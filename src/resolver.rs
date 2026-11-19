@@ -89,6 +89,10 @@ fn substitute_self(ty: &crate::syntax::Type, target: &crate::syntax::Type) -> cr
             *is_mut,
         ),
         Type::Verified(inner) => Type::Verified(Box::new(substitute_self(inner, target))),
+        Type::Distinct(inner) => Type::Distinct(Box::new(substitute_self(inner, target))),
+        Type::DisjointRanges(inner) => {
+            Type::DisjointRanges(Box::new(substitute_self(inner, target)))
+        }
         Type::Pinned(inner, topo) => {
             Type::Pinned(Box::new(substitute_self(inner, target)), topo.clone())
         }
@@ -551,6 +555,8 @@ impl ConstExtents<'_> {
             | Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => self.fold_type(inner),
             Type::GenericInstance(base, args) => {
                 self.fold_type(base);

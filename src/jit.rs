@@ -16,94 +16,6 @@ use std::fs::File;
 use std::io::Write;
 use std::process::Command;
 
-/// Where `libvx_std_core` sits for the profile this compiler was built with.
-///
-/// Its absence is worth its own message: `cargo test` never emits the shared library, because a
-/// dependency edge only asks for an rlib, so a checkout that has only been tested reaches the
-/// An MLIR execution engine that emits an object file, holding its own handle.
-///
-/// Not `melior::ExecutionEngine`, because of how MLIR's C API reads the library list.
-/// `mlirExecutionEngineCreate` takes an `MlirStringRef` per shared library, but builds its
-/// `StringRef` from the pointer alone -- `libPaths.push_back(sharedLibPaths[i].data)` -- so it
-/// calls `strlen` and throws away the length it was handed. A Rust `&str` is not NUL-terminated,
-/// so every path ran off its end into whatever heap bytes followed it, giving
-/// `libmlir_runner_utils.so\xfc\x7f` and a different overrun on each run. Every library then
-/// failed to load, the module could not be materialized, and `emit-obj` wrote nothing.
-///
-/// `CString` is correct whichever the C++ side reads, which matters because it reads the pointer
-/// today and the fix upstream would make it read the length.
-pub struct ObjectEmitter {
-    raw: mlir_sys::MlirExecutionEngine,
-}
-
-impl ObjectEmitter {
-    /// Build an engine over `module`, loading the runtime libraries `shared_library_paths` resolves.
-    pub fn new(module: &melior::ir::Module, opt_level: usize) -> Result<Self, String> {
-        let paths = shared_library_paths()?;
-        let owned: Vec<std::ffi::CString> = paths
-            .iter()
-            .map(|p| std::ffi::CString::new(p.as_str()))
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("a shared-library path contains an interior NUL byte: {e}"))?;
-        let refs: Vec<mlir_sys::MlirStringRef> = owned
-            .iter()
-            .map(|c| mlir_sys::MlirStringRef {
-                data: c.as_ptr(),
-                length: c.as_bytes().len(),
-            })
-            .collect();
-
-        // SAFETY: `owned` backs every pointer in `refs`, and both outlive the call below.
-        let raw = unsafe {
-            mlir_sys::mlirExecutionEngineCreate(
-                module.to_raw(),
-                opt_level as i32,
-                refs.len() as i32,
-                refs.as_ptr(),
-                true,
-                true,
-            )
-        };
-
-        // A null handle is how MLIR reports that it could not build an engine. melior does not
-        // check, which is how a module the verifier rejected became a SIGSEGV instead of a
-        // diagnostic.
-        if raw.ptr.is_null() {
-            return Err(
-                "could not create an MLIR execution engine for this module; \
-                 the diagnostics above say why"
-                    .to_string(),
-            );
-        }
-        Ok(Self { raw })
-    }
-
-    /// Write the compiled module to `path`.
-    pub fn dump_to_object_file(&self, path: &str) -> Result<(), String> {
-        let name = std::ffi::CString::new(path)
-            .map_err(|e| format!("output path contains an interior NUL byte: {e}"))?;
-        // SAFETY: `name` outlives the call. This entry point does honour the length.
-        unsafe {
-            mlir_sys::mlirExecutionEngineDumpToObjectFile(
-                self.raw,
-                mlir_sys::MlirStringRef {
-                    data: name.as_ptr(),
-                    length: name.as_bytes().len(),
-                },
-            )
-        }
-        Ok(())
-    }
-}
-
-impl Drop for ObjectEmitter {
-    fn drop(&mut self) {
-        // SAFETY: `self.raw` was returned non-null by `mlirExecutionEngineCreate` and is destroyed
-        // exactly once.
-        unsafe { mlir_sys::mlirExecutionEngineDestroy(self.raw) }
-    }
-}
-
 /// The target triple of the machine running the compiler, from `llvm-config --host-target`.
 fn host_target_triple() -> Result<String, String> {
     let llvm_config_path =
@@ -474,8 +386,12 @@ fn mark_for_thread_sanitizer(llvmir: &[u8]) -> Vec<u8> {
     for line in text.lines() {
         match line.strip_suffix(" {") {
             Some(head) if line.starts_with("define ") => {
-                out.push_str(head);
-                out.push_str(" sanitize_thread {");
+                // An attribute comes before the debug information of the function.
+                let (attributes, debug) = head.split_at(head.find(" !dbg ").unwrap_or(head.len()));
+                out.push_str(attributes);
+                out.push_str(" sanitize_thread");
+                out.push_str(debug);
+                out.push_str(" {");
             }
             _ => out.push_str(line),
         }
@@ -492,6 +408,26 @@ pub fn compile_mlir_to_object(
     mlir_src: &str,
     temp_dir: &std::path::Path,
     opt_level: u8,
+    disable_llvm_optimizations: bool,
+    thread_sanitizer: bool,
+) -> Result<String, String> {
+    compile_mlir_to_object_with_codegen_level(
+        mlir_src,
+        temp_dir,
+        opt_level,
+        None,
+        disable_llvm_optimizations,
+        thread_sanitizer,
+    )
+}
+
+/// As `compile_mlir_to_object`, with `llc` at `codegen_level` when it is given, and at
+/// `opt_level` when it is not.
+pub fn compile_mlir_to_object_with_codegen_level(
+    mlir_src: &str,
+    temp_dir: &std::path::Path,
+    opt_level: u8,
+    codegen_level: Option<u8>,
     disable_llvm_optimizations: bool,
     thread_sanitizer: bool,
 ) -> Result<String, String> {
@@ -559,14 +495,15 @@ pub fn compile_mlir_to_object(
     run_cmd(opt_cmd, "opt")?;
 
     let llc_path = std::env::var("LLC_PATH").unwrap_or_else(|_| "llc".to_string());
-    println!(
-        "[JIT] Compiling to native object (-O{})...",
-        actual_opt_level
-    );
+    let llc_level = match codegen_level {
+        Some(level) if !disable_llvm_optimizations => level,
+        _ => actual_opt_level,
+    };
+    println!("[JIT] Compiling to native object (-O{})...", llc_level);
     let temp_obj = temp_dir.join("opt.o").to_string_lossy().into_owned();
     let mut llc_cmd = Command::new(&llc_path);
     llc_cmd.args([
-        &format!("-O={}", actual_opt_level),
+        &format!("-O={}", llc_level),
         &format!("-mtriple={triple}"),
         "-mcpu=native",
         "-filetype=obj",
@@ -683,6 +620,12 @@ pub fn execute_mlir_streams(
         ),
         &runtime_lib,
     ]);
+    // libmlir_c_runner_utils needs libMLIR and libLLVM, and GNU ld reads all of their symbols to
+    // check the library, which took most of the time of a link. The loader still checks each
+    // symbol when the program starts, and the symbols of the program are still checked here.
+    if cfg!(target_os = "linux") {
+        clang_cmd.arg("-Wl,--allow-shlib-undefined");
+    }
 
     // The plain half-precision printers MLIR exports only packed. Linked here as well as handed to
     // the execution engine, because this path builds a native executable with clang rather than
@@ -739,6 +682,11 @@ pub fn execute_mlir_streams(
     exe_cmd.args(program_args);
     if std::env::var("RUST_BACKTRACE").is_err() {
         exe_cmd.env("RUST_BACKTRACE", "1");
+    }
+    // The crash report of the runtime names its frames with this program.
+    let symbolizer = std::path::Path::new(&llvm_libdir).with_file_name("bin/llvm-symbolizer");
+    if std::env::var_os("LLVM_SYMBOLIZER_PATH").is_none() && symbolizer.exists() {
+        exe_cmd.env("LLVM_SYMBOLIZER_PATH", &symbolizer);
     }
     if thread_sanitizer {
         // The Rust runtime has no checks of ThreadSanitizer, and orders its own memory with locks

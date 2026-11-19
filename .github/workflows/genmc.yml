@@ -1,7 +1,7 @@
 name: GenMC
 
-# Checks the LLVM IR that vxc generates for the Mutex, the channel and Arc, with GenMC under
-# RC11. See formal/compiled/README.md.
+# Checks the LLVM IR that vxc generates for the Mutex, the Semaphore, the channel and Arc, with
+# GenMC under RC11. See formal/compiled/README.md.
 on:
   push:
     branches: [ main ]
@@ -19,14 +19,14 @@ env:
 jobs:
   genmc:
     name: Check the compiled library with GenMC
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The LLVM of ci.yml. It builds vxc, and its clang, opt and llvm-link make the IR.
       - name: Get our own LLVM
@@ -49,14 +49,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libllvm22 libffi-dev
 
-      # ImageOS names the OS release of the runner (ubuntu24), as in build-own-llvm.
+      # ImageOS names the OS release of the runner (ubuntu26), as in build-own-llvm.
       - name: GenMC cache key
         id: genmc-key
         run: echo "key=genmc-$ImageOS-llvm22-$GENMC_COMMIT-${{ hashFiles('formal/compiled/genmc.patch') }}" >> "$GITHUB_OUTPUT"
 
       - name: Cache GenMC
         id: genmc-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/genmc
           key: ${{ steps.genmc-key.outputs.key }}

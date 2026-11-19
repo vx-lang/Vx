@@ -1,0 +1,33 @@
+//===- an_object_exports_only_the_programs_symbols.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An object from `--action emit-obj` defines the program's functions and nothing more. It has no
+// `_mlir_<name>` wrapper for each function, which MLIR's execution engine added with default
+// visibility, so that a shared library exported it. The engine also used the large code model:
+// on x86-64, each call loaded its target's address through an `R_X86_64_GOT64` first.
+//
+// RUN: vxc %s --action emit-obj -o %t.o
+// RUN: llvm-nm --defined-only --extern-only %t.o | FileCheck %s --implicit-check-not=_mlir_
+// RUN: llvm-objdump -r %t.o | FileCheck %s --check-prefix=CALLS --implicit-check-not=GOT64 --implicit-check-not=GOTOFF64
+// CALLS: RELOCATION RECORDS
+// On Linux, `llvm-nm` prints `T helper`. On macOS, it prints `T _helper`.
+// CHECK-DAG: T {{_?}}helper
+// CHECK-DAG: T {{_?}}main
+// CHECK-DAG: T {{_?}}vx_pipeline_run
+
+pub fn vx_pipeline_run(frame : *mut u8, n : i64) -> i32 {
+  return (n as i32) + 1;
+}
+
+fn helper(x : i32) -> i32 {
+  return x * 2;
+}
+
+fn main() -> i32 {
+  println!("{}", helper(1));
+  return 0;
+}

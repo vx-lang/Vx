@@ -1,0 +1,79 @@
+// `mlir!` blocks with `threads : N` that the compiler refuses. Every thread of a threadgroup runs
+// such a block, so it must be in the code of a loop of blocks.
+// - `threads_in_a_lane_loop`: the block is in a lane loop.
+// - `threads_above_the_block`: a block of the Apple GPU has at most 1024 threads.
+// - `threads_on_the_host`: the block is in host code, outside any kernel.
+// - `threads_zero`: `threads` is a number above 0.
+//
+// RUN: split-file %s %t
+// RUN: not vxc %t/threads_in_a_lane_loop.vx --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=LANE
+// RUN: not vxc %t/threads_above_the_block.vx --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=MANY
+// RUN: not vxc %t/threads_on_the_host.vx --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=HOST
+// RUN: not vxc %t/threads_zero.vx --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=ZERO
+//
+// LANE: Error[E6032] at {{.*}}threads_in_a_lane_loop.vx:5:25: an `mlir!` block with `threads` must be in the code of a loop of blocks, outside its subgroup and lane loops, because every thread of the block runs it
+// MANY: Error[E6032] at {{.*}}threads_above_the_block.vx:4:23: this `mlir!` block asks for 2048 threads, but a block of `Device` has at most 1024
+// HOST: Error[E6032] at {{.*}}threads_on_the_host.vx:2:19: an `mlir!` block with `threads` must be in the code of a loop of blocks
+// ZERO: `threads` of an mlir! block is a number of threads above 0, not '0'
+
+//--- threads_in_a_lane_loop.vx
+pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      for l in 0..32 across lanes(32) {
+        let _d = mlir!( threads : 64, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "gpu"], ensures : [writes_only(out[b * 64 + l])]) {
+          %tid = gpu.thread_id x
+          macro.yield %b : i32
+        };
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- threads_above_the_block.vx
+pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      let _d = mlir!( threads : 2048, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "gpu"], ensures : [writes_only(out[b * 64..b * 64 + 64])]) {
+        %tid = gpu.thread_id x
+        macro.yield %b : i32
+      };
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- threads_on_the_host.vx
+fn main() -> i32 {
+  let _d = mlir!( threads : 64, inputs : (), returns : i32, dialects : ["arith"], ensures : [writes_only()]) {
+    %c = arith.constant 1 : i32
+    macro.yield %c : i32
+  };
+  return 0;
+}
+
+//--- threads_zero.vx
+pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      let _d = mlir!( threads : 0, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "gpu"], ensures : [writes_only(out[b * 64..b * 64 + 64])]) {
+        %tid = gpu.thread_id x
+        macro.yield %b : i32
+      };
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

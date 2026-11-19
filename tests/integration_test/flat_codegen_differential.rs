@@ -1567,6 +1567,73 @@ fn non_generic_struct_with_an_option_field_runs(#[case] jobs: Option<usize>) {
 #[rstest::rstest]
 #[case::normal(None)]
 #[case::parallel(Some(2))]
+fn result_holds_an_error_with_an_optional_code(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_with_an_optional_code.vx",
+        &["4294967301", "22", "33", "-7", "11", "44", "99"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_structs_with_different_enum_fields(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_structs_with_different_enum_fields.vx",
+        &["-9000000000", "77", "3", "-7", "42", "99", "-5"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn struct_with_an_option_field_in_different_enums(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "struct_with_an_option_field_in_different_enums.vx",
+        &[
+            "55",
+            "-7",
+            "4294967301",
+            "99",
+            "41",
+            "7",
+            "2",
+            "-9000000000",
+            "1",
+            "-3",
+        ],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_an_error_from_another_module(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_from_another_module.vx",
+        &["4294967301", "2", "-9000000000"],
+        jobs,
+    );
+}
+
+// Only the last line of the fixture is read: the `Result<Option<i32>, Error>` and `Pair` cases.
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_inside_an_enum_payload_runs(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_inside_an_enum_payload.vx",
+        &["303", "-9", "-1011", "31", "-13", "-47", "99"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
 fn enum_payload_with_empty_fields_runs(
     #[case] jobs: Option<usize>,
     #[values(0, 2)] optimization: u8,
@@ -1728,9 +1795,12 @@ fn assert_generated_aggregate_runs_at_optimization(
     )
     .expect("read fixture");
     std::fs::write(&path, source).expect("write fixture");
+    // A fixture may import a helper module, such as `tests::modules::pass_a_result_through`.
+    let tests_package = format!("tests={}", concat!(env!("CARGO_MANIFEST_DIR"), "/tests"));
     let mut command = super::time_limit::vxc();
     command
         .arg(&path)
+        .args(["--package", &tests_package])
         .arg("--run")
         .arg(format!("-O{optimization}"))
         .env("VX_FLAT_DBG", "1");
@@ -1751,9 +1821,11 @@ fn assert_generated_aggregate_runs_at_optimization(
     };
     assert!(log.contains(marker), "flat path with jobs={jobs:?}: {log}");
     // Native compilation prints progress before the program's final output line.
+    // A program that ends with `println!` leaves an empty line after it.
     let values = stdout
         .lines()
-        .last()
+        .rev()
+        .find(|line| !line.trim().is_empty())
         .expect("program prints its payload values");
     let actual: Vec<_> = values.split_whitespace().collect();
     assert_eq!(

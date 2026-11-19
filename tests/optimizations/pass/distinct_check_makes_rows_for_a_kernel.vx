@@ -1,0 +1,130 @@
+//===- distinct_check_makes_rows_for_a_kernel.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Distinct::check(t)` reads the values of `t` on the CPU. It gives a `Distinct` tensor when no
+// two are equal, and `None` when two are. Here the rows [2, 0, 1] pass the check, move to the
+// GPU, and block `b` writes `10 * b + 1` into column 1 of row `rows[b]`. Then the check finds the
+// two 1s in [1, 0, 1], the two 5s in an `i64` tensor, and the two largest `u64` values. The
+// check sorts a copy of the values, and the two 5s are apart until it does. No `unsafe` is
+// needed.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// CHECK: rows: 11 21 1
+// CHECK-NEXT: [1, 0, 1]:
+// CHECK-NEXT: two are equal
+// CHECK-NEXT: i64 [-5, 3, 8]:
+// CHECK-NEXT: distinct
+// CHECK-NEXT: i64 [5, 1, 4, -2, 5, 3]:
+// CHECK-NEXT: two are equal
+// CHECK-NEXT: u64 [max, 2^63 - 1, 0]:
+// CHECK-NEXT: distinct
+// CHECK-NEXT: u64 [max, 0, max]:
+// CHECK-NEXT: two are equal
+
+import core::option;
+
+fn scatter(y : &mut Tensor<f32, [?, ?], Memory::HBM>, rows : &Distinct<Tensor<i32, [?], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows.len() across blocks {
+      for l in 0..2 across lanes(32) {
+        y[rows[b]][l] = (10 * b + l) as f32;
+      }
+    }
+  }
+  return;
+}
+
+fn say_i32(o : Option<Distinct<Tensor<i32, [?]>>>) -> void {
+  match o {
+    Option<Distinct<Tensor<i32, [?]>>>::Some(_d) => {
+      println!("distinct");
+    }
+    Option<Distinct<Tensor<i32, [?]>>>::None => {
+      println!("two are equal");
+    }
+  }
+  return;
+}
+
+fn say_i64(o : Option<Distinct<Tensor<i64, [?]>>>) -> void {
+  match o {
+    Option<Distinct<Tensor<i64, [?]>>>::Some(_d) => {
+      println!("distinct");
+    }
+    Option<Distinct<Tensor<i64, [?]>>>::None => {
+      println!("two are equal");
+    }
+  }
+  return;
+}
+
+fn say_u64(o : Option<Distinct<Tensor<u64, [?]>>>) -> void {
+  match o {
+    Option<Distinct<Tensor<u64, [?]>>>::Some(_d) => {
+      println!("distinct");
+    }
+    Option<Distinct<Tensor<u64, [?]>>>::None => {
+      println!("two are equal");
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut order = Tensor<i32, [3]>::fill(0);
+  order[0] = 2;
+  order[1] = 0;
+  order[2] = 1;
+  match Distinct::check(order) {
+    Option<Distinct<Tensor<i32, [?]>>>::Some(rows) => {
+      let on_gpu = transfer(rows, Memory::HBM);
+      let mut y = transfer(Tensor<f32, [3, 2]>::fill(-1.0), Memory::HBM);
+      scatter(&mut y, &on_gpu);
+      let h = transfer(y, Memory::CPU_DRAM);
+      println!("rows: {} {} {}", h[0][1], h[1][1], h[2][1]);
+    }
+    Option<Distinct<Tensor<i32, [?]>>>::None => {
+      println!("rows: two are equal");
+    }
+  }
+
+  let mut twice = Tensor<i32, [3]>::fill(0);
+  twice[0] = 1;
+  twice[2] = 1;
+  println!("[1, 0, 1]:");
+  say_i32(Distinct::check(twice));
+
+  let mut a = Tensor<i64, [3]>::fill(0i64);
+  a[0] = -5i64;
+  a[1] = 3i64;
+  a[2] = 8i64;
+  println!("i64 [-5, 3, 8]:");
+  say_i64(Distinct::check(a));
+  let mut b = Tensor<i64, [6]>::fill(0i64);
+  b[0] = 5i64;
+  b[1] = 1i64;
+  b[2] = 4i64;
+  b[3] = -2i64;
+  b[4] = 5i64;
+  b[5] = 3i64;
+  println!("i64 [5, 1, 4, -2, 5, 3]:");
+  say_i64(Distinct::check(b));
+
+  let mut c = Tensor<u64, [3]>::fill(0u64);
+  c[0] = 18446744073709551615u64;
+  c[1] = 9223372036854775807u64;
+  println!("u64 [max, 2^63 - 1, 0]:");
+  say_u64(Distinct::check(c));
+  let mut d = Tensor<u64, [3]>::fill(0u64);
+  d[0] = 18446744073709551615u64;
+  d[2] = 18446744073709551615u64;
+  println!("u64 [max, 0, max]:");
+  say_u64(Distinct::check(d));
+  return 0;
+}

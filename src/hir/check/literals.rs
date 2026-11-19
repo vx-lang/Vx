@@ -505,10 +505,8 @@ impl<'a> TypeChecker<'a> {
         matches!(inner, Type::Tensor(ElementType::F32, dims, _) if dims.len() == 1)
     }
 
-    /// A rank-1 f16/bf16 tensor slice: half-precision STORAGE that every slice contract widens
-    /// to f32 on load (Vx#320). Storage precision and arithmetic precision are separate
-    /// decisions -- a wide-slice op computes in f32 and its result IS f32; only an explicit
-    /// store back into a half tensor narrows again.
+    /// A rank-1 f16/bf16 tensor slice. A reduction over it (`dot`, `sum`, `max`, `min`) gives
+    /// f32. Elementwise arithmetic gives f32 only when the other operand has another type.
     pub(crate) fn is_half_slice(t: &Type) -> bool {
         let inner = match t {
             Type::Borrow { inner, .. }
@@ -528,7 +526,9 @@ impl<'a> TypeChecker<'a> {
     fn is_located_tensor_payload(t: &Type) -> bool {
         match t {
             Type::Pinned(inner, _) | Type::Ref(inner, _) => matches!(**inner, Type::Tensor(..)),
-            Type::Verified(inner) => Self::is_located_tensor_payload(inner),
+            Type::Verified(inner) | Type::Distinct(inner) | Type::DisjointRanges(inner) => {
+                Self::is_located_tensor_payload(inner)
+            }
             _ => false,
         }
     }

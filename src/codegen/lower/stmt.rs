@@ -512,6 +512,8 @@ fn nominal_struct_name(ty: &syntax::Type) -> Option<crate::symbol::Symbol> {
         Type::Ref(inner, _)
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Pinned(inner, _) => nominal_struct_name(inner),
         Type::Borrow { inner, .. } => nominal_struct_name(inner),
         _ => None,
@@ -636,8 +638,9 @@ pub(crate) fn struct_instance_ty<'c>(
 }
 
 /// `place.member = val` where `place` is a struct behind a pointer: `(*p).a = v` with a raw
-/// pointer `p`, or `m.r.x = v` where the field `m.r` is a reference. The value is stored through
-/// the pointer. `None` when `place` is not a struct behind a pointer.
+/// pointer `p`, `p[i].a = v` with a raw pointer `p`, or `m.r.x = v` where the field `m.r` is a
+/// reference. The value is stored through the pointer. `None` when `place` is not a struct behind
+/// a pointer.
 fn store_field_through_pointer<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -661,6 +664,11 @@ fn store_field_through_pointer<'c>(
             }
             _ => return Ok(None),
         },
+        // `p[i]` is lowered as a place below, which gives the address of the element.
+        Expr::IndexAccess(ix) => match gen.infer_ast_type(&ix.base) {
+            Some(T::Pointer(inner, _, _)) => (place, *inner),
+            _ => return Ok(None),
+        },
         _ => return Ok(None),
     };
     let Some(base_struct) = nominal_struct_name(&pointee) else {
@@ -674,7 +682,11 @@ fn store_field_through_pointer<'c>(
     let Some(field_idx) = decl.fields.iter().position(|(n, _)| n == member) else {
         return Ok(None);
     };
-    let (ptr_val, ptr_ty, block) = gen.generate_expr(ptr_expr, block)?;
+    let prev_lvalue = gen.is_lvalue_context;
+    gen.is_lvalue_context = prev_lvalue || matches!(place, Expr::IndexAccess(_));
+    let lowered = gen.generate_expr(ptr_expr, block);
+    gen.is_lvalue_context = prev_lvalue;
+    let (ptr_val, ptr_ty, block) = lowered?;
     assert!(
         ptr_ty.to_string().starts_with("!llvm.ptr"),
         "a struct behind a pointer lowers to a pointer, not {ptr_ty}"
@@ -732,56 +744,6 @@ fn index_base(mut e: &Expr) -> &Expr {
     e
 }
 
-/// Do `dst = a @ b`'s three tensors have statically agreeing rank-2 shapes?
-///
-/// Only then is the destination known to be the size of the product, which is what makes
-/// filling it in place safe. A dynamic operand has no product shape for the checker to have
-/// compared `dst` against, and keeps the allocate-and-publish form.
-fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b: &Expr) -> bool {
-    // Filling `dst` in place zeroes it before the multiply reads its inputs, so an operand
-    // naming the same buffer would read zeros. Each of the three has to be a local declared a
-    // tensor -- a name bound to a borrow denotes whatever it points at, and following that is
-    // the analysis this check exists to avoid.
-    // A destination whose pointer is taken can be read under another name, through a view.
-    let root = |e: &Expr| -> Option<crate::symbol::Symbol> {
-        let r = syntax::matmul_operand_root(e)?;
-        let named = Expr::Identifier(IdentifierExpr {
-            name: r.clone(),
-            span: Span::default(),
-        });
-        // A name declared a borrow or a pointer denotes whatever it points at, which is the
-        // alias the destination's own name does not reveal.
-        match gen.infer_ast_type(&named) {
-            Some(syntax::Type::Borrow { .. } | syntax::Type::Pointer(..)) => None,
-            _ => Some(r.clone()),
-        }
-    };
-    let (Some(d), Some(l), Some(r)) = (root(dst), root(a), root(b)) else {
-        return false;
-    };
-    if !gen.owned_tensors.contains(&d) || gen.pointer_taken.contains(&d) || d == l || d == r {
-        return false;
-    }
-
-    let dims = |e: &Expr| -> Option<Vec<i64>> {
-        let e = match e {
-            Expr::Borrow(borrow) => borrow.expr.as_ref(),
-            other => other,
-        };
-        match gen.infer_ast_type(e)? {
-            syntax::Type::Tensor(_, dims, _) => dims
-                .iter()
-                .map(|d| d.literal().and_then(|v| v.parse::<i64>().ok()))
-                .collect(),
-            _ => None,
-        }
-    };
-    let (Some(d), Some(l), Some(r)) = (dims(dst), dims(a), dims(b)) else {
-        return false;
-    };
-    d.len() == 2 && l.len() == 2 && r.len() == 2 && l[1] == r[0] && d[0] == l[0] && d[1] == r[1]
-}
-
 /// `vx.lane_matmul`. In a region whose `across` loops run on one lane it is `serial`, which the
 /// host lowering expands into loops.
 fn lower_lane_matmul<'c>(
@@ -789,30 +751,10 @@ fn lower_lane_matmul<'c>(
     block: melior::ir::BlockRef<'c, 'c>,
     m: &crate::hir::check::lanes::LaneMatmul,
 ) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
-    let mut block = block;
-    let mut operands = Vec::new();
-    for e in [m.acc, m.lhs, m.rhs] {
-        let (v, mut ty, b) = gen.generate_expr(e, block)?;
-        block = b;
-        operands.push(super::expr::load_tensor_slot(gen, &block, v, &mut ty)?);
-    }
-    let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mapped = gen.across_map.is_some();
-    let mut attrs = vec![(Identifier::new(gen.context, "subgroup"), unit)];
-    if !mapped {
-        attrs.push((Identifier::new(gen.context, "serial"), unit));
-    }
-    if m.accumulate {
-        attrs.push((Identifier::new(gen.context, "accumulate"), unit));
-    }
-    block.append_operation(
-        OperationBuilder::new("vx.lane_matmul", gen.loc())
-            .add_operands(&operands)
-            .add_attributes(&attrs)
-            .build()?,
-    );
+    let routine = crate::hir::check::lanes::matmul_routine(m.accumulate);
+    let (_, block) = super::expr::lower_lane_call(gen, block, routine, &[m.acc, m.lhs, m.rhs])?;
     // Each lane of the subgroup writes some elements of `acc`, and reads the others after this.
-    if mapped {
+    if gen.across_map.is_some() {
         super::across::barrier(gen, block, super::across::Level::Subgroup)?;
     }
     Ok(block)
@@ -825,7 +767,12 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let AssignStmt { lhs, rhs, span } = self;
+        let AssignStmt {
+            lhs,
+            rhs,
+            span,
+            in_place,
+        } = self;
 
         // A lane matmul in the code of a subgroup.
         if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
@@ -838,11 +785,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         // only a field of a variable, so each level of nesting peels off one field.
         if let Expr::MemberAccess(m) = lhs {
             if let Some(rebuilt) = struct_with_one_field_replaced(gen, &m.base, &m.member, rhs) {
-                let assign = AssignStmt {
-                    lhs: (*m.base).clone(),
-                    rhs: rebuilt,
-                    span: *span,
-                };
+                let assign = AssignStmt::new((*m.base).clone(), rebuilt, *span);
                 return assign.lower(gen, block);
             }
         }
@@ -921,17 +864,42 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             )));
         }
 
-        // `c = a @ b` where `c` already names a buffer: fill it, rather than allocating a second
-        // one and rebinding `c` to it. The checker has compared `c`'s declared shape against the
-        // product, so the destination is the right size (Vx#391).
-        if let Expr::BinaryOp(BinaryOpExpr {
-            lhs: ml,
-            op: BinaryOp::MatMul,
-            rhs: mr,
-            ..
-        }) = rhs
-        {
-            if matmul_assign_shapes_agree(gen, lhs, ml, mr) {
+        // `c = a @ b` or `c = a + b` where the checker chose to write into the buffer `c`
+        // holds, rather than to make a second buffer and give `c` that one (Vx#391).
+        if *in_place {
+            let Expr::BinaryOp(BinaryOpExpr {
+                lhs: ml,
+                op,
+                rhs: mr,
+                ..
+            }) = rhs
+            else {
+                unreachable!("the checker writes only an operator's value in place")
+            };
+            if !matches!(op, BinaryOp::MatMul) {
+                let (dst_val, mut dst_ty, block) = gen.generate_expr(lhs, block)?;
+                let dst_val = super::expr::load_tensor_slot(gen, &block, dst_val, &mut dst_ty)?;
+                // The operator writes into the buffer in `nrvo_slot` when its type is the one
+                // the operator makes.
+                let outer = gen.nrvo_slot.replace(dst_val);
+                let (val, _, block) = gen.generate_expr(rhs, block)?;
+                gen.nrvo_slot = outer;
+                if val != dst_val {
+                    // The operator made a buffer of its own: copy it into `c`'s, and free it.
+                    block.append_operation(
+                        OperationBuilder::new("memref.copy", gen.loc())
+                            .add_operands(&[val, dst_val])
+                            .build()?,
+                    );
+                    block.append_operation(
+                        OperationBuilder::new("memref.dealloc", gen.loc())
+                            .add_operands(&[val])
+                            .build()?,
+                    );
+                }
+                return Ok(Some(block));
+            }
+            {
                 let (dst_val, mut dst_ty, block) = gen.generate_expr(lhs, block)?;
                 let (a_val, mut a_ty, block) = gen.generate_expr(ml, block)?;
                 let (b_val, mut b_ty, block) = gen.generate_expr(mr, block)?;
@@ -1221,7 +1189,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .add_operands(&[store_val, base_val]);
                     if let Expr::IndexAccess(ix) = lhs {
                         store_builder = store_builder
-                            .add_attributes(&super::across::lane_element_attrs(gen, ix));
+                            .add_attributes(&super::across::lane_element_attrs(gen, ix))
+                            .add_attributes(&super::across::lane_own_attrs(gen, ix));
                     }
 
                     for idx in indices {
@@ -1474,7 +1443,11 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             {
                 return Ok(Some(new_b));
             } else {
-                panic!("Complex struct assignment lhs not supported");
+                return Err(LowerError::ParseType(format!(
+                    "line {}, column {}: this code generator cannot write a field of this place. \
+                     Take a `&mut` reference to the struct and write the field through it",
+                    span.line, span.column
+                )));
             }
         }
         Ok(Some(block))
@@ -1515,6 +1488,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                     operand_ty: operand_ty.clone(),
                 }),
                 span: *span,
+                in_place: false,
             };
             return assign.lower(gen, block);
         }

@@ -15,8 +15,10 @@
 //
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+// RUN: FileCheck %s --check-prefix=STAGE2 < %t.ptx
 // RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
 // RUN: FileCheck %s < %t.ast.ptx --implicit-check-not=local_depot
+// RUN: FileCheck %s --check-prefix=STAGE2 < %t.ast.ptx
 
 // CHECK-LABEL: .entry block_sum(
 // CHECK-NOT: .shared .align 16 .b8 {{.*}}[1024];
@@ -30,9 +32,22 @@
 // CHECK: st.shared.b32
 // CHECK: bar.sync 0;
 // CHECK: ld.shared.b32
-// CHECK-COUNT-4: shfl.sync.bfly.b32 {{.*}}, 31, -1;
-// CHECK: shfl.sync.bfly.b32 {{.*}}, 1, 31, -1;
-// CHECK-NEXT: bar.sync 0;
+// The second step can come before the first in the text, so its checks follow the values: the 5
+// shuffles add up the 32 results that the load gave, and the division uses that sum.
+// STAGE2-LABEL: .entry block_sum(
+// STAGE2-DAG: ld.shared.b32 %r[[PART:[0-9]+]],
+// STAGE2-DAG: shfl.sync.bfly.b32 %r[[S16:[0-9]+]], %r[[PART]], 16, 31, -1;
+// STAGE2-DAG: add.rn.f32 %r[[A16:[0-9]+]], %r[[PART]], %r[[S16]];
+// STAGE2-DAG: shfl.sync.bfly.b32 %r[[S8:[0-9]+]], %r[[A16]], 8, 31, -1;
+// STAGE2-DAG: add.rn.f32 %r[[A8:[0-9]+]], %r[[A16]], %r[[S8]];
+// STAGE2-DAG: shfl.sync.bfly.b32 %r[[S4:[0-9]+]], %r[[A8]], 4, 31, -1;
+// STAGE2-DAG: add.rn.f32 %r[[A4:[0-9]+]], %r[[A8]], %r[[S4]];
+// STAGE2-DAG: shfl.sync.bfly.b32 %r[[S2:[0-9]+]], %r[[A4]], 2, 31, -1;
+// STAGE2-DAG: add.rn.f32 %r[[A2:[0-9]+]], %r[[A4]], %r[[S2]];
+// STAGE2-DAG: shfl.sync.bfly.b32 %r[[S1:[0-9]+]], %r[[A2]], 1, 31, -1;
+// STAGE2-DAG: add.rn.f32 %r[[SUM:[0-9]+]], %r[[A2]], %r[[S1]];
+// STAGE2-DAG: div.rn.f32 %r{{[0-9]+}}, %r{{[0-9]+}}, %r[[SUM]];
+// STAGE2-LABEL: .entry warp_max(
 pub fn block_sum(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
   spawn on(Topology::Device) {
     for b in 0..rows across blocks {

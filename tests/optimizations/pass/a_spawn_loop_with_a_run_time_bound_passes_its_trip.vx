@@ -1,0 +1,36 @@
+//===- a_spawn_loop_with_a_run_time_bound_passes_its_trip.vx ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// The bounds of this `spawn` loop are known only at run time. Its passes still run in
+// parallel: the launch computes the trip, `max(hi - lo, 0)`, and passes it after the kernel's
+// arguments, and the payload's `launch=$0` names that value. Before, the loop ran on one
+// thread, and a long loop on one GPU thread can stop the GPU.
+//
+// CHECK-NOT: W1033
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}launch=$0\00
+// CHECK-LABEL: llvm.func hidden @fill(%arg0: i32, %arg1: i32)
+// CHECK: %[[DIFF:[0-9]+]] = llvm.sub %arg1, %arg0 : i32
+// CHECK: %[[POSITIVE:[0-9]+]] = llvm.icmp "sgt" %[[DIFF]], %[[ZERO:[0-9]+]] : i32
+// CHECK: %[[TRIP:[0-9]+]] = llvm.select %[[POSITIVE]], %[[DIFF]], %[[ZERO]] : i1, i32
+// CHECK: llvm.store %[[TRIP]], %{{[0-9]+}} : i32, !llvm.ptr
+// CHECK: llvm.call @vx_plugin_dispatch_async(
+
+fn fill(lo : i32, hi : i32) -> f32 {
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in lo..hi {
+      o[r][0] = 1.0;
+    }
+  }
+  return transfer(o, Memory::CPU_DRAM)[0][0];
+}
+
+fn main() -> i32 {
+  print(fill(3, 40));
+  return 0;
+}

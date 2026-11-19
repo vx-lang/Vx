@@ -8,9 +8,9 @@
 // When the NVPTX pipeline cannot make a kernel's image, the compile stops and
 // says why. There is no PTX to carry and no quiet host run.
 //
-// The kernel reads and writes `complex<f32>`. The NVPTX pipeline runs no
-// complex-to-LLVM conversion, so `complex.add` survives every stage and the
-// module cannot be translated. That is the same shape as
+// The kernel reads an element of a `tensor` value (`tensor.extract`). The
+// NVPTX pipeline has no conversion for the `tensor` dialect, so the module
+// cannot be translated. That is the same shape as
 // `spirv_conversion_failure_keeps_the_host_path.mlr`: a kernel the backend
 // cannot express, in a program whose host copy could run. The two differ on
 // purpose, because the backends do.
@@ -38,11 +38,9 @@ module {
   gpu.module @kernels {
     gpu.func @k(%src: memref<4xf32>) kernel {
       %c0 = arith.constant 0 : index
-      %v = memref.load %src[%c0] : memref<4xf32>
-      %c = complex.create %v, %v : complex<f32>
-      %sum = complex.add %c, %c : complex<f32>
-      %re = complex.re %sum : complex<f32>
-      memref.store %re, %src[%c0] : memref<4xf32>
+      %t = tensor.empty() : tensor<4xf32>
+      %e = tensor.extract %t[%c0] : tensor<4xf32>
+      memref.store %e, %src[%c0] : memref<4xf32>
       gpu.return
     }
   }

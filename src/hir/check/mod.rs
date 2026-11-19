@@ -42,6 +42,7 @@ pub mod pointer_facts;
 pub mod projection;
 pub mod raw;
 pub mod region_traffic;
+pub mod subgroup_registers;
 pub mod tasks;
 pub mod thread_safety;
 pub mod transfer;

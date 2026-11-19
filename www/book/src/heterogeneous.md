@@ -98,8 +98,10 @@ let tile = first.wait();
 ```
 
 A program must wait for each token. A token that the program drops with no `.wait()` gets the
-error E6036. Today the copy ends before `transfer_async` returns, so `.wait()` only gives the
-tensor. A later runtime will run the copy in the background, and the program will not change.
+error E6036. On an NVIDIA GPU, the copy runs in the background, and a kernel can run during it.
+The copy takes its data from host memory before `transfer_async` returns, so the program can
+change or free that memory after the call. On other devices the copy ends before `transfer_async`
+returns.
 
 A `spawn on` can also be in a task. So a `tasks` block can give work to several devices, one task
 for each device (see [Tasks and channels](tasks.md)).
@@ -250,8 +252,8 @@ argument on `Tensor` — the memory space it lives in — and that `Verified(...
 The same program compiles and runs against different hardware by swapping the machine file:
 
 ```bash
-vxc --machine fleet/h100-sxm.vx --host default program.vx
-vxc --machine fleet/m4-uma.vx --host default program.vx
+vxc --machine $HOME/.vx/current/fleet/h100-sxm.vx --host default program.vx
+vxc --machine $HOME/.vx/current/fleet/m4-uma.vx --host default program.vx
 ```
 
 `--host default` says which machine runs `main` ([Machine files](machine-files.md)).
@@ -259,7 +261,7 @@ vxc --machine fleet/m4-uma.vx --host default program.vx
 You can ask what the compiler concluded, as JSON, rather than reading it out of diagnostics:
 
 ```bash
-vxc --machine fleet/h100-sxm.vx --host default program.vx --diagnostics-json out.json
+vxc --machine $HOME/.vx/current/fleet/h100-sxm.vx --host default program.vx --diagnostics-json out.json
 ```
 
 That record carries every diagnostic with its structured fields — a capacity rejection includes the

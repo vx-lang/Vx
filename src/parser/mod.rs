@@ -87,6 +87,12 @@ pub struct Parser<'a> {
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
     uses_tuples: bool,
+    /// Set once `Distinct::check` or `DisjointRanges::check` is seen: the module then imports
+    /// `core::distinct`, where the checks are.
+    uses_distinct_check: bool,
+    /// The names that a `let` without `mut` binds to a string literal. `==` on such a name
+    /// compares text, so it needs `core::c_str` as a literal does.
+    string_literal_names: std::collections::HashSet<crate::symbol::Symbol>,
     /// Statements a desugaring produced after the one it returned: `let (a, b) = e;` is a `let`
     /// of `e` followed by one per name. `parse_statement_into` appends them.
     pending_stmts: Vec<crate::syntax::Statement>,
@@ -121,6 +127,8 @@ impl<'a> Parser<'a> {
             mut_params: Vec::new(),
             source,
             uses_tuples: false,
+            uses_distinct_check: false,
+            string_literal_names: std::collections::HashSet::new(),
             pending_stmts: Vec::new(),
             tuple_lets: 0,
             prefix_stmts: Vec::new(),
@@ -423,7 +431,31 @@ mod tests {
         // Any identifier that is not a built-in is a user-defined topology.
         assert_eq!(
             parse_topology("Topology::MyTPU"),
-            Topology::Custom(crate::symbol::Symbol::from("MyTPU"))
+            Topology::Custom(crate::symbol::Symbol::from("MyTPU"), None)
+        );
+    }
+
+    #[test]
+    fn a_declared_topology_takes_an_index_or_a_slice() {
+        assert_eq!(
+            parse_topology("Topology::Dev[1]"),
+            Topology::declared_device("Dev".into(), 1)
+        );
+        assert_eq!(
+            parse_topology("Topology::Dev[0..2]"),
+            Topology::Slice(
+                Box::new(Topology::declared_device("Dev".into(), 0)),
+                Box::new(Expr::Number(NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    Span::default()
+                ))),
+                Box::new(Expr::Number(NumberExpr::new(
+                    "2".to_string(),
+                    None,
+                    Span::default()
+                ))),
+            )
         );
     }
 
@@ -452,6 +484,27 @@ mod tests {
             .descriptor
             .visibility
             .contains(&crate::syntax::MemorySpace::LocalSRAM));
+    }
+
+    /// `count:` is a number of devices from 1 to `MAX_TOPOLOGY_COUNT`. No `count:` is one device.
+    #[test]
+    fn a_topology_count_is_from_1_to_the_limit() {
+        let count = |field: &str| {
+            let input = format!("Topology Dev {{ memory: Memory::Local_SRAM, {field} }}");
+            let mut lexer = Lexer::new(&input);
+            let tokens = lexer.tokenize();
+            let mut parser = Parser::new(&tokens, &input);
+            // `None` when the parser refuses the declaration.
+            parser
+                .parse_topology_decl()
+                .ok()
+                .map(|d| d.descriptor.count)
+        };
+        assert_eq!(count("count: 2"), Some(Some(2)));
+        assert_eq!(count("count: 65536"), Some(Some(65536)));
+        assert_eq!(count("visible: [Memory::Local_SRAM]"), Some(None));
+        assert_eq!(count("count: 0"), None);
+        assert_eq!(count("count: 65537"), None);
     }
 
     #[test]
@@ -710,7 +763,7 @@ mod tests {
         // topology rather than erroring (its memory model comes from the registry).
         assert_eq!(
             parse_topology("Topology::Quantum"),
-            Topology::Custom(crate::symbol::Symbol::from("Quantum"))
+            Topology::Custom(crate::symbol::Symbol::from("Quantum"), None)
         );
     }
 

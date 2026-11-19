@@ -1,0 +1,117 @@
+//===- an_arm_that_ends_in_a_match_whose_arms_return.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` arm gives a value when its last statement is an expression with no `;`. When that
+// expression is a `match` or an `if` whose own arms all `return`, the arm gives no value. So
+// `pick` and `pick_by_if` end in a `match` with no value, which a function that returns `i64`
+// can end with. In `value` and `value_by_if`, each arm ends in a `match` or `if` that gives a
+// value, so the last `match` gives the function's value.
+//
+// `VX_NO_AST_FALLBACK=1` makes the default code generator fail rather than give a function to
+// the AST code generator.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}pick: 1 5 99{{$}}
+// CHECK: {{^}}pick_by_if: 1 5 99{{$}}
+// CHECK: {{^}}value: 1 5 99{{$}}
+// CHECK: {{^}}value_by_if: 1 5 99{{$}}
+
+enum Inner {
+  A,
+  B,
+}
+
+enum Outer {
+  Plain,
+  Wrapped,
+}
+
+fn pick(o : Outer, i : Inner) -> i64 {
+  match o {
+    Outer::Plain => {
+      return 1;
+    }
+    , Outer::Wrapped => {
+      match i {
+        Inner::A => {
+          return 5;
+        }
+        , Inner::B => {
+          return 99;
+        }
+      }
+    }
+  }
+}
+
+fn pick_by_if(o : Outer, a : bool) -> i64 {
+  match o {
+    Outer::Plain => {
+      return 1;
+    }
+    , Outer::Wrapped => {
+      if a {
+        return 5;
+      } else {
+        return 99;
+      }
+    }
+  }
+}
+
+fn value(o : Outer, i : Inner) -> i64 {
+  match o {
+    Outer::Plain => {
+      match i {
+        Inner::A => {
+          1
+        }
+        , Inner::B => {
+          2
+        }
+      }
+    }
+    , Outer::Wrapped => {
+      match i {
+        Inner::A => {
+          5
+        }
+        , Inner::B => {
+          99
+        }
+      }
+    }
+  }
+}
+
+fn value_by_if(o : Outer, a : bool) -> i64 {
+  match o {
+    Outer::Plain => {
+      if a {
+        1
+      } else {
+        2
+      }
+    }
+    , Outer::Wrapped => {
+      if a {
+        5
+      } else {
+        99
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  println!("pick: {} {} {}", pick(Outer::Plain, Inner::A), pick(Outer::Wrapped, Inner::A), pick(Outer::Wrapped, Inner::B));
+  println!("pick_by_if: {} {} {}", pick_by_if(Outer::Plain, true), pick_by_if(Outer::Wrapped, true), pick_by_if(Outer::Wrapped, false));
+  println!("value: {} {} {}", value(Outer::Plain, Inner::A), value(Outer::Wrapped, Inner::A), value(Outer::Wrapped, Inner::B));
+  println!("value_by_if: {} {} {}", value_by_if(Outer::Plain, true), value_by_if(Outer::Wrapped, true), value_by_if(Outer::Wrapped, false));
+  return 0;
+}

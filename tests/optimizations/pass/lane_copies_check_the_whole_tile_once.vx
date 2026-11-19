@@ -1,0 +1,62 @@
+//===- lane_copies_check_the_whole_tile_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The MSL of `lanes::copy` into a tile in shared memory and out of it. The copy first checks that
+// the whole tile is inside the tensor. Then each lane copies its elements with no check. Otherwise
+// each element is checked: a copy into the tile reads a zero past the end of the tensor, and a copy
+// out of the tile writes nothing there. The test needs no GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --input-file=%t.metal
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --input-file=%t.ast.metal
+
+// CHECK-LABEL: kernel void into_the_tile(
+// CHECK: if ([[INSIDE:v[0-9]+]]) {
+// CHECK-NEXT: {
+// CHECK-NEXT: for (
+// CHECK-NOT: ?
+// CHECK: float [[X:v[0-9]+]] = p1[p1_o + {{v[0-9]+}} * p1_s0 + {{v[0-9]+}} * p1_s1];
+// CHECK-NEXT: (vx_npu_kernel_0_smem_0 + {{.*}})[{{[0-9]+}}] = [[X]];
+// CHECK: } else {
+// CHECK: int {{v[0-9]+}} = {{v[0-9]+}} ? {{v[0-9]+}} : {{v[0-9]+}};
+pub fn into_the_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, top : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [16, 32], Memory::SMEM>::uninit() };
+      lanes::copy(&mut tile, x, [top, 0]);
+      for l in 0..32 across lanes(32) {
+        out[l] = tile[15][l];
+      }
+    }
+  }
+  return;
+}
+
+// CHECK-LABEL: kernel void out_of_the_tile(
+// CHECK: if ([[INSIDE:v[0-9]+]]) {
+// CHECK-NEXT: {
+// CHECK-NEXT: for (
+// CHECK-NOT: if (
+// CHECK: p0[p0_o + {{v[0-9]+}} * p0_s0 + {{v[0-9]+}} * p0_s1] = {{v[0-9]+}};
+// CHECK: } else {
+// CHECK: if ({{v[0-9]+}}) {
+// CHECK-NEXT: float {{v[0-9]+}} = (vx_npu_kernel_1_smem_0 +
+pub fn out_of_the_tile(y : &mut Tensor<f32, [?, ?], Memory::HBM>, top : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [16, 32], Memory::SMEM>::uninit() };
+      lanes::fill(&mut tile, 1.0);
+      lanes::copy(y, &tile, [top, 0]);
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -30,7 +30,7 @@
 // device happens to be current.
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
-// PAYLOAD-DAG: topo=501
+// PAYLOAD-DAG: topo=501\00toponame=GPU[1]\00arch=nvptx64\00
 // PAYLOAD-DAG: topo=500
 
 fn prefill() -> f32 {

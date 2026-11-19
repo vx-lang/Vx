@@ -1,0 +1,50 @@
+//===- a_task_calls_a_function_pointer_or_a_closure.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tasks call one function pointer, and two tasks call one closure that reads an `i32`.
+// Both are `Sync`, so the tasks may share them.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}function pointer 5{{$}}
+// CHECK: {{^}}closure 23{{$}}
+
+fn add_one(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn call_in_two_tasks(f : fn(i32) -> i32) -> i32 {
+  let r = tasks {
+    let a = spawn {
+      f(1)
+    };
+    let b = spawn {
+      f(2)
+    };
+    a.join() + b.join()
+  };
+  return r;
+}
+
+fn main() -> i32 {
+  println!("function pointer {}", call_in_two_tasks(add_one));
+  let ten = 10;
+  let add_ten = | x : i32 | -> i32 {
+    x + ten
+  };
+  let r = tasks {
+    let a = spawn {
+      add_ten(1)
+    };
+    let b = spawn {
+      add_ten(2)
+    };
+    a.join() + b.join()
+  };
+  println!("closure {}", r);
+  return 0;
+}

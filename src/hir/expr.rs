@@ -467,6 +467,28 @@ impl<'a> TypeChecker<'a> {
                 for (_, arg_expr, _) in &mut e.inputs {
                     self.check_expr_type_flag(arg_expr, consume);
                 }
+                // The indices of `writes_only(t[i][j])`, so the race proof knows their types.
+                for clause in &mut e.ensures {
+                    let Expr::FunctionCall(fc) = clause else {
+                        continue;
+                    };
+                    if fc.name.as_ref() != "writes_only" {
+                        continue;
+                    }
+                    let mut at = fc.args.first_mut();
+                    while let Some(Expr::IndexAccess(ix)) = at {
+                        match ix.index.as_mut() {
+                            Expr::Range(r) => {
+                                self.check_expr_type_flag(&mut r.start, false);
+                                self.check_expr_type_flag(&mut r.end, false);
+                            }
+                            index => {
+                                self.check_expr_type_flag(index, false);
+                            }
+                        }
+                        at = Some(ix.base.as_mut());
+                    }
+                }
                 self.check_atomic_block(e);
                 self.check_block_dialects(e);
                 // The block can free memory through a pointer that it gets.
@@ -837,6 +859,14 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        if let (Type::Distinct(inner_target), Type::Distinct(inner_source))
+        | (Type::DisjointRanges(inner_target), Type::DisjointRanges(inner_source)) =
+            (target, source)
+        {
+            if self.is_assignable(inner_target, inner_source) {
+                return true;
+            }
+        }
 
         // Note: Verified<T> should NOT implicitly coerce to T if the user strictly expected T in tests,
         // or perhaps we shouldn't strip it here. Let's revert this coercion so type_mismatch fails again.
@@ -914,9 +944,11 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn tensor_of(ty: &Type) -> Option<(&ElementType, &[Dim])> {
         match ty {
             Type::Tensor(e, d, _) => Some((e, d.as_slice())),
-            Type::Ref(inner, _) | Type::Pinned(inner, _) | Type::Verified(inner) => {
-                Self::tensor_of(inner)
-            }
+            Type::Ref(inner, _)
+            | Type::Pinned(inner, _)
+            | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => Self::tensor_of(inner),
             _ => None,
         }
     }

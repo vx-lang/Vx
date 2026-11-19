@@ -149,6 +149,42 @@ enum Step {
         val: E,
         how: End,
     },
+    /// Compare-and-swap: when `word` holds `expect`, store `new` and set `dst` to 1. Else set
+    /// `dst` to 0.
+    Cas {
+        dst: usize,
+        word: E,
+        expect: E,
+        new: E,
+    },
+    /// Copy the value in a slot into `dst`, as a receiver of a broadcast clones it. The slot must
+    /// hold one.
+    Peek {
+        dst: usize,
+        slot: E,
+    },
+    /// The broadcast receiver `recv` got the value in register `val`. It must be the value after
+    /// the last one that this receiver got.
+    Got {
+        recv: usize,
+        val: usize,
+    },
+    /// The broadcast receiver `recv` starts after `val` values.
+    StartAt {
+        recv: usize,
+        val: E,
+    },
+    /// The broadcast receiver `recv` gives `Closed`. It must have got each value that was sent:
+    /// `sends` is the word that counts them.
+    ReceiverClosed {
+        recv: usize,
+        sends: i64,
+    },
+    /// A receiver of the work queue `chan` gives `Closed`. No value that no receiver took may be
+    /// in a slot.
+    QueueClosed {
+        chan: Chan,
+    },
     /// Enter or leave the part of the code that the `Mutex` guards.
     Enter,
     Leave,
@@ -232,6 +268,23 @@ struct Breaks {
     recv_ignores_skips: bool,
     /// `recv` passes a skipped number but does not free its slot for the `send` `cap` later.
     skip_keeps_the_slot: bool,
+    /// `pass_a_skip` frees the slot before the `recv` `cap` places earlier took its value.
+    pass_does_not_wait_for_the_slot: bool,
+    /// A `WorkReceiver` takes its receive number with a plain store, as the `Receiver` does.
+    queue_takes_with_a_store: bool,
+    /// A `WorkReceiver` gives `Closed` when each `Sender` was dropped, and does not check that
+    /// each send number had a `recv`.
+    queue_closed_without_the_count: bool,
+    /// The clone of a broadcast receiver does not add to the counts of the values that it did
+    /// not read.
+    clone_skips_the_counts: bool,
+    /// The clone of a broadcast receiver does not take the lock.
+    clone_without_the_lock: bool,
+    /// The drop of a broadcast receiver does not take the lock.
+    drop_without_the_lock: bool,
+    /// The drop of a broadcast receiver does not take 1 from the counts of the values that it
+    /// did not read.
+    drop_keeps_its_counts: bool,
 }
 
 // The words of a channel, as in `channel.vx`.
@@ -257,7 +310,7 @@ const OTHER_BLOCK: i64 = 43;
 const WORDS: usize = 44;
 
 /// One channel: where its words start, where its slots start in the ring memory, and its room.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Chan {
     base: i64,
     ring: i64,
@@ -310,6 +363,8 @@ const CLOSED: usize = 4; // the value of `SENDERS` that `recv` read
 const V: usize = 5; // a value that was just taken
 const OPEN: usize = 6; // the channels that `select` found open
 const T2: usize = 7; // a second word that was just read
+const TICKET: usize = 8; // the ticket of a lock
+const NOW: usize = 9; // the ticket that a lock serves now
 
 /// `notify` in `channel.vx`.
 fn notify(a: &mut Asm, ch: Chan, b: Breaks) {
@@ -458,7 +513,8 @@ fn sender(ch: Chan, id: i64, count: i64, mark: i64, b: Breaks) -> Vec<Step> {
         dst: T,
         word: ch.w(RECEIVER),
     });
-    a.jump_if(r(T), Cmp::Ne, c(1), gave_back);
+    // A `work_queue` has many receivers, so the send counts them.
+    a.jump_if(r(T), Cmp::Eq, c(0), gave_back);
     a.push(Step::Load {
         dst: T,
         word: ch.slot_word(K),
@@ -546,6 +602,14 @@ fn pass_a_skip(a: &mut Asm, ch: Chan, next: usize, b: Breaks) {
         word: ch.w(SKIPS),
     });
     a.jump_if(r(T), Cmp::Eq, c(0), no_skip);
+    if !b.pass_does_not_wait_for_the_slot {
+        // With many receivers, the `recv` `cap` places before can still read the slot.
+        a.push(Step::Load {
+            dst: T,
+            word: ch.slot_word(K),
+        });
+        a.jump_if(r(T), Cmp::Ne, ch.free(K, b), no_skip);
+    }
     a.push(Step::SkipTake {
         dst: T,
         chan: ch.base,
@@ -804,10 +868,556 @@ fn locker(count: i64, b: Breaks) -> Vec<Step> {
     a.finish()
 }
 
+/// A task with a `WorkReceiver` of `work_queue.vx`, in the block with the cancel mark `mark`. It
+/// calls `recv` until it gives `Closed` or `Cancelled`, and then drops the `WorkReceiver`. A
+/// `recv` takes the receive number `k` with a compare-and-swap, and only when slot `k` holds
+/// its value.
+fn work_receiver(ch: Chan, mark: i64, b: Breaks) -> Vec<Step> {
+    let mut a = Asm::new();
+    let (retry, again, not_full, empty, done) =
+        (a.label(), a.label(), a.label(), a.label(), a.label());
+    a.here(retry);
+    a.push(Step::Load {
+        dst: T,
+        word: c(mark),
+    });
+    a.jump_if(r(T), Cmp::Ne, c(0), done);
+    a.push(Step::Load {
+        dst: SEEN,
+        word: ch.w(WAKE),
+    });
+    // `take`.
+    a.here(again);
+    a.push(Step::Load {
+        dst: CLOSED,
+        word: ch.w(SENDERS),
+    });
+    a.push(Step::Load {
+        dst: K,
+        word: ch.w(RECVS),
+    });
+    a.push(Step::Load {
+        dst: T,
+        word: ch.slot_word(K),
+    });
+    a.jump_if(r(T), Cmp::Ne, ch.full(K, b), not_full);
+    if b.queue_takes_with_a_store {
+        a.push(Step::Store {
+            word: ch.w(RECVS),
+            val: add(r(K), c(1)),
+        });
+    } else {
+        a.push(Step::Cas {
+            dst: T,
+            word: ch.w(RECVS),
+            expect: r(K),
+            new: add(r(K), c(1)),
+        });
+        // Another `WorkReceiver` took the value.
+        a.jump_if(r(T), Cmp::Eq, c(0), again);
+    }
+    a.push(Step::Take {
+        dst: V,
+        slot: ch.slot(K),
+    });
+    a.push(Step::Store {
+        word: ch.slot_word(K),
+        val: ch.taken(K, b),
+    });
+    notify(&mut a, ch, b);
+    a.push(Step::Ends {
+        val: V,
+        how: End::Received,
+    });
+    a.jump(retry);
+    a.here(not_full);
+    pass_a_skip(&mut a, ch, again, b);
+    a.jump_if(r(CLOSED), Cmp::Ne, c(0), empty);
+    if !b.queue_closed_without_the_count {
+        a.push(Step::Load {
+            dst: T,
+            word: ch.w(RECVS),
+        });
+        a.push(Step::Load {
+            dst: T2,
+            word: ch.w(SENDS),
+        });
+        a.jump_if(r(T2), Cmp::Gt, r(T), empty);
+    }
+    a.push(Step::QueueClosed { chan: ch });
+    a.jump(done);
+    a.here(empty);
+    sleep(&mut a, ch, Some(mark), b);
+    a.jump(retry);
+    a.here(done);
+    // The drop of the `WorkReceiver`.
+    let no_notify = a.label();
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: ch.w(RECEIVER),
+        delta: c(-1),
+    });
+    a.jump_if(r(T), Cmp::Ne, c(1), no_notify);
+    notify(&mut a, ch, b);
+    a.here(no_notify);
+    release(&mut a, ch, b);
+    a.push(Step::Done);
+    a.finish()
+}
+
+// The words of a broadcast channel, as in `broadcast.vx`, after the words of `channel`.
+const B_LOCK: i64 = 8;
+const B_SLOTS: i64 = 11;
+// The word of each receiver that holds the number of its next value, by receiver id.
+const B_NEXT: i64 = 30;
+// 1 when the clone of a receiver is ready for the task that uses it.
+const HANDOFF: i64 = 36;
+
+/// The number of the broadcast slot for the number in register `k`.
+fn turn(cap: i64, k: usize) -> E {
+    add(c(B_SLOTS), mul(2, modulo(r(k), cap)))
+}
+
+/// The count of receivers that did not read the broadcast slot for the number in register `k`.
+fn readers(cap: i64, k: usize) -> E {
+    add(c(B_SLOTS + 1), mul(2, modulo(r(k), cap)))
+}
+
+/// `lock_channel` in `channel.vx`: a ticket lock.
+fn lock_channel(a: &mut Asm) {
+    let (wait, got) = (a.label(), a.label());
+    a.push(Step::FetchAdd {
+        dst: TICKET,
+        word: c(B_LOCK),
+        delta: c(1),
+    });
+    a.push(Step::Load {
+        dst: NOW,
+        word: c(B_LOCK + 1),
+    });
+    a.here(wait);
+    a.jump_if(r(NOW), Cmp::Eq, r(TICKET), got);
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: c(B_LOCK + 2),
+        delta: c(1),
+    });
+    a.push(Step::WaitWhile {
+        word: c(B_LOCK + 1),
+        val: r(NOW),
+        or_cancel: None,
+    });
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: c(B_LOCK + 2),
+        delta: c(-1),
+    });
+    a.push(Step::Load {
+        dst: NOW,
+        word: c(B_LOCK + 1),
+    });
+    a.jump(wait);
+    a.here(got);
+}
+
+/// `unlock_channel` in `channel.vx`.
+fn unlock_channel(a: &mut Asm) {
+    let skip = a.label();
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: c(B_LOCK + 1),
+        delta: c(1),
+    });
+    a.push(Step::Load {
+        dst: T,
+        word: c(B_LOCK + 2),
+    });
+    a.jump_if(r(T), Cmp::Eq, c(0), skip);
+    a.push(Step::WakeAll {
+        word: c(B_LOCK + 1),
+    });
+    a.here(skip);
+}
+
+/// `broadcast_free`: drop the value with the number in register `k`, and free its slot.
+fn broadcast_free(a: &mut Asm, ch: Chan, k: usize, b: Breaks) {
+    a.push(Step::Take {
+        dst: V,
+        slot: ch.slot(k),
+    });
+    a.push(Step::Ends {
+        val: V,
+        how: End::Dropped,
+    });
+    a.push(Step::Store {
+        word: turn(ch.cap, k),
+        val: ch.taken(k, b),
+    });
+    notify(a, ch, b);
+}
+
+/// `broadcast_release`: the last end drops each value that is still in a slot.
+fn broadcast_release(a: &mut Asm, ch: Chan) {
+    let not_last = a.label();
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: ch.w(ENDS),
+        delta: c(-1),
+    });
+    a.jump_if(r(T), Cmp::Ne, c(1), not_last);
+    for i in 0..ch.cap {
+        let empty = a.label();
+        a.push(Step::Load {
+            dst: T,
+            word: c(B_SLOTS + 2 * i),
+        });
+        a.jump_if(modulo(r(T), 2), Cmp::Ne, c(1), empty);
+        a.push(Step::Take {
+            dst: V,
+            slot: c(ch.ring + i),
+        });
+        a.push(Step::Ends {
+            val: V,
+            how: End::Dropped,
+        });
+        a.here(empty);
+    }
+    a.here(not_last);
+}
+
+/// A task with the `BroadcastSender`. It sends the values 101 to `100 + count`, and then drops
+/// the sender. A `send` takes the lock, and writes the value when its slot is free.
+fn broadcast_sender(ch: Chan, count: i64, b: Breaks) -> Vec<Step> {
+    let mut a = Asm::new();
+    let (top, retry, have, full, next, drop) = (
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+    );
+    a.push(Step::Set { dst: J, val: c(1) });
+    a.here(top);
+    a.jump_if(r(J), Cmp::Gt, c(count), drop);
+    a.here(retry);
+    a.push(Step::Load {
+        dst: SEEN,
+        word: ch.w(WAKE),
+    });
+    lock_channel(&mut a);
+    a.push(Step::Load {
+        dst: T,
+        word: ch.w(RECEIVER),
+    });
+    a.jump_if(r(T), Cmp::Ne, c(0), have);
+    unlock_channel(&mut a);
+    a.push(Step::EndsNow {
+        val: add(c(100), r(J)),
+        how: End::GivenBack,
+    });
+    a.jump(next);
+    a.here(have);
+    // T holds the count of receivers.
+    a.push(Step::Load {
+        dst: K,
+        word: ch.w(SENDS),
+    });
+    a.push(Step::Load {
+        dst: T2,
+        word: turn(ch.cap, K),
+    });
+    a.jump_if(r(T2), Cmp::Ne, ch.free(K, b), full);
+    a.push(Step::Put {
+        slot: ch.slot(K),
+        val: add(c(100), r(J)),
+    });
+    a.push(Step::Store {
+        word: readers(ch.cap, K),
+        val: r(T),
+    });
+    a.push(Step::Store {
+        word: ch.w(SENDS),
+        val: add(r(K), c(1)),
+    });
+    a.push(Step::Store {
+        word: turn(ch.cap, K),
+        val: ch.full(K, b),
+    });
+    unlock_channel(&mut a);
+    notify(&mut a, ch, b);
+    a.jump(next);
+    a.here(full);
+    unlock_channel(&mut a);
+    sleep(&mut a, ch, None, b);
+    a.jump(retry);
+    a.here(next);
+    a.push(Step::Set {
+        dst: J,
+        val: add(r(J), c(1)),
+    });
+    a.jump(top);
+    a.here(drop);
+    let no_notify = a.label();
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: ch.w(SENDERS),
+        delta: c(-1),
+    });
+    a.jump_if(r(T), Cmp::Ne, c(1), no_notify);
+    notify(&mut a, ch, b);
+    a.here(no_notify);
+    broadcast_release(&mut a, ch);
+    a.push(Step::Done);
+    a.finish()
+}
+
+/// What a broadcast receiver task does besides `recv`.
+#[derive(Clone, Copy)]
+struct BroadcastTask {
+    /// The id of the receiver. Its next number is in the word `B_NEXT + id`.
+    id: i64,
+    /// The task waits until another task cloned the receiver for it.
+    cloned: bool,
+    /// After this many values, clone the receiver for the task of receiver `child`.
+    clone_after: Option<(i64, i64)>,
+    /// Drop the receiver after this many values, or at `Closed`.
+    limit: i64,
+}
+
+/// The clone of a broadcast receiver: it adds 1 to the count of each value that the receiver
+/// did not read, under the lock. The new receiver starts at the same place.
+fn clone_receiver(a: &mut Asm, ch: Chan, id: i64, child: i64, b: Breaks) {
+    if !b.clone_without_the_lock {
+        lock_channel(a);
+    }
+    a.push(Step::Load {
+        dst: K,
+        word: c(B_NEXT + id),
+    });
+    a.push(Step::Load {
+        dst: T2,
+        word: ch.w(SENDS),
+    });
+    if !b.clone_skips_the_counts {
+        let (top, done) = (a.label(), a.label());
+        a.push(Step::Set { dst: V, val: r(K) });
+        a.here(top);
+        a.jump_if(r(V), Cmp::Eq, r(T2), done);
+        a.push(Step::FetchAdd {
+            dst: T,
+            word: readers(ch.cap, V),
+            delta: c(1),
+        });
+        a.push(Step::Set {
+            dst: V,
+            val: add(r(V), c(1)),
+        });
+        a.jump(top);
+        a.here(done);
+    }
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: ch.w(RECEIVER),
+        delta: c(1),
+    });
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: ch.w(ENDS),
+        delta: c(1),
+    });
+    if !b.clone_without_the_lock {
+        unlock_channel(a);
+    }
+    a.push(Step::StartAt {
+        recv: child as usize,
+        val: r(K),
+    });
+    a.push(Step::Store {
+        word: c(B_NEXT + child),
+        val: r(K),
+    });
+    a.push(Step::Store {
+        word: c(HANDOFF),
+        val: c(1),
+    });
+    a.push(Step::WakeAll { word: c(HANDOFF) });
+}
+
+/// A task with a `BroadcastReceiver`. Its `try_recv` reads with no lock. When the count of the
+/// value is 1, it moves the value out. Else it clones the value, and takes 1 from the count. The
+/// receiver that takes the count to 0 drops the value. Each frees the slot for the next `send`.
+fn broadcast_receiver(ch: Chan, task: BroadcastTask, b: Breaks) -> Vec<Step> {
+    let mut a = Asm::new();
+    let next = c(B_NEXT + task.id);
+    let id = task.id as usize;
+    if task.cloned {
+        let (wait, go) = (a.label(), a.label());
+        a.here(wait);
+        a.push(Step::Load {
+            dst: T,
+            word: c(HANDOFF),
+        });
+        a.jump_if(r(T), Cmp::Ne, c(0), go);
+        a.push(Step::WaitWhile {
+            word: c(HANDOFF),
+            val: c(0),
+            or_cancel: None,
+        });
+        a.jump(wait);
+        a.here(go);
+    }
+    let (top, retry, not_there, share, counted, drop) = (
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+    );
+    a.push(Step::Set { dst: J, val: c(0) });
+    a.push(Step::Set {
+        dst: OPEN,
+        val: c(0),
+    });
+    a.here(top);
+    if let Some((after, child)) = task.clone_after {
+        let no_clone = a.label();
+        a.jump_if(r(J), Cmp::Ne, c(after), no_clone);
+        a.jump_if(r(OPEN), Cmp::Ne, c(0), no_clone);
+        clone_receiver(&mut a, ch, task.id, child, b);
+        a.push(Step::Set {
+            dst: OPEN,
+            val: c(1),
+        });
+        a.here(no_clone);
+    }
+    a.jump_if(r(J), Cmp::Eq, c(task.limit), drop);
+    a.here(retry);
+    a.push(Step::Load {
+        dst: SEEN,
+        word: ch.w(WAKE),
+    });
+    // `try_recv`.
+    a.push(Step::Load {
+        dst: CLOSED,
+        word: ch.w(SENDERS),
+    });
+    a.push(Step::Load {
+        dst: K,
+        word: next.clone(),
+    });
+    a.push(Step::Load {
+        dst: T,
+        word: turn(ch.cap, K),
+    });
+    a.jump_if(r(T), Cmp::Ne, ch.full(K, b), not_there);
+    a.push(Step::Store {
+        word: next.clone(),
+        val: add(r(K), c(1)),
+    });
+    a.push(Step::Load {
+        dst: T,
+        word: readers(ch.cap, K),
+    });
+    a.jump_if(r(T), Cmp::Ne, c(1), share);
+    // Each other receiver read the value, so this one moves it out.
+    a.push(Step::Store {
+        word: readers(ch.cap, K),
+        val: c(0),
+    });
+    a.push(Step::Take {
+        dst: V,
+        slot: ch.slot(K),
+    });
+    a.push(Step::Store {
+        word: turn(ch.cap, K),
+        val: ch.taken(K, b),
+    });
+    notify(&mut a, ch, b);
+    a.push(Step::Got { recv: id, val: V });
+    a.push(Step::Ends {
+        val: V,
+        how: End::Received,
+    });
+    a.jump(counted);
+    a.here(share);
+    a.push(Step::Peek {
+        dst: V,
+        slot: ch.slot(K),
+    });
+    a.push(Step::Got { recv: id, val: V });
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: readers(ch.cap, K),
+        delta: c(-1),
+    });
+    a.jump_if(r(T), Cmp::Ne, c(1), counted);
+    broadcast_free(&mut a, ch, K, b);
+    a.here(counted);
+    a.push(Step::Set {
+        dst: J,
+        val: add(r(J), c(1)),
+    });
+    a.jump(top);
+    a.here(not_there);
+    let wait = a.label();
+    a.jump_if(r(CLOSED), Cmp::Ne, c(0), wait);
+    a.push(Step::ReceiverClosed {
+        recv: id,
+        sends: ch.base + SENDS,
+    });
+    a.jump(drop);
+    a.here(wait);
+    sleep(&mut a, ch, None, b);
+    a.jump(retry);
+    a.here(drop);
+    // The drop of the receiver takes 1 from the count of each value that it did not read.
+    if !b.drop_without_the_lock {
+        lock_channel(&mut a);
+    }
+    a.push(Step::Load {
+        dst: T2,
+        word: ch.w(SENDS),
+    });
+    a.push(Step::Load { dst: K, word: next });
+    let (each, step, done) = (a.label(), a.label(), a.label());
+    a.here(each);
+    a.jump_if(r(K), Cmp::Eq, r(T2), done);
+    if !b.drop_keeps_its_counts {
+        a.push(Step::FetchAdd {
+            dst: T,
+            word: readers(ch.cap, K),
+            delta: c(-1),
+        });
+        a.jump_if(r(T), Cmp::Ne, c(1), step);
+        broadcast_free(&mut a, ch, K, b);
+    }
+    a.here(step);
+    a.push(Step::Set {
+        dst: K,
+        val: add(r(K), c(1)),
+    });
+    a.jump(each);
+    a.here(done);
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: ch.w(RECEIVER),
+        delta: c(-1),
+    });
+    if !b.drop_without_the_lock {
+        unlock_channel(&mut a);
+    }
+    notify(&mut a, ch, b);
+    broadcast_release(&mut a, ch);
+    a.push(Step::Done);
+    a.finish()
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Thread {
     pc: usize,
-    regs: [i64; 8],
+    regs: [i64; 10],
     /// The word that the thread waits on, when it waits.
     waits_on: Option<i64>,
 }
@@ -823,6 +1433,8 @@ struct State {
     ended: u64,
     /// The last value received from each sender, by sender id.
     last: [i64; 4],
+    /// The count of values that each receiver of a broadcast got, by receiver id.
+    got: [i64; 4],
     in_lock: u8,
     /// The skip set of each channel: (where its words start, a send number), in order.
     skips: Vec<(i64, i64)>,
@@ -858,12 +1470,19 @@ struct Model {
     /// The words at the start, as `channel` and `Mutex::new` set them.
     first_words: Vec<i64>,
     ring: usize,
+    /// The values of each sender must arrive in order. With many receivers, a later value can
+    /// end before an earlier one, so the work queue does not check this.
+    in_order: bool,
 }
 
 /// A 128-bit hash of `s`. The search keeps this in place of each state that it saw, so that
 /// millions of states fit in the memory of a test machine. Two states with the same hash would
 /// hide one of them, but with a few million states the chance is about 1 in 10^25.
-fn fingerprint(s: &State) -> u128 {
+/// The most states that one search may visit. Each takes about 40 bytes of memory, so this is
+/// under 1 GB, and a few searches at once fit on a CI runner.
+const MAX_STATES: usize = 20_000_000;
+
+fn fingerprint(s: &impl Hash) -> u128 {
     let half = |salt: u8| {
         let mut h = DefaultHasher::new();
         salt.hash(&mut h);
@@ -893,12 +1512,13 @@ impl Model {
                 .iter()
                 .map(|_| Thread {
                     pc: 0,
-                    regs: [0; 8],
+                    regs: [0; 10],
                     waits_on: None,
                 })
                 .collect(),
             ended: 0,
             last: [0; 4],
+            got: [0; 4],
             in_lock: 0,
             skips: Vec::new(),
         }
@@ -991,6 +1611,54 @@ impl Model {
             }
             Step::Ends { val, how } => self.end(s, regs[*val], *how)?,
             Step::EndsNow { val, how } => self.end(s, val.eval(&regs), *how)?,
+            Step::Cas {
+                dst,
+                word,
+                expect,
+                new,
+            } => {
+                let w = word.eval(&regs) as usize;
+                let hit = s.words[w] as i64 == expect.eval(&regs);
+                if hit {
+                    s.words[w] = narrow(new.eval(&regs));
+                }
+                s.threads[t].regs[*dst] = hit as i64;
+            }
+            Step::Peek { dst, slot } => match s.ring[slot.eval(&regs) as usize] {
+                Some(v) => s.threads[t].regs[*dst] = v,
+                None => return Err("a receiver cloned a value from an empty slot".to_string()),
+            },
+            Step::Got { recv, val } => {
+                let n = regs[*val] % 100;
+                if n != s.got[*recv] + 1 {
+                    return Err(format!(
+                        "receiver {recv} got the value number {n} after {} values",
+                        s.got[*recv]
+                    ));
+                }
+                s.got[*recv] = n;
+            }
+            Step::StartAt { recv, val } => s.got[*recv] = val.eval(&regs),
+            Step::ReceiverClosed { recv, sends } => {
+                if s.got[*recv] != s.words[*sends as usize] as i64 {
+                    return Err(format!(
+                        "receiver {recv} gave Closed before it got each value"
+                    ));
+                }
+            }
+            Step::QueueClosed { chan } => {
+                let recvs = s.words[(chan.base + RECVS) as usize] as i64;
+                for i in 0..chan.cap {
+                    let n = s.words[(chan.base + SLOTS + i) as usize] as i64;
+                    let full = n % 2 == 1 && (n - 1) / 2 >= recvs;
+                    if full && s.ring[(chan.ring + i) as usize].is_some() {
+                        return Err(
+                            "a recv gave Closed while a value that no recv took was in the queue"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
             Step::Enter => {
                 s.in_lock += 1;
                 if s.in_lock > 1 {
@@ -1041,7 +1709,7 @@ impl Model {
             return Err(format!("the value {v} ended twice"));
         }
         s.ended |= bit(v);
-        if how == End::Received {
+        if how == End::Received && self.in_order {
             let (from, n) = ((v / 100) as usize, v % 100);
             if n <= s.last[from] {
                 return Err(format!(
@@ -1074,33 +1742,79 @@ impl Model {
 
     /// Visit every interleaving. Answers the count of states.
     fn check(&self) -> Result<usize, Found> {
+        self.search(None, None)
+    }
+
+    /// Visit each interleaving that switches away from a thread that can still move at most
+    /// `k` times. A model with many threads has too many states for `check`, and most bugs of
+    /// concurrent code need only a few such switches. Answers the count of states.
+    fn check_within(&self, k: u8) -> Result<usize, Found> {
+        self.search(Some(k), None)
+    }
+
+    /// `check_within(k)`, but a failure whose text does not contain `what` ends only its own
+    /// run, and the search goes on. So the failure it answers is the one that a test looks for.
+    fn find_within(&self, k: u8, what: &str) -> Result<usize, Found> {
+        self.search(Some(k), Some(what))
+    }
+
+    fn search(&self, bound: Option<u8>, want: Option<&str>) -> Result<usize, Found> {
+        let other = |what: &str| want.is_some_and(|w| !what.contains(w));
+        // With a bound, a state counts again when a run reaches it with fewer switches, so the
+        // key holds the last thread and the count of switches too.
+        let key = |s: &State, last: usize, used: u8| match bound {
+            None => fingerprint(s),
+            Some(_) => fingerprint(&(s, last, used)),
+        };
         let mut seen = HashSet::new();
         let start = self.start();
-        seen.insert(fingerprint(&start));
-        let mut stack = vec![start];
-        while let Some(s) = stack.pop() {
-            let mut moved = false;
+        seen.insert(key(&start, usize::MAX, 0));
+        let mut stack = vec![(start, usize::MAX, 0u8)];
+        while let Some((s, last, used)) = stack.pop() {
+            let mut moves = Vec::new();
+            let mut cut = false;
             for t in 0..s.threads.len() {
                 let mut next = s.clone();
                 match self.step(&mut next, t) {
-                    Ok(false) => continue,
-                    Ok(true) => moved = true,
+                    Ok(false) => moves.push(None),
+                    Ok(true) => moves.push(Some(next)),
+                    Err(what) if other(&what) => {
+                        cut = true;
+                        moves.push(None);
+                    }
                     Err(what) => return Err(found(what, &s)),
                 }
-                if seen.insert(fingerprint(&next)) {
-                    stack.push(next);
+            }
+            let last_can_move = moves.get(last).is_some_and(|m| m.is_some());
+            let moved = moves.iter().any(|m| m.is_some());
+            for (t, next) in moves.into_iter().enumerate() {
+                let Some(next) = next else { continue };
+                let used = used + u8::from(last_can_move && t != last);
+                if bound.is_some_and(|k| used > k) {
+                    continue;
+                }
+                if seen.insert(key(&next, t, used)) {
+                    assert!(
+                        seen.len() <= MAX_STATES,
+                        "the model has more than {MAX_STATES} states, so it needs too much \
+                         memory: make it smaller"
+                    );
+                    stack.push((next, t, used));
                 }
             }
-            if moved {
+            if moved || cut {
                 continue;
             }
-            let fail = |what: String| found(what, &s);
-            if s.threads.iter().any(|t| t.waits_on.is_some()) {
-                return Err(fail(
-                    "each thread that is not done waits, and nothing can wake it".to_string(),
-                ));
+            let stuck = "each thread that is not done waits, and nothing can wake it".to_string();
+            let end = if s.threads.iter().any(|t| t.waits_on.is_some()) {
+                Err(stuck)
+            } else {
+                self.check_end(&s)
+            };
+            match end {
+                Err(what) if !other(&what) => return Err(found(what, &s)),
+                _ => {}
             }
-            self.check_end(&s).map_err(fail)?;
         }
         Ok(seen.len())
     }
@@ -1161,6 +1875,7 @@ fn channel_model(cap: i64, senders: i64, count: i64, limit: i64, b: Breaks) -> M
         },
         first_words: words,
         ring: cap as usize,
+        in_order: true,
     }
 }
 
@@ -1198,6 +1913,7 @@ fn select_model(cap: i64, count: i64, b: Breaks) -> Model {
         allowed: vec![End::Received],
         first_words: words,
         ring: 2 * cap as usize,
+        in_order: true,
     }
 }
 
@@ -1208,6 +1924,7 @@ fn mutex_model(threads: usize, count: i64, b: Breaks) -> Model {
         allowed: Vec::new(),
         first_words: vec![0; 3],
         ring: 0,
+        in_order: true,
     }
 }
 
@@ -1228,6 +1945,25 @@ fn finds(name: &str, model: Model, what: &str) {
     }
 }
 
+/// `holds`, with the search of `check_within(k)`.
+fn holds_within(name: &str, k: u8, model: Model) {
+    match model.check_within(k) {
+        Ok(states) => println!("{name}: holds within {k} switches, in {states} states"),
+        Err(f) => panic!("{name}: {}. {}", f.what, f.threads),
+    }
+}
+
+/// `finds`, with the search of `find_within(k, what)`.
+fn finds_within(name: &str, k: u8, model: Model, what: &str) {
+    match model.find_within(k, what) {
+        Ok(states) => panic!("{name}: the search visited {states} states and found no bug"),
+        Err(f) => {
+            println!("{name}: found \"{}\". {}", f.what, f.threads);
+            assert!(f.what.contains(what), "{name}: expected \"{what}\"");
+        }
+    }
+}
+
 const NONE: Breaks = Breaks {
     vyukov_numbering: false,
     no_select_event: false,
@@ -1237,6 +1973,13 @@ const NONE: Breaks = Breaks {
     send_keeps_its_place: false,
     recv_ignores_skips: false,
     skip_keeps_the_slot: false,
+    pass_does_not_wait_for_the_slot: false,
+    queue_takes_with_a_store: false,
+    queue_closed_without_the_count: false,
+    clone_skips_the_counts: false,
+    clone_without_the_lock: false,
+    drop_without_the_lock: false,
+    drop_keeps_its_counts: false,
 };
 
 #[test]
@@ -1408,6 +2151,7 @@ fn block_with_the_receiver_model(b: Breaks) -> Model {
         allowed: vec![End::GivenBack, End::Dropped],
         first_words: words,
         ring: 1,
+        in_order: true,
     }
 }
 
@@ -1464,6 +2208,7 @@ fn skip_model(b: Breaks) -> Model {
         allowed: vec![End::Received, End::GivenBack],
         first_words: words,
         ring: 1,
+        in_order: true,
     }
 }
 
@@ -1491,4 +2236,270 @@ fn the_search_finds_a_skip_that_does_not_free_its_slot() {
         ..NONE
     };
     finds("skip keeps the slot", skip_model(b), "nothing can wake it");
+}
+
+/// A work queue with room `cap` and two `WorkReceiver`s that receive until `Closed`. Sender 1
+/// sends `first` values in a block that its code cancels at any point, when `cancel` is true.
+/// Sender 2 sends `second` values in another block, with the receivers. So with a cancel, a
+/// receiver must pass each place that a cancelled `send` left, while the other receiver takes
+/// values.
+fn work_queue_model(cap: i64, first: i64, second: i64, cancel: bool, b: Breaks) -> Model {
+    let ch = Chan {
+        base: 0,
+        ring: 0,
+        cap,
+    };
+    let mut programs = vec![
+        sender(ch, 1, first, CANCEL, b),
+        sender(ch, 2, second, OTHER_BLOCK, b),
+        work_receiver(ch, OTHER_BLOCK, b),
+        work_receiver(ch, OTHER_BLOCK, b),
+    ];
+    if cancel {
+        let mut a = Asm::new();
+        a.push(Step::Store {
+            word: c(CANCEL),
+            val: c(1),
+        });
+        a.push(Step::WakeEvery);
+        a.push(Step::Join { thread: 0 });
+        a.push(Step::Done);
+        programs.push(a.finish());
+    }
+    let mut words = vec![0; WORDS];
+    words[SENDERS as usize] = 2;
+    words[RECEIVER as usize] = 2;
+    words[ENDS as usize] = 4;
+    for i in 0..cap {
+        words[(SLOTS + i) as usize] = 2 * i;
+    }
+    Model {
+        programs,
+        senders: vec![(1, first), (2, second)],
+        allowed: if cancel {
+            vec![End::Received, End::GivenBack]
+        } else {
+            vec![End::Received]
+        },
+        first_words: words,
+        ring: cap as usize,
+        in_order: false,
+    }
+}
+
+#[test]
+fn work_queue_with_two_receivers() {
+    holds_within(
+        "work queue, 2 senders, 2 values each, 2 receivers, room 1",
+        2,
+        work_queue_model(1, 2, 2, false, NONE),
+    );
+    holds_within(
+        "work queue, 2 senders, 2 values each, 2 receivers, room 2",
+        2,
+        work_queue_model(2, 2, 2, false, NONE),
+    );
+}
+
+#[test]
+fn work_queue_receivers_pass_the_places_of_cancelled_sends() {
+    holds_within(
+        "work queue, a cancelled send, 2 receivers, room 1",
+        1,
+        work_queue_model(1, 2, 1, true, NONE),
+    );
+    holds_within(
+        "work queue, a cancelled send, 2 receivers, room 2",
+        1,
+        work_queue_model(2, 2, 2, true, NONE),
+    );
+}
+
+#[test]
+fn the_search_finds_a_pass_that_frees_a_slot_still_in_use() {
+    // A receiver takes the number `k - 1` and has not yet read the value. The other receiver
+    // passes the cancelled send `k` and frees the slot. The send `k + 1` then writes over the
+    // value.
+    let b = Breaks {
+        pass_does_not_wait_for_the_slot: true,
+        ..NONE
+    };
+    finds_within(
+        "the pass does not wait for the slot",
+        1,
+        work_queue_model(1, 2, 1, true, b),
+        "wrote over the value",
+    );
+}
+
+#[test]
+fn the_search_finds_two_receivers_that_take_one_number() {
+    let b = Breaks {
+        queue_takes_with_a_store: true,
+        ..NONE
+    };
+    finds_within(
+        "the work queue takes its number with a store",
+        2,
+        work_queue_model(1, 2, 2, false, b),
+        "empty slot",
+    );
+}
+
+#[test]
+fn the_search_finds_a_work_queue_closed_too_early() {
+    let b = Breaks {
+        queue_closed_without_the_count: true,
+        ..NONE
+    };
+    finds_within(
+        "the work queue is closed without the count",
+        2,
+        work_queue_model(2, 2, 2, true, b),
+        "no recv took was in the queue",
+    );
+}
+
+/// A broadcast channel with room `cap`, and a sender task that sends `count` values. Receivers
+/// 0 and 1 are there from the start. Receiver 0 clones itself for receiver 2 after
+/// `clone_after` values. Receiver 1 drops its end after `limit` values. Receivers 0 and 2
+/// receive until `Closed`.
+fn broadcast_model(cap: i64, count: i64, clone_after: i64, limit: i64, b: Breaks) -> Model {
+    let ch = Chan {
+        base: 0,
+        ring: 0,
+        cap,
+    };
+    let programs = vec![
+        broadcast_sender(ch, count, b),
+        broadcast_receiver(
+            ch,
+            BroadcastTask {
+                id: 0,
+                cloned: false,
+                clone_after: Some((clone_after, 2)),
+                limit: i64::MAX,
+            },
+            b,
+        ),
+        broadcast_receiver(
+            ch,
+            BroadcastTask {
+                id: 1,
+                cloned: false,
+                clone_after: None,
+                limit,
+            },
+            b,
+        ),
+        broadcast_receiver(
+            ch,
+            BroadcastTask {
+                id: 2,
+                cloned: true,
+                clone_after: None,
+                limit: i64::MAX,
+            },
+            b,
+        ),
+    ];
+    let mut words = vec![0; WORDS];
+    words[SENDERS as usize] = 1;
+    words[RECEIVER as usize] = 2;
+    words[ENDS as usize] = 3;
+    for i in 0..cap {
+        words[(B_SLOTS + 2 * i) as usize] = 2 * i;
+    }
+    Model {
+        programs,
+        senders: vec![(1, count)],
+        allowed: vec![End::Received, End::Dropped],
+        first_words: words,
+        ring: cap as usize,
+        in_order: false,
+    }
+}
+
+#[test]
+fn broadcast_with_a_clone_of_a_receiver() {
+    holds_within(
+        "broadcast, 2 values, room 1, a clone before the first value",
+        2,
+        broadcast_model(1, 2, 0, i64::MAX, NONE),
+    );
+    holds_within(
+        "broadcast, 2 values, room 2, a clone after one value",
+        2,
+        broadcast_model(2, 2, 1, i64::MAX, NONE),
+    );
+}
+
+#[test]
+fn broadcast_with_a_receiver_that_drops_early() {
+    holds_within(
+        "broadcast, 2 values, room 1, a clone and a drop after one value",
+        2,
+        broadcast_model(1, 2, 1, 1, NONE),
+    );
+    holds_within(
+        "broadcast, 3 values, room 2, a clone after one value, a drop at the start",
+        2,
+        broadcast_model(2, 3, 1, 0, NONE),
+    );
+}
+
+#[test]
+fn the_search_finds_a_clone_that_does_not_count_the_unread_values() {
+    let b = Breaks {
+        clone_skips_the_counts: true,
+        ..NONE
+    };
+    finds_within(
+        "the clone skips the counts",
+        2,
+        broadcast_model(2, 2, 1, i64::MAX, b),
+        "empty slot",
+    );
+}
+
+#[test]
+fn the_search_finds_a_clone_without_the_lock() {
+    let b = Breaks {
+        clone_without_the_lock: true,
+        ..NONE
+    };
+    finds_within(
+        "the clone does not take the lock",
+        2,
+        broadcast_model(1, 2, 0, i64::MAX, b),
+        "empty slot",
+    );
+}
+
+#[test]
+fn the_search_finds_a_drop_without_the_lock() {
+    let b = Breaks {
+        drop_without_the_lock: true,
+        ..NONE
+    };
+    finds_within(
+        "the drop does not take the lock",
+        2,
+        broadcast_model(1, 2, 1, 0, b),
+        "nothing can wake it",
+    );
+}
+
+#[test]
+fn the_search_finds_a_drop_that_keeps_its_counts() {
+    let b = Breaks {
+        drop_keeps_its_counts: true,
+        ..NONE
+    };
+    finds_within(
+        "the drop keeps its counts",
+        2,
+        broadcast_model(1, 3, 1, 1, b),
+        "nothing can wake it",
+    );
 }

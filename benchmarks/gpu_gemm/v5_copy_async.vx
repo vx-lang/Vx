@@ -1,0 +1,108 @@
+//===- v5_copy_async.vx - Vx Compiler -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// C = A @ B in bf16 with f32 sums, on the tensor cores. A block computes a 64 x 64 tile of C,
+// and each of its 4 subgroups a 16 x 64 strip. K goes 32 at a time.
+// The tiles of A and B come in with lanes::copy_async. The rest is as in v4.
+// run.sh in this folder times it against cuBLAS. It sets M, N and K.
+//
+// vx-bench flags: --host default --machine fleet/a100-80.vx
+const M : i32 = 4096;
+const N : i32 = 4096;
+const K : i32 = 4096;
+const REPS : i32 = 50;
+
+pub fn gemm(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<bf16, [?, ?], Memory::HBM>, b : &Tensor<bf16, [?, ?], Memory::HBM>, mt : i32, nt : i32, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..mt * nt across blocks {
+      let bm = blk / nt;
+      let bn = blk % nt;
+      for _once in 0..1 {
+        let mut sa = unsafe {
+          Tensor<bf16, [4, 16, 32], Memory::SMEM>::uninit()
+        };
+        let mut sb = unsafe { Tensor<bf16, [32, 64], Memory::SMEM>::uninit() };
+        let mut acc = unsafe {
+          Tensor<f32, [4, 16, 64], Memory::SMEM>::uninit()
+        };
+        for w in 0..4 across subgroups {
+          for j in 0..32 across lanes {
+            for i in 0..16 {
+              acc[w][i][j] = 0.0;
+              acc[w][i][j + 32] = 0.0;
+            }
+          }
+        }
+        for kt in 0..k / 32 {
+          let tb = lanes::copy_async(&mut sb, b, [kt * 32, bn * 64]);
+          let t0 = lanes::copy_async(&mut sa[0], a, [bm * 64, kt * 32]);
+          let t1 = lanes::copy_async(&mut sa[1], a, [bm * 64 + 16, kt * 32]);
+          let t2 = lanes::copy_async(&mut sa[2], a, [bm * 64 + 32, kt * 32]);
+          let t3 = lanes::copy_async(&mut sa[3], a, [bm * 64 + 48, kt * 32]);
+          tb.wait();
+          t0.wait();
+          t1.wait();
+          t2.wait();
+          t3.wait();
+          for w in 0..4 across subgroups {
+            acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+          }
+        }
+        for w in 0..4 across subgroups {
+          for j in 0..32 across lanes {
+            for i in 0..16 {
+              c[bm * 64 + w * 16 + i][bn * 64 + j] = acc[w][i][j];
+              c[bm * 64 + w * 16 + i][bn * 64 + j + 32] = acc[w][i][j + 32];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+
+// Inputs are small integers, so every sum is exact in f32 and the check can compare bits.
+fn main() -> i32 {
+  let mut ha = Tensor<bf16, [M, K]>::fill(0.0);
+  for i in 0..M {
+    for k in 0..K {
+      ha[i][k] = ((i * 3 + k * 5) % 7 - 3) as bf16;
+    }
+  }
+  let mut hb = Tensor<bf16, [K, N]>::fill(0.0);
+  for k in 0..K {
+    for j in 0..N {
+      hb[k][j] = ((k * 2 + j) % 5 - 2) as bf16;
+    }
+  }
+  let a = transfer(ha, Memory::HBM);
+  let b = transfer(hb, Memory::HBM);
+  let mut c = transfer(Tensor<f32, [M, N]>::fill(0.0), Memory::HBM);
+  for _rep in 0..REPS {
+    gemm(&mut c, &a, &b, M / 64, N / 64, K);
+  }
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let ra = transfer(a, Memory::CPU_DRAM);
+  let rb = transfer(b, Memory::CPU_DRAM);
+  let mut wrong = 0;
+  for s in 0..64 {
+    let i = (s * 7919) % M;
+    let j = (s * 104729) % N;
+    let mut want : f32 = 0.0;
+    for k in 0..K {
+      want = want + (ra[i][k] as f32) * (rb[k][j] as f32);
+    }
+    let got = hc[i][j];
+    if got != want {
+      wrong = wrong + 1;
+    }
+  }
+  println!("gemm {}x{}x{}: {} of 64 samples wrong", M, N, K, wrong);
+  return 0;
+}

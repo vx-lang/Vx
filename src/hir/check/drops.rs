@@ -799,7 +799,9 @@ impl<'a> TypeChecker<'a> {
                 placement: ty.placement().cloned(),
             }],
             // The same value as the type inside, with a proof attached.
-            Type::Verified(inner) => self.drops_glue_at(inner, depth),
+            Type::Verified(inner) | Type::Distinct(inner) | Type::DisjointRanges(inner) => {
+                self.drops_glue_at(inner, depth)
+            }
             // A tensor pinned to a device is in that device's memory, so its plugin frees it.
             Type::Pinned(inner, topology) => {
                 let mut glue = self.drops_glue_at(inner, depth);
@@ -1272,16 +1274,19 @@ impl<'a> TypeChecker<'a> {
         self.borrow.drops.moved_now.clear();
     }
 
-    /// `tensor_view_2d(..)`, also as the value of an `unsafe` block: a view of memory the
-    /// program got from elsewhere, which no drop frees.
+    /// `tensor_view_1d(..)` or `tensor_view_2d(..)`, also as the value of an `unsafe` block: a
+    /// view of memory the program got from elsewhere, which no drop frees.
     pub(crate) fn views_foreign_memory(expr: &Expr) -> bool {
         Self::foreign_view_pointer(expr).is_some()
     }
 
-    /// The pointer that `tensor_view_2d(p, ..)` views, also as the value of an `unsafe` block.
+    /// The pointer that `tensor_view_1d(p, ..)` or `tensor_view_2d(p, ..)` views, also as the
+    /// value of an `unsafe` block.
     pub(crate) fn foreign_view_pointer(expr: &Expr) -> Option<&Expr> {
         match expr {
-            Expr::FunctionCall(c) if c.name.as_ref() == "tensor_view_2d" => c.args.first(),
+            Expr::FunctionCall(c) if crate::syntax::expr::tensor_view_rank(&c.name).is_some() => {
+                c.args.first()
+            }
             Expr::UnsafeBlock(u) => u.ret.as_deref().and_then(Self::foreign_view_pointer),
             _ => None,
         }
@@ -1374,7 +1379,10 @@ impl<'a> TypeChecker<'a> {
     /// number lives in a register, and a tensor's buffer has lifetime markers of its own.
     fn lives_in_a_stack_slot(ty: &Type) -> bool {
         match ty {
-            Type::Verified(inner) | Type::Pinned(inner, _) => Self::lives_in_a_stack_slot(inner),
+            Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
+            | Type::Pinned(inner, _) => Self::lives_in_a_stack_slot(inner),
             // A closure's environment holds borrows of what it captured. A `void` holds nothing.
             Type::Struct(name, _) => {
                 !name.starts_with("Closure_") && !crate::syntax::is_void_ty(ty)
@@ -1389,7 +1397,10 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn is_raw_pointer(ty: &Type) -> bool {
         match ty {
-            Type::Verified(inner) | Type::Pinned(inner, _) => Self::is_raw_pointer(inner),
+            Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
+            | Type::Pinned(inner, _) => Self::is_raw_pointer(inner),
             Type::Pointer(..) => true,
             _ => false,
         }
@@ -1616,7 +1627,11 @@ impl<'a> TypeChecker<'a> {
 
     fn drop_reads_a_reference_in(&mut self, ty: &Type, seen: &mut HashSet<String>) -> bool {
         let parts = match ty {
-            Type::Pointer(inner, ..) | Type::Verified(inner) | Type::Pinned(inner, _) => {
+            Type::Pointer(inner, ..)
+            | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
+            | Type::Pinned(inner, _) => {
                 return self.drop_reads_a_reference_in(inner, seen);
             }
             Type::Struct(name, _) | Type::Enum(name, _) => self.declared_part_types(name, &[]),
@@ -1690,15 +1705,115 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    /// `name = rhs` on `line`, where `before` is what `drops_owner_state` said first: the old
-    /// value is dropped once `rhs` is computed, before it is stored.
+    /// Whether `name` holds a buffer of its own that no path to here moved out: an owner, not a
+    /// view. A `spawn` region runs while an owner outside it holds its value, so the owner is
+    /// found through the region. A task may run at another time, so an owner outside one is not.
+    /// A move inside the region is in `is_moved`, which sees through the region too.
+    pub(crate) fn holds_its_buffer(&self, name: &str) -> bool {
+        if self.is_moved(name) {
+            return false;
+        }
+        for f in self.borrow.drops.frames.iter().rev() {
+            match f {
+                FrameKind::Function { .. } | FrameKind::Tasks | FrameKind::Task { .. } => {
+                    return false;
+                }
+                FrameKind::Spawn | FrameKind::Loop => {}
+                FrameKind::Block { owners, .. } => {
+                    if owners.iter().any(|o| o.name == name) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether `name = rhs` writes the value into the buffer that `name` holds, when it holds
+    /// one. That is `c = a @ b` with neither operand `c`, or `c = a + b` (or `-`, `*`, `/`) on
+    /// tensors of the shape of `c`. Each operand is a name or a borrow of one, and no operand is
+    /// a view of raw memory, which can share the memory of `c`. For `+`, every extent is a
+    /// number. For `@`, an extent may be `?`, which agrees with any other.
+    ///
+    /// Each element of `a + b` reads only the same element of each operand, so `c = c + a` is
+    /// right in place. A matmul fills `c` with zero first, so `c` cannot be an operand of it.
+    pub(crate) fn writes_in_place(&self, name: &str, rhs: &Expr) -> bool {
+        let Expr::BinaryOp(b) = rhs else {
+            return false;
+        };
+        // Each extent, or `None` for one known only at run time.
+        let extents = |dims: &[Dim]| -> Vec<Option<i64>> {
+            dims.iter()
+                .map(|d| d.literal().and_then(|v| v.parse().ok()))
+                .collect()
+        };
+        let Some((Type::Tensor(elem, dims, _), _)) = self.lookup(name) else {
+            return false;
+        };
+        let c = extents(dims);
+        // The operand's name, element type and extents, and whether it is a borrow.
+        let operand = |e: &Expr| -> Option<(String, ElementType, Vec<Option<i64>>, bool)> {
+            let root = crate::syntax::matmul_operand_root(e)?;
+            if self.borrow.foreign_views.contains_key(root) {
+                return None;
+            }
+            let (ty, borrowed) = match &self.lookup(root)?.0 {
+                Type::Borrow { inner, .. } => (inner.as_ref().clone(), true),
+                t => (t.clone(), false),
+            };
+            let Type::Tensor(el, d, _) = ty else {
+                return None;
+            };
+            Some((root.to_string(), el, extents(&d), borrowed))
+        };
+        let (Some(l), Some(r)) = (operand(&b.lhs), operand(&b.rhs)) else {
+            return false;
+        };
+        match b.op {
+            // A name declared a borrow may be `c` under another name.
+            BinaryOp::MatMul => {
+                let agree = |x: &Option<i64>, y: &Option<i64>| x.is_none() || y.is_none() || x == y;
+                !l.3 && !r.3
+                    && l.0 != name
+                    && r.0 != name
+                    && matches!((&l.2[..], &r.2[..], &c[..]),
+                        ([m, k], [k2, n], [cm, cn])
+                            if agree(k, k2) && agree(m, cm) && agree(n, cn))
+            }
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+                let known = |e: &[Option<i64>]| e.iter().all(Option::is_some);
+                known(&c) && l.1 == *elem && r.1 == *elem && l.2 == c && r.2 == c
+            }
+            _ => false,
+        }
+    }
+
+    /// `name = ..` on `line`, where `before` is what `drops_owner_state` said first: the old
+    /// value is dropped once the new one is computed, before it is stored. When the value is
+    /// written in place, the old value is the new one, and nothing is dropped.
     pub(crate) fn drops_note_assign(
         &mut self,
         name: &str,
         before: Option<Moved>,
-        rhs: &Expr,
         line: usize,
+        in_place: bool,
     ) {
+        // Written in place, the old value is the new one. In `c = c + a` the operator moved `c`
+        // and queued its drop after the statement, where it would free the new value.
+        if in_place {
+            if !self.speculating && self.drops_rewriting() {
+                if let Some(FrameKind::Block { stmt, edits, .. }) =
+                    self.borrow.drops.frames.last_mut()
+                {
+                    edits
+                        .after
+                        .entry(*stmt)
+                        .or_default()
+                        .retain(|s| !matches!(s, Statement::Drop(d) if d.name.as_ref() == name));
+                }
+            }
+            return;
+        }
         let Some(moved) = before else {
             return;
         };
@@ -1735,25 +1850,6 @@ impl<'a> TypeChecker<'a> {
                 edits.assign.insert(*stmt, (Vec::new(), Some(f)));
             }
             return;
-        }
-        // `c = a @ b` with neither operand `c`: the product is written into `c`'s buffer, the
-        // same test the code generators make.
-        if let Expr::BinaryOp(b) = rhs {
-            if matches!(b.op, BinaryOp::MatMul) {
-                let plain_root = |e: &Expr| -> Option<String> {
-                    let r = crate::syntax::matmul_operand_root(e)?;
-                    let through = matches!(
-                        self.lookup(r).map(|(t, _)| t),
-                        Some(Type::Borrow { .. } | Type::Pointer(..))
-                    );
-                    (!through).then(|| r.to_string())
-                };
-                if let (Some(l), Some(r)) = (plain_root(&b.lhs), plain_root(&b.rhs)) {
-                    if l != name && r != name {
-                        return;
-                    }
-                }
-            }
         }
         if self.speculating {
             return;

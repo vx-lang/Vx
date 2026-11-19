@@ -648,14 +648,19 @@ impl<'a> TypeChecker<'a> {
                 self.prove_invariants_for_the_next_pass(Some(c.span));
                 self.drops_exit("continue", &c.span, crate::hir::check::drops::ExitTo::Loop)
             }
-            Statement::Assign(AssignStmt { lhs, rhs, span }) => {
+            Statement::Assign(AssignStmt {
+                lhs,
+                rhs,
+                span,
+                in_place,
+            }) => {
                 let span = *span;
                 self.check_token_overwrite(lhs, &span);
                 if let Some(call) = self.container_store(lhs, None, rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
                 } else {
-                    self.check_assign_stmt(lhs, None, rhs, consume, None)
+                    *in_place = self.check_assign_stmt(lhs, None, rhs, consume, None);
                 }
             }
             Statement::CompoundAssign(CompoundAssignStmt {
@@ -688,17 +693,13 @@ impl<'a> TypeChecker<'a> {
                         span,
                         operand_ty: None,
                     });
-                    *stmt = Statement::Assign(AssignStmt {
-                        lhs: lhs.clone(),
-                        rhs: value,
-                        span,
-                    });
+                    *stmt = Statement::Assign(AssignStmt::new(lhs.clone(), value, span));
                     self.check_statement(stmt, return_type, consume);
                 } else if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
                 } else {
-                    self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty))
+                    self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty));
                 }
             }
             Statement::Return(ret) => {
@@ -784,6 +785,11 @@ impl<'a> TypeChecker<'a> {
             e => e,
         };
         let from_literal = ty_ann.is_none() && matches!(bare, Expr::Number(n) if n.ty.is_none());
+        // `let s = "abc"` makes `s` a name for the text, so `==` on `s` compares the text.
+        let text_len = match &*expr {
+            Expr::StringLiteral(l) if !*_is_mut => Some(l.value.as_ref().len()),
+            _ => None,
+        };
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
@@ -791,6 +797,9 @@ impl<'a> TypeChecker<'a> {
         if matches!(&*expr, Expr::Transfer(_)) {
             self.traffic.tile_holder = Some(name.to_string());
         }
+        // The parser's `let` for the sum in `let r = (v + w)[1]` holds what was the base of an
+        // index. Reading an index does not move its base, so `v` and `w` stay usable.
+        let consume = consume && !name.starts_with(crate::syntax::expr::INDEXED_TEMPORARY);
         let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
@@ -872,6 +881,13 @@ impl<'a> TypeChecker<'a> {
             }
             ty
         };
+        let depth = self.current_scope_depth();
+        if let Some(len) = text_len {
+            self.string_literal_lets
+                .insert(name.to_string(), (depth, len));
+        } else if self.string_literal_lets.get(name.as_ref()).map(|(d, _)| *d) == Some(depth) {
+            self.string_literal_lets.remove(name.as_ref());
+        }
 
         // The region's device has to represent what the body builds. A type annotation, or a
         // type inferred from an untyped literal, has no expression that carries it, so the
@@ -883,6 +899,16 @@ impl<'a> TypeChecker<'a> {
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
         if !self.borrow.views.contains_key(name.as_ref()) {
             self.check_spawn_capture_moved(expr);
+        }
+        // A view of a `*const` pointer stays read-only also when another name takes it.
+        let read_only_view = match crate::syntax::expr::bare_unsafe_value(expr) {
+            Expr::Identifier(id) => self.borrow.const_views.contains(&id.name),
+            e => Self::foreign_view_pointer(e).is_some_and(|p| self.is_const_pointer(p)),
+        };
+        if read_only_view {
+            self.borrow.const_views.insert(name.clone());
+        } else {
+            self.borrow.const_views.remove(name);
         }
         if let Some(p) = Self::foreign_view_pointer(expr) {
             let provenance = self.ref_provenance_of(p);
@@ -1508,6 +1534,7 @@ impl<'a> TypeChecker<'a> {
                 var: iter.as_str().into(),
                 bounds,
                 used: false,
+                across: across.is_some(),
             });
         let pointers_at_head = match ordered {
             true => self.pointer_facts.clone(),
@@ -2034,6 +2061,100 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Is `e` a `*const` pointer?
+    pub(crate) fn is_const_pointer(&self, e: &Expr) -> bool {
+        matches!(self.check_expr_type_probe(e), Type::Pointer(_, _, false))
+    }
+
+    /// What a write to `place` goes through that only allows reading, as the program names it:
+    /// a `*const` pointer on the way to the place (`*p`, `p[i]`, `(*p).f`), or a view of memory
+    /// from one. The flag is true for a view. `None` when the write goes through no `*const`
+    /// pointer.
+    pub(crate) fn const_pointer_in_place(&self, place: &Expr) -> Option<(String, bool)> {
+        let name_of = |e: &Expr| match Self::extract_base_and_path(e) {
+            Some((root, path)) => crate::hir::places::display_place(&root, &path),
+            None => "a pointer".to_string(),
+        };
+        let mut place = crate::syntax::expr::bare_unsafe_value(place);
+        loop {
+            if let Expr::Identifier(id) = place {
+                if self.borrow.const_views.contains(&id.name) {
+                    return Some((id.name.to_string(), true));
+                }
+            }
+            if let Some(p) = Self::foreign_view_pointer(place) {
+                if self.is_const_pointer(p) {
+                    return Some((name_of(p), false));
+                }
+            }
+            let base = match place {
+                Expr::Dereference(d) => &*d.expr,
+                Expr::MemberAccess(m) => &*m.base,
+                Expr::IndexAccess(i) => &*i.base,
+                _ => return None,
+            };
+            if self.is_const_pointer(base) {
+                return Some((name_of(base), false));
+            }
+            place = crate::syntax::expr::bare_unsafe_value(base);
+        }
+    }
+
+    /// Whether `place` is reached through a shared reference (`&T`) that a parameter holds, and
+    /// the parameter is not declared `mut`: `t` with `t : &Tensor`, or `layer.codes` with
+    /// `layer : &Layer` or `codes : &Tensor`. Nothing can write such a place until the call
+    /// returns. A local reference does not count: its borrow can end before the function does.
+    pub(crate) fn borrowed_for_the_call(&self, place: &Expr) -> bool {
+        let mut place = crate::syntax::expr::bare_unsafe_value(place);
+        let mut through_shared = false;
+        loop {
+            if matches!(
+                self.check_expr_type_probe(place),
+                Type::Borrow { is_mut: false, .. }
+            ) {
+                through_shared = true;
+            }
+            let base = match place {
+                Expr::Identifier(id) => {
+                    return through_shared
+                        && self.borrow.current_params.contains_key(&id.name)
+                        && !self.is_mutable(id.name.as_ref());
+                }
+                Expr::MemberAccess(m) => &*m.base,
+                Expr::IndexAccess(i) => &*i.base,
+                Expr::Dereference(d) => &*d.expr,
+                _ => return false,
+            };
+            place = crate::syntax::expr::bare_unsafe_value(base);
+        }
+    }
+
+    /// E4006 for a change, `what`, to memory that `place` reaches through a `*const` pointer.
+    pub(crate) fn check_const_pointer_change(&mut self, place: &Expr, what: &str) {
+        if self.speculating {
+            return;
+        }
+        if let Some((name, is_view)) = self.const_pointer_in_place(place) {
+            let message = if is_view {
+                format!(
+                    "{what} memory through `{name}`, a view of memory from a `*const` pointer. \
+                     It only allows reading. Make the view from a `*mut` pointer to change the \
+                     memory"
+                )
+            } else {
+                format!(
+                    "{what} memory through `{name}`, a `*const` pointer. It only allows \
+                     reading. Use a `*mut` pointer to change the memory"
+                )
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4006,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&place.span())),
+            );
+        }
+    }
+
     /// `name = &v` or `&mut v`: a use of `name` reaches what `v` borrows, so `name` holds
     /// those borrows too.
     fn reach_borrows_of(&mut self, name: &crate::symbol::Symbol, value: &Expr, depth: usize) {
@@ -2098,7 +2219,7 @@ impl<'a> TypeChecker<'a> {
         rhs: &mut Expr,
         consume: bool,
         operand_ty: Option<&mut Option<crate::syntax::ElementType>>,
-    ) {
+    ) -> bool {
         self.strip_tensor_deref_at_root(lhs);
         // Assigning to a moved variable gives it a value again. A write does not read what
         // was there, so the move stops being in the way -- and the mark has to go before the
@@ -2107,11 +2228,14 @@ impl<'a> TypeChecker<'a> {
         // Only a plain `x = v`. `x op= v` reads `x` first, and `a[i] = v` writes *through* a
         // value the name no longer owns; both stay refused.
         let mut owner_before = None;
+        let mut holds_its_buffer = false;
+        let mut in_place = false;
         let mut moved_fields_before = Vec::new();
         let moved_before = self.moved_snapshot();
         if op.is_none() {
             if let Expr::Identifier(id) = lhs {
                 owner_before = self.drops_owner_state(id.name.as_ref());
+                holds_its_buffer = self.holds_its_buffer(id.name.as_ref());
                 self.unconsume(id.name.as_ref());
             }
             // `p.a = v` after `p.a` was moved out gives the field a value again.
@@ -2150,6 +2274,9 @@ impl<'a> TypeChecker<'a> {
             let added = self.borrow.added_since(&before_lhs);
             self.borrow.reserve(&added)
         });
+        if !matches!(lhs, Expr::Identifier(_)) {
+            self.check_const_pointer_change(lhs, "this assigns to");
+        }
         if let Some(shared) = self.shared_reference_in_place(lhs) {
             if !self.speculating {
                 self.errors.error_with_code(
@@ -2262,7 +2389,8 @@ impl<'a> TypeChecker<'a> {
         if op.is_none() {
             self.check_view_assign(lhs, rhs, &rhs_ty);
             if let Expr::Identifier(id) = lhs {
-                self.drops_note_assign(id.name.as_ref(), owner_before, rhs, id.span.line);
+                in_place = holds_its_buffer && self.writes_in_place(id.name.as_ref(), rhs);
+                self.drops_note_assign(id.name.as_ref(), owner_before, id.span.line, in_place);
                 self.unconsume(id.name.as_ref());
                 self.borrow.views.remove(id.name.as_ref());
                 if let Expr::Identifier(from) = &*rhs {
@@ -2290,7 +2418,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(op) = op {
             let span = lhs.span();
             if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {
-                return;
+                return false;
             }
             let narrow = [&lhs_ty, &rhs_ty]
                 .iter()
@@ -2305,7 +2433,7 @@ impl<'a> TypeChecker<'a> {
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                 );
-                return;
+                return false;
             }
         }
         // A moved variable reads as `Unknown`, and E4001 already reported it.
@@ -2466,6 +2594,7 @@ impl<'a> TypeChecker<'a> {
             }
             _ => {}
         }
+        in_place
     }
 
     /// Which constant scope each known name currently lives in, innermost winning.
@@ -4013,7 +4142,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Assign(AssignStmt {
                 lhs: Expr::Identifier(IdentifierExpr { name, span: _ }),
                 rhs,
-                span: _,
+                ..
             }) => {
                 match self.eval_expr(rhs, env) {
                     Some(val) => env.insert(name.clone(), val),
@@ -4034,11 +4163,7 @@ impl<'a> TypeChecker<'a> {
                     operand_ty: None,
                 });
                 self.eval_statement(
-                    &Statement::Assign(AssignStmt {
-                        lhs: lhs.clone(),
-                        rhs: folded,
-                        span: *span,
-                    }),
+                    &Statement::Assign(AssignStmt::new(lhs.clone(), folded, *span)),
                     env,
                 )
             }
@@ -4052,7 +4177,7 @@ impl<'a> TypeChecker<'a> {
                         span: _,
                     }),
                 rhs,
-                span: _,
+                ..
             }) => {
                 if let Some(root) = Self::place_root(lhs) {
                     // Only a write straight into a variable is carried out. A nested place
@@ -4236,9 +4361,11 @@ impl MutReferenceTypes<'_> {
             match ty {
                 Type::Borrow { inner, is_mut, .. } => *is_mut || visit(types, inner, seen),
                 Type::Pointer(inner, _, is_mut) => *is_mut || visit(types, inner, seen),
-                Type::Ref(inner, _) | Type::Verified(inner) | Type::Pinned(inner, _) => {
-                    visit(types, inner, seen)
-                }
+                Type::Ref(inner, _)
+                | Type::Verified(inner)
+                | Type::Distinct(inner)
+                | Type::DisjointRanges(inner)
+                | Type::Pinned(inner, _) => visit(types, inner, seen),
                 Type::GenericInstance(base, args) => {
                     visit(types, base, seen) || args.iter().any(|arg| visit(types, arg, seen))
                 }

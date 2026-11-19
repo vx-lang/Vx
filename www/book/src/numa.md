@@ -154,7 +154,7 @@ NUMA node that holds the arguments. `VX_HOST_THREADS=n` sets the number of threa
 ## Seeing it happen
 
 ```bash
-VX_DISPATCH_VERBOSE=1 vxc prog.vx --host default --machine fleet/xeon-8275cl.vx --run
+VX_DISPATCH_VERBOSE=1 vxc prog.vx --host default --machine $HOME/.vx/current/fleet/xeon-8275cl.vx --run
 ```
 
 ```

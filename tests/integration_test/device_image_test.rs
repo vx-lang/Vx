@@ -673,6 +673,235 @@ fn a_kernel_with_a_struct_local_gets_a_spirv_module() {
     }
 }
 
+/// The OpenCL.std instructions in a SPIR-V module, by their number in that
+/// set, and the capabilities that the module declares.
+fn opencl_instructions_and_capabilities(module: &[u8]) -> (Vec<u32>, Vec<u32>) {
+    let words: Vec<u32> = module
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let (mut instructions, mut capabilities) = (Vec::new(), Vec::new());
+    // The header is five words. Each instruction starts with its word count
+    // and its opcode.
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        let opcode = words[at] & 0xffff;
+        assert!(
+            count > 0 && at + count <= words.len(),
+            "a SPIR-V instruction runs past the end of the module"
+        );
+        let operands = &words[at + 1..at + count];
+        match opcode {
+            // OpCapability %capability
+            17 => capabilities.push(operands[0]),
+            // OpExtInst %type %result %set %instruction ...
+            12 => instructions.push(operands[3]),
+            _ => {}
+        }
+        at += count;
+    }
+    (instructions, capabilities)
+}
+
+/// A kernel that calls `exp`, `tanh` and other libm methods on `f32` gets a
+/// SPIR-V module that computes them with the device's own functions. It needs
+/// no `f64`, which Vx's libm computes in and the Arc does not have.
+#[test]
+fn math_methods_use_the_devices_own_functions() {
+    let ir = emit_llvm("spirv_device_image_math_methods.vx");
+    let payload = payload_bytes(&ir, "vx_npu_kernel_0");
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"format=spirv\0"), "the kernel has no SPIR-V image");
+    let section = payload_section(&payload);
+    let (instructions, capabilities) = opencl_instructions_and_capabilities(section);
+    // OpenCL.std numbers: exp is 19 and tanh is 63.
+    for (number, name) in [(19, "exp"), (63, "tanh")] {
+        assert!(
+            instructions.contains(&number),
+            "the module does not use OpenCL's `{name}`. Its OpenCL.std instructions are {instructions:?}"
+        );
+    }
+    // The Float64 capability is number 10.
+    assert!(
+        !capabilities.contains(&10),
+        "the module needs `f64`. Its capabilities are {capabilities:?}"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
+/// Kernels that read and write 8-bit and 4-bit floats each get a SPIR-V module
+/// that `spirv-val` accepts. LLVM has no type for these floats, so the image
+/// must store them as integers.
+#[test]
+fn fp8_and_fp4_kernels_get_a_valid_spirv_module() {
+    let ir = emit_llvm("spirv_device_image_fp8_and_fp4.vx");
+    for kernel in ["vx_npu_kernel_0", "vx_npu_kernel_1"] {
+        let payload = payload_bytes(&ir, kernel);
+        let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"format=spirv\0"),
+            "{kernel} has no SPIR-V image in its payload"
+        );
+        match spirv_val(payload_section(&payload)) {
+            Some(Ok(())) => {}
+            Some(Err(report)) => panic!("spirv-val rejected the module of {kernel}:\n{report}"),
+            None => println!("spirv-val is not installed, so the module was not validated"),
+        }
+    }
+}
+
+/// The opcodes of a SPIR-V module, and the OpenCL.std instruction numbers of
+/// its `OpExtInst`s.
+fn opcodes_and_opencl_instructions(module: &[u8]) -> (Vec<u32>, Vec<u32>) {
+    let words: Vec<u32> = module
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let (mut opcodes, mut opencl) = (Vec::new(), Vec::new());
+    // The header is five words. Each instruction starts with its word count
+    // and its opcode.
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        let opcode = words[at] & 0xffff;
+        assert!(
+            count > 0 && at + count <= words.len(),
+            "a SPIR-V instruction runs past the end of the module"
+        );
+        opcodes.push(opcode);
+        // OpExtInst %type %result %set %instruction ...
+        if opcode == 12 {
+            opencl.push(words[at + 4]);
+        }
+        at += count;
+    }
+    (opcodes, opencl)
+}
+
+/// A kernel that can fail an `assert` gets a SPIR-V module that reports it
+/// through a flag: OpenCL's `printf`, then an atomic `or` into the flag. The
+/// module calls no `puts` or `abort`, which no OpenCL device has, and only that
+/// kernel's payload asks for the flag.
+#[test]
+fn a_kernel_with_an_assert_reports_it_through_a_flag() {
+    let ir = emit_llvm("spirv_device_image_assert.vx");
+    let payloads: Vec<Vec<u8>> = ["vx_npu_kernel_0", "vx_npu_kernel_1"]
+        .iter()
+        .map(|k| payload_bytes(&ir, k))
+        .collect();
+    let has = |payload: &[u8], needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    let flagged: Vec<&Vec<u8>> = payloads
+        .iter()
+        .filter(|p| has(p, b"assert_flag=1\0"))
+        .collect();
+    assert_eq!(
+        flagged.len(),
+        1,
+        "one of the two kernels has an assert, so one payload should ask for the flag"
+    );
+    let payload = flagged[0];
+    assert!(
+        has(payload, b"format=spirv\0"),
+        "the kernel has no SPIR-V image"
+    );
+    let section = payload_section(payload);
+    for name in [&b"puts\0"[..], &b"abort\0"[..]] {
+        assert!(
+            !has(section, name),
+            "the module names `{}`, which no OpenCL device has",
+            String::from_utf8_lossy(&name[..name.len() - 1])
+        );
+    }
+    let (opcodes, opencl) = opcodes_and_opencl_instructions(section);
+    // OpenCL.std's printf is 184, and OpAtomicOr is 241.
+    assert!(
+        opencl.contains(&184),
+        "the module does not print the message with `printf`"
+    );
+    assert!(
+        opcodes.contains(&241),
+        "the module does not set the flag with OpAtomicOr"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
+/// The opcodes of the instructions in a SPIR-V module whose result type is an
+/// 8-bit integer.
+fn instructions_on_bytes(module: &[u8]) -> Vec<u32> {
+    let words: Vec<u32> = module
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let mut bytes = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    // The header is five words. Each instruction starts with its word count
+    // and its opcode, and a result type comes first after that.
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        let opcode = words[at] & 0xffff;
+        assert!(
+            count > 0 && at + count <= words.len(),
+            "a SPIR-V instruction runs past the end of the module"
+        );
+        let operands = &words[at + 1..at + count];
+        match opcode {
+            // OpTypeInt %result 8 %signedness
+            21 if operands[1] == 8 => {
+                bytes.insert(operands[0]);
+            }
+            _ if count > 2 && bytes.contains(&operands[0]) => found.push(opcode),
+            _ => {}
+        }
+        at += count;
+    }
+    found
+}
+
+/// A kernel that compares `i4` values, converts them to `i32` and adds `u4`
+/// values gets a SPIR-V module that computes them in 8 bits: it copies the
+/// sign bit into the upper bits before a signed use, and it clears the upper
+/// bits after a sum.
+#[test]
+fn four_bit_integers_are_computed_in_eight_bits() {
+    let ir = emit_llvm("spirv_device_image_four_bit_integers.vx");
+    let payload = payload_bytes(&ir, "vx_npu_kernel_0");
+    let has = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"format=spirv\0"), "the kernel has no SPIR-V image");
+    let section = payload_section(&payload);
+    let on_bytes = instructions_on_bytes(section);
+    assert!(
+        on_bytes.contains(&195),
+        "no OpShiftRightArithmetic on an 8-bit integer, so no `i4` value gets its sign. \
+         The 8-bit instructions are {on_bytes:?}"
+    );
+    assert!(
+        on_bytes.contains(&199),
+        "no OpBitwiseAnd on an 8-bit integer, so no 4-bit value gets its upper bits cleared. \
+         The 8-bit instructions are {on_bytes:?}"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
+        None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
 /// A placed region that calls the runtime -- `print` inside the region -- also
 /// reaches no device image, and now says so, naming the callee it could not
 /// bring along (#1137).
@@ -875,5 +1104,107 @@ fn a_legacy_compiled_spirv_kernel_gets_a_spirv_module() {
             Some(Err(report)) => panic!("{name}: spirv-val rejected the module:\n{report}"),
             None => println!("spirv-val is not installed, so the module was not validated"),
         }
+    }
+}
+
+/// A kernel that reads, computes on and writes bf16 gets a SPIR-V module, with
+/// no bf16 type in it. LLVM's SPIR-V backend stops the compiler on that type.
+#[test]
+fn a_bf16_kernel_gets_a_valid_spirv_module() {
+    let ir = emit_llvm("spirv_device_image_bf16.vx");
+    for kernel in ["vx_npu_kernel_0", "vx_npu_kernel_1"] {
+        let payload = payload_bytes(&ir, kernel);
+        let section = payload_section(&payload);
+        assert_eq!(
+            &section[..4],
+            &[0x03, 0x02, 0x23, 0x07],
+            "{kernel}: the section does not start with SPIR-V's magic number 0x07230203"
+        );
+        match spirv_val(section) {
+            Some(Ok(())) => {}
+            Some(Err(report)) => panic!("{kernel}: spirv-val rejected the module:\n{report}"),
+            None => println!("spirv-val is not installed, so the module was not validated"),
+        }
+    }
+}
+
+/// The opcodes of the SPIR-V integer instructions that take a result type.
+/// SPIR-V allows none of them on `bool`: `OpIAdd`, `OpISub`, `OpIMul`,
+/// `OpUDiv`, `OpSDiv`, `OpUMod`, `OpSRem`, `OpSMod` and the three shifts.
+const INTEGER_OPCODES: [u32; 11] = [128, 130, 132, 134, 135, 137, 138, 139, 194, 195, 196];
+
+/// The opcode of each integer instruction in a SPIR-V module whose result is a
+/// `bool` or a vector of `bool`.
+fn integer_instructions_on_bool(module: &[u8]) -> Vec<u32> {
+    let words: Vec<u32> = module
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    let mut bools = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    // The header is five words. Each instruction starts with its word count
+    // and its opcode, and a result type comes first after that.
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        let opcode = words[at] & 0xffff;
+        assert!(
+            count > 0 && at + count <= words.len(),
+            "a SPIR-V instruction runs past the end of the module"
+        );
+        let operands = &words[at + 1..at + count];
+        match opcode {
+            // OpTypeBool %result
+            20 => {
+                bools.insert(operands[0]);
+            }
+            // OpTypeVector %result %component %count
+            23 if bools.contains(&operands[1]) => {
+                bools.insert(operands[0]);
+            }
+            op if INTEGER_OPCODES.contains(&op) && bools.contains(&operands[0]) => found.push(op),
+            _ => {}
+        }
+        at += count;
+    }
+    found
+}
+
+/// A kernel that does arithmetic on `i1` values gets a SPIR-V module with no
+/// integer instruction on `bool`.
+#[test]
+fn one_bit_arithmetic_gets_a_valid_spirv_module() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/optimizations/pass/spirv_one_bit_arithmetic_becomes_logic.mlr");
+    let out = Command::new(env!("CARGO_BIN_EXE_vx-opt"))
+        .arg(&path)
+        .arg("--vx-to-llvm")
+        .output()
+        .unwrap_or_else(|e| panic!("could not run vx-opt: {e}"));
+    assert!(
+        out.status.success(),
+        "vx-opt --vx-to-llvm failed on {}:\n{}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8_lossy(&out.stdout);
+    let payload = payload_bytes(&ir, "bits");
+    let section = payload_section(&payload);
+    assert_eq!(
+        &section[..4],
+        &[0x03, 0x02, 0x23, 0x07],
+        "the section does not start with SPIR-V's magic number 0x07230203"
+    );
+    assert_eq!(
+        integer_instructions_on_bool(section),
+        Vec::<u32>::new(),
+        "the module has integer instructions on `bool`, which SPIR-V does not allow. `left` lists their opcodes"
+    );
+    match spirv_val(section) {
+        Some(Ok(())) => {}
+        Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
+        None => println!("spirv-val is not installed, so the module was not validated"),
     }
 }

@@ -14,15 +14,23 @@
 //===----------------------------------------------------------------------===//
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
 
-static INIT_RAYON: Once = Once::new();
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 use super::time_limit::{has_timeout, SECONDS as RUN_LINE_SECONDS};
 
 /// Whether clang can link a program with ThreadSanitizer. Linux packages ship its runtime
 /// apart from clang, in `libclang-rt-<version>-dev`.
+/// Whether a program can see an NVIDIA GPU: a device file exists, and `CUDA_VISIBLE_DEVICES` does
+/// not hide every GPU. A test that only shows its bug on a GPU says `// REQUIRES: nvidia-gpu`.
+fn has_nvidia_gpu() -> bool {
+    if std::env::var("CUDA_VISIBLE_DEVICES").is_ok_and(|v| v.trim().is_empty()) {
+        return false;
+    }
+    Path::new("/dev/nvidia0").exists()
+}
+
 fn has_thread_sanitizer() -> bool {
     static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HAS.get_or_init(|| {
@@ -47,18 +55,6 @@ fn has_thread_sanitizer() -> bool {
 /// `s` as one word for bash, in single quotes.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn init_rayon() {
-    INIT_RAYON.call_once(|| {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(2);
-        let threads = if cores > 2 { cores - 2 } else { 1 };
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global();
-    });
 }
 
 use rayon::prelude::*;
@@ -1019,6 +1015,12 @@ fn run_lit_test_with_env(path: &Path, env: &[(&str, String)]) -> Result<(), Stri
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
         return Ok(());
     }
+    if source.contains("// REQUIRES: linux") && !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    if source.contains("// REQUIRES: nvidia-gpu") && !has_nvidia_gpu() {
+        return Ok(());
+    }
     if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
         // CI has the runtime, so a skip there means that a test stopped running.
         if std::env::var_os("VX_TESTS_NEED_THREAD_SANITIZER").is_some() {
@@ -1680,7 +1682,7 @@ fn run_directory_tests_inner<F>(
 where
     F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
 {
-    init_rayon();
+    super::parallel::init_rayon();
     let _guard = TEST_MUTEX.lock().unwrap();
 
     if dir.exists() {

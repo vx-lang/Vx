@@ -69,6 +69,7 @@ use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 ///   "resident_sets": [                  // working set per space, emitted even when admitted
 ///     {
 ///       "space": "HBM",
+///       "device": "GPU[1]",             // only for one device's copy of a `count:` topology's memory
 ///       "total_bytes": 139653545984,
 ///       "capacity_bytes": 206158430208,
 ///       "utilization": 0.6774,          // total / capacity, rounded to 4 dp
@@ -307,9 +308,15 @@ fn resident_set_json(r: &ResidentSet) -> String {
     } else {
         (r.total_bytes as f64 / r.capacity_bytes as f64 * 10_000.0).round() / 10_000.0
     };
+    // The device appears only for a copy of the memory of one device, so the other entries keep
+    // the keys they always had.
+    let device = match &r.device {
+        Some(d) => format!(", \"device\": \"{}\"", esc(d)),
+        None => String::new(),
+    };
     format!(
-        "{{\"space\": \"{}\", \"total_bytes\": {}, \"capacity_bytes\": {}, \"utilization\": {}, \
-         \"tiles\": {}, \"overcommit\": {}}}",
+        "{{\"space\": \"{}\"{device}, \"total_bytes\": {}, \"capacity_bytes\": {}, \
+         \"utilization\": {}, \"tiles\": {}, \"overcommit\": {}}}",
         esc(&r.space.name()),
         r.total_bytes,
         r.capacity_bytes,

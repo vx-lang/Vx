@@ -62,12 +62,15 @@
 #include "vx_stream_policy.h"
 #include "vx_view_copy.h"
 
+#include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -335,8 +338,242 @@ static cudaError_t device_alloc(void **ptr, size_t bytes) {
   return err;
 }
 
+/* The copies of `transfer_async` that may still run. Each copy goes on a copy
+   stream of its GPU and records an event. A use of the device memory waits for
+   that event: a launch waits on the GPU, and a read, a peer copy or a free
+   waits on the host. */
+static std::mutex copies_mutex;
+static std::unordered_map<void *, cudaEvent_t> copies_in_flight;
+
+/// The copy stream of the current GPU. It does not wait for the legacy default
+/// stream, so a copy runs while a kernel runs.
+static cudaStream_t copy_stream() {
+  static std::mutex mutex;
+  static std::unordered_map<int, cudaStream_t> streams;
+  int device = 0;
+  VX_CUDA_CHECK(cudaGetDevice(&device));
+  std::lock_guard<std::mutex> lock(mutex);
+  cudaStream_t &stream = streams[device];
+  if (!stream) {
+    VX_CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+  }
+  return stream;
+}
+
+/// The event of the copy into `ptr`, or null if no copy into it may still run.
+static cudaEvent_t copy_into(void *ptr) {
+  std::lock_guard<std::mutex> lock(copies_mutex);
+  auto found = copies_in_flight.find(ptr);
+  return found == copies_in_flight.end() ? nullptr : found->second;
+}
+
+/// Makes the work that comes next on `stream` wait for the copy into `ptr`.
+static void stream_waits_for_copy(cudaStream_t stream, void *ptr) {
+  if (cudaEvent_t event = copy_into(ptr)) {
+    VX_CUDA_CHECK(cudaStreamWaitEvent(stream, event, 0));
+  }
+}
+
+/// Waits on the host for the copy into `ptr`, and forgets the copy.
+static void finish_copy_into(void *ptr) {
+  cudaEvent_t event = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(copies_mutex);
+    auto found = copies_in_flight.find(ptr);
+    if (found == copies_in_flight.end()) {
+      return;
+    }
+    event = found->second;
+    copies_in_flight.erase(found);
+  }
+  VX_CUDA_CHECK(cudaEventSynchronize(event));
+  VX_CUDA_CHECK(cudaEventDestroy(event));
+}
+
+/// Forgets the copies that ended.
+static void forget_ended_copies() {
+  std::lock_guard<std::mutex> lock(copies_mutex);
+  for (auto it = copies_in_flight.begin(); it != copies_in_flight.end();) {
+    if (cudaEventQuery(it->second) == cudaSuccess) {
+      VX_CUDA_CHECK(cudaEventDestroy(it->second));
+      it = copies_in_flight.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+/* Pinned memory for `transfer_async`. CUDA copies from pageable memory through
+   small pinned buffers of its own, and that is slow. The program may reuse its
+   host memory when the call returns, so the GPU cannot copy from it later.
+   Instead the host copies each chunk into pinned memory of the runtime, and
+   the GPU copies one chunk while the host copies the next one.
+
+   On an H200 with PCIe 5, the GPU copies from pinned memory at about 54 GB/s.
+   One host thread copies at about 11 GB/s, and four at about 42 GB/s. So a few
+   threads copy each chunk. */
+static constexpr size_t staging_chunk_bytes = size_t(8) << 20;
+static constexpr int staging_chunks = 4;
+/// A smaller copy goes through CUDA's own buffers, as before.
+static constexpr size_t staging_min_bytes = size_t(1) << 20;
+
+struct StagingChunk {
+  void *host = nullptr;
+  /// Recorded after the GPU copy from `host`, so the next use waits for it.
+  cudaEvent_t copied = nullptr;
+};
+
+struct Staging {
+  std::mutex mutex;
+  StagingChunk chunks[staging_chunks];
+  int next = 0;
+};
+
+/// The pinned chunks of the current GPU, or null if CUDA could not pin them.
+static Staging *staging() {
+  static std::mutex mutex;
+  static std::unordered_map<int, Staging *> all;
+  int device = 0;
+  VX_CUDA_CHECK(cudaGetDevice(&device));
+  std::lock_guard<std::mutex> lock(mutex);
+  auto found = all.find(device);
+  if (found != all.end()) {
+    return found->second;
+  }
+  Staging *made = new Staging();
+  for (StagingChunk &chunk : made->chunks) {
+    if (cudaHostAlloc(&chunk.host, staging_chunk_bytes, cudaHostAllocDefault) !=
+        cudaSuccess) {
+      // Pinned memory is limited. Without it, the copy still works.
+      cudaGetLastError();
+      for (StagingChunk &allocated : made->chunks) {
+        if (allocated.host) {
+          VX_CUDA_CHECK(cudaFreeHost(allocated.host));
+        }
+        if (allocated.copied) {
+          VX_CUDA_CHECK(cudaEventDestroy(allocated.copied));
+        }
+      }
+      delete made;
+      made = nullptr;
+      break;
+    }
+    VX_CUDA_CHECK(
+        cudaEventCreateWithFlags(&chunk.copied, cudaEventDisableTiming));
+  }
+  all[device] = made;
+  return made;
+}
+
+/// Host threads that copy one block of memory together. The calling thread
+/// copies the first part.
+class CopyThreads {
+public:
+  CopyThreads() {
+    // A quarter of the CPUs, and at most four threads.
+    const unsigned cpus = std::thread::hardware_concurrency();
+    parts = std::max(1u, std::min(4u, cpus / 4));
+    for (unsigned i = 1; i < parts; ++i) {
+      std::thread([this, i] { work(i); }).detach();
+    }
+  }
+
+  void copy(void *dst, const void *src, size_t bytes) {
+    std::lock_guard<std::mutex> one_copy(busy);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      job = {static_cast<char *>(dst), static_cast<const char *>(src), bytes};
+      unfinished = parts - 1;
+      ++generation;
+    }
+    wake.notify_all();
+    copy_part(0);
+    std::unique_lock<std::mutex> lock(mutex);
+    finished.wait(lock, [this] { return unfinished == 0; });
+  }
+
+private:
+  struct Job {
+    char *dst = nullptr;
+    const char *src = nullptr;
+    size_t bytes = 0;
+  };
+
+  void copy_part(unsigned i) {
+    const size_t part = (job.bytes / parts + 63) & ~size_t(63);
+    const size_t begin = std::min(job.bytes, part * i);
+    const size_t end =
+        i + 1 == parts ? job.bytes : std::min(job.bytes, begin + part);
+    memcpy(job.dst + begin, job.src + begin, end - begin);
+  }
+
+  void work(unsigned i) {
+    unsigned long long seen = 0;
+    for (;;) {
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        wake.wait(lock, [&] { return generation != seen; });
+        seen = generation;
+      }
+      copy_part(i);
+      std::lock_guard<std::mutex> lock(mutex);
+      if (--unfinished == 0) {
+        finished.notify_one();
+      }
+    }
+  }
+
+  unsigned parts = 1;
+  std::mutex busy;
+  std::mutex mutex;
+  std::condition_variable wake;
+  std::condition_variable finished;
+  Job job;
+  unsigned unfinished = 0;
+  unsigned long long generation = 0;
+};
+
+/// The copy threads. They live until the process ends, so they are never
+/// destroyed.
+static CopyThreads &copy_threads() {
+  static CopyThreads *threads = new CopyThreads();
+  return *threads;
+}
+
+/// Starts the copy of `bytes` from `host_ptr` to `device_ptr` on `stream`.
+/// When it returns, the program may reuse `host_ptr`.
+static void copy_to_device_async(void *device_ptr, const void *host_ptr,
+                                 size_t bytes, cudaStream_t stream) {
+  Staging *pinned = bytes >= staging_min_bytes ? staging() : nullptr;
+  if (!pinned) {
+    // From pageable memory, CUDA returns after it copied the bytes into its
+    // own pinned memory.
+    VX_CUDA_CHECK(cudaMemcpyAsync(device_ptr, host_ptr, bytes,
+                                  cudaMemcpyHostToDevice, stream));
+    return;
+  }
+  if (verbose()) {
+    fprintf(stderr, "[Vx CUDA] copy of %zu bytes through pinned memory\n",
+            bytes);
+  }
+  std::lock_guard<std::mutex> lock(pinned->mutex);
+  for (size_t done = 0; done < bytes; done += staging_chunk_bytes) {
+    const size_t n = std::min(staging_chunk_bytes, bytes - done);
+    StagingChunk &chunk = pinned->chunks[pinned->next];
+    pinned->next = (pinned->next + 1) % staging_chunks;
+    VX_CUDA_CHECK(cudaEventSynchronize(chunk.copied));
+    copy_threads().copy(chunk.host, static_cast<const char *>(host_ptr) + done,
+                        n);
+    VX_CUDA_CHECK(cudaMemcpyAsync(static_cast<char *>(device_ptr) + done,
+                                  chunk.host, n, cudaMemcpyHostToDevice,
+                                  stream));
+    VX_CUDA_CHECK(cudaEventRecord(chunk.copied, stream));
+  }
+}
+
 /// Frees device memory, by the rules of `vx_free_action_for`.
 static void device_free(void *ptr) {
+  finish_copy_into(ptr);
   cudaStream_t from = nullptr;
   bool mine = false;
   {
@@ -1016,6 +1253,33 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   return device_ptr;
 }
 
+void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
+                                         uint32_t topology_id,
+                                         uint32_t space_access) {
+  // A copy on the caller's stream is already in stream order, and a copy to
+  // the host or to another machine has no device memory to wait for.
+  if (!host_ptr || !cuda_available() || gpu_index((int32_t)topology_id) < 0 ||
+      caller_stream || vx_routing_worker((int32_t)topology_id)) {
+    return vx_plugin_alloc_and_transfer(bytes, host_ptr, topology_id,
+                                        space_access);
+  }
+  select_device((int32_t)topology_id, "stage");
+  if (space_access == VX_SPACE_ACCESS_HOST_READABLE) {
+    warn_space_access_contradiction(topology_id, bytes);
+  }
+  forget_ended_copies();
+  void *device_ptr = nullptr;
+  VX_CUDA_CHECK(device_alloc(&device_ptr, bytes));
+  cudaStream_t stream = copy_stream();
+  copy_to_device_async(device_ptr, host_ptr, bytes, stream);
+  cudaEvent_t event = nullptr;
+  VX_CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+  VX_CUDA_CHECK(cudaEventRecord(event, stream));
+  std::lock_guard<std::mutex> lock(copies_mutex);
+  copies_in_flight[device_ptr] = event;
+  return device_ptr;
+}
+
 void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
                               uint32_t dst_topology_id, size_t bytes) {
   void *routed = nullptr;
@@ -1055,6 +1319,7 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   // through the host itself. One call is therefore correct on an NVLink pod and
   // on a PCIe-only one, which matters because a rented pod does not say which
   // it gave you.
+  finish_copy_into(src_device_ptr);
   select_device((int32_t)dst_topology_id, "peer");
   void *dst_ptr = nullptr;
   VX_CUDA_CHECK(device_alloc(&dst_ptr, bytes));
@@ -1320,15 +1585,21 @@ bool run_device_image(const void *payload, size_t payload_size,
   }
   if (set_by_program) {
     grid = shape[0];
-  } else if (const char *launch =
-                 vx_payload_field(payload, payload_size, "launch=")) {
-    char *rest = nullptr;
-    long trip = strtol(launch, &rest, 10);
-    if (rest && *rest == ',') {
+  } else {
+    long t = 0;
+    long trip = vx_launch_trip(payload, payload_size, device_args, arg_tags,
+                               num_args, &t);
+    if (trip < 0 || t < 0) {
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: %s: `launch=` names a launch value that is "
+              "not an i32\n",
+              kernel_name);
+      abort();
+    }
+    if (t != 0) {
       /* Two-level "B,T" (Vx#379): B is a block count -- the block loop
          strides by gridDim, so capping it is correct, not lossy -- and T is
          the block shape the compiler suggested. */
-      long t = strtol(rest + 1, nullptr, 10);
       if (trip > 0 && t > 0) {
         grid = trip > 4096 ? 4096u : (unsigned)trip;
         block = t > 1024 ? 1024u : (unsigned)t;
@@ -1410,6 +1681,23 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   if (vx_routing_try_dispatch(binary_payload, payload_size, device_args,
                               arg_tags, num_args)) {
     return 1;
+  }
+
+  // The kernel and every copy below wait for the copies of `transfer_async`
+  // into the operands. They all go on the caller's stream.
+  if (cuda_available()) {
+    for (int64_t i = 0; i < num_args; ++i) {
+      if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF || !device_args[i]) {
+        continue;
+      }
+      void *desc = *(void **)device_args[i];
+      if (desc && VX_ABI_IS_SLOT(arg_tags[i])) {
+        desc = vx_memref_aligned(desc);
+      }
+      if (desc) {
+        stream_waits_for_copy(caller_stream, vx_memref_aligned(desc));
+      }
+    }
   }
 
   vx_gemm_plan plan;
@@ -1519,8 +1807,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     if (span.view >= 0) {
       vx_view_copy_blocks(&views[span.view], copy_block_to_host, span.copy);
     } else {
-      VX_CUDA_CHECK(cudaMemcpy(span.copy, (const void *)span.start,
-                               span.bytes, cudaMemcpyDeviceToHost));
+      VX_CUDA_CHECK(cudaMemcpy(span.copy, (const void *)span.start, span.bytes,
+                               cudaMemcpyDeviceToHost));
     }
     if (verbose()) {
       fprintf(stderr,
@@ -1588,6 +1876,9 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
     return 1;
   }
 
+  for (void *operand : {(void *)xout, (void *)x, (void *)w}) {
+    stream_waits_for_copy(caller_stream, operand);
+  }
   const float alpha = 1.0f, beta = 0.0f;
   DeviceBuffer dw = stage(w, d, n, n, sizeof(float));
   DeviceBuffer dx = stage(x, 1, n, n, sizeof(float));
@@ -1636,6 +1927,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
     // because the ABI is the contract a non-CUDA backend implements and nothing
     // guarantees that backend can infer anything from an address (#346).
     select_device((int32_t)topology_id, "fetch");
+    finish_copy_into(device_ptr);
     wait_for_kernels("Vx copied a tensor to host memory");
     VX_CUDA_CHECK(
         cudaMemcpy(host_ptr, device_ptr, bytes, cudaMemcpyDeviceToHost));
@@ -1680,8 +1972,9 @@ int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
   const int64_t strides[5] = {s0, s1, s2, s3, s4};
   const int64_t box[5] = {b0, b1, b2, b3, b4};
   if (!cuda_available() || rank < 1 || rank > 5 ||
-      (elem_bytes != 4 && elem_bytes != 8) || base % 16 != 0 ||
-      strides[rank - 1] != 1 || !is_device_ptr(reinterpret_cast<void *>(base)))
+      (elem_bytes != 2 && elem_bytes != 4 && elem_bytes != 8) ||
+      base % 16 != 0 || strides[rank - 1] != 1 ||
+      !is_device_ptr(reinterpret_cast<void *>(base)))
     return 0;
   const DriverApi *api = load_driver_api();
   if (!api || !api->TensorMapEncodeTiled)
@@ -1707,8 +2000,9 @@ int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
   CUtensorMap map;
   const CUresult rc = api->TensorMapEncodeTiled(
       &map,
-      elem_bytes == 4 ? CU_TENSOR_MAP_DATA_TYPE_UINT32
-                      : CU_TENSOR_MAP_DATA_TYPE_UINT64,
+      elem_bytes == 2   ? CU_TENSOR_MAP_DATA_TYPE_UINT16
+      : elem_bytes == 4 ? CU_TENSOR_MAP_DATA_TYPE_UINT32
+                        : CU_TENSOR_MAP_DATA_TYPE_UINT64,
       static_cast<cuuint32_t>(rank), reinterpret_cast<void *>(base), global_dim,
       global_strides, box_dim, element_strides, CU_TENSOR_MAP_INTERLEAVE_NONE,
       CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_128B,

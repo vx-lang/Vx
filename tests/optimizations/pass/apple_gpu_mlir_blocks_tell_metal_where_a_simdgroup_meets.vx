@@ -1,0 +1,64 @@
+// `vx.subgroup_schedule_barrier` in an `mlir!` block tells the Metal compiler that the threads of a
+// SIMD-group meet there, as llama.cpp's kernels do between their loads and their multiplies. It
+// orders no memory. The Metal code generator prints it as `simdgroup_barrier(mem_flags::mem_none)`,
+// and the code generator for NVIDIA GPUs drops it.
+//
+// REQUIRES: macos
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal && FileCheck %s --check-prefix=MSL --input-file=%t.metal
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o - 2>&1 | FileCheck %s --check-prefix=NVPTX
+// RUN: env VX_METAL=0 not vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=CPU
+//
+// The block of `lanes` has no `threads`, so the CPU copy of its kernel runs it, and drops the op.
+// The block of `sevens` has `threads`, so the CPU stops there.
+// CHECK: {{^}}lanes: 0 31{{$}}
+// CHECK-NEXT: {{^}}out: 7 7{{$}}
+// CPU: {{^}}lanes: 0 31{{$}}
+// CPU: the `mlir!` block with `threads` at line
+// MSL: simdgroup_barrier(mem_flags::mem_none);
+// MSL-NEXT: {{.*}}[{{.*}}] = {{.*}};
+// NVPTX: image=
+// NVPTX-NOT: subgroup_schedule_barrier
+
+pub fn lanes(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes(32) {
+        let _d = mlir!( inputs : (%o = out : memref<?xi32>, %l = l : i32), returns : i32, dialects : ["arith", "memref", "vx"], ensures : [writes_only(out[l])]) {
+          %k = arith.index_cast %l : i32 to index
+          vx.subgroup_schedule_barrier
+          memref.store %l, %o[%k] : memref<?xi32>
+          macro.yield %l : i32
+        };
+      }
+    }
+  }
+  return;
+}
+
+pub fn sevens(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      let _d = mlir!( threads : 32, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "vx"], ensures : [writes_only(out[b..b + 1])]) {
+        %k = arith.index_cast %b : i32 to index
+        %c7 = arith.constant 7 : i32
+        vx.subgroup_schedule_barrier
+        memref.store %c7, %o[%k] : memref<?xi32>
+        macro.yield %c7 : i32
+      };
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut first = transfer(Tensor<i32>([32]), Memory::HBM);
+  lanes(&mut first);
+  let f = transfer(&first, Memory::CPU_DRAM);
+  println!("lanes: {} {}", f[0], f[31]);
+  let mut out = transfer(Tensor<i32>([2]), Memory::HBM);
+  sevens(&mut out);
+  let h = transfer(&out, Memory::CPU_DRAM);
+  println!("out: {} {}", h[0], h[1]);
+  return 0;
+}

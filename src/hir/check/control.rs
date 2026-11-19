@@ -1507,14 +1507,9 @@ impl<'a> TypeChecker<'a> {
                     // end in `return`/`break`/`continue`, or in a statement like `assert`,
                     // diverge or yield unit and do not constrain the match value — this is
                     // what lets `Option::unwrap` (Some arm `return v`, None arm asserts)
-                    // type-check as `-> T`.
-                    let yields_value = matches!(
-                        arm.body.last(),
-                        Some(Statement::ExprStmt(ExprStmtStmt {
-                            has_semi: false,
-                            ..
-                        }))
-                    );
+                    // type-check as `-> T`. A last `match` whose arms all `return` is no value
+                    // either.
+                    let yields_value = crate::syntax::expr::block_gives_a_value(&arm.body);
                     if literal_arm {
                         literal_arms.push(i);
                         literal_ty.get_or_insert(arm_ty);

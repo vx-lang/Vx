@@ -13,17 +13,19 @@ env:
 jobs:
   # Vx is built and tested against its own LLVM, from scripts/provision/build_llvm.sh, kept in
   # the GitHub Actions cache. This job builds it only when the cache does not have it; the test
-  # jobs wait for it and restore it.
+  # jobs wait for it and restore it. The cache key names the Ubuntu release, so each job that
+  # builds or restores LLVM names its release too. With `ubuntu-latest`, a new release made every
+  # run build LLVM again.
   llvm:
     name: Build LLVM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     outputs:
       key: ${{ steps.llvm.outputs.key }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build LLVM if the cache does not have it
         id: llvm
@@ -39,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The packages of the CUDA job in release.yml, which says why cuda-nvcc is needed.
       - name: Install the CUDA toolkit
@@ -62,7 +64,7 @@ jobs:
   test:
     name: Run Tests
     needs: llvm
-    runs-on: ubuntu-latest # Free Linux Tier
+    runs-on: ubuntu-26.04 # Free Linux Tier
     env:
       # Link with lld (installed below) -- much faster than the default linker
       # for the large MLIR/LLVM libraries that get linked into many binaries.
@@ -70,7 +72,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -160,15 +162,6 @@ jobs:
       # Runs here rather than in its own job because it needs the compiler this job just built.
       - name: Check documentation examples compile
         run: python3 scripts/tools/check_doc_examples.py
-
-      # The Qwen app keeps its tests in apps/qwen/tests, so that they move with it to its own
-      # repository later. Its scripts need NumPy, and ml_dtypes checks its fp8 codes. The system
-      # Python of the runner takes no packages, so they go in a venv of their own.
-      - name: Qwen app tests
-        run: |
-          python3 -m venv "$RUNNER_TEMP/qwen-venv"
-          "$RUNNER_TEMP/qwen-venv/bin/pip" install --quiet numpy ml_dtypes
-          PATH="$RUNNER_TEMP/qwen-venv/bin:$PWD/target/release:$PATH" apps/qwen/tests/run.sh
 
       # The diagnostic reference is generated from the source it describes. Regenerating and
       # diffing catches the case where someone adds a diagnostic and the published reference
@@ -282,13 +275,13 @@ jobs:
   test-debug:
     name: Run Tests (debug profile)
     needs: llvm
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -346,7 +339,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -358,7 +351,7 @@ jobs:
 
       - name: Cache QEMU
         id: qemu-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/qemu
           key: qemu-aarch64-linux-user-${{ env.VX_QEMU_RELEASE }}-${{ runner.os }}

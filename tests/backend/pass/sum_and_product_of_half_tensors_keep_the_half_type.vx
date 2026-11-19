@@ -1,0 +1,120 @@
+//===- sum_and_product_of_half_tensors_keep_the_half_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `a + b` and `a * b` on two f16 or bf16 tensors give a tensor of the same element type, at
+// every rank. The values show the half precision: f16 rounds 2048 + 1 to 2048, and bf16 rounds
+// 256 + 1 to 256. A row of a half tensor is rank 1, so `o[0] + o[1]` goes back into a half row
+// without a cast. A half value with an f32 value gives f32. So in `mixed`, the half sum rounds
+// to 2048 first, and 2048 + 0.5 gives 2048.5. `VX_NO_AST_FALLBACK=1` makes the default code
+// generator fail rather than give a function to the AST code generator.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}f16 rank 2 sum: 2048 5{{$}}
+// CHECK: {{^}}f16 rank 2 product: 6 -1.5{{$}}
+// CHECK: {{^}}bf16 rank 2 sum: 256 5{{$}}
+// CHECK: {{^}}bf16 rank 2 product: 6 -1.5{{$}}
+// CHECK: {{^}}f16 rank 1 sum: 2048{{$}}
+// CHECK: {{^}}bf16 rank 1 sum: 256{{$}}
+// CHECK: {{^}}f16 rows: 2048 2048{{$}}
+// CHECK: {{^}}mixed: 2048.5 2048.5{{$}}
+
+fn f16_rank_2() -> i32 {
+  let mut a = Tensor<f16, [2, 2]>::new();
+  let mut b = Tensor<f16, [2, 2]>::new();
+  a[0][0] = 2048.0;
+  b[0][0] = 1.0;
+  a[1][1] = 2.0;
+  b[1][1] = 3.0;
+  let sum: Tensor<f16, [2, 2]> = a + b;
+  println!("f16 rank 2 sum: {} {}", sum[0][0], sum[1][1]);
+  let mut p = Tensor<f16, [2, 2]>::new();
+  let mut q = Tensor<f16, [2, 2]>::new();
+  p[1][1] = 2.0;
+  q[1][1] = 3.0;
+  p[0][1] = 1.5;
+  q[0][1] = -1.0;
+  let product: Tensor<f16, [2, 2]> = p * q;
+  println!("f16 rank 2 product: {} {}", product[1][1], product[0][1]);
+  return 0;
+}
+
+fn bf16_rank_2() -> i32 {
+  let mut a = Tensor<bf16, [2, 2]>::new();
+  let mut b = Tensor<bf16, [2, 2]>::new();
+  a[0][0] = 256.0;
+  b[0][0] = 1.0;
+  a[1][1] = 2.0;
+  b[1][1] = 3.0;
+  let sum: Tensor<bf16, [2, 2]> = a + b;
+  println!("bf16 rank 2 sum: {} {}", sum[0][0], sum[1][1]);
+  let mut p = Tensor<bf16, [2, 2]>::new();
+  let mut q = Tensor<bf16, [2, 2]>::new();
+  p[1][1] = 2.0;
+  q[1][1] = 3.0;
+  p[0][1] = 1.5;
+  q[0][1] = -1.0;
+  let product: Tensor<bf16, [2, 2]> = p * q;
+  println!("bf16 rank 2 product: {} {}", product[1][1], product[0][1]);
+  return 0;
+}
+
+fn f16_rank_1() -> i32 {
+  let mut a = Tensor<f16, [2]>::new();
+  let mut b = Tensor<f16, [2]>::new();
+  a[0] = 2048.0;
+  b[0] = 1.0;
+  let sum: Tensor<f16, [2]> = a + b;
+  println!("f16 rank 1 sum: {}", sum[0]);
+  return 0;
+}
+
+fn bf16_rank_1() -> i32 {
+  let mut a = Tensor<bf16, [2]>::new();
+  let mut b = Tensor<bf16, [2]>::new();
+  a[0] = 256.0;
+  b[0] = 1.0;
+  let sum: Tensor<bf16, [2]> = a + b;
+  println!("bf16 rank 1 sum: {}", sum[0]);
+  return 0;
+}
+
+// A row plus a row, and a row plus an f16 scalar.
+fn f16_rows() -> i32 {
+  let mut o = Tensor<f16, [3, 2]>::new();
+  o[0][0] = 2048.0;
+  o[1][0] = 1.0;
+  o[2][0] = 2048.0;
+  o[0] = o[0] + o[1];
+  let one : f16 = 1.0;
+  o[2] = o[2] + one;
+  println!("f16 rows: {} {}", o[0][0], o[2][0]);
+  return 0;
+}
+
+// The half sum, then an f32 scalar or an f32 row.
+fn mixed() -> i32 {
+  let mut o = Tensor<f16, [2, 2]>::new();
+  o[0][0] = 2048.0;
+  o[1][0] = 1.0;
+  let half : f32 = 0.5;
+  let mut w = Tensor<f32, [2, 2]>::new();
+  w[0] = (o[0] + o[1]) + half;
+  w[1] = (o[0] + o[1]) + (o[1] * half);
+  println!("mixed: {} {}", w[0][0], w[1][0]);
+  return 0;
+}
+
+fn main() -> i32 {
+  f16_rank_2();
+  bf16_rank_2();
+  f16_rank_1();
+  bf16_rank_1();
+  f16_rows();
+  mixed();
+  return 0;
+}

@@ -1,0 +1,79 @@
+//===- blocks_write_the_rows_of_disjoint_ranges.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Block `t` writes the rows of range `t` of a `DisjointRanges` table: `start + r`, for the lanes
+// `r` where `start + r < end`. No two ranges overlap, so no two blocks write the same row, and
+// the compiler accepts the kernels. The ranges are [5, 7), [0, 3), [3, 5) and [7, 7), which is
+// empty. Lane `r` of block `t` writes `10 * t + r`, and row 7 keeps -1. `flat` writes the same
+// rows into two columns of one index, `(start + r) * 2 + c`. Its tests are written as `end > row`
+// inside `&&`, and as `r <= end - start - 1`. A program of the book chapter on GPU code
+// (www/book/src/gpu.md) shows `write_rows`.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// CHECK: rows: 10 11 12 20 21 0 1 -1
+// CHECK-NEXT: flat column 0: 10 11 12 20 21 0 1 -1
+// CHECK-NEXT: flat column 1: 10 11 12 20 21 0 1 -1
+
+// ANCHOR: program
+fn write_rows(out : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[t][0] as i64) + (r as i64);
+        if row < (tiles[t][1] as i64) {
+          out[row][0] = (10 * t + r) as f32;
+        }
+      }
+    }
+  }
+  return;
+}
+// ANCHOR_END: program
+
+fn flat(out : &mut Tensor<f32, [?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tiles.len() across blocks {
+      for r in 0..4 across lanes(32) {
+        let start = tiles[t][0] as i64;
+        if r < 4 && (tiles[t][1] as i64) > start + (r as i64) {
+          out[(start + (r as i64)) * 2] = (10 * t + r) as f32;
+        }
+        if (r as i64) <= (tiles[t][1] as i64) - start - 1 {
+          out[(start + (r as i64)) * 2 + 1] = (10 * t + r) as f32;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut table = Tensor<i32, [4, 2]>::fill(0);
+  table[0][0] = 5;
+  table[0][1] = 7;
+  table[1][0] = 0;
+  table[1][1] = 3;
+  table[2][0] = 3;
+  table[2][1] = 5;
+  table[3][0] = 7;
+  table[3][1] = 7;
+  let tiles = unsafe { DisjointRanges(transfer(table, Memory::HBM)) };
+
+  let mut y = transfer(Tensor<f32, [8, 1]>::fill(-1.0), Memory::HBM);
+  write_rows(&mut y, &tiles);
+  let yh = transfer(y, Memory::CPU_DRAM);
+  println!("rows: {} {} {} {} {} {} {} {}", yh[0][0], yh[1][0], yh[2][0], yh[3][0], yh[4][0], yh[5][0], yh[6][0], yh[7][0]);
+
+  let mut o = transfer(Tensor<f32, [16]>::fill(-1.0), Memory::HBM);
+  flat(&mut o, &tiles);
+  let h = transfer(o, Memory::CPU_DRAM);
+  println!("flat column 0: {} {} {} {} {} {} {} {}", h[0], h[2], h[4], h[6], h[8], h[10], h[12], h[14]);
+  println!("flat column 1: {} {} {} {} {} {} {} {}", h[1], h[3], h[5], h[7], h[9], h[11], h[13], h[15]);
+  return 0;
+}

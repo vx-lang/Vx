@@ -1,6 +1,10 @@
 // Each kernel of `std::nn` on random data, against a plain loop on the CPU in f64. A line says
 // `ok` when the largest difference is below 1e-5 of the largest value of the loop. The shapes
-// come from Qwen2.5-Coder-0.5B, and some from 7B.
+// come from Qwen2.5-Coder-0.5B, and some from 7B. nn_attention also gets the shape of
+// Qwen3-Coder-30B-A3B, and shapes with 16 heads of Q for each head of K and V. It splits the
+// positions into blocks of 32 below position 640, and of 64 from there on, so it gets both. A
+// lane of a block of 64 takes one position in each half of the block. The shape of 656 positions
+// ends in the first half of its last block, and those of 1001 and 700 end in the second half.
 //
 // The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere. The
 // second run uses the CPU copy everywhere.
@@ -28,6 +32,10 @@
 // CHECK-NEXT: {{^}}nn_attention 14 heads of 64, 38 positions: ok{{$}}
 // CHECK-NEXT: {{^}}nn_attention 28 heads of 128, 301 positions: ok{{$}}
 // CHECK-NEXT: {{^}}nn_attention 14 heads of 64, 1 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 32 heads of 64, 2 heads of K and V, 200 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 32 heads of 128, 4 heads of K and V, 1001 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 28 heads of 128, 4 heads of K and V, 700 positions: ok{{$}}
+// CHECK-NEXT: {{^}}nn_attention 32 heads of 64, 2 heads of K and V, 656 positions: ok{{$}}
 // CHECK-NEXT: {{^}}nn_argmax of 151936: 50645{{$}}
 // CHECK-NEXT: {{^}}nn_embed row 7 of 896: ok{{$}}
 import core::convert;
@@ -336,7 +344,7 @@ fn check_rope(q_heads : i32, kv_heads : i32, head_dim : i32, pos : i32, max_seq 
   return;
 }
 
-fn check_attention(q_heads : i32, kv_heads : i32, head_dim : i32, pos : i32, max_seq : i32) -> void {
+fn check_attention(name : *const i8, q_heads : i32, kv_heads : i32, head_dim : i32, pos : i32, max_seq : i32) -> void {
   let group = q_heads / kv_heads;
   let hq = random_heads(q_heads, head_dim, 61u32, 2.0);
   let hk = random_cache(max_seq, kv_heads, head_dim, 62u32, 2.0);
@@ -344,9 +352,9 @@ fn check_attention(q_heads : i32, kv_heads : i32, head_dim : i32, pos : i32, max
   let q = transfer(random_heads(q_heads, head_dim, 61u32, 2.0), Memory::HBM);
   let k_cache = transfer(random_cache(max_seq, kv_heads, head_dim, 62u32, 2.0), Memory::HBM);
   let v_cache = transfer(random_cache(max_seq, kv_heads, head_dim, 63u32, 1.0), Memory::HBM);
-  let mut scores = transfer(Tensor<f32>([q_heads, max_seq]), Memory::HBM);
+  let mut part = transfer(nn_attention_scratch(max_seq, q_heads, kv_heads, head_dim), Memory::HBM);
   let mut out = transfer(Tensor<f32>([q_heads, head_dim]), Memory::HBM);
-  nn_attention(&mut out, &mut scores, &q, &k_cache, &v_cache, pos, q_heads, kv_heads, head_dim);
+  nn_attention(&mut out, &mut part, &q, &k_cache, &v_cache, pos, q_heads, kv_heads, head_dim);
   let ho = transfer(&out, Memory::CPU_DRAM);
   let mut got = Tensor<f32>([q_heads * head_dim]);
   let mut want = Tensor<f64>([q_heads * head_dim]);
@@ -377,13 +385,7 @@ fn check_attention(q_heads : i32, kv_heads : i32, head_dim : i32, pos : i32, max
       got[h * head_dim + d] = ho[h][d];
     }
   }
-  if head_dim == 128 {
-    report("nn_attention 28 heads of 128, 301 positions", &got, &want, q_heads * head_dim);
-  } else if pos == 0 {
-    report("nn_attention 14 heads of 64, 1 positions", &got, &want, q_heads * head_dim);
-  } else {
-    report("nn_attention 14 heads of 64, 38 positions", &got, &want, q_heads * head_dim);
-  }
+  report(name, &got, &want, q_heads * head_dim);
   return;
 }
 
@@ -430,9 +432,13 @@ fn main() -> i32 {
   check_rms_norm(3584);
   check_rope(14, 2, 64, 5, 16);
   check_rope(28, 4, 128, 300, 400);
-  check_attention(14, 2, 64, 37, 64);
-  check_attention(28, 4, 128, 300, 400);
-  check_attention(14, 2, 64, 0, 8);
+  check_attention("nn_attention 14 heads of 64, 38 positions", 14, 2, 64, 37, 64);
+  check_attention("nn_attention 28 heads of 128, 301 positions", 28, 4, 128, 300, 400);
+  check_attention("nn_attention 14 heads of 64, 1 positions", 14, 2, 64, 0, 8);
+  check_attention("nn_attention 32 heads of 64, 2 heads of K and V, 200 positions", 32, 2, 64, 199, 256);
+  check_attention("nn_attention 32 heads of 128, 4 heads of K and V, 1001 positions", 32, 4, 128, 1000, 1024);
+  check_attention("nn_attention 28 heads of 128, 4 heads of K and V, 700 positions", 28, 4, 128, 699, 768);
+  check_attention("nn_attention 32 heads of 64, 2 heads of K and V, 656 positions", 32, 2, 64, 655, 704);
   check_argmax(151936);
   check_embed(10, 896, 7);
   return 0;

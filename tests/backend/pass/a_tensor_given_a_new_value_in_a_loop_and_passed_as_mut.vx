@@ -1,0 +1,76 @@
+//===- a_tensor_given_a_new_value_in_a_loop_and_passed_as_mut.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor variable that gets a new tensor in a loop is kept in a stack slot. `&mut y` and `&y`
+// of such a variable pass the tensor it holds at that point. `twice` passes `y` before the loop,
+// `three_times` passes it inside the loop, and `through_a_reference` passes it through `let r`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}twice: 0 0{{$}}
+// CHECK: {{^}}three_times: 10 0 10{{$}}
+// CHECK: {{^}}through_a_reference: 5 5{{$}}
+
+fn zeros(n : i32) -> Tensor<f32, [?]> {
+  let mut z = Tensor<f32>([n]);
+  for i in 0..n {
+    z[i] = 0.0;
+  }
+  return z;
+}
+
+fn add_five(y : &mut Tensor<f32, [?]>) -> void {
+  y[0] = y[0] + 5.0;
+  return;
+}
+
+fn sum(y : &Tensor<f32, [?]>) -> f32 {
+  let mut s = 0.0;
+  for i in 0..4 {
+    s = s + y[i];
+  }
+  return s;
+}
+
+fn twice() -> void {
+  let mut y = zeros(4);
+  add_five(&mut y);
+  for r in 0..2 {
+    y = zeros(4);
+  }
+  println!("twice: {} {}", y[0], y[3]);
+  return;
+}
+
+fn three_times() -> void {
+  let mut y = zeros(4);
+  for r in 0..3 {
+    y = zeros(4);
+    add_five(&mut y);
+    add_five(&mut y);
+  }
+  println!("three_times: {} {} {}", y[0], y[3], sum(&y));
+  return;
+}
+
+fn through_a_reference() -> void {
+  let mut y = zeros(4);
+  for r in 0..2 {
+    y = zeros(4);
+  }
+  let r = &mut y;
+  add_five(r);
+  println!("through_a_reference: {} {}", y[0], sum(&y));
+  return;
+}
+
+fn main() -> i32 {
+  twice();
+  three_times();
+  through_a_reference();
+  return 0;
+}

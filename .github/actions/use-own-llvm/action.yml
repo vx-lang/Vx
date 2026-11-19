@@ -12,7 +12,7 @@ runs:
   using: composite
   steps:
     - name: Restore LLVM
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: toolchain/install
         key: ${{ inputs.key }}

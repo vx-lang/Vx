@@ -660,6 +660,8 @@ fn emit_type_gid(ty: &syntax::Type, worker: &mut LocalWorkerState) {
         | Type::Borrow { inner, .. }
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Pinned(inner, _) => emit_type_gid(inner, worker),
         Type::Function(args, ret, _) | Type::Closure(args, ret) => {
             for a in args {
@@ -687,6 +689,8 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
         | Type::Borrow { inner, .. }
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Pinned(inner, _) => nominal_gid(inner),
         // A *nested* instantiation is identified by its base plus a content digest of its own
         // arguments, computed recursively (#305). It cannot be an arena index: the inner
@@ -1282,7 +1286,10 @@ fn by_value_nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
     use syntax::Type;
     match ty {
         Type::Struct(_, id) | Type::Enum(_, id) => *id,
-        Type::Pinned(inner, _) | Type::Verified(inner) => by_value_nominal_gid(inner),
+        Type::Pinned(inner, _)
+        | Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner) => by_value_nominal_gid(inner),
         _ => None,
     }
 }

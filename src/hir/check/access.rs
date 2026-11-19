@@ -295,6 +295,8 @@ impl<'a> TypeChecker<'a> {
             | Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => self.fold_extents(inner),
             Type::GenericInstance(base, args) => {
                 self.fold_extents(base);
@@ -1331,6 +1333,69 @@ impl<'a> TypeChecker<'a> {
             .any(|m| m.name == *name && m.scope == Some(crate::syntax::Scope::Thread))
     }
 
+    /// Whether a tensor placed in `placement` is in the shared memory of a block: its space is
+    /// declared `scope: sm` or `scope: cta`.
+    fn is_shared_space(&self, placement: Option<&crate::syntax::Placement>) -> bool {
+        let Some(p) = placement else {
+            return false;
+        };
+        let crate::syntax::MemorySpace::Custom(name) = &p.space else {
+            return false;
+        };
+        self.env.memories.values().any(|m| {
+            m.name == *name
+                && matches!(
+                    m.scope,
+                    Some(crate::syntax::Scope::Sm | crate::syntax::Scope::Cta)
+                )
+        })
+    }
+
+    /// docs/lane_reductions.md: `obj[idx]`, an element of a tensor in shared memory whose last
+    /// index `idx` is the variable of an `across` loop, may belong to that lane alone. The GPU
+    /// kernel keeps such an element in a register when the other indices are known when
+    /// compiling. So the code generator unrolls the `for` loops of their variables, as for a
+    /// register tensor. Nothing is reported when it cannot.
+    fn unroll_for_lane_element(&mut self, obj: &Expr, idx: &Expr) {
+        if self.speculating {
+            return;
+        }
+        let Expr::Identifier(lane) = idx else {
+            return;
+        };
+        let across = |c: &crate::hir::env::UnrollCandidate| c.across;
+        if !self
+            .unroll_candidates
+            .iter()
+            .rev()
+            .find(|c| c.var == lane.name)
+            .is_some_and(across)
+        {
+            return;
+        }
+        let mut e = obj;
+        while let Expr::IndexAccess(r) = e {
+            let mut names = Vec::new();
+            if Self::index_names(&r.index, &mut names) {
+                for name in names {
+                    let candidate = self
+                        .unroll_candidates
+                        .iter_mut()
+                        .rev()
+                        .find(|c| c.var == name);
+                    if let Some(c) = candidate {
+                        if !c.across
+                            && matches!(c.bounds, Some((lo, hi)) if hi - lo <= MAX_UNROLLED_PASSES)
+                        {
+                            c.used = true;
+                        }
+                    }
+                }
+            }
+            e = &r.base;
+        }
+    }
+
     /// A tensor in a `scope: thread` space stays in registers, and a register has no address.
     /// So each index must be a constant, or made of constants and the variables of `for` loops
     /// with constant bounds. Such a loop is marked, and the code generator unrolls it.
@@ -1473,6 +1538,61 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The type of `q[a..b]`: rows `a` to `b - 1`, so `q`'s dimensions with the first one
+    /// replaced by `b - a`. Both ends must be literal numbers, and the rows must exist.
+    fn range_index_type(
+        &mut self,
+        el_ty: ElementType,
+        dims: &[Dim],
+        top: Option<Placement>,
+        range: &RangeExpr,
+        span: &crate::syntax::Span,
+    ) -> Type {
+        use crate::diagnostic::DiagnosticCode;
+        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(span));
+        let rows = match dims.first() {
+            Some(Dim::Static(Expr::Number(n))) => n.value.parse::<u64>().ok(),
+            _ => None,
+        };
+        let problem = match range.literal_ends() {
+            None => Some((
+                DiagnosticCode::E3065,
+                "the ends of a range index must be literal numbers, such as `q[1..3]`: the \
+                 number of rows is part of the type of the range"
+                    .to_string(),
+            )),
+            Some((a, b)) if b <= a => Some((
+                DiagnosticCode::E3065,
+                format!("the range `{a}..{b}` is empty: its end must be greater than its start"),
+            )),
+            Some((a, b)) => rows.filter(|rows| b > *rows).map(|rows| {
+                (
+                    DiagnosticCode::E8003,
+                    format!("the range `{a}..{b}` goes past the end: this dimension has {rows} elements"),
+                )
+            }),
+        };
+        if let Some((code, message)) = problem {
+            if !self.speculating {
+                self.errors.error_with_code(code, message, at);
+            }
+            // Keep the tensor's own type, so one wrong range gives one error.
+            return Type::Tensor(el_ty, dims.to_vec(), top);
+        }
+        let (a, b) = range
+            .literal_ends()
+            .expect("a range with other ends was refused above");
+        let mut new_dims = dims.to_vec();
+        if let Some(first) = new_dims.first_mut() {
+            *first = Dim::Static(Expr::Number(NumberExpr::new(
+                (b - a).to_string(),
+                None,
+                *span,
+            )));
+        }
+        Type::Tensor(el_ty, new_dims, top)
+    }
+
     pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         // `a[i]` on a struct or an enum whose type implements `Index` reads `*a.index(i)`, and
         // a write, `a[i] = x`, goes through `*a.index_mut(i)`, as in Rust.
@@ -1539,7 +1659,10 @@ impl<'a> TypeChecker<'a> {
                 self.indexed_name = None;
                 if let Some((name, mut path)) = place {
                     if !self.borrow.skip_borrow_check && !self.speculating {
-                        path.push(crate::hir::places::index_element(idx));
+                        crate::hir::places::push_path_element(
+                            &mut path,
+                            crate::hir::places::index_element(idx),
+                        );
                         let live = self.borrow.live_borrows(&name).to_vec();
                         let conflict = live.iter().find(|b| {
                             b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
@@ -1578,6 +1701,10 @@ impl<'a> TypeChecker<'a> {
                 // The check on a reference lets it through, so its index checks what it refers to.
                 let read_ty = match &obj_ty {
                     Type::Borrow { inner, .. } => inner.as_ref(),
+                    other => other,
+                };
+                let read_ty = match read_ty {
+                    Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.as_ref(),
                     other => other,
                 };
                 let located_on = match read_ty {
@@ -1638,7 +1765,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // The index of a write is a read: `idx[b]` in `y[idx[b]] = v` writes only `y`.
+                let lhs = std::mem::replace(&mut self.checking_assign_lhs, false);
                 self.check_expr_type(idx);
+                self.checking_assign_lhs = lhs;
 
                 // Look through a Pinned/Ref device wrapper to the underlying tensor so that
                 // indexing a transferred tensor follows the same rule as a local one.
@@ -1648,6 +1778,34 @@ impl<'a> TypeChecker<'a> {
                     // the row. Answering with the inner type applied the index to nothing, so
                     // `t[0][0]` was the row rather than the element (Vx#417).
                     Type::Borrow { inner, .. } => *inner,
+                    other => other,
+                };
+                // A `Distinct` reads as its tensor. A write could make two elements equal.
+                let base = match base {
+                    Type::Distinct(inner) => {
+                        if self.checking_assign_lhs && !self.speculating {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4006,
+                                "a `Distinct` tensor is read only: a write could make two of its \
+                                 elements equal"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
+                            );
+                        }
+                        *inner
+                    }
+                    Type::DisjointRanges(inner) => {
+                        if self.checking_assign_lhs && !self.speculating {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4006,
+                                "a `DisjointRanges` table is read only: a write could make two of \
+                                 its ranges overlap"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
+                            );
+                        }
+                        *inner
+                    }
                     other => other,
                 };
 
@@ -1662,6 +1820,9 @@ impl<'a> TypeChecker<'a> {
                     type_reported = self.check_tensor_index_in_range(dims, idx, &ix_span);
                     if self.is_register_space(placement.as_ref()) {
                         self.check_register_index(obj, idx, &ix_span);
+                    }
+                    if dims.len() == 1 && self.is_shared_space(placement.as_ref()) {
+                        self.unroll_for_lane_element(obj, idx);
                     }
                 }
                 if !self.speculating && !type_reported {
@@ -1694,6 +1855,9 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Type::Pointer(inner, _, _) = base {
                     *inner
+                } else if let (Type::Tensor(el_ty, dims, top), Expr::Range(range)) = (&base, &**idx)
+                {
+                    self.range_index_type(el_ty.clone(), dims, top.clone(), range, &ix_span)
                 } else if let Type::Tensor(el_ty, dims, top) = base {
                     if dims.len() > 1 {
                         // Partial index (S1): a rank-reduced slice of the remaining dimensions,
@@ -1843,6 +2007,7 @@ impl<'a> TypeChecker<'a> {
                     if let Some(root) = self.read_only_root(inner) {
                         self.report_read_only(&root, "it cannot be borrowed `&mut`", span);
                     }
+                    self.check_const_pointer_change(inner, "this makes a `&mut` borrow of");
                     self.check_field_change(inner, "this `&mut` can change");
                     // `&mut *r` through a shared `r` would make a `&mut` out of a `&`.
                     if let Expr::Dereference(d) = &**inner {
@@ -2044,7 +2209,10 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::IndexAccess(i) => {
                 let (root, mut path) = self.reborrow_base_and_path(&i.base)?;
-                path.push(crate::hir::places::index_element(&i.index));
+                crate::hir::places::push_path_element(
+                    &mut path,
+                    crate::hir::places::index_element(&i.index),
+                );
                 Some((root, path))
             }
             _ => None,
@@ -2378,9 +2546,11 @@ impl<'a> TypeChecker<'a> {
             },
             // A raw pointer has no lifetime of its own, but what it points at may hold
             // references: `Vec<&i32>` keeps them behind its `*mut T`.
-            Type::Pointer(inner, ..) | Type::Pinned(inner, _) | Type::Verified(inner) => {
-                self.type_can_hold_reference_in(inner, seen)
-            }
+            Type::Pointer(inner, ..)
+            | Type::Pinned(inner, _)
+            | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => self.type_can_hold_reference_in(inner, seen),
             _ => false,
         }
     }

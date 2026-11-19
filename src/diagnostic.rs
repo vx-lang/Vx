@@ -127,7 +127,7 @@ pub enum DiagnosticCode {
     /// The loop of a `spawn` region runs on one thread although each pass writes only memory of
     /// its own, so its passes could run at the same time. The warning points at what stops it: a
     /// call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass
-    /// writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks
+    /// writes, a `break` out of the loop, and the like. A region that calls `barrier()` asks
     /// for blocks and threads, so it is warned about whenever it runs on one thread, with the
     /// first thing that stopped the split: two threads that may write the same element, a `break`
     /// out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()`
@@ -212,7 +212,9 @@ pub enum DiagnosticCode {
     E3009,
     /// Function argument count mismatch
     E3010,
-    /// Unsupported cast
+    /// An `as` cast between two types that it does not convert, such as from an integer or a
+    /// float to `bool`. Rust refuses the same casts. A comparison such as `x != 0` says which
+    /// values count as true.
     E3011,
     /// Type mismatch in struct field initialization
     E3012,
@@ -305,10 +307,11 @@ pub enum DiagnosticCode {
     /// parses as a user nominal, so without this a typo -- or a type constructor removed from the
     /// language -- compiled silently and did nothing.
     E3029,
-    /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor or on
-    /// a `bool`. Refused here because the alternative is worse in both directions: the flat
-    /// emitter would decline and fall back to a path that cannot lower it either, and an `i1`
-    /// operand would reach `arith.remsi` and verify.
+    /// An operator applied to operand types it is not defined on -- `%` on a shaped tensor,
+    /// `+`, `-`, `*`, `/` or `%` on a `bool`, or `-` on an unsigned integer or a `bool`. For
+    /// `%`, the flat emitter would decline and fall back to a path that cannot lower it
+    /// either, and an `i1` operand would reach `arith.remsi` and verify. `-` on an unsigned
+    /// integer would wrap with no error, and `true + true` would be `false`.
     E3030,
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
@@ -455,6 +458,10 @@ pub enum DiagnosticCode {
     /// body is not inside a loop around the closure, because the closure can run after the loop
     /// ends.
     E3064,
+    /// A range index `q[a..b]` with ends that are not literal numbers, or with no rows
+    /// (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so
+    /// it must be known while compiling. A range past the last row is E8003.
+    E3065,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -476,7 +483,9 @@ pub enum DiagnosticCode {
     /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
-    /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
+    /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a
+    /// `*const T` pointer and for a view of memory made from one: a write, a `&mut` borrow or a
+    /// `&mut self` call through it. Writing needs a `*mut T`.
     E4006,
     /// A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;`
     /// followed by a use of `r`. The borrow would point at a value that has moved away.
@@ -599,16 +608,17 @@ pub enum DiagnosticCode {
     /// lowering with no functions (an empty body cannot move anything, and accepting it would
     /// make `impl transfer` an inert annotation rather than code).
     E6015,
-    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Three forms: the
-    /// declared name shadows a built-in topology (every use of `Topology::<Name>` resolves to the
-    /// built-in, so the declaration is silently ignored -- including its `arch:`); or two declared
-    /// names collide on one dispatch id (custom ids are derived from the name by hashing), in
-    /// which case which declaration is in force would be hash-iteration order -- observed as the
-    /// same program getting a device image on some runs and not others for a topology, and as a
-    /// `transfer` carrying the other space's capacity and granule for a memory space; or a
-    /// topology whose `arch:` is not `nvptx64` has `Memory::GPU_HBM` as its memory. That memory
-    /// belongs to the built-in NVIDIA GPU, so the tensors of the topology would go to that GPU,
-    /// and its kernels would run elsewhere. Give the memory another name.
+    /// A `Topology` or `Memory` declaration whose identity cannot be relied on. Three forms: a
+    /// declared topology tries to override hardware facts of a built-in topology (like `arch:`,
+    /// `chip:`, or transfer edges) -- the compiler refuses such overrides, though patching
+    /// `dtypes:` is allowed on a topology that owns its memory space (except `CPU`); or two declared names collide
+    /// on one dispatch id (custom ids are derived from the name by hashing), in which case which
+    /// declaration is in force would be hash-iteration order -- observed as the same program
+    /// getting a device image on some runs and not others for a topology, and as a `transfer`
+    /// carrying the other space's capacity and granule for a memory space; or a topology whose
+    /// `arch:` is not `nvptx64` has `Memory::GPU_HBM` as its memory. That memory belongs to the
+    /// built-in NVIDIA GPU, so the tensors of the topology would go to that GPU, and its kernels
+    /// would run elsewhere. Give the memory another name.
     E6016,
     /// A misuse of the `raw::` transfer-lowering primitives (Vx#353): a `raw::` call
     /// outside an `impl transfer` body, an unknown primitive name, a tile argument that
@@ -654,6 +664,14 @@ pub enum DiagnosticCode {
     /// topology holds, written either as the space or as the device that would hold it. The
     /// derivation between the two spellings has a like-named fallback, so an undeclared name
     /// resolves to a space that exists only in the placement that mentions it.
+    ///
+    /// A placement, a `spawn on` or an `on` clause also gets this error when it names a device
+    /// that a declared topology does not have: `X[2]` when `X` has `count: 2`, or a bare `X`
+    /// when `X` has more than one device.
+    ///
+    /// Each device of such a topology has its own copy of its memory. So a placement or a
+    /// `transfer` that names that memory alone gets this error too: it does not say which copy.
+    /// Name the device instead, as in `transfer(x, Topology::X[1])`.
     E6025,
     /// A tensor whose element type the target hardware cannot represent, placed on it anyway.
     ///
@@ -696,7 +714,11 @@ pub enum DiagnosticCode {
     /// topology does not name, a loop outside a `spawn on` region or in the wrong order, a size
     /// that is not known when the kernel is compiled or is over the limit, or a jump out of the
     /// loop. Also a lane reduction (`lanes::sum` and the others) outside the code of a loop of
-    /// blocks or subgroups, or with a tensor that is too large.
+    /// blocks or subgroups, or with a tensor that is too large. Also two passes of the loop that
+    /// may write the same element, or a pass that may read an element that another pass writes.
+    /// A row from a `Distinct` tensor parameter, as in `y[idx[b]]`, keeps the passes apart, and so
+    /// does a row of a range of a `DisjointRanges` table parameter, inside an `if` that keeps it
+    /// below the end of the range.
     E6032,
     /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
     /// a tensor stays in registers, and a register has no address. So each index must be a
@@ -737,6 +759,10 @@ pub enum DiagnosticCode {
     /// of that channel. The room of the channel is counted in the function that calls `channel`,
     /// only until that function returns.
     E6041,
+    /// Code on device 1 or a later device of a declared GPU (`arch: nvptx64` with `count:`). The
+    /// CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on
+    /// GPU 0, so the code has no GPU to run on yet. Run it on device 0.
+    E6042,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

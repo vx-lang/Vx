@@ -12,14 +12,14 @@ on:
 jobs:
   llvm:
     name: Build LLVM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     outputs:
       key: ${{ steps.llvm.outputs.key }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build LLVM if the cache does not have it
         id: llvm
@@ -30,14 +30,14 @@ jobs:
   parity:
     name: Tests on both code generators
     needs: llvm
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

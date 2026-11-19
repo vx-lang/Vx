@@ -609,6 +609,8 @@ pub(crate) struct UnrollCandidate {
     /// Whether a register tensor is indexed with the variable, which makes the code generator
     /// unroll the loop.
     pub(crate) used: bool,
+    /// The loop is an `across` loop, which the code generator never unrolls.
+    pub(crate) across: bool,
 }
 
 pub struct TypeChecker<'a> {
@@ -728,6 +730,9 @@ pub struct TypeChecker<'a> {
     /// their scope. Such a variable gets the literal's default type, and a type error on it
     /// says to write the type.
     pub(crate) literal_typed_lets: std::collections::HashMap<String, usize>,
+    /// The `let`s with no `mut` whose value is a string literal, by name, with the depth of
+    /// their scope and the length of the text. `==` on such a name compares the text.
+    pub(crate) string_literal_lets: std::collections::HashMap<String, (usize, usize)>,
     /// The variables the current function changes: assigns, borrows `&mut`, or calls a
     /// `&mut self` method on.
     pub(crate) changed_vars: std::collections::HashSet<String>,
@@ -773,6 +778,9 @@ pub struct TypeChecker<'a> {
     pub traffic: crate::hir::check_state::TrafficState,
     /// The size of the tensor of each lane reduction, by the position of its call.
     pub(crate) lane_reductions: HashMap<crate::syntax::Span, u64>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
+    /// call.
+    pub(crate) lane_copies_out: HashMap<crate::syntax::Span, Vec<u64>>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -839,6 +847,7 @@ impl<'a> TypeChecker<'a> {
             declared_vars: Vec::new(),
             declared_mut_vars: Vec::new(),
             literal_typed_lets: std::collections::HashMap::new(),
+            string_literal_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
             fact_change_frames: Vec::new(),
             old_values: Vec::new(),
@@ -857,6 +866,7 @@ impl<'a> TypeChecker<'a> {
             seam: Default::default(),
             traffic: Default::default(),
             lane_reductions: HashMap::new(),
+            lane_copies_out: HashMap::new(),
         }
     }
 
@@ -928,6 +938,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.bound_behind_ref.pop();
         self.consteval.env.pop();
         self.literal_typed_lets.retain(|_, d| *d + 1 < depth);
+        self.string_literal_lets.retain(|_, (d, _)| *d + 1 < depth);
         self.borrow.unshadow(depth);
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope. A borrow
@@ -1100,7 +1111,10 @@ impl<'a> TypeChecker<'a> {
     pub fn extract_uses_expr(expr: &Expr, uses: &mut std::collections::HashSet<String>) {
         fn topology(value: &Topology, uses: &mut std::collections::HashSet<String>) {
             match value {
-                Topology::NPU(index) | Topology::AccCore(index) | Topology::GPU(index) => {
+                Topology::NPU(index)
+                | Topology::AccCore(index)
+                | Topology::GPU(index)
+                | Topology::Custom(_, Some(index)) => {
                     TypeChecker::extract_uses_expr(index, uses);
                 }
                 Topology::Slice(base, start, end) => {
@@ -1114,7 +1128,7 @@ impl<'a> TypeChecker<'a> {
                 | Topology::CpuAvx512
                 | Topology::CpuNeon
                 | Topology::Current
-                | Topology::Custom(_) => {}
+                | Topology::Custom(_, None) => {}
             }
         }
 
@@ -1685,7 +1699,7 @@ impl<'a> TypeChecker<'a> {
                 // to the argument's concrete topology; a concrete topology must match. Then
                 // unify the payload (which may itself carry type variables).
                 let tops_ok = match top1 {
-                    Topology::Custom(name) if self.mono.pending_topo_vars.contains(name) => {
+                    Topology::Custom(name, None) if self.mono.pending_topo_vars.contains(name) => {
                         self.mono
                             .pending_topo_bindings
                             .insert(name.clone(), top2.clone());
@@ -1728,7 +1742,7 @@ impl<'a> TypeChecker<'a> {
         top: Topology,
         topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
     ) -> Topology {
-        if let Topology::Custom(name) = &top {
+        if let Topology::Custom(name, None) = &top {
             if let Some(bound) = topo_mapping.get(name) {
                 return bound.clone();
             }
@@ -2027,6 +2041,8 @@ impl<'a> TypeChecker<'a> {
                     | Type::Ref(i, _)
                     | Type::Pinned(i, _)
                     | Type::Verified(i)
+                    | Type::Distinct(i)
+                    | Type::DisjointRanges(i)
                     | Type::Borrow { inner: i, .. } => walk(i, out),
                     Type::GenericInstance(b, args) => {
                         walk(b, out);
@@ -2145,6 +2161,7 @@ impl<'a> TypeChecker<'a> {
         let prev_declared_vars = std::mem::take(&mut self.declared_vars);
         let prev_declared_mut_vars = std::mem::take(&mut self.declared_mut_vars);
         let prev_literal_typed_lets = std::mem::take(&mut self.literal_typed_lets);
+        let prev_string_literal_lets = std::mem::take(&mut self.string_literal_lets);
         let prev_changed_vars = std::mem::take(&mut self.changed_vars);
         // The same for `unsafe`: a generic body is checked at the call that needs it, which may
         // be inside the caller's `unsafe` block, but the body is not inside that block.
@@ -2171,6 +2188,7 @@ impl<'a> TypeChecker<'a> {
         let prev_store_target_vars = std::mem::take(&mut self.borrow.store_target_vars);
         let prev_views = std::mem::take(&mut self.borrow.views);
         let prev_foreign_views = std::mem::take(&mut self.borrow.foreign_views);
+        let prev_const_views = std::mem::take(&mut self.borrow.const_views);
         let prev_view_owners = std::mem::take(&mut self.borrow.view_owners_by_let);
         // The borrow table too. A function's body can be checked from inside another's: a
         // generic method is checked when a call first instantiates it. The caller's borrows are
@@ -2358,6 +2376,8 @@ impl<'a> TypeChecker<'a> {
             self.check_across_loops(&func.params, &mut func.body);
         }
 
+        // A tile that the GPU keeps in registers takes no shared memory.
+        self.leave_out_tiles_in_registers(&func.body);
         // The whole function has been checked; verify the working set of each memory space
         // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.
         self.check_cumulative_capacity();
@@ -2384,6 +2404,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.store_target_vars = prev_store_target_vars;
         self.borrow.views = prev_views;
         self.borrow.foreign_views = prev_foreign_views;
+        self.borrow.const_views = prev_const_views;
         self.borrow.view_owners_by_let = prev_view_owners;
         self.borrow.restore(prev_borrows);
         self.borrow.restore_shadowed(prev_shadowed);
@@ -2400,6 +2421,7 @@ impl<'a> TypeChecker<'a> {
         self.declared_vars = prev_declared_vars;
         self.declared_mut_vars = prev_declared_mut_vars;
         self.literal_typed_lets = prev_literal_typed_lets;
+        self.string_literal_lets = prev_string_literal_lets;
         self.changed_vars = prev_changed_vars;
         self.tasks.exit_function(prev_tasks);
         self.in_unsafe_block = prev_in_unsafe;
@@ -2422,8 +2444,10 @@ impl<'a> TypeChecker<'a> {
         }
 
         let mut expr_parser = crate::parser::Parser::new(&tokens, s);
-        if let Ok(expr) = expr_parser.parse_primary_expr() {
-            return Type::Const(Box::new(expr));
+        if let Ok(expr) = expr_parser.parse_as_expr() {
+            if expr_parser.check(&crate::lexer::TokenType::Eof) {
+                return Type::Const(Box::new(expr));
+            }
         }
 
         Type::Unknown
@@ -2774,7 +2798,7 @@ mod specialization_identity_tests {
     #[case::tensor_host_gpu(tensor(None), gpu(0))]
     #[case::tensor_gpu_devices(gpu(0), gpu(1))]
     #[case::slice_bounds(slice("2"), slice("3"))]
-    #[case::custom_devices(tensor(Some(Placement::on(Topology::Custom("A".into())))), tensor(Some(Placement::on(Topology::Custom("B".into())))))]
+    #[case::custom_devices(tensor(Some(Placement::on(Topology::Custom("A".into(), None)))), tensor(Some(Placement::on(Topology::Custom("B".into(), None)))))]
     #[case::tensor_memory(
         gpu(0),
         tensor(Some(Placement::in_space(MemorySpace::CPUDRAM, Topology::gpu(0))))
@@ -2895,5 +2919,19 @@ mod specialization_identity_tests {
             (true, true),
             "unsupported indices must decline with a diagnostic"
         );
+    }
+
+    #[test]
+    fn parse_ty_str_preserves_cast_in_generic_argument() {
+        let env = GlobalAstEnv::build(&[]);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let checker = TypeChecker::new(&env, &mut worker);
+        let ty = checker.parse_ty_str("N as usize");
+        match ty {
+            Type::Const(c) => assert!(matches!(*c, Expr::AsCast(_))),
+            other => panic!("expected Type::Const(AsCast), got {:?}", other),
+        }
     }
 }
