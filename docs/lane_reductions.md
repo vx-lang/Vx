@@ -229,8 +229,16 @@ This is a matmul of block-scaled `f4e2m1` tiles. In NVFP4, each 16 values along 
   of a block. The lanes of the subgroup share the elements of `acc`, as for a matmul with `@`, and
   then they wait for each other.
 
-It has no tensor-core path yet. The `mma.sync` of `sm_120a` and the `tcgen05.mma` of `sm_100a` are
-the next steps ([#3645](https://github.com/vx-lang/Vx/issues/3645)).
+On `sm_120a`, `sm_121a` and their families, the matmul goes to the tensor cores when all of these
+are true:
+
+- The result has a multiple of 16 rows and a multiple of 8 columns, and `k` is a multiple of 64.
+- The scales are `f8e4m3` for 16 values (NVFP4), or `f8e8m0` for 16 or 32 values (MXFP4).
+
+Each 16 x 8 piece of the result is then a chain of block-scaled `mma.sync.m16n8k64`, one for each
+64 values of `k`. The tensor core adds the products in an order of its own, so the last bits of a
+sum can differ from the loops on the CPU. Other chips use the lanes of the subgroup. The B200
+needs `tcgen05`, which is the next step ([#3645](https://github.com/vx-lang/Vx/issues/3645)).
 
 ## Copies
 
