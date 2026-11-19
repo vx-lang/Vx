@@ -33,7 +33,8 @@ give indices that fix each variable.
 
 ## Why `Distinct` is not enough
 
-`Distinct<..>` claims that no two elements of an index tensor are equal, so the check treats
+`Distinct<..>` ([`distinct_tensors_for_writes_by_index.md`](distinct_tensors_for_writes_by_index.md))
+claims that no two elements of an index tensor are equal, so the check treats
 `y[idx[b]]` as `y[b]`. A tile covers a range of rows, and distinct starts do not make ranges
 that do not overlap: starts 0 and 10 are distinct, but rows 0 .. 64 and 10 .. 74 overlap. The
 plan's guarantee is of another kind: no two `[start, end)` ranges overlap.
