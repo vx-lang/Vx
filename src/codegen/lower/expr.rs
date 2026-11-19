@@ -5339,25 +5339,6 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
     }
 }
 
-/// The type of an arm whose value is a name its pattern binds, `Ok(v) => { v }`: the variant's
-/// payload type, with the type arguments that the pattern's enum names.
-fn payload_binding_type(
-    gen: &MeliorGenerator<'_>,
-    arm: &syntax::MatchArm,
-    value: &Expr,
-    scrutinee_ty: Option<&syntax::Type>,
-) -> Option<syntax::Type> {
-    let (Expr::Identifier(id), syntax::Pattern::EnumVariant(en, vn, Some(pats))) =
-        (value, &arm.pattern)
-    else {
-        return None;
-    };
-    let position = pats
-        .iter()
-        .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;
-    variant_payload_type(gen, en, vn, position, scrutinee_ty)
-}
-
 /// The type of the payload at `position` of the variant `vn` of `en`, with the type arguments
 /// that `en` names, such as `T` of `Result<T, E>::Ok`.
 pub(crate) fn variant_payload_type(
@@ -5420,73 +5401,22 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
             }
         }
 
-        // The match yields a value exactly when an arm ends in a tail expression -- the same
-        // rule the checker uses to type it. The merge block then takes that value as a block
-        // argument and each arm branches with its own, which is what makes the match evaluate
-        // to what its arms say. The type comes from the first such arm rather than from
-        // `expected_type`, which is unset for an unannotated `let`.
-        let tail_arms: Vec<_> = self
-            .arms
-            .iter()
-            .filter_map(|arm| match arm.body.last() {
-                Some(syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
-                    expr,
-                    has_semi: false,
-                    ..
-                })) if syntax::expr::block_gives_a_value(&arm.body) => Some((arm, expr)),
-                _ => None,
-            })
-            .collect();
-        let tail_expr = tail_arms.first().map(|(_, e)| *e);
-        // A pattern such as `Option::Some(x)` names no type arguments. The scrutinee has them.
-        let scrutinee_ty = gen.infer_ast_type(&self.expr);
-        // The fallback to `expected_type` applies only when there *is* a tail expression whose
-        // type could not be inferred. Applying it to a match with no tail expression at all
-        // would make a statement-position match look value-producing, and every arm would then
-        // have to yield something it never had.
-        // A statement `match` produces no value, whatever its arms end in: a trailing `if` or
-        // `unsafe { }` there is a statement too.
+        // The match gives a value when an arm ends in an expression with no `;`. The merge block
+        // then takes that value as a block argument, and each arm branches with its own. The
+        // checker stores the type of that value. A statement `match` gives no value, whatever
+        // its arms end in.
         let in_statement = outer_expected == Some(gen.none_ty);
-        // Every arm gives the same type, so the first arm whose value has a known type decides
-        // it. `r * 3` with a payload binding `r` has none, but a later `0` arm does.
-        let arm_value_ty = |gen: &MeliorGenerator<'c>, arm: &syntax::MatchArm, e: &Expr| match e {
-            // `infer_ast_type` has no arm for a bare literal, and an arm body is usually
-            // exactly that. Read the literal's own type, which the checker stamps, and fall
-            // back to how the parser would have typed it.
-            Expr::Number(n) => {
-                let elem = n
-                    .ty
-                    .clone()
-                    .unwrap_or_else(|| crate::parser::expr::default_number_elem(n.value.as_ref()));
-                gen.lower_type(&syntax::Type::Scalar(elem)).ok()
-            }
-            // A name that the arm's pattern binds hides any outer local of that name, so the
-            // payload type comes first.
-            other => payload_binding_type(gen, arm, other, scrutinee_ty.as_ref())
-                .or_else(|| gen.infer_ast_type(other))
-                .or_else(|| match other {
-                    // `r * 3`: the checker gives the operands' type, which is the result's.
-                    Expr::BinaryOp(b) if b.op != syntax::expr::BinaryOp::MatMul => {
-                        b.operand_ty.clone().map(syntax::Type::Scalar)
-                    }
-                    _ => None,
-                })
-                .and_then(|t| gen.lower_type(&t).ok()),
-        };
-        let value_ty = if tail_expr.is_none() || in_statement {
+        let value_ty = if !syntax::expr::match_yields_a_value(self) || in_statement {
             None
         } else {
-            tail_arms
-                .iter()
-                .find_map(|(arm, e)| arm_value_ty(gen, arm, e))
-                .or(gen.expected_type)
+            let ty = self.value_ty.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "the checker gave no type to a `match` that gives a value, at {:?}",
+                    self.span
+                )
+            });
+            Some(gen.lower_type(ty)?)
         };
-        // An arm gives a value, so the placeholder below would replace it with a wrong one.
-        if tail_expr.is_some() && !in_statement && value_ty.is_none() {
-            return Err(LowerError::ParseType(
-                "cannot find the type of the value that this `match` gives".to_string(),
-            ));
-        }
 
         let parent_region = block.parent_region().unwrap();
         let merge_block = match value_ty {

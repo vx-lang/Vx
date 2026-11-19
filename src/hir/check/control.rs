@@ -1233,6 +1233,7 @@ impl<'a> TypeChecker<'a> {
             expr: subject,
             arms,
             span,
+            ..
         }) = expr
         else {
             return None;
@@ -1327,6 +1328,7 @@ impl<'a> TypeChecker<'a> {
                 expr: match_expr,
                 arms,
                 span: match_span,
+                ..
             }) => {
                 // Matching a variable, or what a reference points at, reads it: only an arm
                 // that binds a value which has to move moves it (below). Any other scrutinee

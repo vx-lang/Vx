@@ -3018,18 +3018,12 @@ impl<'c> MeliorGenerator<'c> {
             // A cast's value has the target type by definition (`my_closure as ||->i32`), and the
             // indirect-call path needs it in `ast_env` to rebuild the callee signature.
             Expr::AsCast(c) => Some(c.target_ty.clone()),
-            // An `unsafe { .. }` block has the type of its tail expression. Without this arm an
-            // unannotated `let` over one records nothing in `ast_env`, so every consumer is blind
-            // to a type the checker already computed -- and a redundant annotation then decides
-            // which code is generated. The flat path's inference already sees through it.
-            Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
-            // A `spawn` block that gives a value has the type of its tail expression too.
-            Expr::SpawnOn(s) => self.infer_ast_type(s.ret.as_deref()?),
-            // An `if` that gives a value has the type of its first branch's last expression.
-            Expr::If(i) => match i.then_block.last()? {
-                syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
-                _ => None,
-            },
+            // A block that gives a value has the type that the checker stored on it. Without
+            // these arms an unannotated `let` over one records nothing in `ast_env`.
+            Expr::UnsafeBlock(u) => u.value_ty.clone(),
+            Expr::SpawnOn(s) => s.value_ty.clone(),
+            Expr::Match(m) => m.value_ty.clone(),
+            Expr::If(i) => i.value_ty.clone(),
             // A number has the type the checker gave it.
             Expr::Number(n) => n.ty.clone().map(syntax::Type::Scalar),
             // `let p = &mut x` binds a reference. Recording that is what tells a later read of

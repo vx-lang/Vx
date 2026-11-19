@@ -141,6 +141,9 @@ pub struct SpawnOnExpr {
         crate::syntax::MemorySpace,
         Option<crate::syntax::MemorySpace>,
     )>,
+    /// The type of the value that the block gives, set by the checker. `None` for a block that
+    /// gives no value. The code generators read this type and do not work it out again.
+    pub value_ty: Option<Type>,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -150,6 +153,7 @@ impl SpawnOnExpr {
             ret,
             span,
             arrivals: None,
+            value_ty: None,
         }
     }
 }
@@ -701,6 +705,11 @@ pub fn match_yields_a_value(m: &MatchExpr) -> bool {
     m.arms.iter().any(|a| block_gives_a_value(&a.body))
 }
 
+/// Whether an `if` gives a value: one of its branches does.
+pub fn if_gives_a_value(i: &IfExpr) -> bool {
+    block_gives_a_value(&i.then_block) || i.else_block.as_deref().is_some_and(block_gives_a_value)
+}
+
 /// Whether `body`, a `match` arm or an `if` branch, gives a value: its last statement is an
 /// expression with no `;`. A last `match` or `if` gives a value only when one of its own arms or
 /// branches does. So an arm that ends in a `match` whose arms all `return` gives none.
@@ -712,10 +721,7 @@ pub fn block_gives_a_value(body: &[Statement]) -> bool {
             ..
         })) => match expr {
             Expr::Match(m) => match_yields_a_value(m),
-            Expr::If(i) => {
-                block_gives_a_value(&i.then_block)
-                    || i.else_block.as_deref().is_some_and(block_gives_a_value)
-            }
+            Expr::If(i) => if_gives_a_value(i),
             _ => true,
         },
         _ => false,
@@ -1025,6 +1031,9 @@ pub struct IfExpr {
     pub then_block: Vec<Statement>,
     pub else_block: Option<Vec<Statement>>,
     pub span: Span,
+    /// The type of the value that the `if` gives, set by the checker. `None` for an `if` that
+    /// gives no value. The code generators read this type and do not work it out again.
+    pub value_ty: Option<Type>,
 }
 impl IfExpr {
     pub fn new(
@@ -1040,6 +1049,7 @@ impl IfExpr {
             then_block,
             else_block,
             span,
+            value_ty: None,
         }
     }
 }
@@ -1086,10 +1096,18 @@ pub struct MatchExpr {
     pub expr: Box<Expr>,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// The type of the value that the `match` gives, set by the checker. `None` for a `match`
+    /// that gives no value. The code generators read this type and do not work it out again.
+    pub value_ty: Option<Type>,
 }
 impl MatchExpr {
     pub fn new(expr: Box<Expr>, arms: Vec<MatchArm>, span: Span) -> Self {
-        Self { expr, arms, span }
+        Self {
+            expr,
+            arms,
+            span,
+            value_ty: None,
+        }
     }
 }
 
@@ -1940,6 +1958,7 @@ impl Expr {
                     .as_ref()
                     .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
                 span: e.span,
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::Range(e) => Expr::Range(RangeExpr {
                 start: Box::new(e.start.substitute(mapping)),
@@ -1958,6 +1977,7 @@ impl Expr {
                     })
                     .collect(),
                 span: e.span,
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::Grad(e) => Expr::Grad(GradExpr {
                 target_fn: e.target_fn.clone(),
@@ -1984,6 +2004,7 @@ impl Expr {
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
                 arrivals: e.arrivals.clone(),
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::TaskBlock(e) => Expr::TaskBlock(TaskBlockExpr {
                 kind: e.kind,

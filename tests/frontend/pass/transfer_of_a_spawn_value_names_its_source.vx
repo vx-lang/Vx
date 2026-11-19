@@ -1,0 +1,32 @@
+//===- transfer_of_a_spawn_value_names_its_source.vx ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` region on the GPU gives a tensor `x` that it made. The type of
+// `t` is a tensor on the GPU, so the transfer of `t` to the host names the
+// GPU as its source (`source_topology`). Both code generators take the
+// type of `t` from the checker. `x` is a local of the region, so the type
+// of `t` cannot come from a local outside it.
+//
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @from_a_spawn
+// CHECK: "vx.transfer"{{.*}}source_topology = {{[0-9]+}} : i32, space = "CPU_DRAM"
+
+fn from_a_spawn() -> f32 {
+  let t = spawn on(Topology::GPU) {
+    let mut x = Tensor<f32>([4]);
+    x[0] = 1.5;
+    x
+  };
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0];
+}
+
+fn main() -> i32 {
+  println!("{}", from_a_spawn());
+  return 0;
+}

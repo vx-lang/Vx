@@ -1,0 +1,107 @@
+//===- match_value_in_generic_functions_and_each_position.vx ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` that gives a value, in the places where a value can be.
+// - `value_or` is generic. The program calls it with `i32` and with `f32`,
+//   so each copy of the function has a `match` of another type.
+// - `as_argument` uses a `match` as a call argument, `as_return` as a
+//   return value, and `in_a_struct` as a struct field.
+// - `or_leave` has an arm that returns. The other arm gives the type.
+// The program prints 7, 2.5, 3, 1.5, 6 and -1 with both code generators,
+// and with a parallel compile (`-j 2`).
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s -j 2 2>&1 | FileCheck %s
+// CHECK: 7
+// CHECK-NEXT: 2.5
+// CHECK-NEXT: 3
+// CHECK-NEXT: 1.5
+// CHECK-NEXT: 6
+// CHECK-NEXT: -1
+
+import core::option;
+
+struct Pair {
+  a : f32,
+  b : i32,
+}
+
+fn value_or<T>(o : Option<T>, d : T) -> T {
+  let r = match o {
+    Option<T>::Some(v) => {
+      v
+    }
+    Option<T>::None => {
+      d
+    }
+  };
+  return r;
+}
+
+fn half(x : f32) -> f32 {
+  return x / 2.0;
+}
+
+fn as_argument(o : Option<i32>) -> f32 {
+  return half(match o {
+    Option<i32>::Some(v) => {
+      v as f32
+    }
+    Option<i32>::None => {
+      0.0
+    }
+  });
+}
+
+fn as_return(o : Option<i32>) -> f32 {
+  match o {
+    Option<i32>::Some(v) => {
+      let v = v as f32;
+      v / 2.0
+    }
+    Option<i32>::None => {
+      0.0
+    }
+  }
+}
+
+fn in_a_struct(o : Option<i32>) -> Pair {
+  return Pair {
+    a : 0.0,
+    b : match o {
+      Option<i32>::Some(v) => {
+        v * 2
+      }
+      Option<i32>::None => {
+        0
+      }
+    }
+  };
+}
+
+fn or_leave(o : Option<i32>) -> i32 {
+  let r = match o {
+    Option<i32>::Some(v) => {
+      v
+    }
+    Option<i32>::None => {
+      return -1;
+    }
+  };
+  return r;
+}
+
+fn main() -> i32 {
+  println!("{}", value_or(Option<i32>::Some(7), 0));
+  println!("{}", value_or(Option<f32>::None(), 2.5));
+  println!("{}", as_argument(Option<i32>::Some(6)));
+  println!("{}", as_return(Option<i32>::Some(3)));
+  println!("{}", in_a_struct(Option<i32>::Some(3)).b);
+  println!("{}", or_leave(Option<i32>::None()));
+  return 0;
+}
