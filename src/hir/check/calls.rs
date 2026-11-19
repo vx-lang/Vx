@@ -906,10 +906,16 @@ impl<'a> TypeChecker<'a> {
                 return Type::Struct("void".into(), None);
             }
         }
-        // `Distinct::check(t)` is a call of the function in `core::distinct` for the element type
-        // of `t`, which the parser imports for such a program.
+        // `Distinct::check(t)` and `DisjointRanges::check(t)` are calls of the function in
+        // `core::distinct` for the element type of `t`, which the parser imports for such a
+        // program.
         if let Expr::FunctionCall(fc) = expr {
-            if fc.name.as_ref() == "Distinct::check" {
+            let claim = match fc.name.as_ref() {
+                "Distinct::check" => Some(("Distinct", "distinct_check")),
+                "DisjointRanges::check" => Some(("DisjointRanges", "disjoint_ranges_check")),
+                _ => None,
+            };
+            if let Some((claim, prefix)) = claim {
                 let ty = match fc.args.as_slice() {
                     [t] => self.operand_type(t),
                     _ => Type::Unknown,
@@ -919,9 +925,9 @@ impl<'a> TypeChecker<'a> {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3004,
                             format!(
-                                "`Distinct::check(t)` reads the values of `t` on the CPU, but `t` \
+                                "`{claim}::check(t)` reads the values of `t` on the CPU, but `t` \
                                  is in {}. Check the tensor before the transfer, and transfer \
-                                 the `Distinct` tensor",
+                                 the `{claim}` tensor",
                                 p.space.name()
                             ),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&fc.span)),
@@ -929,30 +935,40 @@ impl<'a> TypeChecker<'a> {
                         return Type::Unknown;
                     }
                 }
+                let shape_holds = |dims: &[crate::syntax::Dim]| match claim {
+                    "Distinct" => dims.len() == 1,
+                    _ => dims.len() == 2 && dims[1].literal() == Some("2"),
+                };
                 let checked = match fc.args.as_slice() {
                     [_] => match ty {
-                        Type::Tensor(el, dims, _) if dims.len() == 1 => match el {
-                            ElementType::I32 => Some("distinct_check_i32"),
-                            ElementType::I64 => Some("distinct_check_i64"),
-                            ElementType::U32 => Some("distinct_check_u32"),
-                            ElementType::U64 => Some("distinct_check_u64"),
+                        Type::Tensor(el, dims, _) if shape_holds(&dims) => match el {
+                            ElementType::I32 => Some("i32"),
+                            ElementType::I64 => Some("i64"),
+                            ElementType::U32 => Some("u32"),
+                            ElementType::U64 => Some("u64"),
                             _ => None,
                         },
                         _ => None,
                     },
                     _ => None,
                 };
-                let Some(name) = checked else {
+                let Some(el) = checked else {
+                    let shape = if claim == "Distinct" {
+                        "with one dimension"
+                    } else {
+                        "of shape `[?, 2]`"
+                    };
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,
-                        "`Distinct::check(t)` takes one tensor with one dimension of `i32`, \
-                         `i64`, `u32` or `u64`, by value"
-                            .to_string(),
+                        format!(
+                            "`{claim}::check(t)` takes one tensor {shape} of `i32`, `i64`, `u32` \
+                             or `u64`, by value"
+                        ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(&fc.span)),
                     );
                     return Type::Unknown;
                 };
-                fc.name = name.into();
+                fc.name = format!("{prefix}_{el}").into();
             }
         }
         // A closure literal written as the `body` of `within` runs within its time limit.
