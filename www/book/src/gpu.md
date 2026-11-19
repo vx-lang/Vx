@@ -75,6 +75,10 @@ digits `l % 4`, `(l % 32) / 4` and `l / 32`. It writes each part as a sum of the
 `l / 4` is `(l % 32) / 4 + 8 * (l / 32)`. The indices must fix every digit. Here the row fixes the
 two upper digits, and the column fixes `l % 4`, so the writes fix `l`.
 
+Two loops that come one after the other, such as a `for j in 0..2` in each of two `if` blocks,
+count as one loop when their ranges are the same numbers. So a write in one loop and a write in
+the other can use the same column `col + 8 * j`.
+
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
 

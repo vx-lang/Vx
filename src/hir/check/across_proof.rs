@@ -32,6 +32,10 @@
 // `(v % 32) / 4` and `v / 32`. Each part is then a sum of digits, and the accesses fix `v` when
 // their indices fix every digit.
 //
+// The proof compares two passes, and their inner loops can be at different values, so a key of an
+// inner loop stands for any value of its range. Two loops that follow one another, with the same
+// range in numbers, can then share one key. No index can use both, as it can use two nested loops.
+//
 // An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
 // pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
 //
@@ -161,6 +165,8 @@ struct Proof<'c> {
     /// Tensors from outside the loop that the pass uses whole, not by element.
     whole: HashMap<String, Span>,
     next_key: usize,
+    /// The keys of the inner loops that ended, with their ranges.
+    finished: Vec<(String, (i64, i64))>,
     error: Option<(String, Span)>,
     /// The statement being walked, for an expression with no position of its own.
     at: Span,
@@ -237,6 +243,7 @@ pub(crate) fn across_loop_race(
             accesses: BTreeMap::new(),
             whole: HashMap::new(),
             next_key: 0,
+            finished: Vec::new(),
             error: None,
             at: f.span,
             pass: None,
@@ -480,9 +487,31 @@ impl Proof<'_> {
                     _ => None,
                 };
                 self.scopes.push(HashMap::new());
-                self.bind_index(&inner.iter, &inner.iterable, range, inner.across.as_ref());
+                let earlier = range.and_then(|r| {
+                    let at = self.finished.iter().position(|(_, f)| *f == r)?;
+                    Some(self.finished.remove(at).0)
+                });
+                let key = match earlier {
+                    Some(key) => {
+                        let ty = range_type(&inner.iterable);
+                        self.bind(
+                            &inner.iter,
+                            Binding::Index {
+                                key: key.clone(),
+                                ty,
+                            },
+                        );
+                        key
+                    }
+                    None => {
+                        self.bind_index(&inner.iter, &inner.iterable, range, inner.across.as_ref())
+                    }
+                };
                 self.stmts(&inner.body);
                 self.scopes.pop();
+                if let Some(r) = range {
+                    self.finished.push((key, r));
+                }
             }
             Statement::Loop(l) => self.block(&l.body),
             Statement::ExprStmt(e) => self.expr(&e.expr),
