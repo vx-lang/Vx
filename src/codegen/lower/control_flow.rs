@@ -19,7 +19,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
             cond,
             then_block,
             else_block: else_block_opt,
-            span: _,
+            ..
         } = self;
 
         if *is_comptime {

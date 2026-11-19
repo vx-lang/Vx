@@ -345,11 +345,15 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::SpawnOn(..) => {
                 self.value_unused = value_unused;
-                self.check_spawnon_expr(expr, consume)
+                let ty = self.check_spawnon_expr(expr, consume);
+                store_value_type(expr, &ty);
+                ty
             }
             Expr::If(..) => {
                 self.value_unused = value_unused;
-                self.check_if_expr(expr, consume)
+                let ty = self.check_if_expr(expr, consume);
+                store_value_type(expr, &ty);
+                ty
             }
             Expr::SizeOf(..) => Type::Scalar(ElementType::I64),
             // A join that the check already wrote: a read of the handle.
@@ -424,7 +428,9 @@ impl<'a> TypeChecker<'a> {
             Expr::Dereference(..) => self.check_dereference_expr(expr, consume),
             Expr::UnsafeBlock(..) => {
                 self.value_unused = value_unused;
-                self.check_unsafeblock_expr(expr, consume)
+                let ty = self.check_unsafeblock_expr(expr, consume);
+                store_value_type(expr, &ty);
+                ty
             }
             Expr::TaskBlock(..) => {
                 self.value_unused = value_unused;
@@ -437,7 +443,10 @@ impl<'a> TypeChecker<'a> {
             Expr::Range(..) => self.check_range_expr(expr),
             Expr::Match(..) => {
                 self.value_unused = value_unused;
-                self.check_match_expr(expr, consume)
+                let ty = self.check_match_expr(expr, consume);
+                // The check can make a `match` on strings into an `if`.
+                store_value_type(expr, &ty);
+                ty
             }
             Expr::VecMacro(..) => self.check_vecmacro_expr(expr),
             Expr::Closure(..) => {
@@ -950,5 +959,25 @@ impl<'a> TypeChecker<'a> {
             | Type::DisjointRanges(inner) => Self::tensor_of(inner),
             _ => None,
         }
+    }
+}
+
+/// Stores on a block the type of the value that it gives. The code generators read this type and
+/// do not work it out again from the source. A block that gives no value keeps `None`.
+fn store_value_type(expr: &mut Expr, ty: &Type) {
+    let value = |gives: bool| gives.then(|| ty.clone());
+    match expr {
+        Expr::Match(m) => m.value_ty = value(crate::syntax::expr::match_yields_a_value(m)),
+        Expr::If(i) => {
+            let gives = crate::syntax::expr::block_gives_a_value(&i.then_block)
+                || i.else_block
+                    .as_deref()
+                    .is_some_and(crate::syntax::expr::block_gives_a_value);
+            i.value_ty = value(gives);
+        }
+        Expr::SpawnOn(s) => s.value_ty = value(s.ret.is_some()),
+        // A block made from a task keeps the type that the check of tasks gave it.
+        Expr::UnsafeBlock(u) if u.task.is_none() => u.value_ty = value(u.ret.is_some()),
+        _ => {}
     }
 }

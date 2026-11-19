@@ -1034,11 +1034,7 @@ impl<'a> Parser<'a> {
                     },
                 });
             }
-            let expr = Expr::Match(MatchExpr {
-                expr: Box::new(expr),
-                arms,
-                span: match_span,
-            });
+            let expr = Expr::Match(MatchExpr::new(Box::new(expr), arms, match_span));
             return Ok(self.wrap_try(expr));
         }
 
@@ -1514,6 +1510,7 @@ impl<'a> Parser<'a> {
                                 expansion: self.expansion(),
                             },
                             arrivals: None,
+                            value_ty: None,
                         })
                     }
                     TokenType::Unknown('"') => {
@@ -1666,13 +1663,13 @@ impl<'a> Parser<'a> {
                 else_block = Some(block);
             }
         }
-        Ok(IfExpr {
+        Ok(IfExpr::new(
             is_comptime,
-            cond: Box::new(cond),
+            Box::new(cond),
             then_block,
             else_block,
-            span: if_span,
-        })
+            if_span,
+        ))
     }
 
     fn wrap_try(&mut self, mut expr: Expr) -> Expr {

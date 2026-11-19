@@ -2299,25 +2299,31 @@ impl<'r> Lowerer<'r> {
             }
             // A value-position `if` in expression context: nested (`if c { if d { .. } else { .. } }
             // else { .. }`), a call argument, an implicit return (the parser rewrites a trailing `if`
-            // to `return if ..`), or a compound-assign RHS (#229). Infer the result type from the
-            // then-branch's trailing value, allocate a slot, store each branch's value into it, and
+            // to `return if ..`), or a compound-assign RHS (#229). Take the result type that the
+            // checker stored on the `if`, allocate a slot, store each branch's value into it, and
             // load the result. (The annotated `let v: T = if ..` form uses its annotation directly in
             // `lower_stmt`, a more precise path that this does not replace.)
             Expr::If(if_expr) => {
                 let result_ty = self.infer_if_ty(if_expr).ok_or(Decline::TypeNotModelled {
-                    what: "an if branch whose type cannot be inferred",
+                    what:
+                        "an if whose value has a type that the flat code generator does not model",
                 })?;
                 let slot = self.emit_alloca(result_ty.clone());
                 self.lower_if_into_slot(if_expr, slot.reg)?;
                 Ok(self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), result_ty, 0))
             }
             // A `match` used as a value, such as a return value, local initializer, or call argument.
-            // Infer its result type from an arm's trailing expression and allocate a result slot.
+            // Its type is the one that the checker stored on it. Allocate a result slot of that type.
             // Generate branches that store the selected arm's value, then load the result.
             // An arm with an explicit `return` leaves the function directly without storing a value.
             Expr::Match(m) => {
+                assert!(
+                    m.value_ty.is_some() || !crate::syntax::expr::match_yields_a_value(m),
+                    "the checker gave no type to a `match` that gives a value, at {:?}",
+                    m.span
+                );
                 let result_ty = self.infer_expr_ty(e).ok_or(Decline::TypeNotModelled {
-                    what: "a match arm whose type cannot be inferred",
+                    what: "a match whose value has a type that the flat code generator does not model",
                 })?;
                 let slot = self.emit_alloca(result_ty.clone());
                 self.lower_match_with_result(m, Some(slot.reg))?;
@@ -2471,12 +2477,8 @@ impl<'r> Lowerer<'r> {
                     lowered_ty(&sig.ret_ty, self.registry)
                 }
             },
-            // A name that the arm's pattern binds hides any outer local of that name, so the
-            // payload type comes first.
-            Expr::Match(m) => m.arms.iter().find_map(|arm| {
-                self.infer_payload_binding_ty(m, arm)
-                    .or_else(|| self.infer_block_ty(&arm.body))
-            }),
+            // A `match` that gives a value has the type that the checker stored on it.
+            Expr::Match(m) => self.lower_ty_synth(m.value_ty.as_ref()?),
             Expr::If(iff) => self.infer_if_ty(iff),
             // `t.extent(k)`, as the checker rewrites it: an `i32`, as `lower_expr` emits it.
             Expr::IndexAccess(ix) if matches!(&*ix.base, Expr::MemberAccess(ma) if ma.member.as_ref() == "$extent") => {
@@ -2498,67 +2500,15 @@ impl<'r> Lowerer<'r> {
             },
             // An inline `mlir!` block's value is its declared result.
             Expr::InlineMlir(im) => lowered_ty(im.returns.as_ref()?, self.registry),
-            Expr::UnsafeBlock(ub) => self.infer_expr_ty(ub.ret.as_deref()?),
+            Expr::UnsafeBlock(ub) => self.lower_ty_synth(ub.value_ty.as_ref()?),
             Expr::ComptimeBlock(cb) => self.infer_expr_ty(cb.ret.as_deref()?),
             _ => None,
         }
     }
 
-    /// The type of a value `if`: its `then` branch's value, or its `else` branch's when the
-    /// `then` branch gives none, as in `if c { continue; } else { x }`.
+    /// The type of a value `if`, which the checker stored on it.
     fn infer_if_ty(&mut self, iff: &crate::syntax::IfExpr) -> Option<LoweredTy> {
-        if let Some(block) = comptime_survivor(iff) {
-            return self.infer_block_ty(block);
-        }
-        self.infer_block_ty(&iff.then_block)
-            .or_else(|| self.infer_block_ty(iff.else_block.as_deref()?))
-    }
-
-    /// The type of an arm whose value is a name its pattern binds, `Some(v) => { v }`: the
-    /// variant's payload type, from the subject's enum type.
-    fn infer_payload_binding_ty(
-        &mut self,
-        m: &crate::syntax::MatchExpr,
-        arm: &crate::syntax::MatchArm,
-    ) -> Option<LoweredTy> {
-        let Statement::ExprStmt(es) = arm.body.last()? else {
-            return None;
-        };
-        if es.has_semi {
-            return None;
-        }
-        let Expr::Identifier(id) = &es.expr else {
-            return None;
-        };
-        let crate::syntax::Pattern::EnumVariant(pattern_en, variant, Some(pats)) = &arm.pattern
-        else {
-            return None;
-        };
-        let index = pats
-            .iter()
-            .position(|p| matches!(p, crate::syntax::Pattern::Identifier(n) if *n == id.name))?;
-        let enum_ty = self
-            .infer_ast_type(&m.expr)
-            .unwrap_or_else(|| Type::Enum(pattern_en.to_string().into(), None));
-        let (name, mut args) = nominal_name_and_args(deref_to_pointee(&enum_ty))?;
-        if args.is_empty() {
-            args = parse_struct_instance(name.as_ref()).1;
-        }
-        let data = self.registry.enum_data.get(base_name(name.as_ref()))?;
-        let (_, payload) = data
-            .variants
-            .iter()
-            .find(|(n, _)| n.as_ref() == variant.as_ref())?;
-        let ty = substitute_generics(payload.get(index)?, &data.generics, &args);
-        lowered_ty(&ty, self.registry)
-    }
-
-    /// The inferred type of a block's trailing semicolon-less value expression (a branch's value).
-    fn infer_block_ty(&mut self, stmts: &[Statement]) -> Option<LoweredTy> {
-        match stmts.last()? {
-            Statement::ExprStmt(es) if !es.has_semi => self.infer_expr_ty(&es.expr),
-            _ => None,
-        }
+        self.lower_ty_synth(iff.value_ty.as_ref()?)
     }
 
     /// Recover the concrete AST `Type` of an expression from the scope's `ast_types` + the registry's
@@ -2640,10 +2590,9 @@ impl<'r> Lowerer<'r> {
             // A struct literal has its named type (`let adder = |x| ..` -> the generated
             // `Closure_N` struct), so a closure local passed to `.map` is recognized as a closure. (#242)
             Expr::StructInit(si) => Some(Type::Struct(si.name.clone(), si.type_id)),
-            Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
-            // The value of a `spawn` region is its tail. The checker moves a `let` of the region
-            // to before it, so a local of the region already has its type here.
-            Expr::SpawnOn(sp) => self.infer_ast_type(sp.ret.as_deref()?),
+            // A block that gives a value has the type that the checker stored on it.
+            Expr::UnsafeBlock(u) => u.value_ty.clone(),
+            Expr::SpawnOn(sp) => sp.value_ty.clone(),
             Expr::AsCast(c) => Some(c.target_ty.clone()),
             // `&e` has a borrow type over `e`'s type (`&x` where `x : i32` -> `&i32`), so an
             // unannotated `let r = &x` types `r` as `&i32` and a later `*r` recovers `i32`. (#230)

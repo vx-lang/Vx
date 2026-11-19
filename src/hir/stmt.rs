@@ -3706,6 +3706,7 @@ impl<'a> TypeChecker<'a> {
                 else_block,
                 span: _,
                 is_comptime: _,
+                ..
             }) => {
                 if let Some(Value::Bool(cond_val)) = self.eval_expr(cond, env) {
                     let block = if cond_val {
@@ -4264,6 +4265,7 @@ impl<'a> TypeChecker<'a> {
                         else_block,
                         is_comptime: _,
                         span: _,
+                        ..
                     }),
                 has_semi: _,
                 span: _,

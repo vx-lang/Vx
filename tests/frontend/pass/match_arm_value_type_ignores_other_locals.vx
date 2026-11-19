@@ -8,13 +8,17 @@
 // A `match` that gives a `Handle` gets its type from its own arms. A local of
 // the same name with another type must not change it. That local is in an
 // earlier function in `from_a_new_local`, and in the same function in
-// `from_a_payload`. The program prints 7 and 8 with both code generators.
+// `from_a_payload`. In `from_a_redefined_payload`, the arm itself redefines
+// its payload `v` as an `f32`, so the `match` gives an `f32`. The program
+// prints 7, 8 and 4.5 with both code generators.
 //
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // RUN: vxc %s 2>&1 | FileCheck %s
 // CHECK: 7
 // CHECK-NEXT: 8
+// CHECK-NEXT: 4.5
 
+import core::option;
 import core::result;
 
 struct Handle {
@@ -62,8 +66,23 @@ fn from_a_payload() -> i32 {
   return h.id + (v as i32) - 5;
 }
 
+// The arm's value is `v`, but the arm redefines `v` as an `f32` first.
+fn from_a_redefined_payload(o : Option<i32>) -> f32 {
+  let r = match o {
+    Option<i32>::Some(v) => {
+      let v = v as f32;
+      v
+    }
+    Option<i32>::None => {
+      0.0
+    }
+  };
+  return r / 2.0;
+}
+
 fn main() -> i32 {
   println!("{}", from_a_new_local());
   println!("{}", from_a_payload());
+  println!("{}", from_a_redefined_payload(Option<i32>::Some(9)));
   return 0;
 }

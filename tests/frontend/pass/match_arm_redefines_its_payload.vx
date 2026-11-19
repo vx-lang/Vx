@@ -1,0 +1,81 @@
+//===- match_arm_redefines_its_payload.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each `match` arm binds a payload `v` of type `i32`, and the arm's value
+// uses `v`. The type of the `match` must follow the `v` that is in scope:
+// - `redefined_in_a_sum`: `let v = v as f32`, then `v * 2.0`, so `f32`.
+// - `redefined_as_a_struct`: `let v = Point {..}`, then `v.x`, so `f32`.
+// - `redefined_in_an_inner_block`: the `let v` is inside an `if`, so the
+//   arm's value is the payload, an `i32`. 7 / 2 is 3 for an `i32`.
+// The program prints 9, 4.5 and 3 with both code generators, and with a
+// parallel compile (`-j 2`).
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s -j 2 2>&1 | FileCheck %s
+// CHECK: 9
+// CHECK-NEXT: 4.5
+// CHECK-NEXT: 3
+
+import core::option;
+
+struct Point {
+  x : f32,
+  y : f32,
+}
+
+fn redefined_in_a_sum(o : Option<i32>) -> f32 {
+  let r = match o {
+    Option<i32>::Some(v) => {
+      let v = v as f32;
+      v * 2.0
+    }
+    Option<i32>::None => {
+      0.0
+    }
+  };
+  return r;
+}
+
+fn redefined_as_a_struct(o : Option<i32>) -> f32 {
+  let r = match o {
+    Option<i32>::Some(v) => {
+      let v = Point {
+        x : (v as f32) / 2.0,
+        y : 0.0
+      };
+      v.x
+    }
+    Option<i32>::None => {
+      0.0
+    }
+  };
+  return r;
+}
+
+fn redefined_in_an_inner_block(o : Option<i32>) -> i32 {
+  let r = match o {
+    Option<i32>::Some(v) => {
+      if v > 100 {
+        let v = 1.5;
+        println!("{}", v);
+      }
+      v
+    }
+    Option<i32>::None => {
+      0
+    }
+  };
+  return r / 2;
+}
+
+fn main() -> i32 {
+  println!("{}", redefined_in_a_sum(Option<i32>::Some(4) ) + 1.0);
+  println!("{}", redefined_as_a_struct(Option<i32>::Some(9)));
+  println!("{}", redefined_in_an_inner_block(Option<i32>::Some(7)));
+  return 0;
+}

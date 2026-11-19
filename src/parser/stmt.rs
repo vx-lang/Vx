@@ -292,13 +292,13 @@ impl<'a> Parser<'a> {
 
                 let else_block = Some(vec![Statement::Break(BreakStmt::new(while_span))]);
 
-                let if_expr = Expr::If(IfExpr {
-                    is_comptime: false,
-                    cond: Box::new(cond),
-                    then_block: while_body,
+                let if_expr = Expr::If(IfExpr::new(
+                    false,
+                    Box::new(cond),
+                    while_body,
                     else_block,
-                    span: while_span,
-                });
+                    while_span,
+                ));
 
                 let body = vec![Statement::ExprStmt(ExprStmtStmt {
                     expr: if_expr,

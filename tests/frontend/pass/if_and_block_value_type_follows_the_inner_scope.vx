@@ -1,0 +1,46 @@
+//===- if_and_block_value_type_follows_the_inner_scope.vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A branch of an `if`, or an `unsafe` block, redefines the parameter `x`
+// (an `i32`) as an `f32`. The value of the `if` or the block uses the new
+// `x`, so it is an `f32`:
+// - `if_redefines`: the `then` branch gives `x * 0.5`.
+// - `block_redefines`: an `unsafe` block gives `x`, and it is the value of
+//   the `then` branch of an `if`.
+// The program prints 3.5 and 7.5 with both code generators, and with a
+// parallel compile (`-j 2`).
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s -j 2 2>&1 | FileCheck %s
+// CHECK: 3.5
+// CHECK-NEXT: 7.5
+
+fn if_redefines(x : i32, c : bool) -> f32 {
+  let r = if c {
+    let x = x as f32;
+    x * 0.5
+  } else {
+    0.0
+  };
+  return r;
+}
+
+fn block_redefines(x : i32, c : bool) -> f32 {
+  let r = if c {
+    unsafe { let x = x as f32; x }
+  } else {
+    0.0
+  };
+  return r + 0.5;
+}
+
+fn main() -> i32 {
+  println!("{}", if_redefines(7, true));
+  println!("{}", block_redefines(7, true));
+  return 0;
+}

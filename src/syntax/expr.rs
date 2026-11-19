@@ -141,6 +141,9 @@ pub struct SpawnOnExpr {
         crate::syntax::MemorySpace,
         Option<crate::syntax::MemorySpace>,
     )>,
+    /// The type of the value that the block gives, set by the checker. `None` for a block that
+    /// gives no value. The code generators read this type and do not work it out again.
+    pub value_ty: Option<Type>,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -150,6 +153,7 @@ impl SpawnOnExpr {
             ret,
             span,
             arrivals: None,
+            value_ty: None,
         }
     }
 }
@@ -1025,6 +1029,9 @@ pub struct IfExpr {
     pub then_block: Vec<Statement>,
     pub else_block: Option<Vec<Statement>>,
     pub span: Span,
+    /// The type of the value that the `if` gives, set by the checker. `None` for an `if` that
+    /// gives no value. The code generators read this type and do not work it out again.
+    pub value_ty: Option<Type>,
 }
 impl IfExpr {
     pub fn new(
@@ -1040,6 +1047,7 @@ impl IfExpr {
             then_block,
             else_block,
             span,
+            value_ty: None,
         }
     }
 }
@@ -1086,10 +1094,18 @@ pub struct MatchExpr {
     pub expr: Box<Expr>,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// The type of the value that the `match` gives, set by the checker. `None` for a `match`
+    /// that gives no value. The code generators read this type and do not work it out again.
+    pub value_ty: Option<Type>,
 }
 impl MatchExpr {
     pub fn new(expr: Box<Expr>, arms: Vec<MatchArm>, span: Span) -> Self {
-        Self { expr, arms, span }
+        Self {
+            expr,
+            arms,
+            span,
+            value_ty: None,
+        }
     }
 }
 
@@ -1940,6 +1956,7 @@ impl Expr {
                     .as_ref()
                     .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
                 span: e.span,
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::Range(e) => Expr::Range(RangeExpr {
                 start: Box::new(e.start.substitute(mapping)),
@@ -1958,6 +1975,7 @@ impl Expr {
                     })
                     .collect(),
                 span: e.span,
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::Grad(e) => Expr::Grad(GradExpr {
                 target_fn: e.target_fn.clone(),
@@ -1984,6 +2002,7 @@ impl Expr {
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
                 arrivals: e.arrivals.clone(),
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::TaskBlock(e) => Expr::TaskBlock(TaskBlockExpr {
                 kind: e.kind,

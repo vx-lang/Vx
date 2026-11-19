@@ -329,13 +329,13 @@ fn build_steps(
 impl IfExpr {
     /// `if cond { then_block } else { else_block }`.
     fn new_value(cond: Expr, then_block: Vec<Statement>, else_block: Vec<Statement>) -> Self {
-        Self {
-            is_comptime: false,
-            cond: Box::new(cond),
+        Self::new(
+            false,
+            Box::new(cond),
             then_block,
-            else_block: Some(else_block),
-            span: Span::default(),
-        }
+            Some(else_block),
+            Span::default(),
+        )
     }
 }
 
