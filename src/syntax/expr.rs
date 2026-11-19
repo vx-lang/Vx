@@ -91,6 +91,8 @@ impl EnumVariantExpr {
     }
 }
 
+/// A number compares by its value and type, not its place: a number can be a tensor dimension,
+/// and `[4]` written in two places is one type.
 #[derive(Debug, Clone)]
 pub struct NumberExpr {
     pub value: Symbol,
@@ -107,14 +109,13 @@ pub struct NumberExpr {
 pub struct WrittenNumber {
     /// The number without its type suffix, such as `0x1FF` for `0x1FFu8`.
     pub text: Symbol,
-    /// Where the literal is. [`NumberExpr::span`] stays empty, because spans take part in
-    /// comparing types, and a literal is also a tensor dimension.
+    /// Where the literal is.
     pub span: Span,
 }
 
 impl PartialEq for NumberExpr {
     fn eq(&self, other: &Self) -> bool {
-        self.value == other.value && self.ty == other.ty && self.span == other.span
+        self.value == other.value && self.ty == other.ty
     }
 }
 
