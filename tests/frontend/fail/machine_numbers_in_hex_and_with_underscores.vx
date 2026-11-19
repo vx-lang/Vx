@@ -26,9 +26,9 @@ struct Lanes {
 fn main() -> i32 {
   let a : Tensor<f32, [64, 64]> = unsafe { Tensor<f32, [64, 64]>::uninit() };
   let b : Tensor<f32, [64, 64]> = unsafe { Tensor<f32, [64, 64]>::uninit() };
-  // CHECK: Error[E6009] in {{.*}}machine_numbers_in_hex_and_with_underscores.vx: transferred tensor needs 16384 bytes but memory space 'NPU_HBM' has capacity 16383 bytes
+  // CHECK: Error[E6009] at {{.*}}machine_numbers_in_hex_and_with_underscores.vx:[[@LINE+1]]:3: transferred tensor needs 16384 bytes but memory space 'NPU_HBM' has capacity 16383 bytes
   let staged = transfer(a, Memory::NPU_HBM);
-  // CHECK: Error[E6009] in {{.*}}machine_numbers_in_hex_and_with_underscores.vx: transferred tensor needs 16384 bytes but memory space 'GPU_HBM' has capacity 16383 bytes
+  // CHECK: Error[E6009] at {{.*}}machine_numbers_in_hex_and_with_underscores.vx:[[@LINE+1]]:3: transferred tensor needs 16384 bytes but memory space 'GPU_HBM' has capacity 16383 bytes
   let other = transfer(b, Memory::GPU_HBM);
   return 0;
 }

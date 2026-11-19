@@ -309,9 +309,16 @@ impl<'a> TypeChecker<'a> {
                 Some(ty) => ty.accepts_integer_literal(&value).is_some(),
                 None => !crate::parser::expr::is_float_literal_spelling(&value),
             };
-            // Both code generators hold an integer constant in 64 bits.
+            // Both code generators hold an integer constant in 64 bits, or in 128 bits for an
+            // `i128` or a `u128`.
             let magnitude = value.trim_start_matches('-');
-            let too_wide = integer && magnitude.parse::<u64>().is_err();
+            let too_wide = integer
+                && match ty {
+                    Some(ElementType::I128 | ElementType::U128) => {
+                        magnitude.parse::<u128>().is_err()
+                    }
+                    _ => magnitude.parse::<u64>().is_err(),
+                };
             let mut notes = Vec::new();
             let message = match &ty {
                 Some(ty) if ty.accepts_integer_literal(&value) == Some(false) => {

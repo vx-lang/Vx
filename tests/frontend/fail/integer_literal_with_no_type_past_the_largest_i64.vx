@@ -10,7 +10,8 @@
 //
 // A literal with no suffix, where nothing around it gives it a type, is at most an `i64`. A
 // literal from 2^63 up to 2^64 - 1 is an error that suggests a `u64` suffix. It used to crash
-// the code generator. A literal that needs more than 64 bits is an error, with a type or not.
+// the code generator. A literal that needs more than 64 bits is an error, unless its type is
+// `i128` or `u128`.
 
 fn id<T>(x : T) -> T {
   return x;
@@ -35,10 +36,11 @@ fn main() -> i32 {
   let same = id(0x8000_0000_0000_0000);
   // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:14: 0xFFFF_FFFF_FFFF_FFFF does not fit `i64`
   let mask = 0xFFFF_FFFF_FFFF_FFFF as u64;
-  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:21: 0x1_0000_0000_0000_0000 needs more than 64 bits
+  // An `i128` holds it.
+  // CHECK-NOT: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:
   let huge : i128 = 0x1_0000_0000_0000_0000;
   // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:14: 0x1_0000_0000_0000_0000 needs more than 64 bits
   let wide = 0x1_0000_0000_0000_0000;
   return 0;
 }
-// CHECK: 8 error(s) emitted
+// CHECK: 7 error(s) emitted
