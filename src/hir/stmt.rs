@@ -892,7 +892,7 @@ impl<'a> TypeChecker<'a> {
         // The region's device has to represent what the body builds. A type annotation, or a
         // type inferred from an untyped literal, has no expression that carries it, so the
         // binding is checked here. Expression types are checked as they are typed.
-        if self.active_space_declares_dtypes {
+        if self.active_device_declares_dtypes {
             self.check_type_element_types_in_active_region(&binding_ty, &context, span, span);
         }
 

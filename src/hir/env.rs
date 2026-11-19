@@ -642,11 +642,11 @@ pub struct TypeChecker<'a> {
     /// Something that needs `unsafe` was checked since the innermost written `unsafe` block
     /// began. If it stays false, that block warns (W1010).
     pub(crate) unsafe_op_seen: bool,
+    /// The device the code being checked runs on. Change it with `set_active_topology`.
     pub(crate) active_topology: Topology,
-    pub(crate) active_memory: MemorySpace,
-    /// Whether the device that owns `active_memory` declares `dtypes:`. Set whenever the
-    /// space changes, so the per-expression check costs a bool read outside a region.
-    pub(crate) active_space_declares_dtypes: bool,
+    /// Whether `active_topology` declares `dtypes:`, so that the check of each expression
+    /// costs one bool read outside a region.
+    pub(crate) active_device_declares_dtypes: bool,
     /// Statements already reported for an element type inside a device region, as
     /// `(line, column, element type)`.
     pub(crate) region_element_reports:
@@ -793,13 +793,9 @@ impl<'a> TypeChecker<'a> {
         // descriptors and transfer edges. No global registry -- the graph is the per-compilation,
         // lock-free carrier the parallel pipeline shares by `&`.
         let transfer_cost_graph = &env.transfer_cost_graph;
-        let active_memory = transfer_cost_graph.default_memory_for(&Topology::CPU);
-        let active_space_declares_dtypes = transfer_cost_graph
-            .owning_topology(&active_memory)
-            .ok()
-            .and_then(|top| transfer_cost_graph.descriptor(&top.kind()))
-            .and_then(|desc| desc.dtypes.as_ref())
-            .is_some();
+        let active_device_declares_dtypes = transfer_cost_graph
+            .descriptor(&Topology::CPU.kind())
+            .is_some_and(|desc| desc.dtypes.is_some());
         Self {
             env,
             worker,
@@ -816,8 +812,7 @@ impl<'a> TypeChecker<'a> {
             trusted: None,
             borrow_clause_errors: std::collections::HashSet::new(),
             active_topology: Topology::CPU,
-            active_memory,
-            active_space_declares_dtypes,
+            active_device_declares_dtypes,
             region_element_reports: std::collections::HashSet::new(),
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
@@ -870,11 +865,10 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Change the space the code being checked runs in, keeping the derived `dtypes:` flag
-    /// in step with it.
-    pub(crate) fn set_active_memory(&mut self, space: MemorySpace) {
-        self.active_space_declares_dtypes = self.space_declares_dtypes(&space);
-        self.active_memory = space;
+    /// Change the device the code being checked runs on, and keep the `dtypes:` flag in step.
+    pub(crate) fn set_active_topology(&mut self, device: Topology) {
+        self.active_device_declares_dtypes = self.declared_dtypes(&device).is_some();
+        self.active_topology = device;
     }
 
     pub fn push_scope(&mut self) {
@@ -2172,12 +2166,7 @@ impl<'a> TypeChecker<'a> {
         self.push_scope();
 
         let prev_top = self.active_topology.clone();
-        let prev_mem = self.active_memory.clone();
-        self.active_topology = func.topology.clone();
-        let mem = self
-            .transfer_cost_graph
-            .default_memory_for(&self.active_topology);
-        self.set_active_memory(mem);
+        self.set_active_topology(func.topology.clone());
 
         // Record the parameter set and clear per-function provenance state for the
         // return-escape analysis (#243). Saved/restored so nested checks (closures) don't
@@ -2396,8 +2385,7 @@ impl<'a> TypeChecker<'a> {
         self.consteval.constraints = prev_constraints;
         self.fact_change_frames = prev_fact_change_frames;
         self.pointer_facts_leave_body(prev_pointer_state);
-        self.active_topology = prev_top;
-        self.set_active_memory(prev_mem);
+        self.set_active_topology(prev_top);
         self.borrow.current_params = prev_params;
         self.borrow.ref_provenance = prev_provenance;
         self.borrow.store_targets = prev_store_targets;
