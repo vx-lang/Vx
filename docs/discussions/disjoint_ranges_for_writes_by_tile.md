@@ -47,7 +47,8 @@ index values, so nothing can break the claim after the check. A kernel takes
 nothing of the output. It is a fact about values that the check uses.
 
 `DisjointRanges<..>` is the same kind of type: a table of `[start, end)` ranges, owned by the
-type, with only reads (`start(t)`, `end(t)`, `len()`). Owned or viewed makes no difference to the
+type, with only reads: `tiles[t][0]` is the start of range `t`, `tiles[t][1]` its end, and
+`tiles.len()` the number of ranges. Owned or viewed makes no difference to the
 claim. A part of a set of distinct values is still distinct, and a subset of ranges that do not
 overlap still does not overlap. So a view of part of either table keeps its claim.
 
@@ -59,8 +60,9 @@ fn grouped(out : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRanges<
   spawn on(Topology::Device) {
     for t in 0..tiles.len() across blocks {
       for r in 0..64 across lanes {
-        if r < tiles.end(t) - tiles.start(t) {
-          out[tiles.start(t) + r][0] = 1.0;   // fixes t, because the ranges do not overlap
+        let row = (tiles[t][0] as i64) + (r as i64);
+        if row < (tiles[t][1] as i64) {
+          out[row][0] = 1.0;   // fixes t, because the ranges do not overlap
         }
       }
     }
@@ -81,8 +83,13 @@ from the `DisjointRanges` claim, not from new borrow rules.
 
 ## The rule
 
-The check treats `out[start(t) + r]`, with `0 <= r < end(t) - start(t)`, as an index that fixes
-`t`. In the z3 query of #3561, `start` and `end` are unknown functions. For the two passes that the
+Inside `if x < tiles[e][1]`, the check treats an index `x = tiles[e][0] + rest`, where `rest` is
+never below zero, as a row of range `e`. That row fixes whatever `e` fixes. The index can also be
+part of a larger one, such as `(start + r) * 2 + c`. The sum must not wrap, so an `i32` start is
+cast to `i64` before the lane index is added. #3664 adds this rule to the pattern check of
+`across_proof.rs`.
+
+In the z3 query of #3561, `start` and `end` are unknown functions. For the two passes that the
 query compares, it adds the claim `t1 != t2 => end(t1) <= start(t2) or end(t2) <= start(t1)`, so
 the query stays quantifier-free.
 
