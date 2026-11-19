@@ -113,7 +113,7 @@ vx::CollectiveDevice test_device() {
       [](void *host, const void *device, size_t bytes) {
         memcpy(host, device, bytes);
       },
-      [](void *) {},
+      [](void *s) { note("synchronize", s); },
       [](void *p, void *handle) -> std::string {
         memset(handle, 0, vx::kPeerHandleBytes);
         memcpy(handle, &p, sizeof p);
@@ -443,6 +443,18 @@ void test_two_ranks_address_each_others_part() {
   check(closed < events.size() && first_event("release", part0) > closed &&
             first_event("release", part1) > closed,
         "no rank frees its part before both ranks close their address of it");
+  // Rank r closes the part of the other rank, 1 - r.
+  void *other_part[2] = {part1, part0};
+  for (int r = 0; r < 2; ++r) {
+    const size_t close = first_event("close", other_part[r]);
+    bool waited = false;
+    for (size_t i = first_event("open", other_part[r]); i < close; ++i) {
+      waited |= events[i].what == "synchronize" && events[i].rank == r;
+    }
+    check(close < events.size() && waited,
+          "each rank waits for its stream before it closes another rank's "
+          "part");
+  }
 }
 
 void test_a_peer_buffer_with_no_gpu_is_host_memory() {

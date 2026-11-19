@@ -360,6 +360,10 @@ public:
                   "buffer after the recording.";
     }
     std::string why = with_device([&]() -> std::string {
+      // `cudaIpcCloseMemHandle` does not say that it waits for kernels. So
+      // wait for this rank's kernels first: one of them can still use another
+      // rank's part.
+      device_.synchronize(device_.stream());
       std::string why;
       for (int32_t r = 0; r < ranks_; ++r) {
         if (r != rank_ && why.empty()) {
