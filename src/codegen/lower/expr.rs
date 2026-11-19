@@ -5352,6 +5352,9 @@ fn payload_binding_type(
     else {
         return None;
     };
+    if arm.body_declares(id.name.as_ref()) {
+        return None;
+    }
     let position = pats
         .iter()
         .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;

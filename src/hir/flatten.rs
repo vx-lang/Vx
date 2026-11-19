@@ -2530,6 +2530,9 @@ impl<'r> Lowerer<'r> {
         let Expr::Identifier(id) = &es.expr else {
             return None;
         };
+        if arm.body_declares(id.name.as_ref()) {
+            return None;
+        }
         let crate::syntax::Pattern::EnumVariant(pattern_en, variant, Some(pats)) = &arm.pattern
         else {
             return None;
