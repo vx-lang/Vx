@@ -293,6 +293,37 @@ unlocks the `Mutex` (`book_mutex_guards_a_total.vx`):
 It prints `total 20000`. Use an atomic for one number, and a `Mutex` when a change touches more
 than one number.
 
+## `Semaphore`
+
+A `Semaphore` from `std::sync::semaphore` limits how many tasks do a thing at the same time.
+`Semaphore::new(n)` makes `n` permits. `acquire()` takes a permit, and waits while none is
+free. It gives a `Permit`, and the drop of the `Permit` gives the permit back. In this program,
+at most 2 of 10 tasks "download" at the same time (`book_semaphore_limits_the_tasks_that_download.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_semaphore_limits_the_tasks_that_download.vx:program}}
+```
+
+It prints `10 downloads, at most 2 at once`.
+
+An `acquire` can be cancelled, as a `recv` can. It gives `Cancelled` when the `tasks` block of
+the task was cancelled. `acquire_for(limit)` also gives `TimedOut` after the time limit, and
+`acquire_until(deadline)` at a deadline. `try_acquire()` does not wait: it gives `None` when no
+permit is free. The tasks do not get the permits in the order of their `acquire` calls. So when
+many tasks compete, one waiter can wait without limit.
+
+### Compared with tokio
+
+tokio's `Semaphore` gives the permits in the order of the `acquire` calls, and the Vx
+`Semaphore` does not. tokio's also has `acquire_many`, `add_permits` and `close`, which the Vx
+`Semaphore` does not have yet. Two things differ in the other direction:
+
+- A cancel of the `tasks` block stops a task that waits in `acquire`. The cancel follows the
+  blocks of the program, so it needs no extra code. In tokio, a task stops at its next `.await`
+  when `JoinHandle::abort` or the drop of a `JoinSet` cancels it.
+- When each task waits and nothing can wake one, the runtime stops the program. Its report names
+  each `acquire` that waits, its line, and the line that made the `Semaphore`.
+
 ## `Arc`
 
 A task can borrow the locals of its parent, so most programs need no `Arc`. Use an `Arc<T>` when a
