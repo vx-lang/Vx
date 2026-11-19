@@ -197,6 +197,7 @@ fn write_element_type(w: &mut Writer, e: &ElementType) {
         F8E5M2 => 19,
         F4E2M1 => 20,
         USize => 21,
+        F8E8M0 => 22,
     };
     w.u8(tag);
     if let Generic(s) = e {
@@ -229,6 +230,7 @@ fn read_element_type(r: &mut Reader) -> Result<ElementType, String> {
         19 => F8E5M2,
         20 => F4E2M1,
         21 => USize,
+        22 => F8E8M0,
         t => return Err(format!("vxlib: bad ElementType tag {t}")),
     })
 }

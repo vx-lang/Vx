@@ -324,7 +324,7 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
     }
     match ty_text {
         "f4E2M1FN" => Some(4),
-        "f8E4M3FN" | "f8E5M2" => Some(8),
+        "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" => Some(8),
         "f16" | "bf16" => Some(16),
         "f32" => Some(32),
         "f64" => Some(64),
@@ -336,7 +336,7 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
 pub(crate) fn is_float_text(ty_text: &str) -> bool {
     matches!(
         ty_text,
-        "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16" | "f32" | "f64"
+        "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16" | "f32" | "f64"
     )
 }
 
