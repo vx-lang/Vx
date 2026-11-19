@@ -386,8 +386,12 @@ fn mark_for_thread_sanitizer(llvmir: &[u8]) -> Vec<u8> {
     for line in text.lines() {
         match line.strip_suffix(" {") {
             Some(head) if line.starts_with("define ") => {
-                out.push_str(head);
-                out.push_str(" sanitize_thread {");
+                // An attribute comes before the debug information of the function.
+                let (attributes, debug) = head.split_at(head.find(" !dbg ").unwrap_or(head.len()));
+                out.push_str(attributes);
+                out.push_str(" sanitize_thread");
+                out.push_str(debug);
+                out.push_str(" {");
             }
             _ => out.push_str(line),
         }
@@ -678,6 +682,11 @@ pub fn execute_mlir_streams(
     exe_cmd.args(program_args);
     if std::env::var("RUST_BACKTRACE").is_err() {
         exe_cmd.env("RUST_BACKTRACE", "1");
+    }
+    // The crash report of the runtime names its frames with this program.
+    let symbolizer = std::path::Path::new(&llvm_libdir).with_file_name("bin/llvm-symbolizer");
+    if std::env::var_os("LLVM_SYMBOLIZER_PATH").is_none() && symbolizer.exists() {
+        exe_cmd.env("LLVM_SYMBOLIZER_PATH", &symbolizer);
     }
     if thread_sanitizer {
         // The Rust runtime has no checks of ThreadSanitizer, and orders its own memory with locks
