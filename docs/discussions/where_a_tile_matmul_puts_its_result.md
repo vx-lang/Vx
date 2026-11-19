@@ -99,14 +99,14 @@ A later change can let a programmer write `Memory::REG` on a tile of a subgroup,
 meaning. The compiler would then check that the part of each lane fits in the register budget,
 and that only that subgroup reads the tile.
 
-The lowering in MLIR can give the guarantee. Today, when it cannot keep an accumulator in
-registers, it keeps the tile in shared memory, and says nothing. Examples are another op that
-reads the tile, or an index that is not known at compile time. For a tile in `Memory::REG`, that
-case becomes a compile error that names the access that needs memory. This guarantee has two
-limits:
+The language requires this guarantee, and the lowering in MLIR gives it. Today, when the lowering
+cannot keep an accumulator in registers, it keeps the tile in shared memory, and says nothing.
+Examples are another op that reads the tile, or an index that is not known at compile time. For a
+tile in `Memory::REG`, that case is a compile error that names the access that needs memory.
 
-- It covers what MLIR decides: the compiler makes no buffer for the tile. `ptxas` assigns the
-  registers later, and it can still spill some of them to local memory when a kernel needs too
-  many. When `ptxas` runs, the compiler can report its spills for these tiles.
+- The guarantee is about the code that Vx writes: Vx makes no buffer for the tile. `ptxas`
+  assigns the registers later, and it can still spill some of them to local memory. That is
+  outside the language. A kernel that must have no spills is written by hand, in `mlir!`, until
+  Vx has its own assembler.
 - The error needs the source line of the access. The legacy code generator gives the operations
   of MLIR the locations of the Vx source. The flat code generator does not yet (#3643).
