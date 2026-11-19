@@ -1,0 +1,39 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// String literals and aliases keep their byte type without type annotations.
+// RUN: env VX_FLAT_DBG=1 vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,CHECK # flat-codegen
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// FLAT: [flat-codegen] emitted module via the flat path
+// CHECK: {{^}}first: 104{{$}}
+// CHECK: {{^}}second: 105{{$}}
+// CHECK: {{^}}alias: 106{{$}}
+// CHECK: {{^}}typed: 107{{$}}
+// CHECK: {{^}}arithmetic: 110{{$}}
+// CHECK: {{^}}borrowed: 104{{$}}
+
+fn main() -> i32 {
+  let text = "hi";
+  let first = unsafe { text[0] };
+  println!("first: {}", first);
+  let second = unsafe { text[1] };
+  println!("second: {}", second);
+
+  let original = "jk";
+  let alias = original;
+  let aliased = unsafe { alias[0] };
+  println!("alias: {}", aliased);
+
+  let typed : *const i8 = "kl";
+  let typed_first = unsafe { typed[0] };
+  println!("typed: {}", typed_first);
+
+  let number = unsafe { text[0] };
+  let next = number + 6i8;
+  println!("arithmetic: {}", next);
+  let byte_ref = &first;
+  let borrowed = *byte_ref;
+  println!("borrowed: {}", borrowed);
+  return 0;
+}

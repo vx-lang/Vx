@@ -128,6 +128,45 @@ A `Distinct` tensor does not help when two passes add to the same row. In a mixt
 layer, a token goes to several experts, and their results add into the row of the token. Use
 [atomics](#atomics-on-the-elements-of-a-tensor) for that, or a separate pass.
 
+## Rows from a table of ranges
+
+A block can also write a range of rows that a table gives it. The grouped matrix product of a
+mixture-of-experts layer is an example: a first kernel cuts the rows of each expert into tiles,
+and block `t` of a second kernel writes the rows of tile `t`. Distinct starts do not keep two
+blocks apart, because two ranges can overlap.
+
+When no two ranges overlap, say so in the type of the table:
+`DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>`. Row `t` holds range `t`: the start in
+`tiles[t][0]` and the end, one past the last row, in `tiles[t][1]`. Then a row `tiles[t][0] + r`
+fixes `t`, inside an `if` that keeps it below `tiles[t][1]`
+(`blocks_write_the_rows_of_disjoint_ranges.vx`):
+
+```rust
+{{#include ../../../tests/optimizations/pass/blocks_write_the_rows_of_disjoint_ranges.vx:program}}
+```
+
+The rules:
+
+- The index is `tiles[t][0]` plus a value that is never below zero, such as a lane index.
+- The `if` tests that index against `tiles[t][1]`, with the same `t`: `row < end`, `end > row`,
+  `row <= end - 1`, also as one side of `&&`. Only the writes in its `then` block count.
+- The index can be part of a larger one, as in `(start + r) * 2 + c` with `c` below 2.
+- The sum must not wrap. With `i32` ranges, cast the start and the lane index to `i64`, as above.
+  An `i32` sum `tiles[t][0] + r` is E6032.
+- A table is read only. A write to it is E4006, because a write could make two ranges overlap.
+  `tiles.len()` gives the number of ranges.
+- As for `Distinct`, only a parameter of the function counts.
+
+`DisjointRanges::check(t)` makes a table, as `Distinct::check` makes a `Distinct` tensor. It takes
+`t` by value: a tensor of shape `[?, 2]` of `i32`, `i64`, `u32` or `u64`, on the CPU. It returns
+`None` when two ranges overlap or a range ends before it starts. An empty range `[s, s)` overlaps a
+range that has `s` inside it, but not a range that starts or ends at `s`. The check sorts a copy of
+the ranges, so it costs one sort on the CPU.
+
+`unsafe { DisjointRanges(t) }` makes a table with no check. It takes a tensor of integers of shape
+`[?, 2]`, and it moves `t`. If two ranges overlap, two blocks write the same row. That is a data
+race, and Vx makes no promise about the result.
+
 ## A tile in shared memory
 
 `Memory::SMEM` is the fast memory of a block. A tensor in it, a tile, lives as long as the code of

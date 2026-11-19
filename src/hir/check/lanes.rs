@@ -51,6 +51,9 @@ pub enum LaneOp {
     Matmul,
     /// Multiplies each row of a tile in shared memory by an element of another tile.
     ScaleRows,
+    /// `acc` gets the matmul of two `f4e2m1` tiles, each with a scale for each block of k. The
+    /// lanes of a block or of a subgroup compute it together.
+    MatmulScaled,
 }
 
 impl LaneOp {
@@ -343,7 +346,13 @@ impl LaneRoutine {
 
 /// The element types of the accumulator of a lane matmul, and of the tiles that it multiplies.
 const MATMUL_ACC: &[ElementType] = &[ElementType::F32];
-const MATMUL_TILES: &[ElementType] = &[ElementType::F32, ElementType::BF16, ElementType::F16];
+const MATMUL_TILES: &[ElementType] = &[
+    ElementType::F32,
+    ElementType::BF16,
+    ElementType::F16,
+    ElementType::F8E4M3,
+    ElementType::F8E5M2,
+];
 
 const KIND_SUM: (&str, LaneAttr) = ("kind", LaneAttr::Str("sum"));
 const KIND_MAX: (&str, LaneAttr) = ("kind", LaneAttr::Str("max"));
@@ -444,6 +453,16 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
             ScaleRows,
             "vx.lane_scale_rows",
             &[Tensor, Tensor],
+            None,
+        )
+        .with_lanes()
+        .with_row_of(0)
+        .writing_first(),
+        LaneRoutine::call(
+            "matmul_scaled",
+            MatmulScaled,
+            "vx.lane_matmul_scaled",
+            &[Tensor, Tensor, Tensor, Tensor, Tensor],
             None,
         )
         .with_lanes()
@@ -643,6 +662,9 @@ impl crate::hir::TypeChecker<'_> {
             Some(LaneOp::Fill) => return self.check_fill(name, args, arg_types, call_span),
             Some(LaneOp::ScaleRows) => {
                 return self.check_scale_rows(name, args, arg_types, call_span)
+            }
+            Some(LaneOp::MatmulScaled) => {
+                return self.check_matmul_scaled(name, args, arg_types, call_span)
             }
             _ => {}
         }
@@ -1280,6 +1302,116 @@ impl crate::hir::TypeChecker<'_> {
                      `&`, with one element for each of the {rows} rows of the first, such as \
                      `&scale[w]` for `Tensor<f32, [4, {rows}], Memory::SMEM>`, but it is `{}`",
                     arg_types[1]
+                ),
+                span,
+            );
+        }
+        void
+    }
+
+    /// The type of a call `lanes::matmul_scaled(&mut acc, &a, &sa, &b, &sb)`. It adds to
+    /// `acc[i][j]` the sum over `k` of `a[i][k] * sa[i][k / B] * b[k][j] * sb[k / B][j]`, where
+    /// `B` is the k size of `a` over the k size of `sa`. `acc` is an `f32` matrix, `a` and `b`
+    /// are `f4e2m1` matrices, and `sa` and `sb` are matrices of one scale type, `f8e4m3` (NVFP4)
+    /// or `f8e8m0` (MXFP4). All five are in shared memory, and their sizes are numbers.
+    fn check_matmul_scaled(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let void = Type::Struct("void".into(), None);
+        if self.speculating {
+            return void;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 5 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 5 arguments, `&mut acc`, `&a`, `&sa`, `&b` and `&sb`, but it \
+                     got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return void;
+        }
+        // The two sizes of a matrix of `elem` in shared memory, borrowed as `&mut` or as `&`.
+        let matrix = |t: &Type, elem: &ElementType, is_mut: bool| -> Option<[i128; 2]> {
+            let Type::Borrow {
+                inner, is_mut: m, ..
+            } = t
+            else {
+                return None;
+            };
+            let Type::Tensor(e, dims, p) = inner.as_ref() else {
+                return None;
+            };
+            if *m != is_mut || e != elem || dims.len() != 2 || !self.in_shared_memory(p) {
+                return None;
+            }
+            let size = |d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1);
+            Some([size(&dims[0])?, size(&dims[1])?])
+        };
+        // NVFP4 has `f8e4m3` scales and MXFP4 `f8e8m0` scales. `sb` has the type of `sa`.
+        let scale = match &arg_types[2] {
+            Type::Borrow { inner, .. }
+                if matches!(inner.as_ref(), Type::Tensor(ElementType::F8E8M0, ..)) =>
+            {
+                ElementType::F8E8M0
+            }
+            _ => ElementType::F8E4M3,
+        };
+        let wanted = [
+            ("first", "`acc`", ElementType::F32, true, "an `f32`"),
+            ("second", "`a`", ElementType::F4E2M1, false, "an `f4e2m1`"),
+            (
+                "third",
+                "`sa`",
+                scale.clone(),
+                false,
+                "an `f8e4m3` or `f8e8m0`",
+            ),
+            ("fourth", "`b`", ElementType::F4E2M1, false, "an `f4e2m1`"),
+            ("fifth", "`sb`", scale.clone(), false, "a scale"),
+        ];
+        let mut sizes = Vec::new();
+        for (t, (nth, what, elem, is_mut, shown)) in arg_types.iter().zip(wanted) {
+            let Some(size) = matrix(t, &elem, is_mut) else {
+                let borrow = if is_mut { "`&mut`" } else { "`&`" };
+                let shown = if nth == "fifth" {
+                    format!("an `{scale}`")
+                } else {
+                    shown.to_string()
+                };
+                let like_sa = if nth == "fifth" { ", as `sa` does" } else { "" };
+                self.errors.error_with_code(
+                    DiagnosticCode::E3003,
+                    format!(
+                        "the {nth} argument of `{name}`, {what}, must borrow {shown} matrix in \
+                         shared memory as {borrow}{like_sa}, with sizes that are numbers, but it is \
+                         `{t}`"
+                    ),
+                    span,
+                );
+                return void;
+            };
+            sizes.push(size);
+        }
+        let [[m, n], [am, k], [sm, sk], [bk, bn], [sbk, sbn]] = sizes[..] else {
+            unreachable!("five matrices");
+        };
+        let fits = am == m && bn == n && bk == k && sm == m && sbn == n && sbk == sk && k % sk == 0;
+        if !fits {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the sizes of the tiles of `{name}` do not fit: with `acc` of [M, N] and `a` \
+                     of [M, K], `b` must be [K, N], `sa` [M, K / B] and `sb` [K / B, N], where \
+                     the block size B divides K. Here `acc` is [{m}, {n}], `a` [{am}, {k}], `sa` \
+                     [{sm}, {sk}], `b` [{bk}, {bn}] and `sb` [{sbk}, {sbn}]"
                 ),
                 span,
             );

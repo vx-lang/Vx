@@ -1,0 +1,78 @@
+//===- an_across_loop_on_a_spirv64_topology_is_refused.vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `across` loop asks the device to launch its levels: blocks, then
+// subgroups, then lanes. The Intel GPU is `arch: spirv64` and no code generator
+// for that arch can launch levels, so the compiler refuses the loop (E6032)
+// rather than emitting a launch nothing can perform.
+//
+// Two topologies are refused, for the two reasons a `spirv64` topology can be:
+//
+// - `Device` is the one fleet/arc-a770.vx declares. It lists no `levels:`, so
+//   there is no level for the word after `across` to name.
+// - `Simd` declares its levels and is still refused, because the arch is what
+//   decides whether they can be launched.
+//
+// This is why a `spirv64` payload cannot carry a fixed grid today: `grid=` and
+// `block=` are written for an `across` loop, and no such loop compiles for this
+// arch. The message names the flag that turns the loop into a plain `for`, and
+// an_across_loop_on_a_spirv64_topology_has_no_launch_shape.vx checks that the
+// payload of that form carries no shape.
+//
+// RUN: not vxc %s --machine fleet/arc-a770.vx 2>&1 | FileCheck %s
+// CHECK: Error[E6032]{{.*}}`across blocks`: the topology `Device` has no levels
+// CHECK: Error[E6032]{{.*}}`across blocks`: no code generator can launch the levels of the topology `Simd`, whose arch is `spirv64`
+// CHECK: Pass `-fauto-schedule-levels` to run the loop as a plain `for`
+
+Memory CPU_DRAM {}
+
+Memory Simd_HBM {
+  capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+
+Topology Simd {
+  arch: spirv64,
+  levels: [blocks(max_lanes: 1024), lanes],
+  memory: Memory::Simd_HBM,
+  visible: [Memory::Simd_HBM],
+  transfer Memory::CPU_DRAM -> Memory::Simd_HBM : 60 GB/s,
+  transfer Memory::Simd_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn add_one(out : &mut Tensor<f32, [64], Memory::GPU_HBM>, x : &Tensor<f32, [64], Memory::GPU_HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..n across blocks {
+      out[i] = x[i] + 1.0;
+    }
+  }
+  return;
+}
+
+fn add_one_where_the_levels_exist(out : &mut Tensor<f32, [64], Memory::Simd_HBM>, x : &Tensor<f32, [64], Memory::Simd_HBM>, n : i32) -> void {
+  spawn on(Topology::Simd) {
+    for i in 0..n across blocks {
+      out[i] = x[i] + 1.0;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut x = unsafe { Tensor<f32, [64]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [64]>::uninit() };
+  for i in 0..64 {
+    x[i] = i as f32;
+    o[i] = 0.0;
+  }
+  let gx = transfer(x, Memory::GPU_HBM);
+  let mut go = transfer(o, Memory::GPU_HBM);
+  add_one(&mut go, &gx, 64);
+  let home = transfer(go, Memory::CPU_DRAM);
+  print(home[0] as i32);
+  return 0;
+}

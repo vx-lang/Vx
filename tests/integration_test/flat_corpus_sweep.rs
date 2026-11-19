@@ -185,6 +185,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
         "optimizations/pass/scoped_fences_in_across_loops.vx",                // needs --machine
         "optimizations/pass/reads_only_calls_in_across_loops.vx",             // needs --machine
+        "optimizations/pass/lane_own_tensors_borrowed_as_mut_in_across_loops.vx", // needs --machine
         "optimizations/pass/code_after_the_blocks_runs_in_the_last_pass.vx",  // needs --machine
         "optimizations/pass/gpu_image_keeps_only_the_kernels.vx",             // needs --machine
         "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
@@ -203,6 +204,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_matmuls_on_the_gpu.vx",                      // needs --machine
         "optimizations/pass/matmul_tiles_in_shared_memory_avoid_bank_conflicts.vx", // needs --machine
         "optimizations/pass/lane_matmuls_on_tensor_cores.vx",                 // needs --machine
+        "optimizations/pass/lane_matmuls_of_fp8_tiles_give_the_sums_of_a_loop.vx", // needs --machine
+        "optimizations/pass/lane_matmuls_of_fp8_tiles_on_tensor_cores.vx",  // needs --machine
         "optimizations/pass/lane_copies_on_the_cpu.vx",                       // needs --machine
         "optimizations/pass/lane_copies_on_the_gpu.vx",                       // needs --machine
         "optimizations/pass/lane_copy_into_and_out_of_a_tile.vx",             // needs --machine
@@ -210,6 +213,13 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_fill_of_a_tile.vx",                          // needs --machine
         "optimizations/pass/lane_fill_on_the_gpu.vx",                         // needs --machine
         "optimizations/pass/lane_scale_rows_keeps_the_sums_in_registers.vx",  // needs --machine
+        "optimizations/pass/lane_matmul_scaled_on_the_cpu.vx",                // needs --machine
+        "optimizations/pass/lane_matmul_scaled_on_the_gpu.vx",                // needs --machine
+        "optimizations/pass/lane_matmul_scaled_mxfp4_on_the_cpu.vx",          // needs --machine
+        "optimizations/pass/lane_matmul_scaled_on_tensor_cores.vx",           // needs --machine
+        "optimizations/pass/lane_matmul_scaled_on_tcgen05.vx",                // needs --machine
+        "optimizations/pass/lane_matmul_scaled_in_block_code_on_the_cpu.vx",  // needs --machine
+        "optimizations/pass/lane_matmul_scaled_mxfp4_in_block_code_on_the_cpu.vx", // needs --machine
         "optimizations/pass/a_gpu_kernel_reads_a_borrowed_host_tensor_with_no_copy.vx", // needs --machine
         "optimizations/pass/weights_in_a_struct_reach_the_gpu_with_no_copy.vx", // needs --machine
         "optimizations/pass/lane_copies_check_the_whole_tile_once.vx", // needs --machine
@@ -256,6 +266,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
         "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
+        // needs -fauto-schedule-levels
+        "optimizations/pass/an_across_loop_on_a_spirv64_topology_has_no_launch_shape.vx",
         "frontend/pass/packages/import_from_a_package.vx", // needs --package
         // needs --machine
         "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
@@ -304,6 +316,14 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/std_nn_moe_group_sorts_pairs_by_expert.vx",
         // needs --machine
         "optimizations/pass/emit_ptx_names_the_kernels_of_a_generic_function.vx",
+        // needs --machine
+        "optimizations/pass/a_lane_variable_with_the_name_of_a_parameter_for_emit_ptx.vx",
+        // needs --machine
+        "optimizations/pass/a_kernel_reads_a_parameter_that_the_host_borrows_for_emit_ptx.vx",
+        // needs --machine
+        "optimizations/pass/blocks_write_the_rows_of_disjoint_ranges.vx",
+        // needs --machine
+        "optimizations/pass/disjoint_ranges_check_makes_ranges_for_a_kernel.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

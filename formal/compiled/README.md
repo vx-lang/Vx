@@ -1,8 +1,8 @@
 # Checking the compiled library with GenMC
 
 The tests in `formal/memory_model` check a model of the library. The tests here check the LLVM
-IR that vxc generates for the `Mutex`, the channel and `Arc`. So they also find a bug in the
-lowering of atomics. Tracking issue: #2170.
+IR that vxc generates for the `Mutex`, the `Semaphore`, the channel and `Arc`. So they also find
+a bug in the lowering of atomics. Tracking issue: #2170.
 
 [GenMC](https://github.com/MPI-SWS/genmc) is a model checker for LLVM IR. It runs a small program
 in every execution that RC11 allows. It reports a failed assertion, a data race, an access to
@@ -11,6 +11,7 @@ freed memory, and a thread that waits forever.
 | File | What it is |
 | --- | --- |
 | `mutex_three_tasks.vx` | Three tasks lock a `Mutex` and add 1 to its value. |
+| `semaphore_three_tasks.vx` | Three tasks take the one permit of a `Semaphore` and add 1 to a plain value. |
 | `channel_keeps_the_order_of_one_sender.vx` | One task sends 1 and 2, and the values arrive in order. |
 | `arc_two_holders.vx` | Two tasks read through an `Arc` and drop it. The last drop writes to the value. |
 | `harness.c` | The runtime functions that the library calls, written for GenMC. |
@@ -20,7 +21,8 @@ freed memory, and a thread that waits forever.
 ## What is real and what is a stub
 
 Real: the IR that vxc generates for each client and for the library: `lock`, the drop of the
-guard, `send`, `recv`, `clone` and the drop of `Arc`, with the atomic orders that vxc chose.
+guard, `acquire`, the drop of the `Permit`, `send`, `recv`, `clone` and the drop of `Arc`, with
+the atomic orders that vxc chose.
 
 Stubs, in `harness.c`:
 
@@ -46,8 +48,12 @@ GenMC cannot read IR that loads or stores a whole struct, so the script optimize
 | Client | Executions at each level | Time |
 | --- | --- | --- |
 | `mutex_three_tasks.vx` | 33678 | 21 s |
+| `semaphore_three_tasks.vx` | 15690, and 538 blocked | 15 s |
 | `channel_keeps_the_order_of_one_sender.vx` | 15537 | 10 s |
 | `arc_two_holders.vx` | 4 | < 1 s |
+
+GenMC stops an execution as blocked when a loop runs again and nothing changed. In the semaphore,
+this is probably a task that wakes, finds no free permit and sleeps again.
 
 A channel with two senders did not finish in 20 minutes, with room for 1 value or for 2.
 
@@ -57,6 +63,10 @@ Each of these changes to a copy of the library made the check fail:
   Without the flag the check passes, because a `Relaxed` read is an `Acquire` read.
 - The drop of the guard adds to `serving` with `Relaxed`: a lost wake.
 - The drop of the guard wakes only when two threads sleep: a lost wake.
+- `acquire` takes a permit with `Relaxed`, with `-fweak-relaxed-atomics`: a data race on the value.
+  Without the flag the check passes.
+- The drop of a `Permit` gives the permit back with `Relaxed`: a data race on the value.
+- The drop of a `Permit` wakes only when two threads sleep: a lost wake.
 - The drop of an `Arc` takes 1 from the count with `Relaxed`: an access to freed memory.
 - `send` marks its slot full with a `Relaxed` store: a data race on the slot.
 

@@ -1015,6 +1015,9 @@ fn run_lit_test_with_env(path: &Path, env: &[(&str, String)]) -> Result<(), Stri
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
         return Ok(());
     }
+    if source.contains("// REQUIRES: linux") && !cfg!(target_os = "linux") {
+        return Ok(());
+    }
     if source.contains("// REQUIRES: nvidia-gpu") && !has_nvidia_gpu() {
         return Ok(());
     }

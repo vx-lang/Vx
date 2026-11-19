@@ -1856,7 +1856,7 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "tuple".into()],
             });
         }
-        // `Distinct::check(t)` is a call of a function in `core::distinct`.
+        // `Distinct::check(t)` and `DisjointRanges::check(t)` call functions in `core::distinct`.
         if self.uses_distinct_check
             && !imports.iter().any(|i: &ImportDecl| {
                 i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "distinct"

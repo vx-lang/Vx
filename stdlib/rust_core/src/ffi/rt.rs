@@ -20,24 +20,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // Math & Core Functions
 // ============================================================================
 
-#[no_mangle]
-pub extern "C" fn vx_sigsegv_handler(sig: libc::c_int) {
-    // A wild memory access can surface as either SIGSEGV (unmapped page) or
-    // SIGBUS (e.g. a far out-of-range address on arm64); catch both so the crash
-    // is always reported with a backtrace rather than a silent signal death.
-    if sig == libc::SIGBUS {
-        println!("Caught SIGBUS: Bus Error!");
-    } else {
-        println!("Caught SIGSEGV: Segmentation Fault!");
-    }
-    println!(
-        "Backtrace:
-{:#?}",
-        std::backtrace::Backtrace::force_capture()
-    );
-    std::process::abort();
-}
-
 /// A failed check prints its message with `puts` and then calls `abort`. Standard output is
 /// buffered when it is a pipe, and `abort` does not flush it, so the message was lost. Flush,
 /// then say which task stopped, then let the abort go on.
@@ -54,18 +36,15 @@ extern "C" fn vx_sigabrt_handler(_sig: libc::c_int) {
 pub extern "C" fn vx_init_signals() {
     // A bad value stops the program now, and not at its first `drop`.
     crate::ffi::tasks::drop_wait_cap_ns();
+    crate::ffi::crash_report::prepare();
     unsafe {
+        // The first `backtrace` call of glibc loads libgcc_s, which allocates. Make it here, so
+        // that the call in the SIGSEGV handler does not.
+        let mut frame = [ptr::null_mut(); 1];
+        libc::backtrace(frame.as_mut_ptr(), 1);
         libc::signal(
             libc::SIGABRT,
             vx_sigabrt_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGSEGV,
-            vx_sigsegv_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGBUS,
-            vx_sigsegv_handler as *const () as libc::sighandler_t,
         );
     }
 }

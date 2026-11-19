@@ -525,8 +525,8 @@ impl<'a> TypeChecker<'a> {
 
         // A value built inside a device region has no placement, so no placement check sees
         // it. The region's device has to be able to represent it. Silent outside a region,
-        // whose host space declares no `dtypes:`.
-        if !untyped_literal && !self.speculating && self.active_space_declares_dtypes {
+        // because the host declares no `dtypes:`.
+        if !untyped_literal && !self.speculating && self.active_device_declares_dtypes {
             // Most expression nodes carry no span of their own, so point at the statement
             // that contains them instead.
             let statement = self.errors.at;
@@ -858,7 +858,10 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        if let (Type::Distinct(inner_target), Type::Distinct(inner_source)) = (target, source) {
+        if let (Type::Distinct(inner_target), Type::Distinct(inner_source))
+        | (Type::DisjointRanges(inner_target), Type::DisjointRanges(inner_source)) =
+            (target, source)
+        {
             if self.is_assignable(inner_target, inner_source) {
                 return true;
             }
@@ -943,7 +946,8 @@ impl<'a> TypeChecker<'a> {
             Type::Ref(inner, _)
             | Type::Pinned(inner, _)
             | Type::Verified(inner)
-            | Type::Distinct(inner) => Self::tensor_of(inner),
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => Self::tensor_of(inner),
             _ => None,
         }
     }

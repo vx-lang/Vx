@@ -218,6 +218,7 @@ fn tensor_within(ty: &crate::syntax::Type) -> Option<&crate::syntax::Type> {
         Type::Tensor(..) => Some(ty),
         Type::Verified(inner)
         | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Pinned(inner, _)
         | Type::Ref(inner, _) => tensor_within(inner),
         Type::Borrow { inner, .. } => tensor_within(inner),

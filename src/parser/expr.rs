@@ -1120,15 +1120,26 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 })
             }
-            // `Distinct::check(t)` checks the values of `t` and calls `core::distinct`.
-            TokenType::Distinct if self.peek_n(1).kind == TokenType::DoubleColon => {
+            // `Distinct::check(t)` and `DisjointRanges::check(t)` check the values of `t` and
+            // call `core::distinct`.
+            TokenType::Distinct | TokenType::DisjointRanges
+                if self.peek_n(1).kind == TokenType::DoubleColon =>
+            {
+                let claim = if peeked_token.kind == TokenType::Distinct {
+                    "Distinct"
+                } else {
+                    "DisjointRanges"
+                };
                 self.advance();
                 self.advance();
                 match &self.advance().kind {
                     TokenType::Identifier(s) if *s == "check" => {}
-                    _ => return Err(self.error("Expected 'check' after 'Distinct::'")),
+                    _ => return Err(self.error(&format!("Expected 'check' after '{claim}::'"))),
                 }
-                self.consume(&TokenType::LeftParen, "Expected '(' after Distinct::check")?;
+                self.consume(
+                    &TokenType::LeftParen,
+                    &format!("Expected '(' after {claim}::check"),
+                )?;
                 let mut args = Vec::new();
                 if !self.check(&TokenType::RightParen) {
                     args.push(self.parse_expr()?);
@@ -1140,7 +1151,7 @@ impl<'a> Parser<'a> {
                 self.uses_distinct_check = true;
                 Expr::FunctionCall(FunctionCallExpr {
                     owner_type_args: None,
-                    name: "Distinct::check".to_string().into(),
+                    name: format!("{claim}::check").into(),
                     type_args: None,
                     args,
                     span: Span {
@@ -1151,14 +1162,19 @@ impl<'a> Parser<'a> {
                     },
                 })
             }
-            TokenType::Distinct => {
+            TokenType::Distinct | TokenType::DisjointRanges => {
+                let name = if peeked_token.kind == TokenType::Distinct {
+                    "Distinct"
+                } else {
+                    "DisjointRanges"
+                };
                 self.advance();
-                self.consume(&TokenType::LeftParen, "Expected '(' after Distinct")?;
+                self.consume(&TokenType::LeftParen, &format!("Expected '(' after {name}"))?;
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::FunctionCall(FunctionCallExpr {
                     owner_type_args: None,
-                    name: "Distinct".to_string().into(),
+                    name: name.to_string().into(),
                     type_args: None,
                     args: vec![inner],
                     span: Span {

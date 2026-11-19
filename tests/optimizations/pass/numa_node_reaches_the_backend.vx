@@ -15,7 +15,7 @@
 // a node -- so a space declaring a node is dispatched by a banded id instead,
 // `arch::NUMA_DISPATCH_BASE + N`.
 //
-// That is what these checks pin: node 0 becomes 1000 and node 1 becomes 1001,
+// That is what these checks pin: node 0 becomes 1100 and node 1 becomes 1101,
 // carried on the `vx.transfer` the backend reads. The `space =` attribute is
 // checked alongside so a renumbering cannot quietly swap which node a space
 // gets -- the pair is the assertion, not either line alone.
@@ -29,10 +29,10 @@
 // RUN: vxc %s --host default --machine fleet/xeon-8275cl.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
 // RUN: vxc %s --legacy-codegen --host default --machine fleet/xeon-8275cl.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
 // CHECK: vx.transfer
-// CHECK-SAME: target_topology = 1000
+// CHECK-SAME: target_topology = 1100
 // CHECK-SAME: space = "HBM"
 // CHECK: vx.transfer
-// CHECK-SAME: target_topology = 1001
+// CHECK-SAME: target_topology = 1101
 // CHECK-SAME: space = "PEER_HBM"
 
 fn main() -> i32 {

@@ -34,6 +34,10 @@
 // the pass that fixes whatever `e` fixes: two passes that read the same value read it at the
 // same `e`.
 //
+// No two ranges `[t[e][0], t[e][1])` of a `DisjointRanges` table overlap. So in the `then` block
+// of `if x < t[e][1]`, an index `x` that is `t[e][0]` plus a value that is never below zero is a
+// row of range `e`. Such a row is a variable of the pass that fixes whatever `e` fixes.
+//
 //===----------------------------------------------------------------------===//
 
 use crate::hir::comptime_interpreter::ComptimeInterpreter;
@@ -87,6 +91,15 @@ impl Affine {
     fn as_constant(&self) -> Option<i64> {
         self.terms.is_empty().then_some(self.constant)
     }
+}
+
+/// A claim about the values of a tensor parameter, which its type states.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Claim {
+    /// `Distinct<..>`: no two elements are equal.
+    Distinct,
+    /// `DisjointRanges<..>`: no two ranges `[t[i][0], t[i][1])` overlap.
+    DisjointRanges,
 }
 
 /// What a name means inside the pass.
@@ -153,11 +166,22 @@ struct Proof<'c> {
     slots: HashMap<String, (String, i64)>,
     /// The tensor argument of each call that takes a slot.
     slot_calls: HashSet<Span>,
-    /// The `Distinct` tensors from outside the loop, with the type of their elements.
-    distinct: &'c HashMap<String, ElementType>,
+    /// The `Distinct` tensors and `DisjointRanges` tables from outside the loop, with the type
+    /// of their elements.
+    claims: &'c HashMap<String, (Claim, ElementType)>,
     /// Each read `idx[e]` of a `Distinct` tensor: the tensor and the form of `e`. The key of the
     /// read as a variable is the tensor, then `#distinct` and its place in this list.
     distinct_reads: RefCell<Vec<(String, Affine)>>,
+    /// Each read `t[e][c]` of a `DisjointRanges` table: the table, the form of `e`, and `c`, 0
+    /// for the start and 1 for the end. The key of the read as a variable is the table, then
+    /// `#range` and its place in this list, then `#outside` when `e` is the same in every pass.
+    range_reads: RefCell<Vec<(String, Affine, i64)>>,
+    /// Each row of a range: the table and the form of `e`. The key of the row as a variable is
+    /// the table, then `#row` and its place in this list.
+    range_rows: Vec<(String, Affine)>,
+    /// The tests `x < t[e][1]` of the `if` blocks that the walk is in: `x`, and the key of the
+    /// read `t[e][1]`.
+    below_ends: Vec<(Affine, String)>,
 }
 
 /// The position of an `across` clause, the largest end that its loop may have, and the type of
@@ -180,7 +204,7 @@ pub(crate) fn across_loop_race(
     contracts: &HashMap<String, Vec<usize>>,
     templates: &HashSet<String>,
     copies_out: &HashMap<Span, Vec<u64>>,
-    distinct: &HashMap<String, ElementType>,
+    claims: &HashMap<String, (Claim, ElementType)>,
 ) -> Result<Vec<LargestEnd>, (String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
@@ -213,8 +237,11 @@ pub(crate) fn across_loop_race(
             pass: None,
             slots: HashMap::new(),
             slot_calls: HashSet::new(),
-            distinct,
+            claims,
             distinct_reads: RefCell::new(Vec::new()),
+            range_reads: RefCell::new(Vec::new()),
+            range_rows: Vec::new(),
+            below_ends: Vec::new(),
         };
         p.own = p.bind_index(&f.iter, &f.iterable, range, f.across.as_ref());
         p.stmts(&f.body);
@@ -543,7 +570,10 @@ impl Proof<'_> {
     }
 
     fn record(&mut self, name: &str, indices: &[&Expr], write: bool, at: Span) {
-        let indices = indices.iter().map(|i| self.affine(i)).collect();
+        let indices = indices
+            .iter()
+            .map(|i| self.affine(i).map(|f| self.row(f)))
+            .collect();
         self.accesses
             .entry(name.to_string())
             .or_default()
@@ -586,7 +616,8 @@ impl Proof<'_> {
         let mut forms = Vec::new();
         for i in indices {
             let Expr::Range(r) = i else {
-                forms.push(self.affine(i));
+                let form = self.affine(i).map(|f| self.row(f));
+                forms.push(form);
                 continue;
             };
             let lo = self.affine(&r.start);
@@ -823,6 +854,12 @@ impl Proof<'_> {
                 fc.args.iter().for_each(|a| self.expr(a));
             }
             Expr::Borrow(b) => {
+                // A tensor that the pass declares is its own, so no other pass can write it.
+                if let Expr::Identifier(id) = &*b.expr {
+                    if b.is_mut && !self.outside(&id.name) {
+                        return;
+                    }
+                }
                 if b.is_mut {
                     self.fail(
                         "a `&mut` borrow in an `across` loop may write any element".to_string(),
@@ -836,7 +873,10 @@ impl Proof<'_> {
                 self.expr(&i.cond);
                 let outer = self.pass;
                 self.pass = self.pass.or(self.one_pass(&i.cond));
+                let held = self.below_ends.len();
+                self.below_end(&i.cond);
                 self.block(&i.then_block);
+                self.below_ends.truncate(held);
                 self.pass = outer;
                 if let Some(b) = &i.else_block {
                     self.block(b);
@@ -934,12 +974,17 @@ impl Proof<'_> {
                 // From outside the loop: the same in every pass.
                 None => Some(Affine::var(format!("{}#outside", id.name))),
             },
+            Expr::IndexAccess(ix) if matches!(&*ix.base, Expr::IndexAccess(_)) => {
+                self.range_read(ix)
+            }
             Expr::IndexAccess(ix) => {
                 let Expr::Identifier(id) = &*ix.base else {
                     return None;
                 };
                 let name = id.name.as_ref();
-                if !self.outside(name) || !self.distinct.contains_key(name) {
+                if !self.outside(name)
+                    || !matches!(self.claims.get(name), Some((Claim::Distinct, _)))
+                {
                     return None;
                 }
                 let index = self.affine(&ix.index)?;
@@ -1084,11 +1129,152 @@ impl Proof<'_> {
             .cloned()
     }
 
+    /// The form `t[e][c]`, a read of the start or the end of a range of a `DisjointRanges` table.
+    fn range_read(&self, ix: &crate::syntax::expr::IndexAccessExpr) -> Option<Affine> {
+        let Expr::IndexAccess(row) = &*ix.base else {
+            return None;
+        };
+        let Expr::Identifier(id) = &*row.base else {
+            return None;
+        };
+        let name = id.name.as_ref();
+        if !self.outside(name) || !matches!(self.claims.get(name), Some((Claim::DisjointRanges, _)))
+        {
+            return None;
+        }
+        let column = self
+            .affine(&ix.index)?
+            .as_constant()
+            .filter(|c| *c == 0 || *c == 1)?;
+        let index = self.affine(&row.index)?;
+        let mut reads = self.range_reads.borrow_mut();
+        let at = match reads
+            .iter()
+            .position(|(t, f, c)| t == name && *f == index && *c == column)
+        {
+            Some(at) => at,
+            None => {
+                reads.push((name.to_string(), index.clone(), column));
+                reads.len() - 1
+            }
+        };
+        // A read at an index that is the same in every pass is the same in every pass.
+        let same = if index.terms.keys().all(|v| v.ends_with("#outside")) {
+            "#outside"
+        } else {
+            ""
+        };
+        Some(Affine::var(format!("{name}#range{at}{same}")))
+    }
+
+    /// The table, the form of the index and the column of the read of a `DisjointRanges` table
+    /// whose key is `v`.
+    fn range_read_of(&self, v: &str) -> Option<(String, Affine, i64)> {
+        let (_, at) = v.trim_end_matches("#outside").rsplit_once("#range")?;
+        self.range_reads
+            .borrow()
+            .get(at.parse::<usize>().ok()?)
+            .cloned()
+    }
+
+    /// The table and the form of the index of the row of a range whose key is `v`.
+    fn row_of(&self, v: &str) -> Option<(String, Affine)> {
+        let (_, at) = v.rsplit_once("#row")?;
+        self.range_rows.get(at.parse::<usize>().ok()?).cloned()
+    }
+
+    /// Records each test `x < t[e][1]` in `cond`, also as one side of `&&`. `a <= b` is
+    /// `a - 1 < b`, and `b > a` is `a < b`.
+    fn below_end(&mut self, cond: &Expr) {
+        match cond {
+            Expr::LogicalOp(l) if l.op == LogicalOp::And => {
+                self.below_end(&l.lhs);
+                self.below_end(&l.rhs);
+            }
+            Expr::RelationalOp(r) => {
+                let (a, b, step) = match r.op {
+                    RelationalOp::Lt => (&r.lhs, &r.rhs, 0),
+                    RelationalOp::Le => (&r.lhs, &r.rhs, 1),
+                    RelationalOp::Gt => (&r.rhs, &r.lhs, 0),
+                    RelationalOp::Ge => (&r.rhs, &r.lhs, 1),
+                    _ => return,
+                };
+                // `a < b` is `x < end`, with `x = a - b + end`.
+                let Some(d) = self
+                    .affine(a)
+                    .zip(self.affine(b))
+                    .and_then(|(a, b)| a.add(&b, -1))
+                    .and_then(|d| d.add(&Affine::constant(step), -1))
+                else {
+                    return;
+                };
+                let ends: Vec<String> = d
+                    .terms
+                    .iter()
+                    .filter(|(v, c)| {
+                        **c == -1 && self.range_read_of(v).is_some_and(|(_, _, c)| c == 1)
+                    })
+                    .map(|(v, _)| v.clone())
+                    .collect();
+                for end in ends {
+                    if let Some(x) = d.clone().add(&Affine::var(end.clone()), 1) {
+                        self.below_ends.push((x, end));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `form` with a row of a range in place of `x`, when `form` is `k * x` plus terms without
+    /// `t[e][0]`, `x` is `t[e][0]` plus a value that is never below zero, and a test
+    /// `x < t[e][1]` holds. Otherwise `form`.
+    fn row(&mut self, form: Affine) -> Affine {
+        let found = self.below_ends.iter().find_map(|(x, end)| {
+            let (table, index, _) = self.range_read_of(end)?;
+            // A range that is the same in every pass keeps no two passes apart.
+            if index.terms.keys().all(|v| v.ends_with("#outside")) {
+                return None;
+            }
+            let start = x.terms.iter().find_map(|(v, c)| {
+                let (t, i, column) = self.range_read_of(v)?;
+                (*c == 1 && t == table && i == index && column == 0).then(|| v.clone())
+            })?;
+            let rest = x.clone().add(&Affine::var(start.clone()), -1)?;
+            let (lo, _) = self.bounds(&rest, false, None)?;
+            let k = *form.terms.get(&start)?;
+            let others = form.clone().add(&x.clone().scale(k)?, -1)?;
+            (lo >= 0).then_some((table, index, k, others))
+        });
+        let Some((table, index, k, others)) = found else {
+            return form;
+        };
+        let at = match self
+            .range_rows
+            .iter()
+            .position(|(t, i)| *t == table && *i == index)
+        {
+            Some(at) => at,
+            None => {
+                self.range_rows.push((table.clone(), index));
+                self.range_rows.len() - 1
+            }
+        };
+        let row = Affine::var(format!("{table}#row{at}")).scale(k);
+        row.and_then(|row| others.add(&row, 1)).unwrap_or(form)
+    }
+
     /// The least and the greatest value of the loop index `v`, from its range or its type.
     fn index_range(&self, v: &str) -> Option<(i128, i128)> {
-        // A read of a `Distinct` tensor is any value of its element type.
-        if let Some((tensor, _)) = self.distinct_read(v) {
-            return ComptimeInterpreter::integer_range(&self.distinct[&tensor]);
+        // A read of a `Distinct` tensor or of a `DisjointRanges` table, or a row of a range, is
+        // any value of its element type.
+        let read = self
+            .distinct_read(v)
+            .map(|(t, _)| t)
+            .or_else(|| self.range_read_of(v).map(|(t, ..)| t))
+            .or_else(|| self.row_of(v).map(|(t, _)| t));
+        if let Some(tensor) = read {
+            return ComptimeInterpreter::integer_range(&self.claims[&tensor].1);
         }
         // `v` is never below zero. A remainder is below `n`, and neither part is above `v`.
         if let Some((index, quotient, n)) = Self::part_of(v) {
@@ -1166,11 +1352,13 @@ impl Proof<'_> {
 
     /// As `fixes_own_with`, for the variable `key` of the pass.
     fn fixes_with(&self, form: &Affine, key: &str, gap: Option<i64>) -> bool {
-        // Two passes with the same value of `idx[e]` have the same `e`.
+        // Two passes with the same value of `idx[e]`, or a row of the range `e`, have the same
+        // `e`.
         let fixes = |v: &String| {
             v == key
                 || self
                     .distinct_read(v)
+                    .or_else(|| self.row_of(v))
                     .is_some_and(|(_, index)| self.fixes_with(&index, key, None))
         };
         if !form.terms.keys().any(fixes) {

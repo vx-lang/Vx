@@ -678,6 +678,10 @@ pub enum DiagnosticCode {
     /// for silicon that is not there -- and the placement is in the type, so the question is
     /// answerable here rather than at a kernel launch on the machine that lacks the type.
     ///
+    /// The check asks the device the value is on: the device of a `spawn` region, or the device
+    /// that a placement or a `transfer` names. A placement that names only a memory asks the
+    /// topology whose `memory:` it is.
+    ///
     /// Only fires against a topology that declares `dtypes:`. An undeclared machine constrains
     /// nothing, which is what keeps every machine file written before the field kept working.
     E6026,
@@ -714,7 +718,9 @@ pub enum DiagnosticCode {
     /// loop. Also a lane reduction (`lanes::sum` and the others) outside the code of a loop of
     /// blocks or subgroups, or with a tensor that is too large. Also two passes of the loop that
     /// may write the same element, or a pass that may read an element that another pass writes.
-    /// A row from a `Distinct` tensor parameter, as in `y[idx[b]]`, keeps the passes apart.
+    /// A row from a `Distinct` tensor parameter, as in `y[idx[b]]`, keeps the passes apart, and so
+    /// does a row of a range of a `DisjointRanges` table parameter, inside an `if` that keeps it
+    /// below the end of the range.
     E6032,
     /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
     /// a tensor stays in registers, and a register has no address. So each index must be a
