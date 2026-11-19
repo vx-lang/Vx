@@ -836,19 +836,11 @@ impl Walk<'_> {
         }
         let calls = std::mem::take(&mut self.lane_calls);
         for c in &calls {
-            // A scaled matmul, like a matmul with `@`, runs on the 32 lanes of a subgroup.
+            // A scaled matmul in the code of a subgroup, like a matmul with `@`, runs on its 32
+            // lanes. In the code of a block, all the lanes of the block compute it.
             if lanes::lane_routine(&c.name).is_some_and(|r| r.op == lanes::LaneOp::MatmulScaled) {
                 if c.scope == LevelKind::Subgroups {
                     self.needs_subgroups_of_32(c);
-                } else {
-                    self.error(
-                        format!(
-                            "{} must be in the code of a loop of subgroups: the 32 lanes of a \
-                             subgroup compute it together",
-                            lanes::shown_name(&c.name)
-                        ),
-                        c.at,
-                    );
                 }
                 continue;
             }

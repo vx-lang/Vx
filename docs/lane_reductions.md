@@ -225,9 +225,8 @@ This is a matmul of block-scaled `f4e2m1` tiles. In NVFP4, each 16 values along 
   unsigned.
 - NVFP4 also has one `f32` scale for each tensor. The program multiplies `acc` by it after the
   matmul.
-- The call must be in the code of a subgroup, outside its lane loops. E6032 refuses it in the code
-  of a block. The lanes of the subgroup share the elements of `acc`, as for a matmul with `@`, and
-  then they wait for each other.
+- The call must be in the code of a block or of a subgroup, outside its lane loops. The lanes of
+  the block or the subgroup share the elements of `acc`, and then they wait for each other.
 
 On `sm_120a`, `sm_121a` and their families, the matmul goes to the tensor cores when all of these
 are true:
@@ -237,8 +236,18 @@ are true:
 
 Each 16 x 8 piece of the result is then a chain of block-scaled `mma.sync.m16n8k64`, one for each
 64 values of `k`. The tensor core adds the products in an order of its own, so the last bits of a
-sum can differ from the loops on the CPU. Other chips use the lanes of the subgroup. The B200
-needs `tcgen05`, which is the next step ([#3645](https://github.com/vx-lang/Vx/issues/3645)).
+sum can differ from the loops on the CPU. Other chips use the lanes of the subgroup.
+
+On `sm_100a` (the B200), `sm_103a` and `sm_110a`, a matmul in the code of a block of 128 lanes can
+use `tcgen05.mma` when all of these are true:
+
+- `acc` has 128 rows, and a multiple of 8 columns up to 256. `k` is a multiple of 64.
+- The scales are `f8e4m3` for 16 values, or `f8e8m0` for 16 or 32 values.
+- The environment variable `VX_TCGEN05` is `1` when the program compiles.
+
+This path is off by default until a B200 runs it
+([#3645](https://github.com/vx-lang/Vx/issues/3645)). The lanes copy the tiles into shared memory
+in the layout that the tensor core reads, and the sums go through tensor memory.
 
 ## Copies
 

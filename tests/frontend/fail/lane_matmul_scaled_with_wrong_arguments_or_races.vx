@@ -8,19 +8,20 @@
 // `lanes::matmul_scaled(&mut acc, &a, &sa, &b, &sb)` takes an `f32` matrix as `&mut`, two
 // `f4e2m1` matrices and their two matrices of scales, all in shared memory. Both scales are
 // `f8e4m3` (NVFP4), or both are `f8e8m0` (MXFP4). With `acc` of [M, N] and `a` of [M, K], `b` is
-// [K, N], `sa` [M, K / B] and `sb` [K / B, N], where the block size B divides K. The 32 lanes of a
-// subgroup compute it, and two subgroups must not write the same `acc`. Each function below
-// breaks one rule.
+// [K, N], `sa` [M, K / B] and `sb` [K / B, N], where the block size B divides K. The lanes of a
+// block or a subgroup compute it together, outside their lane loops, and two subgroups must not
+// write the same `acc`. Each function below breaks one rule.
 //
 // RUN: not vxc %s --host default --machine fleet/b200.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:34:{{.*}}`lanes::matmul_scaled` takes 5 arguments, `&mut acc`, `&a`, `&sa`, `&b` and `&sb`, but it got 4
-// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:51:{{.*}}the second argument of `lanes::matmul_scaled`, `a`, must borrow an `f4e2m1` matrix in shared memory as `&`, {{.*}} but it is `&Tensor<f16, [16, 64], Memory::SMEM>`
-// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:67:{{.*}}the fifth argument of `lanes::matmul_scaled`, `sb`, must borrow an `f8e4m3` matrix in shared memory as `&`, {{.*}} but it is `&Tensor<f8e4m3, [4, 8], Memory::HBM>`
-// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:84:{{.*}}the sizes of the tiles of `lanes::matmul_scaled` do not fit: {{.*}} Here `acc` is [16, 8], `a` [16, 64], `sa` [16, 3], `b` [64, 8] and `sb` [3, 8]
-// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:101:{{.*}}the sizes of the tiles of `lanes::matmul_scaled` do not fit: {{.*}} Here `acc` is [16, 8], `a` [16, 64], `sa` [16, 4], `b` [32, 8] and `sb` [4, 8]
-// CHECK: Error[E6032] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:117:{{.*}}`lanes::matmul_scaled` must be in the code of a loop of subgroups: the 32 lanes of a subgroup compute it together
-// CHECK: Error[E6032] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:133:{{.*}}each pass writes `acc`, which is declared outside the loop, so the passes race.
-// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:150:{{.*}}the fifth argument of `lanes::matmul_scaled`, `sb`, must borrow an `f8e4m3` matrix in shared memory as `&`, as `sa` does, {{.*}} but it is `&Tensor<f8e8m0, [4, 8], Memory::SMEM>`
+// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:35:{{.*}}`lanes::matmul_scaled` takes 5 arguments, `&mut acc`, `&a`, `&sa`, `&b` and `&sb`, but it got 4
+// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:52:{{.*}}the second argument of `lanes::matmul_scaled`, `a`, must borrow an `f4e2m1` matrix in shared memory as `&`, {{.*}} but it is `&Tensor<f16, [16, 64], Memory::SMEM>`
+// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:68:{{.*}}the fifth argument of `lanes::matmul_scaled`, `sb`, must borrow an `f8e4m3` matrix in shared memory as `&`, as `sa` does, {{.*}} but it is `&Tensor<f8e4m3, [4, 8], Memory::HBM>`
+// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:85:{{.*}}the sizes of the tiles of `lanes::matmul_scaled` do not fit: {{.*}} Here `acc` is [16, 8], `a` [16, 64], `sa` [16, 3], `b` [64, 8] and `sb` [3, 8]
+// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:102:{{.*}}the sizes of the tiles of `lanes::matmul_scaled` do not fit: {{.*}} Here `acc` is [16, 8], `a` [16, 64], `sa` [16, 4], `b` [32, 8] and `sb` [4, 8]
+// CHECK: Error[E6032] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:119:{{.*}}each pass writes `acc`, which is declared outside the loop, so the passes race.
+// CHECK: Error[E6032] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:119:{{.*}}`lanes::matmul_scaled` must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane loops.
+// CHECK: Error[E6032] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:136:{{.*}}each pass writes `acc`, which is declared outside the loop, so the passes race.
+// CHECK: Error[E3003] at {{.*}}lane_matmul_scaled_with_wrong_arguments_or_races.vx:153:{{.*}}the fifth argument of `lanes::matmul_scaled`, `sb`, must borrow an `f8e4m3` matrix in shared memory as `&`, as `sa` does, {{.*}} but it is `&Tensor<f8e8m0, [4, 8], Memory::SMEM>`
 
 // Four arguments: no `&sb`.
 pub fn four_arguments(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
@@ -105,8 +106,8 @@ pub fn b_has_the_wrong_k(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
   return;
 }
 
-// The call is in the code of a block, not of a subgroup.
-pub fn in_the_code_of_a_block(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+// The call is in a lane loop, where each lane would compute its own matmul.
+pub fn in_a_lane_loop(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for blk in 0..1 across blocks {
       let mut acc = unsafe { Tensor<f32, [16, 8], Memory::SMEM>::uninit() };
@@ -114,7 +115,9 @@ pub fn in_the_code_of_a_block(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void
       let sa = unsafe { Tensor<f8e4m3, [16, 4], Memory::SMEM>::uninit() };
       let b = unsafe { Tensor<f4e2m1, [64, 8], Memory::SMEM>::uninit() };
       let sb = unsafe { Tensor<f8e4m3, [4, 8], Memory::SMEM>::uninit() };
-      lanes::matmul_scaled(&mut acc, &a, &sa, &b, &sb);
+      for i in 0..32 across lanes {
+        lanes::matmul_scaled(&mut acc, &a, &sa, &b, &sb);
+      }
     }
   }
   return;

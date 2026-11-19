@@ -51,7 +51,8 @@ pub enum LaneOp {
     Matmul,
     /// Multiplies each row of a tile in shared memory by an element of another tile.
     ScaleRows,
-    /// `acc` gets the matmul of two `f4e2m1` tiles, each with a scale for each block of k.
+    /// `acc` gets the matmul of two `f4e2m1` tiles, each with a scale for each block of k. The
+    /// lanes of a block or of a subgroup compute it together.
     MatmulScaled,
 }
 
@@ -464,6 +465,7 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
             &[Tensor, Tensor, Tensor, Tensor, Tensor],
             None,
         )
+        .with_lanes()
         .with_row_of(0)
         .writing_first(),
         LaneRoutine::call("matmul", Matmul, "vx.lane_matmul", matmul, None)
