@@ -69,6 +69,12 @@ An index can also use `i / n` and `i % n`, where `i` is the variable of a loop i
 with the same rule for `n`. With `i` below 4 and `j` below 32, `(i / 2) * 32 + j` is at most 63.
 So `c[b * 64 + (i / 2) * 32 + j]` fixes `b`.
 
+The parts can also be parts of parts, with numbers that each divide the next. The result of a
+tensor core is an example: in a block of 128 lanes, lane `l` holds row `16 * (l / 32) + (l % 32) / 4` and the row 8 below it, at columns `2 * (l % 4)` and one more. The compiler cuts `l` into the
+digits `l % 4`, `(l % 32) / 4` and `l / 32`. It writes each part as a sum of these digits, so
+`l / 4` is `(l % 32) / 4 + 8 * (l / 32)`. The indices must fix every digit. Here the row fixes the
+two upper digits, and the column fixes `l % 4`, so the writes fix `l`.
+
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
 
