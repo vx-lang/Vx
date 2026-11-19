@@ -306,21 +306,22 @@ def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>,
                      UnitAttr:$serial, UnitAttr:$subgroup_row);
 }
 
-// `lanes::matmul_scaled` in the code of a subgroup. `acc` is an `f32` matrix, `lhs`
-// and `rhs` are `f4E2M1FN` matrices, and `lhs_scale` and `rhs_scale` hold the
-// scale of each block of k: both `f8E4M3FN` (NVFP4) or both `f8E8M0FNU` (MXFP4).
-// Each element (i, j) of `acc` gets the sum over k of
-// lhs[i][k] * lhs_scale[i][k / B] * rhs[k][j] * rhs_scale[k / B][j], from 0 and
-// in the order of k, and then its old value. B is the k size of `lhs` over the k
-// size of `lhs_scale`. An `f8E4M3FN` scale counts without its sign bit, as the
-// tensor core reads it. The device clone gives the elements to the lanes of the
-// subgroup, and the host lowering and `serial` compute them in loops.
+// `lanes::matmul_scaled` in the code of a subgroup, or of a block of `lanes` lanes.
+// `acc` is an `f32` matrix, `lhs` and `rhs` are `f4E2M1FN` matrices, and
+// `lhs_scale` and `rhs_scale` hold the scale of each block of k: both `f8E4M3FN`
+// (NVFP4) or both `f8E8M0FNU` (MXFP4). Each element (i, j) of `acc` gets the sum
+// over k of lhs[i][k] * lhs_scale[i][k / B] * rhs[k][j] * rhs_scale[k / B][j],
+// from 0 and in the order of k, and then its old value. B is the k size of `lhs`
+// over the k size of `lhs_scale`. An `f8E4M3FN` scale counts without its sign
+// bit, as the tensor core reads it. The device clone gives the elements to the
+// lanes of the subgroup or the block, and the host lowering and `serial`
+// compute them in loops.
 def Vx_LaneMatmulScaledOp : Vx_Op<"lane_matmul_scaled", [MemoryEffects<[MemRead, MemWrite]>,
         DeclareOpInterfaceMethods<Vx_LaneOpInterface, ["expandInKernel"]>]> {
-    let summary = "A matmul of tiles with block scales, with the lanes of a subgroup.";
+    let summary = "A matmul of tiles with block scales, with the lanes of a block or a subgroup.";
     let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$lhs_scale,
-                     AnyMemRef:$rhs, AnyMemRef:$rhs_scale, UnitAttr:$subgroup,
-                     UnitAttr:$serial, UnitAttr:$subgroup_row);
+                     AnyMemRef:$rhs, AnyMemRef:$rhs_scale, I64Attr:$lanes,
+                     UnitAttr:$subgroup, UnitAttr:$serial, UnitAttr:$subgroup_row);
 }
 
 // `lanes::copy_async`: the lanes of a block copy the tile of `source` at `place`

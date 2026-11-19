@@ -4064,18 +4064,18 @@ static void expandLaneMatmulScaledOnHost(OpBuilder &b,
                      });
 }
 
-/// A scaled lane matmul on the lanes of a subgroup: lane `l` computes the
-/// elements `l`, `l + 32` and so on, in row order. Then every lane of the
-/// subgroup waits, so that each lane can read what the others wrote.
+/// A scaled lane matmul on the lanes of a subgroup or a block: lane `l`
+/// computes the elements `l`, `l + lanes` and so on, in row order. Then every
+/// lane of the subgroup or the block waits, so that each lane can read what the
+/// others wrote.
 static void expandLaneMatmulScaledOnDevice(OpBuilder &b,
                                            vx::LaneMatmulScaledOp op) {
-  assert(op.getSubgroup() && "the checker allows a scaled lane matmul only in "
-                             "the code of a subgroup");
   Location loc = op.getLoc();
-  Value lanes = b.create<arith::ConstantIndexOp>(loc, 32);
+  Value lanes = b.create<arith::ConstantIndexOp>(loc, op.getLanes());
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
-  Value lane = b.create<arith::RemUIOp>(loc, tid, lanes);
+  Value lane =
+      op.getSubgroup() ? b.create<arith::RemUIOp>(loc, tid, lanes) : tid;
   Value cols = b.create<memref::DimOp>(loc, op.getAcc(), 1);
   Value all = b.create<arith::MulIOp>(
       loc, b.create<memref::DimOp>(loc, op.getAcc(), 0), cols);
@@ -4086,8 +4086,12 @@ static void expandLaneMatmulScaledOnDevice(OpBuilder &b,
                              nb.create<arith::RemUIOp>(l, e, cols));
                          nb.create<scf::YieldOp>(l);
                        });
-  auto bar = b.create<vx::BarrierOp>(loc);
-  bar->setAttr("subgroup", b.getUnitAttr());
+  if (op.getSubgroup()) {
+    auto bar = b.create<vx::BarrierOp>(loc);
+    bar->setAttr("subgroup", b.getUnitAttr());
+  } else {
+    b.create<gpu::BarrierOp>(loc);
+  }
 }
 
 /// The wait right after `wait`, when only ops that touch no memory come between
@@ -4434,6 +4438,422 @@ static void expandLaneMatmulScaledWithMma(OpBuilder &b,
                        });
   auto bar = b.create<vx::BarrierOp>(loc);
   bar->setAttr("subgroup", b.getUnitAttr());
+}
+
+/// The block-scaled `tcgen05.mma` of a scaled lane matmul: its kind, the number
+/// of scales of a row or column in one step of 64 values of k, the values of k
+/// that share one scale, and the instruction descriptor.
+struct Tcgen05Mma {
+  std::string kind;
+  int64_t scales;
+  int64_t block;
+  uint32_t idesc;
+};
+
+/// The columns of tensor memory that a scaled lane matmul with `n` columns and
+/// `steps` steps of k takes, and where its scales start. The sums take columns
+/// 0 to n - 1. Step i keeps the scales of `lhs` in the 4 columns from
+/// `scaleStart + 32 * i`, and those of `rhs` in the columns from 16 more, as
+/// CUTLASS's NVFP4 GEMM places them. An allocation is a power of two from 32 to
+/// 512 columns.
+static std::pair<int64_t, int64_t> tcgen05Columns(int64_t n, int64_t steps) {
+  int64_t scaleStart = llvm::alignTo(n, 16);
+  int64_t used = scaleStart + 32 * steps;
+  return {std::max<int64_t>(32, llvm::PowerOf2Ceil(used)), scaleStart};
+}
+
+/// The block-scaled `tcgen05.mma` that `chip` has for `op`, if any:
+/// `sm_100a`, `sm_103a` and `sm_110a`. It is off unless `VX_TCGEN05=1`,
+/// because no such kernel of Vx has run on a GPU yet, and a wrong descriptor
+/// can hang the GPU. The matmul is in the code of a block of 128 lanes. `acc`
+/// has 128 rows and N columns, N a multiple of 8 up to 256, and k is a multiple
+/// of 64.
+static std::optional<Tcgen05Mma> tcgen05MmaFor(vx::LaneMatmulScaledOp op,
+                                               StringRef chip) {
+  const char *on = ::getenv("VX_TCGEN05");
+  if (!on || StringRef(on) != "1")
+    return std::nullopt;
+  unsigned number = chipNumber(chip);
+  if ((number != 100 && number != 103 && number != 110) || !chip.ends_with("a"))
+    return std::nullopt;
+  if (op.getSubgroup() || op.getSerial() || op.getLanes() != 128)
+    return std::nullopt;
+  for (Value v : op->getOperands())
+    if (!cast<MemRefType>(v.getType()).hasStaticShape())
+      return std::nullopt;
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  auto lhsScale = cast<MemRefType>(op.getLhsScale().getType());
+  int64_t m = acc.getDimSize(0), n = acc.getDimSize(1);
+  int64_t k = cast<MemRefType>(op.getLhs().getType()).getDimSize(1);
+  if (m != 128 || n % 8 || n > 256 || k % 64 ||
+      tcgen05Columns(n, k / 64).first > 512)
+    return std::nullopt;
+  int64_t block = k / lhsScale.getDimSize(1);
+  Type scale = lhsScale.getElementType();
+  // Instruction descriptor of `kind::mxf4` and `kind::mxf4nvf4` (PTX ISA,
+  // "Instruction descriptor"): `e2m1` A and B (bits 7 and 10), both K-major,
+  // N >> 3 in bits 17-22, the scale type in bits 23-24, M >> 7 in bits 27-28,
+  // dense, K = 64, scale data IDs 0, and the scales of A in 32 lanes.
+  auto idesc = [&](uint32_t scaleType) -> uint32_t {
+    return (1u << 7) | (1u << 10) | (uint32_t(n >> 3) << 17) |
+           (scaleType << 23) | (1u << 27);
+  };
+  if (isa<Float8E4M3FNType>(scale) && block == 16)
+    return Tcgen05Mma{"mxf4nvf4.block_scale.scale_vec::4X", 4, 16, idesc(0)};
+  if (isa<Float8E8M0FNUType>(scale) && block == 16)
+    return Tcgen05Mma{"mxf4nvf4.block_scale.scale_vec::4X", 4, 16, idesc(1)};
+  if (isa<Float8E8M0FNUType>(scale) && block == 32)
+    return Tcgen05Mma{"mxf4.block_scale.scale_vec::2X", 2, 32, idesc(1)};
+  return std::nullopt;
+}
+
+/// A scaled lane matmul on the tensor cores of the B200, with `tcgen05`. Every
+/// lane of the block of 128 runs this, and these are the rules that the B200
+/// SASS notes found on silicon for `kind::f16`:
+/// - The lanes copy `lhs` and `rhs` into shared memory as the tensor core
+///   reads them: two `e2m1` values to a byte, the first in the low bits,
+///   K-major rows of 128 bytes with the 128-byte swizzle (16-byte chunk c of
+///   row r goes to chunk c ^ (r % 8)), 8 rows to 1024 bytes, and 256 values of
+///   k to a group of rows. A `fence.proxy.async` makes the copy visible to the
+///   tensor core.
+/// - Warp 0 alone allocates and frees the tensor memory, and thread 0 makes an
+///   mbarrier that one commit ends.
+/// - Each warp writes the scales into its own 32 lanes of tensor memory with
+///   `tcgen05.st`, because the tensor core reads them from every 32 lanes.
+///   Lane l of column c holds row `32 * c + l` of `lhs_scale`, or column
+///   `32 * c + l` of `rhs_scale`, one scale per byte.
+/// - Thread 0 issues one `tcgen05.mma` for each 64 values of k, the first one
+///   from 0, and commits them to the mbarrier.
+/// - Warp 0 waits for the mbarrier, a bounded number of times, and stops the
+///   kernel with `trap` if it waits too long. The other warps wait at a block
+///   barrier. Then lane l of warp w reads row `32 * w + l` of the sums with
+///   `tcgen05.ld`, adds the old value, and stores it to `acc`.
+static void expandLaneMatmulScaledWithTcgen05(OpBuilder &b,
+                                              vx::LaneMatmulScaledOp op,
+                                              const Tcgen05Mma &mma) {
+  Location loc = op.getLoc();
+  MLIRContext *ctx = b.getContext();
+  Type i8 = b.getI8Type(), i32 = b.getI32Type(), i64 = b.getI64Type();
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  int64_t m = acc.getDimSize(0), n = acc.getDimSize(1);
+  int64_t k = cast<MemRefType>(op.getLhs().getType()).getDimSize(1);
+  int64_t steps = k / 64, groups = (k + 255) / 256;
+  auto [columns, scaleStart] = tcgen05Columns(n, steps);
+  auto index = [&](int64_t v) -> Value {
+    return b.create<arith::ConstantIndexOp>(loc, v);
+  };
+  auto int32 = [&](OpBuilder &nb, Location l, int64_t v) -> Value {
+    return nb.create<arith::ConstantIntOp>(l, i32, v);
+  };
+  auto ptx = [&](OpBuilder &nb, Location l, StringRef text,
+                 StringRef constraints, ValueRange operands) {
+    lanePtx(nb, l, text, constraints, operands);
+  };
+  auto syncBlock = [&](OpBuilder &nb, Location l) {
+    ptx(nb, l, "tcgen05.fence::before_thread_sync;", "", {});
+    nb.create<gpu::BarrierOp>(l);
+    ptx(nb, l, "tcgen05.fence::after_thread_sync;", "", {});
+  };
+  // Shared memory, at the start of the kernel: the copies of the tiles, the
+  // address that the allocation gives, and the mbarrier.
+  auto func = op->getParentOfType<gpu::GPUFuncOp>();
+  OpBuilder entry(&func.getBody().front(), func.getBody().front().begin());
+  auto shared = [&](int64_t count, Type elem, int64_t align) -> Value {
+    return entry.create<memref::AllocaOp>(
+        loc,
+        MemRefType::get({count}, elem, MemRefLayoutAttrInterface{},
+                        entry.getI64IntegerAttr(3)),
+        entry.getI64IntegerAttr(align));
+  };
+  int64_t lhsBytes = groups * m * 128, rhsBytes = groups * n * 128;
+  Value lhsCopy = shared(lhsBytes, i8, 1024);
+  Value rhsCopy = shared(rhsBytes, i8, 1024);
+  Value slot = shared(1, i32, 16);
+  Value barrier = shared(1, i64, 8);
+
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value warp = b.create<arith::DivUIOp>(loc, tid, index(32));
+  Value lane = b.create<arith::RemUIOp>(loc, tid, index(32));
+  Value warpZero =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, warp, index(0));
+
+  // The 4 bits of an `e2m1` value, in an i8.
+  auto nibble = [&](OpBuilder &nb, Location l, Value v) -> Value {
+    Value bits = nb.create<arith::ExtUIOp>(
+        l, i8, nb.create<arith::BitcastOp>(l, nb.getIntegerType(4), v));
+    return nb.create<arith::AndIOp>(
+        l, bits, nb.create<arith::ConstantIntOp>(l, i8, 0xF));
+  };
+  // Copies a tile of `rows` rows into `copy`. Row r, value kk of the tile is
+  // `at(r, kk)`.
+  auto copyTile =
+      [&](Value copy, int64_t rows,
+          function_ref<Value(OpBuilder &, Location, Value, Value)> at) {
+        int64_t bytes = groups * rows * 128;
+        b.create<scf::ForOp>(
+            loc, tid, index(bytes), index(128), ValueRange{},
+            [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+              Value group = nb.create<arith::DivUIOp>(l, e, index(rows * 128));
+              Value rest = nb.create<arith::RemUIOp>(l, e, index(rows * 128));
+              Value r = nb.create<arith::DivUIOp>(l, rest, index(128));
+              Value byte = nb.create<arith::RemUIOp>(l, rest, index(128));
+              Value kk = nb.create<arith::AddIOp>(
+                  l, nb.create<arith::MulIOp>(l, group, index(256)),
+                  nb.create<arith::MulIOp>(l, byte, index(2)));
+              // A byte past the end of k holds zeros.
+              Value inside = nb.create<arith::CmpIOp>(
+                  l, arith::CmpIPredicate::ult, kk, index(k));
+              Value safe = nb.create<arith::SelectOp>(l, inside, kk, index(0));
+              Value low = nibble(nb, l, at(nb, l, r, safe));
+              Value high = nibble(
+                  nb, l,
+                  at(nb, l, r, nb.create<arith::AddIOp>(l, safe, index(1))));
+              Value pair = nb.create<arith::OrIOp>(
+                  l, low,
+                  nb.create<arith::ShLIOp>(
+                      l, high, nb.create<arith::ConstantIntOp>(l, i8, 4)));
+              pair = nb.create<arith::SelectOp>(
+                  l, inside, pair, nb.create<arith::ConstantIntOp>(l, i8, 0));
+              // The 128-byte swizzle: chunk c of row r goes to chunk c ^ (r %
+              // 8).
+              Value chunk = nb.create<arith::XOrIOp>(
+                  l, nb.create<arith::DivUIOp>(l, byte, index(16)),
+                  nb.create<arith::RemUIOp>(l, r, index(8)));
+              Value place = nb.create<arith::AddIOp>(
+                  l,
+                  nb.create<arith::AddIOp>(
+                      l, nb.create<arith::MulIOp>(l, group, index(rows * 128)),
+                      nb.create<arith::MulIOp>(l, r, index(128))),
+                  nb.create<arith::AddIOp>(
+                      l, nb.create<arith::MulIOp>(l, chunk, index(16)),
+                      nb.create<arith::RemUIOp>(l, byte, index(16))));
+              nb.create<memref::StoreOp>(l, pair, copy, ValueRange{place});
+              nb.create<scf::YieldOp>(l);
+            });
+      };
+  copyTile(lhsCopy, m, [&](OpBuilder &nb, Location l, Value r, Value kk) {
+    return nb.create<memref::LoadOp>(l, op.getLhs(), ValueRange{r, kk})
+        .getResult();
+  });
+  copyTile(rhsCopy, n, [&](OpBuilder &nb, Location l, Value c, Value kk) {
+    return nb.create<memref::LoadOp>(l, op.getRhs(), ValueRange{kk, c})
+        .getResult();
+  });
+  ptx(b, loc, "fence.proxy.async.shared::cta;", "", {});
+
+  // Warp 0 allocates the tensor memory, and thread 0 makes the mbarrier.
+  Value slotAt = laneAddress(b, loc, slot);
+  Value barrierAt = laneAddress(b, loc, barrier);
+  auto onWarpZero = [&](function_ref<void(OpBuilder &)> body) {
+    auto inWarp = b.create<scf::IfOp>(loc, warpZero, /*withElseRegion=*/false);
+    OpBuilder wb =
+        OpBuilder::atBlockTerminator(&inWarp.getThenRegion().front());
+    body(wb);
+  };
+  onWarpZero([&](OpBuilder &wb) {
+    ptx(wb, loc,
+        "tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [$0], " +
+            std::to_string(columns) + ";",
+        "l", {slotAt});
+  });
+  onThreadZero(b, loc, [&](OpBuilder &t) {
+    ptx(t, loc, "mbarrier.init.shared::cta.b64 [$0], 1;", "l", {barrierAt});
+    ptx(t, loc, "fence.mbarrier_init.release.cluster;", "", {});
+  });
+  syncBlock(b, loc);
+  Value base = b.create<memref::LoadOp>(loc, slot, ValueRange{index(0)});
+  // The address of the 32 lanes of this warp: the lane in bits 31-16.
+  Value warpBase = b.create<arith::AddIOp>(
+      loc, base,
+      b.create<arith::ShLIOp>(
+          loc,
+          b.create<arith::MulIOp>(loc,
+                                  b.create<arith::IndexCastOp>(loc, i32, warp),
+                                  int32(b, loc, 32)),
+          int32(b, loc, 16)));
+
+  // The scales, into tensor memory. A register holds the scales of one row or
+  // column for one step, the first in the low bits. An `f8E4M3FN` scale loses
+  // its sign bit, as the loops on the host read it.
+  auto packScales = [&](ArrayRef<Value> values) -> Value {
+    Value word;
+    for (auto [e, v] : llvm::enumerate(values)) {
+      Value part = b.create<arith::BitcastOp>(loc, i8, v);
+      if (isa<Float8E4M3FNType>(v.getType()))
+        part = b.create<arith::AndIOp>(
+            loc, part, b.create<arith::ConstantIntOp>(loc, i8, 0x7F));
+      part = b.create<arith::ExtUIOp>(loc, i32, part);
+      if (e)
+        part = b.create<arith::ShLIOp>(loc, part, int32(b, loc, 8 * e));
+      word = word ? b.create<arith::OrIOp>(loc, word, part).getResult() : part;
+    }
+    return word;
+  };
+  int64_t rhsColumns = llvm::PowerOf2Ceil((n + 31) / 32);
+  auto store = [&](Value at, ArrayRef<Value> regs) {
+    std::string list, constraints = "r";
+    for (size_t r = 0; r < regs.size(); ++r) {
+      list += (r ? ", $" : "$") + std::to_string(r + 1);
+      constraints += ",r";
+    }
+    SmallVector<Value> operands = {at};
+    llvm::append_range(operands, regs);
+    ptx(b, loc,
+        "tcgen05.st.sync.aligned.32x32b.x" + std::to_string(regs.size()) +
+            ".b32 [$0], {" + list + "};",
+        constraints, operands);
+  };
+  for (int64_t i = 0; i < steps; ++i) {
+    SmallVector<Value> lhsRegs, rhsRegs;
+    for (int64_t c = 0; c < 4; ++c) {
+      Value row = b.create<arith::AddIOp>(loc, lane, index(32 * c));
+      SmallVector<Value> values;
+      for (int64_t j = 0; j < mma.scales; ++j)
+        values.push_back(b.create<memref::LoadOp>(
+            loc, op.getLhsScale(), ValueRange{row, index(i * mma.scales + j)}));
+      lhsRegs.push_back(packScales(values));
+    }
+    for (int64_t c = 0; c < rhsColumns; ++c) {
+      Value col = b.create<arith::AddIOp>(loc, lane, index(32 * c));
+      Value inside = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult,
+                                             col, index(n));
+      Value safe = b.create<arith::SelectOp>(loc, inside, col, index(0));
+      SmallVector<Value> values;
+      for (int64_t j = 0; j < mma.scales; ++j)
+        values.push_back(b.create<memref::LoadOp>(
+            loc, op.getRhsScale(),
+            ValueRange{index(i * mma.scales + j), safe}));
+      rhsRegs.push_back(b.create<arith::SelectOp>(
+          loc, inside, packScales(values), int32(b, loc, 0)));
+    }
+    Value lhsAt = b.create<arith::AddIOp>(loc, warpBase,
+                                          int32(b, loc, scaleStart + 32 * i));
+    store(lhsAt, lhsRegs);
+    store(b.create<arith::AddIOp>(loc, lhsAt, int32(b, loc, 16)), rhsRegs);
+  }
+  ptx(b, loc, "tcgen05.wait::st.sync.aligned;", "", {});
+  syncBlock(b, loc);
+
+  // Thread 0 issues the matmuls, and commits them to the mbarrier. Shared
+  // memory descriptor: the address >> 4 in bits 0-13, 16 bytes between core
+  // matrices along k (bits 16-29), 1024 bytes between groups of 8 rows (bits
+  // 32-45), version 1 (bit 46), and the 128-byte swizzle (bits 61-63).
+  Value lhsAt = laneAddress(b, loc, lhsCopy);
+  Value rhsAt = laneAddress(b, loc, rhsCopy);
+  onThreadZero(b, loc, [&](OpBuilder &t) {
+    auto descriptor = [&](Value at, int64_t offset) -> Value {
+      Value address = t.create<arith::AddIOp>(
+          loc, at, t.create<arith::ConstantIntOp>(loc, i64, offset));
+      Value field = t.create<arith::AndIOp>(
+          loc,
+          t.create<arith::ShRUIOp>(loc, address,
+                                   t.create<arith::ConstantIntOp>(loc, i64, 4)),
+          t.create<arith::ConstantIntOp>(loc, i64, 0x3FFF));
+      return t.create<arith::OrIOp>(
+          loc, field,
+          t.create<arith::ConstantIntOp>(loc, i64, 0x4000404000010000LL));
+    };
+    Value idesc = t.create<arith::ConstantIntOp>(loc, i32, mma.idesc);
+    for (int64_t i = 0; i < steps; ++i) {
+      int64_t within = (i % 4) * 32;
+      Value scaleAt = t.create<arith::AddIOp>(
+          loc, base,
+          t.create<arith::ConstantIntOp>(loc, i32, scaleStart + 32 * i));
+      ptx(t, loc,
+          "{ .reg .pred p; setp.ne.b32 p, $6, 0; "
+          "tcgen05.mma.cta_group::1.kind::" +
+              mma.kind + " [$0], $1, $2, $3, [$4], [$5], p; }",
+          "r,l,l,r,r,r,r",
+          {base, descriptor(lhsAt, (i / 4) * m * 128 + within),
+           descriptor(rhsAt, (i / 4) * n * 128 + within), idesc, scaleAt,
+           t.create<arith::AddIOp>(
+               loc, scaleAt, t.create<arith::ConstantIntOp>(loc, i32, 16)),
+           t.create<arith::ConstantIntOp>(loc, i32, i ? 1 : 0)});
+    }
+    ptx(t, loc,
+        "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster."
+        "b64 [$0];",
+        "l", {barrierAt});
+  });
+
+  // Warp 0 waits for the commit, at most 2^24 times, and stops the kernel if
+  // the matmuls never end. The other warps wait at the block barrier.
+  onWarpZero([&](OpBuilder &wb) {
+    auto loop = wb.create<scf::WhileOp>(
+        loc, TypeRange{i32, i32},
+        ValueRange{int32(wb, loc, 0), int32(wb, loc, 0)},
+        [&](OpBuilder &cb, Location l, ValueRange args) {
+          Value waiting = cb.create<arith::AndIOp>(
+              l,
+              cb.create<arith::CmpIOp>(l, arith::CmpIPredicate::eq, args[0],
+                                       int32(cb, l, 0)),
+              cb.create<arith::CmpIOp>(l, arith::CmpIPredicate::ult, args[1],
+                                       int32(cb, l, 1 << 24)));
+          cb.create<scf::ConditionOp>(l, waiting, args);
+        },
+        [&](OpBuilder &cb, Location l, ValueRange args) {
+          Value ended =
+              cb.create<LLVM::InlineAsmOp>(
+                    l, i32, ValueRange{barrierAt},
+                    "{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 "
+                    "p, [$1], 0; selp.u32 $0, 1, 0, p; }",
+                    "=r,l", /*has_side_effects=*/true,
+                    /*is_align_stack=*/false,
+                    LLVM::tailcallkind::TailCallKind::None,
+                    LLVM::AsmDialectAttr(), ArrayAttr())
+                  .getResult(0);
+          cb.create<scf::YieldOp>(
+              l, ValueRange{ended, cb.create<arith::AddIOp>(l, args[1],
+                                                            int32(cb, l, 1))});
+        });
+    auto never = wb.create<scf::IfOp>(
+        loc,
+        wb.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                 loop.getResult(0), int32(wb, loc, 0)),
+        /*withElseRegion=*/false);
+    OpBuilder nb = OpBuilder::atBlockTerminator(&never.getThenRegion().front());
+    ptx(nb, loc, "trap;", "", {});
+  });
+  syncBlock(b, loc);
+
+  // Lane l of warp w reads row 32 w + l of the sums, 8 columns at a time.
+  Value row = b.create<arith::AddIOp>(
+      loc, b.create<arith::MulIOp>(loc, warp, index(32)), lane);
+  Type eight = LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(8, i32));
+  for (int64_t c0 = 0; c0 < n; c0 += 8) {
+    Value sums =
+        b.create<LLVM::InlineAsmOp>(
+             loc, eight,
+             ValueRange{
+                 b.create<arith::AddIOp>(loc, warpBase, int32(b, loc, c0))},
+             "tcgen05.ld.sync.aligned.32x32b.x8.b32 {$0, $1, $2, $3, $4, $5, "
+             "$6, $7}, [$8];",
+             "=r,=r,=r,=r,=r,=r,=r,=r,r", /*has_side_effects=*/true,
+             /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
+             LLVM::AsmDialectAttr(), ArrayAttr())
+            .getResult(0);
+    ptx(b, loc, "tcgen05.wait::ld.sync.aligned;", "", {});
+    for (int64_t j = 0; j < 8; ++j) {
+      Value sum = b.create<arith::BitcastOp>(
+          loc, b.getF32Type(), b.create<LLVM::ExtractValueOp>(loc, sums, j));
+      Value col = index(c0 + j);
+      Value old =
+          b.create<memref::LoadOp>(loc, op.getAcc(), ValueRange{row, col});
+      b.create<memref::StoreOp>(loc, b.create<arith::AddFOp>(loc, old, sum),
+                                op.getAcc(), ValueRange{row, col});
+    }
+  }
+
+  // Every lane has read its sums, so warp 0 frees the tensor memory. The block
+  // barrier also lets each lane read what the others stored.
+  syncBlock(b, loc);
+  onWarpZero([&](OpBuilder &wb) {
+    ptx(wb, loc,
+        "tcgen05.dealloc.cta_group::1.sync.aligned.b32 $0, " +
+            std::to_string(columns) + ";",
+        "r", {base});
+  });
 }
 
 /// Whether the Metal printer can print a lane matmul with the simdgroup
@@ -7914,8 +8334,15 @@ struct ConvertVxToStandardPass
         SmallVector<vx::LaneMatmulScaledOp> scaled;
         gpuFunc.walk([&](vx::LaneMatmulScaledOp op) { scaled.push_back(op); });
         for (vx::LaneMatmulScaledOp op : scaled) {
-          std::optional<ScaledMma> mma =
-              op.getSerial() ? std::nullopt : scaledMmaFor(op, mmaChip);
+          if (std::optional<Tcgen05Mma> tc = tcgen05MmaFor(op, mmaChip)) {
+            OpBuilder b(op);
+            expandLaneMatmulScaledWithTcgen05(b, op, *tc);
+            op.erase();
+            continue;
+          }
+          std::optional<ScaledMma> mma = op.getSerial() || !op.getSubgroup()
+                                             ? std::nullopt
+                                             : scaledMmaFor(op, mmaChip);
           if (!mma)
             continue;
           OpBuilder b(op);

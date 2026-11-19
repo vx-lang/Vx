@@ -105,9 +105,9 @@ tensor cores multiply them as `f16`.
 
 ## Block-scaled fp4: NVFP4 and MXFP4
 
-The compiler does not support the scaled tensor type yet ([#1877]). In the code of a GPU subgroup,
-`lanes::matmul_scaled` already multiplies two NVFP4 or MXFP4 tiles whose scales are in tensors of
-their own ([#3645]).
+The compiler does not support the scaled tensor type yet ([#1877]). In the code of a GPU block or
+subgroup, `lanes::matmul_scaled` already multiplies two NVFP4 or MXFP4 tiles whose scales are in
+tensors of their own ([#3645]).
 
 An `f4e2m1` value is a number from -6 to 6. To hold real weights, NVFP4 and MXFP4
 put the values in blocks, and give each block a scale. A value is its `f4e2m1` number times the
