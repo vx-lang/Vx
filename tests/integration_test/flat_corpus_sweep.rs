@@ -318,6 +318,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/a_lane_variable_with_the_name_of_a_parameter_for_emit_ptx.vx",
         // needs --machine
         "optimizations/pass/a_kernel_reads_a_parameter_that_the_host_borrows_for_emit_ptx.vx",
+        // needs --machine
+        "optimizations/pass/blocks_write_the_rows_of_disjoint_ranges.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

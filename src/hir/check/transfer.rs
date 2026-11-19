@@ -546,6 +546,7 @@ impl<'a> TypeChecker<'a> {
                 Type::Ref(inner, _)
                 | Type::Verified(inner)
                 | Type::Distinct(inner)
+                | Type::DisjointRanges(inner)
                 | Type::Borrow { inner, .. }
                 | Type::Pointer(inner, _, _) => stack.push(*inner),
                 Type::Struct(..) | Type::GenericInstance(..) => {
@@ -1376,6 +1377,7 @@ impl<'a> TypeChecker<'a> {
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
             | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => self.collect_placed_tensors(inner, out),
             // A channel end holds no tensor: `channel` counts the room of the channel.
             Type::GenericInstance(base, _) if Self::is_channel_end(base) => return,
@@ -2555,6 +2557,12 @@ impl<'a> TypeChecker<'a> {
                     unreachable!("matched above")
                 };
                 Type::Distinct(Box::new(Type::Tensor(el, dims, Some(placement))))
+            }
+            Type::DisjointRanges(inner) if matches!(*inner, Type::Tensor(..)) => {
+                let Type::Tensor(el, dims, _) = *inner else {
+                    unreachable!("matched above")
+                };
+                Type::DisjointRanges(Box::new(Type::Tensor(el, dims, Some(placement))))
             }
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {

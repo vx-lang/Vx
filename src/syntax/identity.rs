@@ -177,7 +177,8 @@ pub(crate) fn specialization_type_name(ty: &Type) -> Option<String> {
             | Type::Ref(inner, _)
             | Type::Pinned(inner, _)
             | Type::Verified(inner)
-            | Type::Distinct(inner) => {
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => {
                 visit(inner, &format!("{path}/inner"), entries)?;
             }
             Type::GenericInstance(base, args) => {
