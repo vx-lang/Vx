@@ -4509,7 +4509,12 @@ impl<'r> Lowerer<'r> {
         } else {
             Vec::new()
         };
-        self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
+        self.emit_effect(
+            Opcode::Spawn,
+            Register(launch.max_registers as u32),
+            Register(0),
+            imm,
+        );
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
         }
