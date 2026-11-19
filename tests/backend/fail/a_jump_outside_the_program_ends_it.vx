@@ -11,6 +11,9 @@
 // has no other frames. On macOS, the unwinder of Rust used to loop on such an address, so the
 // program ran at 100% CPU and printed nothing.
 //
+// REQUIRES: linux
+// On macOS the runtime has no crash handler for now, so it prints no report there.
+//
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not="after the jump"
 // CHECK: {{^}}before the jump{{$}}
 // CHECK: {{^}}Caught SIGSEGV: Segmentation Fault!{{$}}

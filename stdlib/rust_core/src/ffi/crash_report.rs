@@ -51,7 +51,12 @@ static PREPARED: OnceLock<Prepared> = OnceLock::new();
 static REPORTING: AtomicBool = AtomicBool::new(false);
 
 /// Finds the symbolizer and the loaded images, and installs the handler. Runs before the program.
+/// On macOS the report loses the function that crashed, so a crash there gets no handler and no
+/// report for now.
 pub(crate) fn prepare() {
+    if cfg!(target_os = "macos") {
+        return;
+    }
     PREPARED.get_or_init(|| Prepared {
         symbolizer: find_symbolizer(),
         images: loaded_images(),
