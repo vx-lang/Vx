@@ -89,7 +89,9 @@ acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);   // sa and sb are f8e4m3 til
 
 On an NVIDIA GPU from `sm_89` on, it runs on the tensor cores when the sizes are multiples of
 16 x 8 x 32. The tensor cores add the products in an order of their own, so the last bits of a sum
-can differ from the sum on the CPU.
+can differ from the sum on the CPU. On `sm_89`, the tensor cores multiply the fp8 values. On
+`sm_90`, the assembler of NVIDIA (`ptxas`) converts the values to f16 first, and the tensor cores
+multiply them as f16.
 
 ## Block-scaled fp4: NVFP4 and MXFP4
 
