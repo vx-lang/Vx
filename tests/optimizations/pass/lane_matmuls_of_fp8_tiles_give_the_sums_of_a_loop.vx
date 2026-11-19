@@ -1,0 +1,95 @@
+//===- lane_matmuls_of_fp8_tiles_give_the_sums_of_a_loop.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two matmuls in the code of a subgroup loop: `f8e4m3` tiles of 32 x 32 by 32 x 16 added to
+// `acc`, which starts at 1, and `f8e5m2` tiles of 16 x 64 by 64 x 8 with no `+`. On an NVIDIA GPU
+// from `sm_89` on, both go to the tensor cores (`lane_matmuls_of_fp8_tiles_on_tensor_cores.vx`
+// checks the PTX). With no GPU, the kernel runs on the CPU. The inputs are small integers, so each
+// sum is exact, and both give the values that a Python loop gave.
+//
+// RUN: vxc %s --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}e4m3: -3 -3 7 sum of all 1020{{$}}
+// CHECK: {{^}}e5m2: -5 2 5 sum of all -3{{$}}
+
+fn main() -> i32 {
+  let mut c = transfer(Tensor<f32, [2, 32, 16]>::fill(0.0), Memory::HBM);
+  let mut d = transfer(Tensor<f32, [2, 16, 8]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<f8e4m3, [2, 32, 32], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe {
+        Tensor<f8e4m3, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      let mut ea = unsafe {
+        Tensor<f8e5m2, [2, 16, 64], Memory::SMEM>::uninit()
+      };
+      let mut eb = unsafe {
+        Tensor<f8e5m2, [2, 64, 8], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      let mut last = unsafe {
+        Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          for k in 0..32 {
+            sa[w][i][k] = (((w * 32 + i) * 3 + k * 5) % 7 - 3) as f8e4m3;
+          }
+          for j in 0..16 {
+            acc[w][i][j] = 1.0;
+            sb[w][i][j] = ((i * 2 + j) % 5 - 2) as f8e4m3;
+          }
+          for h in 0..2 {
+            let k = h * 32 + i;
+            for r in 0..16 {
+              ea[w][r][k] = (((w * 16 + r) + k * 3) % 5 - 2) as f8e5m2;
+            }
+            for j in 0..8 {
+              eb[w][k][j] = ((k + j * 3) % 7 - 3) as f8e5m2;
+            }
+          }
+        }
+        acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        last[w] = (ea[w] as f32) @ (eb[w] as f32);
+        for i in 0..32 across lanes {
+          for j in 0..16 {
+            c[w][i][j] = acc[w][i][j];
+          }
+          if i < 16 {
+            for j in 0..8 {
+              d[w][i][j] = last[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let hd = transfer(d, Memory::CPU_DRAM);
+  let mut all = 0.0;
+  let mut all_last = 0.0;
+  for w in 0..2 {
+    for i in 0..32 {
+      for j in 0..16 {
+        all = all + hc[w][i][j];
+      }
+    }
+    for i in 0..16 {
+      for j in 0..8 {
+        all_last = all_last + hd[w][i][j];
+      }
+    }
+  }
+  println!("e4m3: {} {} {} sum of all {}", hc[0][0][0], hc[1][31][15], hc[1][20][5], all);
+  println!("e5m2: {} {} {} sum of all {}", hd[0][0][0], hd[1][15][7], hd[0][9][3], all_last);
+  return 0;
+}

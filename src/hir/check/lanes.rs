@@ -343,7 +343,13 @@ impl LaneRoutine {
 
 /// The element types of the accumulator of a lane matmul, and of the tiles that it multiplies.
 const MATMUL_ACC: &[ElementType] = &[ElementType::F32];
-const MATMUL_TILES: &[ElementType] = &[ElementType::F32, ElementType::BF16, ElementType::F16];
+const MATMUL_TILES: &[ElementType] = &[
+    ElementType::F32,
+    ElementType::BF16,
+    ElementType::F16,
+    ElementType::F8E4M3,
+    ElementType::F8E5M2,
+];
 
 const KIND_SUM: (&str, LaneAttr) = ("kind", LaneAttr::Str("sum"));
 const KIND_MAX: (&str, LaneAttr) = ("kind", LaneAttr::Str("max"));
