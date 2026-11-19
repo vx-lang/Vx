@@ -1586,6 +1586,8 @@ impl<'c> MeliorGenerator<'c> {
         func: &Function,
     ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
+        // Without this, a local such as `v` kept the type it had in an earlier function.
+        self.ast_env.clear();
         self.allocs.clear();
         self.started_slots.clear();
         self.function_file = func.file.as_ref().map(|f| f.to_string());
@@ -3021,6 +3023,8 @@ impl<'c> MeliorGenerator<'c> {
             // to a type the checker already computed -- and a redundant annotation then decides
             // which code is generated. The flat path's inference already sees through it.
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // A `spawn` block that gives a value has the type of its tail expression too.
+            Expr::SpawnOn(s) => self.infer_ast_type(s.ret.as_deref()?),
             // An `if` that gives a value has the type of its first branch's last expression.
             Expr::If(i) => match i.then_block.last()? {
                 syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),

@@ -2471,9 +2471,11 @@ impl<'r> Lowerer<'r> {
                     lowered_ty(&sig.ret_ty, self.registry)
                 }
             },
+            // A name that the arm's pattern binds hides any outer local of that name, so the
+            // payload type comes first.
             Expr::Match(m) => m.arms.iter().find_map(|arm| {
-                self.infer_block_ty(&arm.body)
-                    .or_else(|| self.infer_payload_binding_ty(m, arm))
+                self.infer_payload_binding_ty(m, arm)
+                    .or_else(|| self.infer_block_ty(&arm.body))
             }),
             Expr::If(iff) => self.infer_if_ty(iff),
             // `t.extent(k)`, as the checker rewrites it: an `i32`, as `lower_expr` emits it.
