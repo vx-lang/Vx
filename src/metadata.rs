@@ -605,6 +605,10 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
                         w.u8(1);
                         w.sym(v);
                     }
+                    Dim::DynMult(n) => {
+                        w.u8(2);
+                        w.u64(*n);
+                    }
                 }
             }
         }
@@ -692,6 +696,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
                         Some(ElementType::I32),
                         crate::syntax::Span::default(),
                     ))),
+                    2 => Dim::DynMult(r.u64()?),
                     t => return Err(format!("vxlib: bad Dim tag {t}")),
                 });
             }

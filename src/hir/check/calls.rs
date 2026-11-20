@@ -2881,7 +2881,7 @@ impl<'a> TypeChecker<'a> {
             // takes exactly the arguments the other cannot. `::fill(v)` adds one on top: the
             // value, which no other constructor takes.
             let fills = resolved_name == "Tensor::fill";
-            let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn)));
+            let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn | Dim::DynMult(_))));
             let wanted = usize::from(dynamic) + usize::from(fills);
             if args.len() != wanted {
                 let why = if fills {

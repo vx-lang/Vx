@@ -263,7 +263,9 @@ fn tensor_dim_string(d: &Dim) -> Option<String> {
         Dim::Static(Expr::Number(n)) => Some(n.value.as_ref().to_string()),
         Dim::Static(Expr::Identifier(id)) => Some(id.name.as_ref().to_string()),
         Dim::Static(_) => None,
-        Dim::Dyn => Some(DYN_DIM.to_string()),
+        // `? mult_of N` states a fact about the extent, not the extent: at run time it is
+        // the same unknown extent a plain `?` is.
+        Dim::Dyn | Dim::DynMult(_) => Some(DYN_DIM.to_string()),
     }
 }
 
@@ -5724,8 +5726,10 @@ impl<'r> Lowerer<'r> {
                 _ => false,
             };
             let local_dims: Vec<bool> = dims.iter().map(local_dim).collect();
-            let dynamic =
-                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn));
+            let dynamic = local_dims.iter().any(|l| *l)
+                || dims
+                    .iter()
+                    .any(|d| matches!(d, Dim::Dyn | Dim::DynMult(_)));
             let mut extents: Vec<Register> = Vec::new();
             let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
@@ -5735,7 +5739,9 @@ impl<'r> Lowerer<'r> {
                 };
                 for (i, d) in dims.iter().enumerate() {
                     let extent = match d {
-                        Dim::Dyn => written_shape
+                        // A `?` and a `? mult_of N` take their extents from the written shape:
+                        // the divisor is a fact about the extent, not a value.
+                        Dim::Dyn | Dim::DynMult(_) => written_shape
                             .filter(|s| s.len() == dims.len())
                             .map(|s| &s[i])?,
                         Dim::Static(e) if local_dims[i] => e,

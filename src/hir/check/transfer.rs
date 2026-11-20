@@ -826,6 +826,9 @@ impl<'a> TypeChecker<'a> {
                             format!("dimension {i} is the runtime value '{}'", id.name)
                         }
                         Dim::Dyn => format!("dimension {i} is a run-time extent"),
+                        Dim::DynMult(n) => {
+                            format!("dimension {i} is a run-time extent stated to be a multiple of {n}")
+                        }
                         _ => format!("dimension {i} is not a compile-time constant"),
                     })
                     .unwrap_or_else(|| "the shape is not statically known".to_string());

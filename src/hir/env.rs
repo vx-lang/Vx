@@ -1583,6 +1583,9 @@ impl<'a> TypeChecker<'a> {
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
                     match (dim1, dim2) {
                         (Dim::Dyn, _) => {}
+                        // A `? mult_of N` in the pattern states a fact the subject does not:
+                        // matching would hand the callee a contract the caller never gave.
+                        (Dim::DynMult(_), Dim::Dyn) => return false,
                         (Dim::Static(Expr::Identifier(id)), Dim::Static(Expr::Number(n))) => {
                             let extent = Type::Generic(n.value.clone(), None);
                             if !Self::bind_dim(&id.name, extent, mapping) {

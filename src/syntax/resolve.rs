@@ -159,6 +159,7 @@ impl Type {
                 for dim in dims.iter_mut().filter_map(|d| match d {
                     Dim::Static(e) => Some(e),
                     Dim::Dyn => None,
+                    Dim::DynMult(_) => None,
                 }) {
                     dim.resolve_names(scope);
                 }
