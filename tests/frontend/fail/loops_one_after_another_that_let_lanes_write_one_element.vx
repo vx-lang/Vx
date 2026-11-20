@@ -1,0 +1,54 @@
+//===- loops_one_after_another_that_let_lanes_write_one_element.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A lane runs two loops one after the other, as in `lanes_write_rows_in_two_loops_one_after_another.vx`.
+// Here two lanes can write the same element, so the compiler refuses each function.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// The second loop has 3 passes, not 2: lane 0 writes element 2, and so does lane 1 in the first loop.
+pub fn loops_of_different_lengths(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes(32) {
+        for j in 0..2 {
+          out[2 * l + j] = l;
+        }
+        for j in 0..3 {
+          // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:11: two passes of this lane loop may write the same element of `out`
+          out[2 * l + j] = l;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// `a` and `k` are two loops, one in the other, so `a - k` is not 0. Lane 0 writes element 3 at
+// `a` 3 and `k` 0, and so does lane 1 at `a` 0 and `k` 1. The loop before them has the same range.
+pub fn nested_loops_after_a_loop(out : &mut Tensor<i32, [?], Memory::HBM>, other : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes(32) {
+        for j in 0..4 {
+          other[l][j] = l;
+        }
+        for a in 0..4 {
+          for k in 0..4 {
+            // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:13: two passes of this lane loop may write the same element of `out`
+            out[4 * l + a - k] = l;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -328,6 +328,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/disjoint_ranges_check_makes_ranges_for_a_kernel.vx",
         // needs --machine
         "optimizations/pass/lanes_write_rows_from_nested_parts_of_the_lane_index.vx",
+        // needs --machine
+        "optimizations/pass/lanes_write_rows_in_two_loops_one_after_another.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.
