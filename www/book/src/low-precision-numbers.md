@@ -98,6 +98,17 @@ On an NVIDIA GPU from `sm_89` on, it runs on the tensor cores in two cases:
 - One tile is fp8 and the other is `f16`, and the sizes are multiples of 16 x 8 x 16. Each lane
   converts its fp8 values to `f16`, which holds them exactly.
 
+The two tiles can be in two memories, such as weights in HBM and activations in shared memory:
+
+```rust
+acc[w] = acc[w] + (a[blk] as f32) @ (sb[w] as f32);   // a is in HBM, sb and acc in shared memory
+```
+
+The product goes to the memory that its target names, here the shared memory of `acc`. When the
+type of the target names no memory, the compiler reports an error (E3004). It does not pick a
+memory itself. On the GPU, the lanes load a tile in HBM straight into their registers, with no copy
+in shared memory. A kernel that reads each weight once saves the time of that copy.
+
 The tensor cores add the products in an order of their own, so the last bits of a sum can differ
 from the sum on the CPU. When both tiles are fp8, the tensor cores of `sm_89` multiply the fp8
 values. On `sm_90`, the assembler of NVIDIA (`ptxas`) converts the values to `f16` first, and the
