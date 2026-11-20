@@ -47,9 +47,9 @@ fn main() -> i32 {
   write_rows(&mut out, &tiles);
   let h = transfer(out, Memory::CPU_DRAM);
   println!(
-    "rows: {} {} {} {} {} {} {} {}",
-    h[0][0] as f32, h[1][0] as f32, h[2][0] as f32, h[3][0] as f32,
-    h[4][0] as f32, h[5][0] as f32, h[6][0] as f32, h[7][0] as f32
+  "rows: {} {} {} {} {} {} {} {}",
+  h[0][0] as f32, h[1][0] as f32, h[2][0] as f32, h[3][0] as f32,
+  h[4][0] as f32, h[5][0] as f32, h[6][0] as f32, h[7][0] as f32
   );
   return 0;
 }
