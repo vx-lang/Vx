@@ -23,8 +23,10 @@ acc[w] = (a[blk] as f32) @ (sb as f32);   // a is in Memory::HBM, sb and acc in 
 
 For a batch of one, a kernel wants to read the weights `a` from HBM straight into the registers
 of the tensor cores. The kernel reads each weight byte once, so a copy into shared memory first
-only adds time. glm-vx does this with inline PTX in `mlir!`. Its MoE down kernel on an H200 took 11.4 µs
-this way, against 18.6 µs for the kernel that copies the weights first.
+only adds time. glm-vx does this with inline PTX in `mlir!`, in its MoE down kernel with `mma.sync`.
+On an H200 at the shapes of 8-way tensor parallelism, that kernel took 11.4 µs. Its kernel on the
+CUDA cores (`fp8_moe_cvt_down2`) took 18.6 µs. Nobody measured a tensor-core kernel that copies the
+weights into shared memory first.
 
 So: if A is in HBM and B is in shared memory, where does C go, and who decides?
 
