@@ -255,8 +255,14 @@ pub struct DriverOptions {
     /// error. The check is in CPU code, not in a GPU kernel. The default, `-fno-bounds-checks`,
     /// does not check indices.
     ///
+    /// `-fguarded-load-versioning`: when eight or more `if`s guard loads with `c + k < n`
+    /// for growing `k`, check only the last one. When it holds, run all the loads without
+    /// their checks, so that sm_90 predicate registers are not exhausted. The default,
+    /// `-fguarded-load-versioning`, is enabled for GPU kernels on sm_90 and later.
+    /// `-fno-guarded-load-versioning` disables it.
+    ///
     /// For each feature, the last one wins
-    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels", "weak-relaxed-atomics", "no-weak-relaxed-atomics", "bounds-checks", "no-bounds-checks"])]
+    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels", "weak-relaxed-atomics", "no-weak-relaxed-atomics", "bounds-checks", "no-bounds-checks", "guarded-load-versioning", "no-guarded-load-versioning"])]
     pub features: Vec<String>,
 
     /// Optimization level (-O0 to -O3)
@@ -303,6 +309,19 @@ impl DriverOptions {
     /// Whether `-fbounds-checks` is on.
     pub fn bounds_checks(&self) -> bool {
         self.feature("bounds-checks")
+    }
+
+    /// Whether `-fguarded-load-versioning` is on (default true).
+    pub fn guarded_load_versioning(&self) -> bool {
+        match self
+            .features
+            .iter()
+            .rev()
+            .find(|f| f.strip_prefix("no-").unwrap_or(f) == "guarded-load-versioning")
+        {
+            Some(f) => f == "guarded-load-versioning",
+            None => true,
+        }
     }
 
     /// Whether `--sanitize=thread` is on.
@@ -1725,6 +1744,13 @@ impl CompilerDriver {
                 melior::ir::Attribute::unit(context),
             );
         }
+        if !self.options.guarded_load_versioning() {
+            use melior::ir::operation::OperationMutLike;
+            module.as_operation_mut().set_attribute(
+                "vx.no_guarded_load_versioning",
+                melior::ir::Attribute::unit(context),
+            );
+        }
         let ran = crate::intern_mode::timed("mlir_passes", || pass_manager.run(&mut module));
         if let Err(e) = ran {
             return Err(format!("MLIR passes failed for {}: {}", filename, e));
@@ -2524,6 +2550,12 @@ mod tests {
         assert!(o.bounds_checks());
         assert!(!parse(&["-fbounds-checks", "-fno-bounds-checks"]).bounds_checks());
         assert!(!parse(&[]).bounds_checks());
+        assert!(parse(&[]).guarded_load_versioning());
+        assert!(!parse(&["-fno-guarded-load-versioning"]).guarded_load_versioning());
+        assert!(
+            parse(&["-fno-guarded-load-versioning", "-fguarded-load-versioning"])
+                .guarded_load_versioning()
+        );
     }
 
     /// Two modules can declare a host topology at once -- `--machine fleet/h100.vx --host default`

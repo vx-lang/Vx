@@ -7991,6 +7991,311 @@ static LogicalResult lowerTasks(ModuleOp module) {
   return failure(stray.wasInterrupted());
 }
 
+static bool chipHasHopperPredicatePressure(StringRef chip) {
+  unsigned version = 0;
+  return chip.consume_front("sm_") &&
+         !chip.take_while(llvm::isDigit).getAsInteger(10, version) &&
+         version >= 90;
+}
+
+static bool guardedLoadVersioningEnabled(Operation *op) {
+  ModuleOp module =
+      isa<ModuleOp>(op) ? cast<ModuleOp>(op) : op->getParentOfType<ModuleOp>();
+  return !module || !module->hasAttr("vx.no_guarded_load_versioning");
+}
+
+struct GuardedDiamond {
+  Block *header = nullptr;
+  Block *trueDest = nullptr;
+  Block *falseDest = nullptr;
+  Block *joinDest = nullptr;
+  arith::CmpIOp cmpOp;
+  Value base;
+  int64_t offset = 0;
+  Value bound;
+  arith::CmpIPredicate pred = arith::CmpIPredicate::slt;
+};
+
+static Value baseAllocaMemref(Value base) {
+  if (auto ld = base.getDefiningOp<memref::LoadOp>()) {
+    if (ld.getMemref().getDefiningOp<memref::AllocaOp>())
+      return ld.getMemref();
+  }
+  return nullptr;
+}
+
+// Two loads of one alloca with the same indices read one value, so the
+// headers of a batch share a base even when the base is a `let mut` variable
+// that each guard reloads. A store to that alloca inside the batch would
+// break this: the diamond check refuses every store but one to a scalar
+// slot, and findGuardedDiamondBatch refuses a store to the base's own alloca.
+// A write through any other path, a call or a raw pointer, is not visible
+// here; the borrow checker refuses to hand out either for a scalar local, so
+// none reaches a batch from Vx source.
+static bool areEquivalentBases(Value b1, Value b2) {
+  if (b1 == b2)
+    return true;
+  auto ld1 = b1.getDefiningOp<memref::LoadOp>();
+  auto ld2 = b2.getDefiningOp<memref::LoadOp>();
+  if (ld1 && ld2 && ld1.getMemref() == ld2.getMemref()) {
+    if (ld1.getMemref().getDefiningOp<memref::AllocaOp>()) {
+      if (ld1.getIndices() == ld2.getIndices())
+        return true;
+    }
+  }
+  return false;
+}
+
+static bool isGuardedDiamond(Block *header, GuardedDiamond &d) {
+  auto condBr = dyn_cast_or_null<cf::CondBranchOp>(header->getTerminator());
+  if (!condBr)
+    return false;
+
+  auto cmp = condBr.getCondition().getDefiningOp<arith::CmpIOp>();
+  if (!cmp)
+    return false;
+
+  // The comparison must be in this header block, immediately before the branch.
+  if (cmp->getBlock() != header || cmp->getNextNode() != condBr)
+    return false;
+
+  arith::CmpIPredicate pred = cmp.getPredicate();
+  if (pred != arith::CmpIPredicate::slt && pred != arith::CmpIPredicate::sle)
+    return false;
+
+  Block *trueDest = condBr.getTrueDest();
+  Block *falseDest = condBr.getFalseDest();
+  if (trueDest->getSinglePredecessor() != header ||
+      falseDest->getSinglePredecessor() != header)
+    return false;
+
+  auto trueBr = dyn_cast_or_null<cf::BranchOp>(trueDest->getTerminator());
+  auto falseBr = dyn_cast_or_null<cf::BranchOp>(falseDest->getTerminator());
+  if (!trueBr || !falseBr)
+    return false;
+
+  if (trueBr.getDest() != falseBr.getDest())
+    return false;
+
+  Block *joinDest = trueBr.getDest();
+  if (joinDest->getNumArguments() != 0)
+    return false;
+
+  Value lhs = cmp.getLhs();
+  Value rhs = cmp.getRhs();
+
+  Value base = lhs;
+  int64_t offset = 0;
+  if (auto add = lhs.getDefiningOp<arith::AddIOp>()) {
+    if (auto cst = mlir::getConstantIntValue(add.getRhs())) {
+      base = add.getLhs();
+      offset = *cst;
+    } else if (auto cst = mlir::getConstantIntValue(add.getLhs())) {
+      base = add.getRhs();
+      offset = *cst;
+    } else {
+      // Non-constant add (e.g. lane + batch * 256) is the base itself with
+      // offset 0.
+      base = lhs;
+      offset = 0;
+    }
+  }
+
+  if (offset < 0)
+    return false;
+
+  // A negative offset can wrap when `c` is near the smallest `i32`, and the
+  // wrap check looks only at the last offset, so the fast path would still run
+  // this load.
+  if (offset < 0)
+    return false;
+
+  bool hasLoad = false;
+  for (Block *b : {trueDest, falseDest}) {
+    for (Operation &op : *b) {
+      if (auto st = dyn_cast<memref::StoreOp>(op)) {
+        if (!st.getMemref().getDefiningOp<memref::AllocaOp>())
+          return false;
+      } else if (auto ld = dyn_cast<memref::LoadOp>(op)) {
+        if (!ld.getMemref().getDefiningOp<memref::AllocaOp>())
+          hasLoad = true;
+      } else if (op.hasTrait<OpTrait::IsTerminator>()) {
+        continue;
+      } else if (!isa<arith::ArithDialect, memref::MemRefDialect>(
+                     op.getDialect())) {
+        return false;
+      }
+    }
+  }
+
+  if (!hasLoad)
+    return false;
+
+  d.header = header;
+  d.trueDest = trueDest;
+  d.falseDest = falseDest;
+  d.joinDest = joinDest;
+  d.cmpOp = cmp;
+  d.base = base;
+  d.offset = offset;
+  d.bound = rhs;
+  d.pred = pred;
+  return true;
+}
+
+static bool findGuardedDiamondBatch(
+    gpu::GPUFuncOp gpuFunc,
+    const llvm::SmallPtrSetImpl<Block *> &transformedHeaders,
+    SmallVectorImpl<GuardedDiamond> &batch) {
+  for (Block &header : gpuFunc.getBody()) {
+    if (transformedHeaders.contains(&header))
+      continue;
+
+    GuardedDiamond first;
+    if (!isGuardedDiamond(&header, first))
+      continue;
+
+    SmallVector<GuardedDiamond, 8> candidates;
+    candidates.push_back(first);
+
+    Block *currJoin = first.joinDest;
+    while (true) {
+      Block *nextHeader = currJoin;
+      if (auto br = dyn_cast_or_null<cf::BranchOp>(currJoin->getTerminator())) {
+        if (currJoin->getOperations().size() == 1)
+          nextHeader = br.getDest();
+      }
+
+      GuardedDiamond next;
+      if (!isGuardedDiamond(nextHeader, next))
+        break;
+
+      if (!areEquivalentBases(next.base, first.base) ||
+          next.bound != first.bound || next.pred != first.pred ||
+          next.offset <= candidates.back().offset)
+        break;
+
+      candidates.push_back(next);
+      currJoin = next.joinDest;
+    }
+
+    if (candidates.size() < 8)
+      continue;
+
+    // Collect all blocks belonging to the batch.
+    llvm::SmallPtrSet<Block *, 32> batchBlocks;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      batchBlocks.insert(candidates[i].header);
+      batchBlocks.insert(candidates[i].trueDest);
+      batchBlocks.insert(candidates[i].falseDest);
+      if (i + 1 < candidates.size() &&
+          candidates[i].joinDest != candidates[i + 1].header) {
+        batchBlocks.insert(candidates[i].joinDest);
+      }
+    }
+
+    // Invariant 1: No base alloca store or non-alloca store within the batch.
+    Value baseAlloca = baseAllocaMemref(first.base);
+    bool safeStores = true;
+    for (Block *b : batchBlocks) {
+      for (Operation &op : *b) {
+        if (auto st = dyn_cast<memref::StoreOp>(op)) {
+          if (!st.getMemref().getDefiningOp<memref::AllocaOp>() ||
+              (baseAlloca && st.getMemref() == baseAlloca)) {
+            safeStores = false;
+            break;
+          }
+        }
+      }
+      if (!safeStores)
+        break;
+    }
+    if (!safeStores)
+      continue;
+
+    // Invariant 2: No value computed in the batch may be used outside the
+    // batch.
+    bool valuesEscape = false;
+    for (Block *b : batchBlocks) {
+      for (Operation &op : *b) {
+        for (Value res : op.getResults()) {
+          for (Operation *user : res.getUsers()) {
+            if (!batchBlocks.contains(user->getBlock())) {
+              valuesEscape = true;
+              break;
+            }
+          }
+          if (valuesEscape)
+            break;
+        }
+        if (valuesEscape)
+          break;
+      }
+      if (valuesEscape)
+        break;
+    }
+    if (valuesEscape)
+      continue;
+
+    batch = std::move(candidates);
+    return true;
+  }
+  return false;
+}
+
+static void versionGuardedLoadBatches(gpu::GPUFuncOp gpuFunc) {
+  llvm::SmallPtrSet<Block *, 8> transformedHeaders;
+  SmallVector<GuardedDiamond, 8> batch;
+
+  while (findGuardedDiamondBatch(gpuFunc, transformedHeaders, batch)) {
+    GuardedDiamond &first = batch.front();
+    GuardedDiamond &last = batch.back();
+    for (const GuardedDiamond &d : batch)
+      transformedHeaders.insert(d.header);
+
+    Block *slowHeader0 = first.header->splitBlock(first.cmpOp);
+    transformedHeaders.insert(slowHeader0);
+
+    OpBuilder b(first.header, first.header->end());
+    Location loc = first.cmpOp.getLoc();
+    Value maxOffsetCst =
+        b.create<arith::ConstantIntOp>(loc, first.base.getType(), last.offset);
+    Value maxLhs = b.create<arith::AddIOp>(loc, first.base, maxOffsetCst);
+    Value noWrap = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                           maxLhs, first.base);
+    Value inBound =
+        b.create<arith::CmpIOp>(loc, first.pred, maxLhs, first.bound);
+    Value versionCond = b.create<arith::AndIOp>(loc, noWrap, inBound);
+
+    Block *fastBlock = gpuFunc.addBlock();
+    IRMapping mapping;
+
+    for (const GuardedDiamond &d : batch)
+      mapping.map(d.base, first.base);
+
+    for (size_t i = 0; i < batch.size(); ++i) {
+      GuardedDiamond &d = batch[i];
+      if (i > 0) {
+        for (Operation &op : *d.header) {
+          if (&op == d.cmpOp || op.hasTrait<OpTrait::IsTerminator>())
+            continue;
+          OpBuilder(fastBlock, fastBlock->end()).clone(op, mapping);
+        }
+      }
+      for (Operation &op : *d.trueDest) {
+        if (op.hasTrait<OpTrait::IsTerminator>())
+          continue;
+        OpBuilder(fastBlock, fastBlock->end()).clone(op, mapping);
+      }
+    }
+
+    OpBuilder(fastBlock, fastBlock->end())
+        .create<cf::BranchOp>(loc, last.joinDest);
+
+    b.create<cf::CondBranchOp>(loc, versionCond, fastBlock, slowHeader0);
+  }
+}
+
 struct ConvertVxToStandardPass
     : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
@@ -8774,6 +9079,14 @@ struct ConvertVxToStandardPass
           end.create<gpu::ReturnOp>(kernel.getLoc());
         }
       }
+
+      // On a GPU, version batches of guarded loads on the last guard so that
+      // loads are not serialized by predicate exhaustion on sm_90.
+      DevicePipeline pipeline = pipelineOfKernel(kernel);
+      bool isSm90Nvptx = pipeline == DevicePipeline::Nvptx &&
+                         chipHasHopperPredicatePressure(deviceChip(gpuModule));
+      if (isSm90Nvptx && guardedLoadVersioningEnabled(gpuFunc))
+        versionGuardedLoadBatches(gpuFunc);
     }
   }
 
