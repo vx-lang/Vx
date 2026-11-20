@@ -12,6 +12,35 @@
 
 use super::*;
 
+/// Turn the trailing expression of a function body, written without `;`, into `return <expr>`.
+/// A trait default method needs this as much as a normal function does.
+fn return_the_trailing_expression(body: &mut [Statement]) {
+    let Some(last) = body.last_mut() else {
+        return;
+    };
+    let Statement::ExprStmt(ExprStmtStmt {
+        expr,
+        has_semi,
+        span,
+    }) = last
+    else {
+        return;
+    };
+    // Two reasons a trailing expression is not the block's value: it produces nothing
+    // (an else-less `if`, an `unsafe` block with no trailing expression), or every path
+    // through it already returned.
+    if *has_semi
+        || crate::syntax::expr::yields_no_value(expr)
+        || crate::syntax::expr::diverges_on_every_path(expr)
+    {
+        return;
+    }
+    *last = Statement::Return(ReturnStmt {
+        expr: Some(expr.clone()),
+        span: *span,
+    });
+}
+
 impl<'a> Parser<'a> {
     pub(crate) fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
         let token = self.advance();
@@ -256,27 +285,7 @@ impl<'a> Parser<'a> {
             self.parse_statement_into(&mut body)?;
         }
 
-        // Transform implicit return
-        if let Some(Statement::ExprStmt(ExprStmtStmt {
-            expr,
-            has_semi,
-            span,
-        })) = body.last().cloned()
-        {
-            // Two reasons a trailing expression is not the block's value: it produces nothing
-            // (an else-less `if`, an `unsafe` block with no trailing expression), or every path
-            // through it already returned.
-            if !has_semi
-                && !crate::syntax::expr::yields_no_value(&expr)
-                && !crate::syntax::expr::diverges_on_every_path(&expr)
-            {
-                let lsyntax_idx = body.len() - 1;
-                body[lsyntax_idx] = Statement::Return(ReturnStmt {
-                    expr: Some(expr),
-                    span,
-                });
-            }
-        }
+        return_the_trailing_expression(&mut body);
 
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
@@ -1380,6 +1389,7 @@ impl<'a> Parser<'a> {
                     &TokenType::RightBrace,
                     "Expected '}' after trait method body",
                 )?;
+                return_the_trailing_expression(&mut body);
                 Some(body)
             } else {
                 self.consume(
