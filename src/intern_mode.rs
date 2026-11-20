@@ -215,6 +215,29 @@ pub const PHASES: [&str; 22] = [
 // put it; the alternative is per-worker counters merged at the barrier.
 static PHASE_NANOS: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()]; // vx-lint: allow-atomic
 
+// The process's peak resident memory, in bytes, when each phase last ended. 0 for a phase that
+// did not run.
+static PHASE_PEAK_BYTES: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()]; // vx-lint: allow-atomic
+
+/// The most resident memory this process used so far, in bytes. The OS keeps this value, and it
+/// never goes down.
+pub fn peak_resident_bytes() -> u64 {
+    // SAFETY: `rusage` holds only integers, so all zeros is a valid value. `getrusage` only
+    // writes the struct it is given.
+    let (status, usage) = unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        (libc::getrusage(libc::RUSAGE_SELF, &mut usage), usage)
+    };
+    assert_eq!(status, 0, "getrusage failed");
+    let max_rss = usage.ru_maxrss as u64;
+    // macOS gives `ru_maxrss` in bytes. Linux gives it in kilobytes.
+    if cfg!(target_os = "macos") {
+        max_rss
+    } else {
+        max_rss * 1024
+    }
+}
+
 fn phase_index(name: &str) -> Option<usize> {
     PHASES.iter().position(|p| *p == name)
 }
@@ -237,30 +260,49 @@ pub fn timed<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
 pub fn record(name: &str, elapsed: std::time::Duration) {
     if let Some(i) = phase_index(name) {
         PHASE_NANOS[i].fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+        PHASE_PEAK_BYTES[i].fetch_max(peak_resident_bytes(), Ordering::Relaxed);
     }
 }
 
-/// Drain the accumulated per-phase times, in pipeline order. Resets the counters, so successive
-/// calls report successive runs -- which is what a repetition-based harness wants.
-pub fn take_phases() -> Vec<(&'static str, std::time::Duration)> {
+/// Drain the time and the peak memory of each phase, in pipeline order, and reset both.
+fn drain_phases() -> Vec<(&'static str, std::time::Duration, u64)> {
     PHASES
         .iter()
         .enumerate()
         .map(|(i, name)| {
             let nanos = PHASE_NANOS[i].swap(0, Ordering::Relaxed);
-            (*name, std::time::Duration::from_nanos(nanos))
+            let peak = PHASE_PEAK_BYTES[i].swap(0, Ordering::Relaxed);
+            (*name, std::time::Duration::from_nanos(nanos), peak)
         })
         .collect()
 }
 
-/// One machine-readable line per phase: `phase,<name>,<milliseconds>`, so a harness can parse a
-/// run without scraping the human report.
+/// Drain the accumulated per-phase times, in pipeline order. Resets the counters, so successive
+/// calls report successive runs -- which is what a repetition-based harness wants.
+pub fn take_phases() -> Vec<(&'static str, std::time::Duration)> {
+    drain_phases()
+        .into_iter()
+        .map(|(name, time, _)| (name, time))
+        .collect()
+}
+
+/// One machine-readable line per phase: `phase,<name>,<milliseconds>,<peak MB>`, so a harness
+/// can parse a run without scraping the human report.
+///
+/// The peak is the process's peak resident memory when the phase ended. It never goes down, so
+/// the phase where it jumps is the phase that raised it.
 ///
 /// Its caller writes these to stderr, keeping stdout for the MLIR a compile prints.
 pub fn phases_csv() -> String {
-    take_phases()
+    drain_phases()
         .into_iter()
-        .map(|(n, d)| format!("phase,{n},{:.4}\n", d.as_secs_f64() * 1e3))
+        .map(|(n, d, peak)| {
+            format!(
+                "phase,{n},{:.4},{:.1}\n",
+                d.as_secs_f64() * 1e3,
+                peak as f64 / (1024.0 * 1024.0)
+            )
+        })
         .collect()
 }
 
@@ -291,6 +333,22 @@ mod tests {
                 "{name} is not a declared phase"
             );
         }
+    }
+
+    /// `ru_maxrss` is in bytes on macOS and in kilobytes on Linux. A wrong unit is off by 1024
+    /// and lands outside these bounds on either system.
+    #[test]
+    fn peak_resident_bytes_is_in_bytes() {
+        const BUFFER: usize = 256 << 20;
+        // Writing every byte makes the OS map the whole buffer, so it counts as resident.
+        let buffer = std::hint::black_box(vec![1u8; BUFFER]);
+        let peak = peak_resident_bytes();
+        drop(buffer);
+        assert!(
+            peak >= BUFFER as u64,
+            "peak {peak} is below the 256 MB buffer"
+        );
+        assert!(peak < 64 << 30, "peak {peak} is above 64 GB");
     }
 
     /// Every phase name the compiler hands to `timed` has to be declared here, or `record` drops
