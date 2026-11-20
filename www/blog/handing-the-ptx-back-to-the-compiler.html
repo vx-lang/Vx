@@ -45,8 +45,10 @@ MLIR ops. A test pins each PTX instruction that the old text had, with its exact
 registers and spills that ptxas reports. 14 of the 20 pinned kernels kept every pinned
 instruction. In the other 6, the compiler wrote fewer instructions, because it could now see the
 code around the old asm. No kernel needs more registers. One needs one register fewer, and one
-spills 8 bytes where it spilled 40. In three places the compiler made worse code, and we kept a
-small piece of asm there. No GPU ran the converted kernels yet.</blockquote>
+spills 8 bytes where it spilled 40. In four places the compiler made worse code. One needed a fix,
+and three keep their asm. One of these had the same instructions in another order, and only a
+timing on an H200 showed it. All of glm-vx's hardware tests for these kernels passed on an
+H200.</blockquote>
 
 <h2 id="why"><a href="#why">Why the PTX was there</a></h2>
 
@@ -163,10 +165,10 @@ st.global.b16  [%rd65], %r199;
 cvt.rn.bf16.f32  %rs1, %r327;
 st.global.b16    [%rd74], %rs1;</code></pre>
 
-<h2 id="worse"><a href="#worse">Three places where seeing more made it worse</a></h2>
+<h2 id="worse"><a href="#worse">Four places where seeing more made it worse</a></h2>
 
-<p>An op that LLVM can see is also an op that LLVM can move. Three times that cost us, and the
-pins caught each one.</p>
+<p>An op that LLVM can see is also an op that LLVM can move. Four times that cost us. The pins
+caught three of them, and a GPU timing caught the fourth.</p>
 
 <ul>
 <li><strong>A split load lost its cache hint.</strong> When every use of a vector load is an
@@ -175,32 +177,41 @@ extract of one element, LLVM splits the load into scalar loads, and the scalar l
 <code>ld.global.nc.v4.b32</code> and <code>ld.global.nc.v2.b32</code> found this.</li>
 <li><strong>The lane id moved out of the loop.</strong> As an NVVM op, the read of
 <code>%laneid</code> is pure, so LLVM moves it, and the values made from it, out of the loop over
-blocks. They then stay in registers for the whole loop, which cost 2 more registers. The six
+blocks. They then stay in registers for the whole loop, which cost 2 more registers. Four
 scores kernels keep a one-line asm, <code>mov.u32 $0, %laneid</code>.</li>
 <li><strong>Barrier addresses stayed in registers.</strong> With <code>nvvm.mbarrier.init</code>,
 LLVM computes the 8 barrier addresses once, before the loop over tiles, and keeps them in
 registers. The two H100 GEMM kernels needed 3 more registers. <code>mbarrier.init</code> stays
 asm.</li>
+<li><strong>Same instructions, another order.</strong> In <code>index_scores_mma_at</code>, ptxas
+gave the same 472 SASS instructions and 132 registers with the ops as with the asm. Only 70% of
+their order was the same, and the kernel ran slower on an H200. The pins count instructions and
+registers, so they cannot see this. Loading the rows in the order of the old asm, and letting
+ptxas fuse the multiplies and adds, gave the same SASS as before. So the warp body of this kernel
+and of its <code>_hist</code> twin stays asm. The data is in
+<a href="https://github.com/vx-lang/glm-vx/issues/65">glm-vx#65</a>.</li>
 </ul>
 
 <h2 id="left"><a href="#left">What stays PTX</a></h2>
 
-<p>Besides the lane-id reads and the barrier inits, two kinds of PTX stay:</p>
+<p>Besides the lane-id reads, the barrier inits and the warp body above, two kinds of PTX stay:</p>
 
 <ul>
 <li><strong>wgmma.</strong> The H100 GEMM issues <code>wgmma.fence</code>, the
 <code>wgmma.mma_async</code> ops and then a commit and a wait. In the asm, each of these
 instructions reads and writes the accumulator registers, so nothing can move between them. The
 NVVM ops do not tie the accumulator to the fence and the wait, so we kept the asm.</li>
-<li><strong>The fp8 <code>mma.sync</code>.</strong> NVVM in LLVM 22 has no op for the dense fp8
-<code>mma.sync.m16n8k32</code>. The two fp8 scores kernels and four MoE kernels write most of their
-work as PTX. Vx's own tile matmul <code>@</code> generates this instruction, so
-these kernels can become plain Vx, without an <code>mlir!</code> block.</li>
+<li><strong>The fp8 <code>mma.sync</code>.</strong> MLIR's <code>nvvm.mma.sync</code> refuses
+fp8, so the two fp8 scores kernels and four MoE kernels write most of their work as PTX. LLVM 22
+does have an intrinsic for the dense fp8 <code>mma.sync.m16n8k32</code>, and Vx's own tile matmul
+<code>@</code> now generates the instruction through it, with the same SASS as before (<a
+href="https://github.com/vx-lang/Vx/pull/3703">#3703</a>). So these kernels can become plain Vx,
+without an <code>mlir!</code> block.</li>
 </ul>
 
-<p>The converted kernels are on a glm-vx branch that is not merged yet. The pins check the PTX and
-the registers, not the results. The kernels still have to run on a GPU, and glm-vx's hardware
-tests for them are the next step.</p>
+<p>The converted kernels are on glm-vx main. On an H200, all of glm-vx's hardware tests for them
+passed: top-k, index scores, index chunk and both fp8 GEMMs. The pins check the PTX and the
+registers. The tests check the results. Only a timing checks the speed.</p>
 
 </article>
 
