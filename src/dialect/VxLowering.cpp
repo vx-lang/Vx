@@ -4973,6 +4973,16 @@ static bool ldmatrixFits(Value tile) {
 /// converts two fp8 elements to f16 with one `cvt.rn.f16x2`. The tensor core
 /// adds the products in an order of its own, so the last bits can differ from
 /// the expansion on the host.
+///
+/// A sum over K gives the same result in any order of K, if both tiles use
+/// that order. So when `lhs` does not use `ldmatrix`, a lane takes its columns
+/// of K for t `mma.sync` from 16 bytes next to each other in a row of `lhs`,
+/// and one vector load reads them. With r elements in one register, lane `l`
+/// takes the 2 * r * t columns from `(l % 4) * 2 * r * t` in each 8 * r * t
+/// columns. When K is not a multiple of 8 * r * t, t is smaller. When
+/// `rhs` uses `ldmatrix`, each lane gives it the row of K in that order. This
+/// puts the rows of one `ldmatrix` further apart in shared memory, with more
+/// bank conflicts, so it happens only when `lhs` is not in shared memory.
 static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                     Type elem, Value fragments = {}) {
   Location loc = op.getLoc();
@@ -4994,10 +5004,41 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
   Value group = b.create<arith::DivUIOp>(loc, lane, index(4));
   Value quad = b.create<arith::RemUIOp>(loc, lane, index(4));
   Value pair = b.create<arith::MulIOp>(loc, quad, index(2));
-  // The first column of K of this lane in each half of a `mma.sync`.
-  Value first = b.create<arith::MulIOp>(loc, quad, index(perRegister));
+  bool lhsLdmatrix = ldmatrixFits(op.getLhs());
+  bool rhsLdmatrix = ldmatrixFits(op.getRhs());
+  auto lhsSpace = dyn_cast_or_null<IntegerAttr>(
+      cast<MemRefType>(op.getLhs().getType()).getMemorySpace());
+  bool lhsShared = lhsSpace && lhsSpace.getInt() == 3;
+  // The `mma.sync` that take their columns of K from one run of a lane, at
+  // most 16 bytes of `lhs`. With 0, the lane keeps the order of K that
+  // `ldmatrix` needs.
+  int64_t lhsBits =
+      cast<MemRefType>(op.getLhs().getType()).getElementTypeBitWidth();
+  assert(lhsBits >= 8 && "a tile of the tensor cores has bytes");
+  int64_t together = 0;
+  if (!lhsLdmatrix && !(rhsLdmatrix && lhsShared)) {
+    together = 16 * 8 / (2 * perRegister * lhsBits);
+    while (together > 1 && k % (depthStep * together))
+      together /= 2;
+  }
+  int64_t steps = std::max<int64_t>(together, 1);
+  // The first column of K of this lane in each half of a `mma.sync`, and the
+  // distance to its first column in the second half.
+  Value first = b.create<arith::MulIOp>(
+      loc, quad, index(together ? 2 * together * perRegister : perRegister));
   Value zero = index(0), one = index(1), eight = index(8);
-  Value half = index(depthStep / 2);
+  Value half = index(together ? perRegister : depthStep / 2);
+  // With `together`, one vector load reads a run, when the row is contiguous.
+  auto lhsType = cast<MemRefType>(op.getLhs().getType());
+  SmallVector<int64_t> lhsStrides;
+  int64_t lhsOffset;
+  bool lhsRuns =
+      together &&
+      succeeded(lhsType.getStridesAndOffset(lhsStrides, lhsOffset)) &&
+      lhsStrides[1] == 1;
+  bool lhsWidens = isMmaFp8(lhsType.getElementType()) && !fp8;
+  auto runType =
+      VectorType::get({2 * perRegister * steps}, lhsType.getElementType());
   Value zeroF =
       b.create<arith::ConstantFloatOp>(loc, b.getF32Type(), APFloat(0.0f));
   // The elements in one register, the first in the low bits. f16 goes to the
@@ -5041,14 +5082,28 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
             .getResult(0);
     return nb.create<LLVM::BitcastOp>(l, VectorType::get({2}, elem), word);
   };
+  // Register `r` of a lane from `run`, its columns of K in a row of `lhs`.
+  auto fromRun = [&](OpBuilder &nb, Location l, Value run, int64_t r) -> Value {
+    if (lhsWidens) {
+      SmallVector<Value> values;
+      for (int64_t e = 0; e < perRegister; ++e)
+        values.push_back(
+            nb.create<vector::ExtractOp>(l, run, r * perRegister + e));
+      return widen(nb, l, values);
+    }
+    Value words =
+        nb.create<vector::BitCastOp>(l, VectorType::get({2 * steps}, i32), run);
+    Value word = nb.create<vector::ExtractOp>(l, words, r);
+    if (elem.isF16())
+      return nb.create<LLVM::BitcastOp>(l, VectorType::get({2}, elem), word);
+    return word;
+  };
   auto add = [&](OpBuilder &nb, Location l, Value x, Value y) -> Value {
     return nb.create<arith::AddIOp>(l, x, y);
   };
   // For `ldmatrix`, lane `l` gives the address of row `l % 16` of a 16 x 16
   // part of `lhs`, at column 8 for the lanes from 16 on. In `rhs` it gives
   // the same row, and `.trans` turns the rows of K into the columns of B.
-  bool lhsLdmatrix = ldmatrixFits(op.getLhs());
-  bool rhsLdmatrix = ldmatrixFits(op.getRhs());
   Value row16 = b.create<arith::RemUIOp>(loc, lane, index(16));
   Value half8 = b.create<arith::MulIOp>(
       loc, b.create<arith::DivUIOp>(loc, lane, index(16)), index(8));
@@ -5105,61 +5160,97 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                 : zeroF);
     }
     auto chain = nb.create<scf::ForOp>(
-        l, zero, index(k), index(depthStep), start,
-        [&](OpBuilder &kb, Location kl, Value depth, ValueRange c) {
-          Value kA = add(kb, kl, depth, first), kB = add(kb, kl, kA, half);
-          // The elements of one register of `lhs` in row `i`, or of `rhs`.
-          auto lhs = [&](Value i, Value from) -> Value {
-            SmallVector<Value> values;
-            for (int64_t e = 0; e < perRegister; ++e)
-              values.push_back(kb.create<memref::LoadOp>(
-                  kl, op.getLhs(), ValueRange{i, add(kb, kl, from, index(e))}));
-            return isMmaFp8(values[0].getType()) && !fp8 ? widen(kb, kl, values)
-                                                         : pack(kb, kl, values);
-          };
-          auto rhs = [&](Value from) -> Value {
-            SmallVector<Value> values;
-            for (int64_t e = 0; e < perRegister; ++e)
-              values.push_back(kb.create<memref::LoadOp>(
-                  kl, op.getRhs(),
-                  ValueRange{add(kb, kl, from, index(e)), col}));
-            return isMmaFp8(values[0].getType()) && !fp8 ? widen(kb, kl, values)
-                                                         : pack(kb, kl, values);
-          };
-          SmallVector<Value> a =
-              lhsLdmatrix
-                  ? ldmatrix(kb, kl, op.getLhs(), add(kb, kl, top, row16),
-                             add(kb, kl, depth, half8), 4, /*transpose=*/false)
-                  : SmallVector<Value>{lhs(row0, kA), lhs(row1, kA),
-                                       lhs(row0, kB), lhs(row1, kB)};
-          SmallVector<Value> bv =
-              rhsLdmatrix ? ldmatrix(kb, kl, op.getRhs(),
-                                     add(kb, kl, depth, row16), left, 2,
-                                     /*transpose=*/true)
-                          : SmallVector<Value>{rhs(kA), rhs(kB)};
-          Value sums;
-          if (fp8) {
-            SmallVector<Value> operands(a);
-            llvm::append_range(operands, bv);
-            llvm::append_range(operands, c);
-            sums = kb.create<LLVM::InlineAsmOp>(
-                         kl, result, operands, fp8Mma,
-                         "=f,=f,=f,=f,r,r,r,r,r,r,0,1,2,3",
-                         /*has_side_effects=*/false,
-                         /*is_align_stack=*/false,
-                         LLVM::tailcallkind::TailCallKind::None,
-                         LLVM::AsmDialectAttr(), ArrayAttr())
-                       .getResult(0);
-          } else {
-            sums = kb.create<NVVM::MmaOp>(
-                         kl, result, a, bv, c, ArrayRef<int64_t>{16, 8, 16},
-                         std::nullopt, std::nullopt, types, layouts)
-                       .getRes();
+        l, zero, index(k), index(depthStep * steps), start,
+        [&](OpBuilder &kb, Location kl, Value depth, ValueRange carried) {
+          SmallVector<Value> c(carried);
+          // The runs of this lane in `row0` and `row1` of `lhs`.
+          SmallVector<Value> runs;
+          if (lhsRuns)
+            for (Value i : {row0, row1})
+              runs.push_back(kb.create<vector::LoadOp>(
+                  kl, runType, op.getLhs(),
+                  ValueRange{i, add(kb, kl, depth, first)}));
+          for (int64_t step = 0; step < steps; ++step) {
+            Value kA = add(kb, kl, depth, first);
+            if (step)
+              kA = add(kb, kl, kA, index(2 * perRegister * step));
+            Value kB = add(kb, kl, kA, half);
+            // The elements of one register of `lhs` in row `i`, or of `rhs`.
+            auto lhs = [&](Value i, Value from) -> Value {
+              SmallVector<Value> values;
+              for (int64_t e = 0; e < perRegister; ++e)
+                values.push_back(kb.create<memref::LoadOp>(
+                    kl, op.getLhs(),
+                    ValueRange{i, add(kb, kl, from, index(e))}));
+              return isMmaFp8(values[0].getType()) && !fp8
+                         ? widen(kb, kl, values)
+                         : pack(kb, kl, values);
+            };
+            auto rhs = [&](Value from) -> Value {
+              SmallVector<Value> values;
+              for (int64_t e = 0; e < perRegister; ++e)
+                values.push_back(kb.create<memref::LoadOp>(
+                    kl, op.getRhs(),
+                    ValueRange{add(kb, kl, from, index(e)), col}));
+              return isMmaFp8(values[0].getType()) && !fp8
+                         ? widen(kb, kl, values)
+                         : pack(kb, kl, values);
+            };
+            SmallVector<Value> a =
+                lhsLdmatrix
+                    ? ldmatrix(kb, kl, op.getLhs(), add(kb, kl, top, row16),
+                               add(kb, kl, depth, half8), 4,
+                               /*transpose=*/false)
+                : lhsRuns
+                    ? SmallVector<Value>{fromRun(kb, kl, runs[0], 2 * step),
+                                         fromRun(kb, kl, runs[1], 2 * step),
+                                         fromRun(kb, kl, runs[0], 2 * step + 1),
+                                         fromRun(kb, kl, runs[1], 2 * step + 1)}
+                    : SmallVector<Value>{lhs(row0, kA), lhs(row1, kA),
+                                         lhs(row0, kB), lhs(row1, kB)};
+            // The row of `rhs` that this lane gives `ldmatrix`: row `l % 16`
+            // of the 16 rows of this `mma.sync`, in the order of K above.
+            auto rhsRow = [&]() -> Value {
+              if (!together)
+                return add(kb, kl, depth, row16);
+              assert(perRegister == 2 && "ldmatrix loads 16-bit elements");
+              Value inGroup = kb.create<arith::RemUIOp>(kl, row16, index(8));
+              Value q = kb.create<arith::DivUIOp>(kl, inGroup, index(2));
+              Value e = kb.create<arith::RemUIOp>(kl, row16, index(2));
+              Value s = kb.create<arith::DivUIOp>(kl, row16, index(8));
+              Value row = add(kb, kl, depth, index(4 * step));
+              row = add(kb, kl, row,
+                        kb.create<arith::MulIOp>(kl, q, index(4 * steps)));
+              row = add(kb, kl, row, kb.create<arith::MulIOp>(kl, s, index(2)));
+              return add(kb, kl, row, e);
+            };
+            SmallVector<Value> bv =
+                rhsLdmatrix ? ldmatrix(kb, kl, op.getRhs(), rhsRow(), left, 2,
+                                       /*transpose=*/true)
+                            : SmallVector<Value>{rhs(kA), rhs(kB)};
+            Value sums;
+            if (fp8) {
+              SmallVector<Value> operands(a);
+              llvm::append_range(operands, bv);
+              llvm::append_range(operands, c);
+              sums = kb.create<LLVM::InlineAsmOp>(
+                           kl, result, operands, fp8Mma,
+                           "=f,=f,=f,=f,r,r,r,r,r,r,0,1,2,3",
+                           /*has_side_effects=*/false,
+                           /*is_align_stack=*/false,
+                           LLVM::tailcallkind::TailCallKind::None,
+                           LLVM::AsmDialectAttr(), ArrayAttr())
+                         .getResult(0);
+            } else {
+              sums = kb.create<NVVM::MmaOp>(
+                           kl, result, a, bv, c, ArrayRef<int64_t>{16, 8, 16},
+                           std::nullopt, std::nullopt, types, layouts)
+                         .getRes();
+            }
+            for (int64_t e = 0; e < 4; ++e)
+              c[e] = kb.create<LLVM::ExtractValueOp>(kl, sums, e);
           }
-          SmallVector<Value> d;
-          for (int64_t e = 0; e < 4; ++e)
-            d.push_back(kb.create<LLVM::ExtractValueOp>(kl, sums, e));
-          kb.create<scf::YieldOp>(kl, d);
+          kb.create<scf::YieldOp>(kl, c);
         });
     for (auto [e, ij] : llvm::enumerate(place)) {
       if (fragments)

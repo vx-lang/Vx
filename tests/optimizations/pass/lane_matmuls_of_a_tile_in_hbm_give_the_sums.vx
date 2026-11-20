@@ -13,8 +13,8 @@
 // no `acc`, so each value is 1 less. With no GPU, the kernels run on the CPU.
 //
 // On the GPU, the lanes load the fragments of a tile in HBM from HBM into the registers of the
-// tensor cores, with no copy in shared memory: four `ld.global.b32` give the four registers of
-// the first tile, and bytes from `ld.global.nc.b8` give the second tile. `into_hbm` stores the
+// tensor cores, with no copy in shared memory: two `ld.global.nc.v2.b32` give the four registers
+// of the first tile, and bytes from `ld.global.nc.b8` give the second tile. `into_hbm` stores the
 // result registers to HBM.
 //
 // RUN: vxc %s --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -27,10 +27,8 @@
 // CHECK: {{^}}b in HBM: -3 -3 7 sum of all 1020{{$}}
 // CHECK: {{^}}into HBM: -4 -4 6 sum of all -4{{$}}
 // PTX-LABEL: .entry a_in_hbm(
-// PTX: ld.global.b32 %r[[A0:[0-9]+]], [
-// PTX-NEXT: ld.global.b32 %r[[A1:[0-9]+]], [
-// PTX-NEXT: ld.global.b32 %r[[A2:[0-9]+]], [
-// PTX-NEXT: ld.global.b32 %r[[A3:[0-9]+]], [
+// PTX: ld.global.nc.v2.b32 {%r[[A0:[0-9]+]], %r[[A2:[0-9]+]]}, [%rd[[ROW:[0-9]+]]];
+// PTX-NEXT: ld.global.nc.v2.b32 {%r[[A1:[0-9]+]], %r[[A3:[0-9]+]]}, [%rd[[ROW]]+256];
 // PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[A0]], %r[[A1]], %r[[A2]], %r[[A3]]}
 // PTX-LABEL: .entry b_in_hbm(
 // PTX: ld.global.nc.b8
