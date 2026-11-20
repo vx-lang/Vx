@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handing the PTX back to the compiler</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="glm-vx's GPU kernels had 99 pieces of hand-written PTX. We moved most of them to MLIR ops, with a test that pins every instruction the old PTX had. Most kernels got the same PTX, and where the compiler could see the instructions around the old asm, it wrote fewer instructions.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Handing the PTX back to the compiler">
+<meta property="og:description" content="We moved the hand-written PTX of glm-vx's kernels to MLIR ops. A test pins every old instruction. Most kernels got the same PTX, and some got better PTX.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-20T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/handing-the-ptx-back-to-the-compiler.html">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Handing the PTX back to the compiler</h1>
+<p class="post-meta">Aditya Kumar &middot; 20 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — glm-vx runs GLM models with GPU kernels written
+in Vx. Its kernels had 99 pieces of hand-written PTX in 25 source files. We moved most of them to
+MLIR ops. A test pins each PTX instruction that the old text had, with its exact count, and the
+registers and spills that ptxas reports. 14 of the 20 pinned kernels kept every pinned
+instruction. In the other 6, the compiler wrote fewer instructions, because it could now see the
+code around the old asm. No kernel needs more registers. One needs one register fewer, and one
+spills 8 bytes where it spilled 40. In three places the compiler made worse code, and we kept a
+small piece of asm there. No GPU ran the converted kernels yet.</blockquote>
+
+<h2 id="why"><a href="#why">Why the PTX was there</a></h2>
+
+<p>A Vx function can hold an <code>mlir!</code> block: MLIR ops that the compiler puts into the
+function as they are. glm-vx used these blocks for the GPU instructions that Vx code did not have
+a way to say: tensor-core <code>mma.sync</code>, warp shuffles and votes, <code>cp.async</code>
+copies, TMA loads and mbarriers on the H100, and loads with cache hints. Many of these blocks held
+one op, <code>llvm.inline_asm</code>, with PTX text inside it:</p>
+
+<pre><code>%r = llvm.inline_asm has_side_effects "{ .reg .pred q; .reg .b32 m; setp.ne.s32 q, $1, 0;
+    vote.sync.ballot.b32 m, q, -1; popc.b32 $0, m; }", "=r,r" %p : (i32) -&gt; i32</code></pre>
+
+<p>To LLVM, this text is a black box. LLVM cannot remove an instruction in it, merge it with the
+code around it, or move it. That is sometimes what you want. Usually it only stops the compiler
+from doing its job. The NVVM dialect of MLIR has an op for almost all of these instructions, so
+we moved them.</p>
+
+<h2 id="the-test"><a href="#the-test">A test that pins the old PTX</a></h2>
+
+<p>A move like this can lose an instruction without a test failing. A 16-byte load can become two
+8-byte loads, or a <code>.nc</code> cache hint can go away, and the kernel still gives the right
+answer. So before we changed a line, we recorded what the kernels had.</p>
+
+<p>For each of the 20 kernels that had inline PTX, <code>gpu/spawn/ptx_pins.json</code> keeps
+each special instruction form of the old text, with all its qualifiers, for example
+<code>shfl.sync.down.b32</code> or <code>ld.global.nc.v4.b32</code>. It keeps the count of that
+form in the whole kernel, and the registers, stack and spill bytes from ptxas 13.1. The test
+builds each kernel and checks the exact count of each form. The registers, stack and spills must
+be no more than before. Plain adds, moves and compares are not pinned, because LLVM can choose
+them differently and be right.</p>
+
+<p>We broke the build on purpose to see the test fail: an f16 <code>mma</code> in place of bf16,
+one shuffle fewer, a 16-byte load split in two, one register more, and a spill. Each failed the
+test for its kernel.</p>
+
+<h2 id="same"><a href="#same">Most kernels: the same PTX</a></h2>
+
+<p>The old PTX became these ops:</p>
+
+<table>
+<thead><tr><th>Old PTX</th><th>MLIR op</th></tr></thead>
+<tbody>
+<tr><td><code>mma.sync</code> (bf16, f16)</td><td><code>nvvm.mma.sync</code></td></tr>
+<tr><td><code>shfl.sync</code>, <code>vote.sync.ballot</code>, <code>match.any.sync</code></td><td><code>nvvm.shfl.sync</code>, <code>nvvm.vote.sync</code>, <code>nvvm.match.sync</code></td></tr>
+<tr><td><code>popc</code></td><td><code>llvm.intr.ctpop</code></td></tr>
+<tr><td><code>cp.async</code> and its commit and wait</td><td><code>nvvm.cp.async.shared.global</code> and its ops</td></tr>
+<tr><td><code>ld.global.nc.v4</code></td><td>an invariant <code>llvm.load</code> of a vector</td></tr>
+<tr><td><code>cvt.rn.bf16x2.f32</code>, <code>cvt.rn.bf16.f32</code></td><td><code>llvm.fptrunc</code></td></tr>
+<tr><td><code>cvt.rn.satfinite.e4m3x2.f32</code></td><td><code>nvvm.convert.f32x2.to.f8x2</code></td></tr>
+<tr><td>TMA load, mbarrier arrive and wait, fences, prefetch</td><td>the <code>nvvm</code> ops of the same names</td></tr>
+</tbody>
+</table>
+
+<p>In 14 of the 20 kernels, every pinned form kept its exact count, and ptxas gave the same
+registers. One of them, <code>index_q_bf16_at</code>, now needs 13 registers, not 14. The 499
+inline-asm regions in the PTX of these kernels went down to 81. 45 of the 81 are not ours.
+LLVM's NVPTX backend writes an <code>exit;</code> as inline asm after a failed bounds check.</p>
+
+<h2 id="better"><a href="#better">Six kernels: better PTX</a></h2>
+
+<p>In six kernels the pins failed, because the new PTX had fewer instructions. The compiler now
+saw both the old asm and the code around it, so it could remove work that the asm hid. We
+read each change, made sure the new PTX does the same work, and recorded the new counts. A
+removed form stays in the pins at count 0, so it cannot come back without a test failure.</p>
+
+<p><strong>A ballot that only needs to know "any".</strong> The top-k kernels count the lanes of a
+warp with a flag set: a ballot, then a <code>popc</code>. Some callers only test whether the count
+is above zero. With the asm, the flag went from a predicate to an integer and back, and the
+<code>popc</code> stayed:</p>
+
+<pre><code>selp.b32          %r69, 1, 0, %p3;
+add.s32           %r262, %r68, %r69;
+{ .reg .pred q; .reg .b32 m; setp.ne.s32 q, %r262, 0;
+  vote.sync.ballot.b32 m, q, -1; popc.b32 %r261, m; }
+setp.lt.s32       %p133, %r261, 1;</code></pre>
+
+<p>With the ops, LLVM sees that "count &gt; 0" is "ballot is not 0". It ballots the predicate
+directly and drops the <code>popc</code>:</p>
+
+<pre><code>or.pred               %p153, %p2, %p3;
+vote.sync.ballot.b32  %r325, %p153, -1;
+setp.eq.b32           %p154, %r325, 0;</code></pre>
+
+<p>The three top-k kernels have 18 fewer <code>popc.b32</code>. In <code>topk_mb_list_at</code>,
+which ptxas fits in 32 registers, the spill stores went from 40 bytes to 8.</p>
+
+<p><strong>The mbarrier wait loop.</strong> In the H100 GEMM, the asm turned the result of
+<code>mbarrier.try_wait</code> into an integer with a <code>selp</code>, and the loop compared the
+integer with zero. Now the loop branches on the predicate:</p>
+
+<pre><code>// before
+{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%rd249], %r122; selp.u32 %r121, 1, 0, p; }
+setp.eq.b32  %p9, %r121, 0;
+@%p9 bra     $L__BB0_8;
+
+// after
+mbarrier.try_wait.parity.shared.b64 %p9, [%rd65], %r14;
+not.pred     %p10, %p9;
+@%p10 bra    $L__BB0_8;</code></pre>
+
+<p>LLVM writes <code>.shared</code> where the asm had <code>.shared::cta</code>. PTX defines the
+two as the same address space.</p>
+
+<p><strong>A bf16 store.</strong> The epilogue of the GEMM converts each f32 result to bf16 and
+stores 16 bits. The asm converted into a 16-bit register and then widened it to 32 bits with
+<code>cvt.u32.u16</code>, only for the store to use the low 16 bits again. Now the store takes the
+16-bit register, and <code>fp8_gemm_m64</code> has 64 fewer instructions:</p>
+
+<pre><code>// before
+{ .reg .b16 h; cvt.rn.bf16.f32 h, %r393; cvt.u32.u16 %r199, h; }
+st.global.b16  [%rd65], %r199;
+
+// after
+cvt.rn.bf16.f32  %rs1, %r327;
+st.global.b16    [%rd74], %rs1;</code></pre>
+
+<h2 id="worse"><a href="#worse">Three places where seeing more made it worse</a></h2>
+
+<p>An op that LLVM can see is also an op that LLVM can move. Three times that cost us, and the
+pins caught each one.</p>
+
+<ul>
+<li><strong>A split load lost its cache hint.</strong> When every use of a vector load is an
+extract of one element, LLVM splits the load into scalar loads, and the scalar loads lose the
+<code>.nc</code> hint. A <code>freeze</code> after each load keeps it whole. The pins of
+<code>ld.global.nc.v4.b32</code> and <code>ld.global.nc.v2.b32</code> found this.</li>
+<li><strong>The lane id moved out of the loop.</strong> As an NVVM op, the read of
+<code>%laneid</code> is pure, so LLVM moves it, and the values made from it, out of the loop over
+blocks. They then stay in registers for the whole loop, which cost 2 more registers. The six
+scores kernels keep a one-line asm, <code>mov.u32 $0, %laneid</code>.</li>
+<li><strong>Barrier addresses stayed in registers.</strong> With <code>nvvm.mbarrier.init</code>,
+LLVM computes the 8 barrier addresses once, before the loop over tiles, and keeps them in
+registers. The two H100 GEMM kernels needed 3 more registers. <code>mbarrier.init</code> stays
+asm.</li>
+</ul>
+
+<h2 id="left"><a href="#left">What stays PTX</a></h2>
+
+<p>Besides the lane-id reads and the barrier inits, two kinds of PTX stay:</p>
+
+<ul>
+<li><strong>wgmma.</strong> The H100 GEMM issues <code>wgmma.fence</code>, the
+<code>wgmma.mma_async</code> ops and then a commit and a wait. In the asm, each of these
+instructions reads and writes the accumulator registers, so nothing can move between them. The
+NVVM ops do not tie the accumulator to the fence and the wait, so we kept the asm.</li>
+<li><strong>The fp8 <code>mma.sync</code>.</strong> NVVM in LLVM 22 has no op for the dense fp8
+<code>mma.sync.m16n8k32</code>. The two fp8 scores kernels and four MoE kernels write most of their
+work as PTX. Vx's own tile matmul <code>@</code> generates this instruction, so
+these kernels can become plain Vx, without an <code>mlir!</code> block.</li>
+</ul>
+
+<p>The converted kernels are on a glm-vx branch that is not merged yet. The pins check the PTX and
+the registers, not the results. The kernels still have to run on a GPU, and glm-vx's hardware
+tests for them are the next step.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

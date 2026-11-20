@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-11-17T18:00:00Z</updated>
+  <updated>2026-11-20T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Handing the PTX back to the compiler</title>
+    <link href="https://vxlang.org/blog/handing-the-ptx-back-to-the-compiler.html"/>
+    <id>https://vxlang.org/blog/handing-the-ptx-back-to-the-compiler.html</id>
+    <updated>2026-11-20T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>glm-vx runs GLM models with GPU kernels written in Vx, and its kernels had 99 pieces of hand-written PTX inside mlir! blocks. To LLVM, inline PTX is a black box: it cannot remove, merge or move an instruction in it. We moved most of it to NVVM and LLVM ops. A test pins each instruction form of the old PTX with its exact count, and the registers and spills from ptxas. 14 of the 20 kernels kept every pinned instruction. In the other 6 the compiler wrote fewer instructions: a ballot that only tests for any lane drops its popc, an mbarrier wait loop branches on the predicate, and a bf16 store drops a widening convert. One kernel spills 8 bytes where it spilled 40. In three places the compiler made worse code: a split load lost its cache hint, the lane id moved out of a loop, and barrier addresses stayed in registers. Those keep a fix or a small piece of asm. The wgmma ops and the fp8 mma.sync stay PTX. No GPU ran the converted kernels yet.</summary>
+  </entry>
 
   <entry>
     <title>An escape hatch the size of one fact</title>
