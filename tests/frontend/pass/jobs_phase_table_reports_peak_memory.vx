@@ -1,0 +1,23 @@
+//===- jobs_phase_table_reports_peak_memory.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each line of the VX_PIPELINE_PHASES table gives the phase's time in milliseconds and then the
+// peak memory of the compiler in MB when the phase ended. A phase that ran never reports 0 MB.
+// RUN: (VX_PIPELINE_PHASES=1 vxc -j 2 --emit-mlir %s 2>&1 >/dev/null) | FileCheck %s
+
+fn add_one(n : i64) -> i64 {
+  return n + 1i64;
+}
+
+fn main() -> i32 {
+  add_one(1i64);
+  return 0;
+}
+
+// CHECK: phase,parse,{{[0-9]+\.[0-9]+}},{{[1-9][0-9]*\.[0-9]}}{{$}}
+// CHECK: phase,type_check,{{[0-9]+\.[0-9]+}},{{[1-9][0-9]*\.[0-9]}}{{$}}
+// CHECK: phase,mlir_print,{{[0-9]+\.[0-9]+}},{{[1-9][0-9]*\.[0-9]}}{{$}}
