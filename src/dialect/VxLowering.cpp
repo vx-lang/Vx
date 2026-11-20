@@ -6426,7 +6426,9 @@ static bool isDeviceLowerableDialect(StringRef ns) {
 /// Whether the device pipeline can take `op` as it is. `nvvm` ops are PTX
 /// already. An `llvm` op, such as the `getelementptr` and `load` of a raw
 /// pointer, lowers on the device too, except one that names a symbol: the
-/// symbol is a host function or a host global.
+/// symbol is a host function or a host global. An intrinsic is not one --
+/// `llvm.intr.*` is NVVM's own (`llvm.intr.assume` carries a `? mult_of N`
+/// fact into the kernel, #3668), and NVPTX lowers it, usually to nothing.
 static bool deviceAcceptsOp(Operation *op) {
   Dialect *dialect = op->getDialect();
   if (!dialect)
@@ -6434,8 +6436,13 @@ static bool deviceAcceptsOp(Operation *op) {
   StringRef ns = dialect->getNamespace();
   if (ns == "nvvm")
     return true;
-  if (ns == "llvm")
-    return !isa<LLVM::CallOp, LLVM::InvokeOp, LLVM::AddressOfOp>(op);
+  if (ns == "llvm") {
+    if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+      auto callee = call.getCalleeAttr();
+      return callee && callee.getValue().starts_with("llvm.intr.");
+    }
+    return !isa<LLVM::InvokeOp, LLVM::AddressOfOp>(op);
+  }
   return isDeviceLowerableDialect(ns);
 }
 

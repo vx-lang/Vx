@@ -827,7 +827,9 @@ impl<'a> TypeChecker<'a> {
                         }
                         Dim::Dyn => format!("dimension {i} is a run-time extent"),
                         Dim::DynMult(n) => {
-                            format!("dimension {i} is a run-time extent stated to be a multiple of {n}")
+                            format!(
+                                "dimension {i} is a run-time extent stated to be a multiple of {n}"
+                            )
                         }
                         _ => format!("dimension {i} is not a compile-time constant"),
                     })
