@@ -60,6 +60,7 @@ the same in each run.
 | A copy of a tile to or from shared memory | `lanes::copy` |
 | The same value in each element of a tile in shared memory | `lanes::fill` |
 | Each row of a tile in shared memory times a value of its own | `lanes::scale_rows` |
+| A part of a tensor in the L2 cache before the lanes read it | `lanes::prefetch` |
 | A faster `exp` or `tanh` in a GPU kernel | `fast_exp`, `fast_tanh` ([Exact and fast math](exact-and-fast-math.md)) |
 | Work on several devices at the same time | a task for each device, with a `spawn on` in each task |
 | The result of one task | `join()` on its handle |

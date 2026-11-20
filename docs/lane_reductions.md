@@ -352,6 +352,14 @@ element for each row. Each lane scales the elements `lane`, `lane + lanes`, and 
 every lane of the block or the subgroup waits. On the Apple GPU, a scale keeps the tile of a matmul
 in shared memory.
 
+`lanes::prefetch(&x, [i, j], [rows, cols])` asks for a part of `x` to come into the L2 cache, and
+reads no value. The part stops at the ends of `x`, and each row of it, along the last dimension,
+is one range of bytes. On `sm_90` and later, lane `l` starts one `cp.async.bulk.prefetch.L2` for
+each of the rows `l`, `l + lanes`, and so on, with the range rounded out to 16 bytes. On an older
+NVIDIA chip, the lanes share the 128-byte lines of the rows, with one `prefetch.L2` for each. Other
+targets, and a kernel on one lane, drop it. A kernel that waits for the kernel before it
+(`VX_GPU_PDL=1`) keeps a prefetch above the wait.
+
 ## Not yet
 
 - `f64` and the integer types.
