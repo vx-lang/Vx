@@ -3279,9 +3279,35 @@ impl<'r> Lowerer<'r> {
                         pack_targets(body_b, next_b),
                     );
                     self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
-                    // Bind each payload pattern to its field (`Some(v)` -> `v = <payload>`).
+                    // Void payloads have names but occupy no storage fields.
                     if let Some(pats) = payload_pats {
+                        let mapping: HashMap<_, _> = data
+                            .generics
+                            .iter()
+                            .cloned()
+                            .zip(args.iter().cloned())
+                            .collect();
+                        let mut field = 0;
                         for (i, pat) in pats.iter().enumerate() {
+                            let payload_type =
+                                data.variants[ordinal as usize].1[i].substitute(&mapping);
+                            if crate::syntax::is_void_ty(&payload_type) {
+                                if let crate::syntax::Pattern::Identifier(pname) = pat {
+                                    let placeholder = self.emit_value(
+                                        Opcode::Const,
+                                        Register(0),
+                                        Register(0),
+                                        ElementType::I32,
+                                        0,
+                                    );
+                                    self.note_shadow(pname);
+                                    self.ast_types.insert(pname.clone(), payload_type);
+                                    self.bind_local(pname.clone(), placeholder, false, false);
+                                }
+                                continue;
+                            }
+                            let payload_field = field;
+                            field += 1;
                             if let crate::syntax::Pattern::Identifier(pname) = pat {
                                 let payloads = self.agg_layouts[layout_index]
                                     .variant_payloads
@@ -3289,14 +3315,8 @@ impl<'r> Lowerer<'r> {
                                     .ok_or(Decline::TypeNotModelled {
                                         what: "an enum payload type that is not laid out",
                                     })?;
-                                // A `void` payload (`Ok(v)` of a `Result<void, E>`) has no
-                                // storage, so there is nothing to bind. A later read of the name
-                                // finds it unbound and declines.
-                                if i >= payloads.len() {
-                                    continue;
-                                }
                                 // This variant's payload type, not the slot's.
-                                let payload_type = payloads[i].ty.clone();
+                                let payload_type = payloads[payload_field].ty.clone();
                                 let lty = self.payload_lowered_ty(&payload_type).ok_or(
                                     Decline::TypeNotModelled {
                                         what: "an enum payload type that is not modelled",
@@ -3310,7 +3330,7 @@ impl<'r> Lowerer<'r> {
                                     EnumPayloadIndex {
                                         variant: u32::try_from(ordinal)
                                             .expect("enum variant fits in u32"),
-                                        field: u32::try_from(i)
+                                        field: u32::try_from(payload_field)
                                             .expect("enum payload field fits in u32"),
                                     }
                                     .encode(),
@@ -7745,6 +7765,13 @@ impl<'r> Lowerer<'r> {
             }
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
+                Expr::Match(_) if crate::syntax::expr::statement_always_exits(s, &|_| false) => {
+                    // Reuse return lowering to close the match's unused continuation block.
+                    self.lower_stmt(&Statement::Return(crate::syntax::ReturnStmt::new(
+                        Some(e.expr.clone()),
+                        e.span,
+                    )))
+                }
                 Expr::Match(m) => self.lower_match(m),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp, false).map(|_| ()),
                 Expr::UnsafeBlock(ub) if ub.task.is_some() => self

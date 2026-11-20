@@ -2126,7 +2126,9 @@ impl<'c> MeliorGenerator<'c> {
                         return Ok(None);
                     }
                 }
-                let diverges = crate::syntax::expr::diverges_on_every_path(&s.expr);
+                let diverges = crate::syntax::expr::diverges_on_every_path(&s.expr)
+                    || (matches!(&s.expr, Expr::Match(_))
+                        && crate::syntax::expr::statement_always_exits(stmt, &|_| false));
                 let out = LowerToMelior::lower(s, self, block)?;
                 if !diverges {
                     return Ok(out);
