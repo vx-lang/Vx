@@ -469,6 +469,12 @@ fn topology_index(expr: &crate::syntax::Expr) -> i32 {
 pub const TASKS_BLOCK_DISPATCH_ID: i32 = 10;
 pub const TASK_DISPATCH_ID: i32 = 11;
 
+/// Whether a spawn with this dispatch id runs on a device: anything but the host-like ids
+/// (CPU/Current, the two tasks ids, and the two CPU feature levels).
+pub fn is_device_dispatch_id(id: i64) -> bool {
+    !matches!(id, 0 | 10 | 11 | 600 | 700)
+}
+
 pub fn topology_dispatch_id(top: &Topology) -> i32 {
     match top {
         Topology::CPU | Topology::Current => 0,

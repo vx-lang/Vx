@@ -28,6 +28,129 @@ mod seam_cert;
 mod stmt;
 mod tensors;
 
+/// The dims of the tensor inside a checker-level type, or `None` when the type is not one.
+pub(crate) fn tensor_dims_of(ty: &syntax::Type) -> Option<&Vec<syntax::Dim>> {
+    match ty {
+        syntax::Type::Tensor(_, dims, _) => Some(dims),
+        syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner)
+        | syntax::Type::Ref(inner, _)
+        | syntax::Type::Pinned(inner, _) => tensor_dims_of(inner),
+        syntax::Type::Borrow { inner, .. } | syntax::Type::Pointer(inner, ..) => {
+            tensor_dims_of(inner)
+        }
+        _ => None,
+    }
+}
+
+/// Whether the type states a `? mult_of N` fact with N above 1, the only ones worth an assume.
+pub(crate) fn states_a_mult_of_fact(ty: &syntax::Type) -> bool {
+    tensor_dims_of(ty).is_some_and(|dims| dims.iter().any(|d| d.mult_of().is_some_and(|n| n > 1)))
+}
+
+/// One `llvm.intr.assume` per `? mult_of N` dimension of the tensor type that `val` holds
+/// (#3668): N a power of two, so `(extent & (N - 1)) == 0` says what the caller stated in
+/// the type. The op goes where `block` puts it; callers append at the entry of the code
+/// the fact covers, so the assume dominates the accesses that rely on it. A value that is
+/// not a memref and a type with no such dimension add nothing.
+pub(crate) fn assume_dims_are_multiples<'c>(
+    gen: &MeliorGenerator<'c>,
+    val: Value<'c, 'c>,
+    mlir_ty: Type<'c>,
+    ast_ty: &syntax::Type,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(), LowerError> {
+    let ty_str = mlir_ty.to_string();
+    // `memref<memref<...>>` is a slot that holds a tensor, not one: `memref.dim` reads a
+    // plain memref, and the caller hands the loaded inner one instead.
+    if !ty_str.starts_with("memref<") || ty_str.contains("memref<memref<") {
+        return Ok(());
+    }
+    if !states_a_mult_of_fact(ast_ty) {
+        return Ok(());
+    }
+    let dims = tensor_dims_of(ast_ty).expect("states_a_mult_of_fact said there is one");
+    let index_ty = melior::ir::r#type::Type::index(gen.context);
+    for (i, d) in dims.iter().enumerate() {
+        let Some(n) = d.mult_of().filter(|n| *n > 1) else {
+            continue;
+        };
+        let extent: Value = block
+            .append_operation(
+                OperationBuilder::new("memref.dim", gen.loc())
+                    .add_operands(&[val, index_constant(gen, block, i as i64, index_ty)?])
+                    .add_results(&[index_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let low_bits: Value = block
+            .append_operation(
+                OperationBuilder::new("arith.andi", gen.loc())
+                    .add_operands(&[
+                        extent,
+                        index_constant(gen, block, (n - 1) as i64, index_ty)?,
+                    ])
+                    .add_results(&[index_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let eq: Value = block
+            .append_operation(
+                OperationBuilder::new("arith.cmpi", gen.loc())
+                    .add_operands(&[low_bits, index_constant(gen, block, 0, index_ty)?])
+                    .add_results(&[gen.i1_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "predicate"),
+                        IntegerAttribute::new(
+                            gen.i64_ty,
+                            melior::dialect::arith::CmpiPredicate::Eq as i64,
+                        )
+                        .into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        // The empty `op_bundle_sizes` the verifier asks of an assume with no bundle.
+        let empty_bundle_sizes = Attribute::parse(gen.context, "array<i32>")
+            .ok_or_else(|| LowerError::from("failed to parse array<i32> for assume".to_string()))?;
+        block.append_operation(
+            OperationBuilder::new("llvm.intr.assume", gen.loc())
+                .add_operands(&[eq])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "op_bundle_sizes"),
+                    empty_bundle_sizes,
+                )])
+                .build()?,
+        );
+    }
+    Ok(())
+}
+
+/// An `index` constant, the type `memref.dim` speaks.
+fn index_constant<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    v: i64,
+    index_ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    Ok(block
+        .append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[index_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(index_ty, v).into(),
+                )])
+                .build()?,
+        )
+        .result(0)?
+        .into())
+}
+
 pub trait LowerToMelior<'c> {
     type Output;
     fn lower(

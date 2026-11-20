@@ -1586,6 +1586,16 @@ impl<'a> TypeChecker<'a> {
                         // A `? mult_of N` in the pattern states a fact the subject does not:
                         // matching would hand the callee a contract the caller never gave.
                         (Dim::DynMult(_), Dim::Dyn) => return false,
+                        // A known extent matches the fact when it satisfies it. A compile-time
+                        // check, so the fact cannot be stated of an extent that breaks it.
+                        (Dim::DynMult(m), Dim::Static(Expr::Number(n))) => {
+                            if n.value.parse::<u64>().map(|v| v % m == 0) != Ok(true) {
+                                return false;
+                            }
+                        }
+                        // A const name cannot stand for a run-time fact, as it cannot stand
+                        // for a run-time extent above.
+                        (Dim::Static(Expr::Identifier(_)), Dim::DynMult(_)) => return false,
                         (Dim::Static(Expr::Identifier(id)), Dim::Static(Expr::Number(n))) => {
                             let extent = Type::Generic(n.value.clone(), None);
                             if !Self::bind_dim(&id.name, extent, mapping) {

@@ -1661,6 +1661,17 @@ impl<'c> MeliorGenerator<'c> {
                 self.env.insert(name.to_string().into(), (arg_val, arg_ty));
             }
             self.ast_env.insert(name.to_string().into(), ast_ty.clone());
+            // A `? mult_of N` fact of a parameter reaches LLVM as an assume at the
+            // function's entry (#3668), so every access the body makes can fold on it.
+            if crate::codegen::lower::states_a_mult_of_fact(ast_ty) {
+                crate::codegen::lower::assume_dims_are_multiples(
+                    self,
+                    arg_val,
+                    arg_ty,
+                    ast_ty,
+                    current_block,
+                )?;
+            }
         }
         // The caller's buffer is block argument 0; `return` writes into it. Cleared with
         // `current_return_type` at the end of the function.
