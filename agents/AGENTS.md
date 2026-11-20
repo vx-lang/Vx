@@ -135,6 +135,11 @@ Use the virtualenv created inside venv. Stop you dont find a venv virtual enviro
 - A test's comment is a claim about what it asserts. If they disagree, the comment is what
   the next reader believes, so fix the checks or narrow the comment.
 
+## Benchmarks
+
+- Measure and report every speed number that leaves the repository as
+  `docs/benchmarking_policy.md` says: release notes, posts, READMEs and PR descriptions.
+
 ## Rust Toolchain Environment
 
 **CRITICAL**

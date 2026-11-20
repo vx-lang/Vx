@@ -255,6 +255,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/apple_gpu_sums_vectors_across_a_simd_group.vx",
         // needs --machine
+        "optimizations/pass/apple_gpu_kernels_for_n_positions_match_one_position.vx",
+        // needs --machine
         "optimizations/pass/nvidia_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
         // split-file
         "optimizations/pass/gpu_only_code_on_the_cpu_with_the_programs_own_write.vx",
@@ -266,6 +268,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
         "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
+        // needs -fauto-schedule-levels
+        "optimizations/pass/an_across_loop_on_a_spirv64_topology_has_no_launch_shape.vx",
         "frontend/pass/packages/import_from_a_package.vx", // needs --package
         // needs --machine
         "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
@@ -320,6 +324,16 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/a_kernel_reads_a_parameter_that_the_host_borrows_for_emit_ptx.vx",
         // needs --machine
         "optimizations/pass/blocks_write_the_rows_of_disjoint_ranges.vx",
+        // needs --machine
+        "optimizations/pass/disjoint_ranges_check_makes_ranges_for_a_kernel.vx",
+        // needs --machine
+        "optimizations/pass/lanes_write_rows_from_nested_parts_of_the_lane_index.vx",
+        // needs --machine
+        "optimizations/pass/lanes_write_rows_in_two_loops_one_after_another.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmuls_of_a_tile_in_hbm_give_the_sums.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmuls_load_16_bytes_of_a_row_at_once.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

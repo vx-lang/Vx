@@ -678,6 +678,10 @@ pub enum DiagnosticCode {
     /// for silicon that is not there -- and the placement is in the type, so the question is
     /// answerable here rather than at a kernel launch on the machine that lacks the type.
     ///
+    /// The check asks the device the value is on: the device of a `spawn` region, or the device
+    /// that a placement or a `transfer` names. A placement that names only a memory asks the
+    /// topology whose `memory:` it is.
+    ///
     /// Only fires against a topology that declares `dtypes:`. An undeclared machine constrains
     /// nothing, which is what keeps every machine file written before the field kept working.
     E6026,

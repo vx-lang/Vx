@@ -9,6 +9,10 @@ mod integration_test {
     mod apple_gpu_functions_called_from_two_c_threads;
     #[cfg(target_os = "macos")]
     mod apple_gpu_kernels_called_from_c;
+    // Linux only: it reads an ELF symbol table, and the Apple library is a
+    // Mach-O one.
+    #[cfg(target_os = "linux")]
+    mod abi_of_the_dispatch_library;
     mod architecture_test;
     mod arrival_counts_test;
     mod assert_codegen_test;

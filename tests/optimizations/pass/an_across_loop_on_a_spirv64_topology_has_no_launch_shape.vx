@@ -1,0 +1,61 @@
+//===- an_across_loop_on_a_spirv64_topology_has_no_launch_shape.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The other half of the refusal in
+// tests/frontend/fail/an_across_loop_on_a_spirv64_topology_is_refused.vx.
+//
+// `-fauto-schedule-levels` runs an `across` loop as a plain `for` that carries
+// its level as metadata, and the region compiles for a `spirv64` topology. The
+// payload it produces names the image's format and carries no `grid=` and no
+// `block=`, because a launch shape is what an `across` loop would have given
+// it. So `vx_launch_shape` cannot answer for a `spirv64` payload today: the
+// only producer of that shape is the loop this arch refuses.
+//
+// The kernel still runs: the image is launched as one block of one lane, and
+// the plain `for` walks the whole range inside it.
+//
+// RUN: vxc %s -fauto-schedule-levels --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD --implicit-check-not=grid= --implicit-check-not=block= --implicit-check-not=Error
+// PAYLOAD: vx_npu_kernel_0\00abi=1\00{{.*}}format=spirv\00
+
+Memory CPU_DRAM {
+  capacity: 16 GiB, bandwidth: 50 GB/s, managed: cached
+}
+
+Memory DEV_HBM {
+  capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+
+Topology Simd {
+  arch: spirv64,
+  levels: [blocks(max_lanes: 1024), lanes],
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn add_one(out : &mut Tensor<f32, [64]>, x : &Tensor<f32, [64]>, n : i32) -> void {
+  spawn on(Topology::Simd) {
+    for i in 0..n across blocks {
+      out[i] = x[i] + 1.0;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut x = unsafe { Tensor<f32, [64]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [64]>::uninit() };
+  for i in 0..64 {
+    x[i] = i as f32;
+    o[i] = 0.0;
+  }
+  add_one(&mut o, &x, 64);
+  print(o[0] as i32);
+  return 0;
+}

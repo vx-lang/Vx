@@ -69,6 +69,16 @@ An index can also use `i / n` and `i % n`, where `i` is the variable of a loop i
 with the same rule for `n`. With `i` below 4 and `j` below 32, `(i / 2) * 32 + j` is at most 63.
 So `c[b * 64 + (i / 2) * 32 + j]` fixes `b`.
 
+The parts can also be parts of parts, with numbers that each divide the next. The result of a
+tensor core is an example: in a block of 128 lanes, lane `l` holds row `16 * (l / 32) + (l % 32) / 4` and the row 8 below it, at columns `2 * (l % 4)` and one more. The compiler cuts `l` into the
+digits `l % 4`, `(l % 32) / 4` and `l / 32`. It writes each part as a sum of these digits, so
+`l / 4` is `(l % 32) / 4 + 8 * (l / 32)`. The indices must fix every digit. Here the row fixes the
+two upper digits, and the column fixes `l % 4`, so the writes fix `l`.
+
+Two loops that come one after the other, such as a `for j in 0..2` in each of two `if` blocks,
+count as one loop when their ranges are the same numbers. So a write in one loop and a write in
+the other can use the same column `col + 8 * j`.
+
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
 
@@ -156,6 +166,12 @@ The rules:
 - A table is read only. A write to it is E4006, because a write could make two ranges overlap.
   `tiles.len()` gives the number of ranges.
 - As for `Distinct`, only a parameter of the function counts.
+
+`DisjointRanges::check(t)` makes a table, as `Distinct::check` makes a `Distinct` tensor. It takes
+`t` by value: a tensor of shape `[?, 2]` of `i32`, `i64`, `u32` or `u64`, on the CPU. It returns
+`None` when two ranges overlap or a range ends before it starts. An empty range `[s, s)` overlaps a
+range that has `s` inside it, but not a range that starts or ends at `s`. The check sorts a copy of
+the ranges, so it costs one sort on the CPU.
 
 `unsafe { DisjointRanges(t) }` makes a table with no check. It takes a tensor of integers of shape
 `[?, 2]`, and it moves `t`. If two ranges overlap, two blocks write the same row. That is a data

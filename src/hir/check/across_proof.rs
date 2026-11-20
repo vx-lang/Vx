@@ -27,6 +27,15 @@
 // fix `v`. `n` is a number above zero, or a value from outside the loop that is a factor of the
 // loop's end, as in `0..m * n`: when `n` is zero, the loop has no passes.
 //
+// A part of a part, such as `(v % 32) / 4`, is a digit of `v` when its numbers divide each other.
+// The numbers of the parts that two accesses use cut `v` into digits, such as `v % 4`,
+// `(v % 32) / 4` and `v / 32`. Each part is then a sum of digits, and the accesses fix `v` when
+// their indices fix every digit.
+//
+// The proof compares two passes, and their inner loops can be at different values, so a key of an
+// inner loop stands for any value of its range. Two loops that follow one another, with the same
+// range in numbers, can then share one key. No index can use both, as it can use two nested loops.
+//
 // An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
 // pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
 //
@@ -156,6 +165,8 @@ struct Proof<'c> {
     /// Tensors from outside the loop that the pass uses whole, not by element.
     whole: HashMap<String, Span>,
     next_key: usize,
+    /// The keys of the inner loops that ended, with their ranges.
+    finished: Vec<(String, (i64, i64))>,
     error: Option<(String, Span)>,
     /// The statement being walked, for an expression with no position of its own.
     at: Span,
@@ -232,6 +243,7 @@ pub(crate) fn across_loop_race(
             accesses: BTreeMap::new(),
             whole: HashMap::new(),
             next_key: 0,
+            finished: Vec::new(),
             error: None,
             at: f.span,
             pass: None,
@@ -475,9 +487,31 @@ impl Proof<'_> {
                     _ => None,
                 };
                 self.scopes.push(HashMap::new());
-                self.bind_index(&inner.iter, &inner.iterable, range, inner.across.as_ref());
+                let earlier = range.and_then(|r| {
+                    let at = self.finished.iter().position(|(_, f)| *f == r)?;
+                    Some(self.finished.remove(at).0)
+                });
+                let key = match earlier {
+                    Some(key) => {
+                        let ty = range_type(&inner.iterable);
+                        self.bind(
+                            &inner.iter,
+                            Binding::Index {
+                                key: key.clone(),
+                                ty,
+                            },
+                        );
+                        key
+                    }
+                    None => {
+                        self.bind_index(&inner.iter, &inner.iterable, range, inner.across.as_ref())
+                    }
+                };
                 self.stmts(&inner.body);
                 self.scopes.pop();
+                if let Some(r) = range {
+                    self.finished.push((key, r));
+                }
             }
             Statement::Loop(l) => self.block(&l.body),
             Statement::ExprStmt(e) => self.expr(&e.expr),
@@ -1048,10 +1082,13 @@ impl Proof<'_> {
     /// the key of `v`, then `/` or `%`, then `n` in parentheses.
     fn part(&self, v: &Affine, n: &Affine, quotient: bool) -> Option<Affine> {
         let index = v.terms.keys().next()?;
-        if *v != Affine::var(index.clone())
-            || !self.ranges.contains_key(index)
-            || self.index_range(index)?.0 < 0
-        {
+        if *v != Affine::var(index.clone()) {
+            return None;
+        }
+        if !self.ranges.contains_key(index) {
+            return self.part_of_a_digit(index, n.as_constant()?, quotient);
+        }
+        if self.index_range(index)?.0 < 0 {
             return None;
         }
         let n = match n.as_constant() {
@@ -1072,6 +1109,62 @@ impl Proof<'_> {
         let op = if quotient { '/' } else { '%' };
         // The key cannot end with `#outside`, which marks a value from outside the loop.
         Some(Affine::var(format!("{index}{op}({n})")))
+    }
+
+    /// `key / n` or `key % n`, when `key` is a digit of a loop index and `n` a number above zero.
+    /// The result is a digit again: `(v % 32) / 4` is `v / 4` below 8, and `(v / 4) % 8` is the
+    /// same digit.
+    fn part_of_a_digit(&self, key: &str, n: i64, quotient: bool) -> Option<Affine> {
+        let (index, lo, hi) = self.digit_of(key)?;
+        if n <= 0 {
+            return None;
+        }
+        let (lo, hi) = match (quotient, hi) {
+            (true, None) => (lo.checked_mul(n)?, None),
+            // `(v % hi) / lo / n` is `(v % hi) / (lo * n)` when `lo * n` divides `hi`.
+            (true, Some(hi)) => {
+                let lo = lo.checked_mul(n)?;
+                (hi % lo == 0).then_some((lo, Some(hi)))?
+            }
+            (false, None) => (lo, Some(lo.checked_mul(n)?)),
+            // `(v % hi) / lo % n` is `(v % (lo * n)) / lo` when `n` divides `hi / lo`.
+            (false, Some(hi)) => ((hi / lo) % n == 0).then_some((lo, Some(lo.checked_mul(n)?)))?,
+        };
+        if hi == Some(lo) {
+            return Some(Affine::constant(0));
+        }
+        Some(Affine::var(digit_key(index, lo, hi)))
+    }
+
+    /// For the key of a digit of a loop index `v` that is never below zero: the key of `v`,
+    /// `lo` and `hi`, for the digit `(v % hi) / lo`, or `v / lo` when there is no `hi`. `lo`
+    /// divides `hi`. `v` itself is the digit with `lo` 1 and no `hi`.
+    fn digit_of<'k>(&self, key: &'k str) -> Option<(&'k str, i64, Option<i64>)> {
+        let number = |s: &str| s.parse::<i64>().ok().filter(|n| *n > 0);
+        let (index, lo, hi) = match key.find(['/', '%']) {
+            None => (key, 1, None),
+            Some(at) => {
+                let rest = &key[at..];
+                let inside = |s: &'k str| s.strip_prefix('(')?.strip_suffix(')');
+                let (lo, hi) = if let Some(n) = rest.strip_prefix('/') {
+                    (number(inside(n)?)?, None)
+                } else {
+                    let rest = &rest[1..];
+                    match rest.split_once(")/(") {
+                        Some((hi, lo)) => (
+                            number(lo.strip_suffix(')')?)?,
+                            Some(number(hi.strip_prefix('(')?)?),
+                        ),
+                        None => (1, Some(number(inside(rest)?)?)),
+                    }
+                };
+                (&key[..at], lo, hi)
+            }
+        };
+        if !self.ranges.contains_key(index) || self.index_range(index)?.0 < 0 {
+            return None;
+        }
+        Some((index, lo, hi))
     }
 
     /// The key of the loop index, whether the key is of `v / n`, and `n`, for a key that `part`
@@ -1277,6 +1370,11 @@ impl Proof<'_> {
             return ComptimeInterpreter::integer_range(&self.claims[&tensor].1);
         }
         // `v` is never below zero. A remainder is below `n`, and neither part is above `v`.
+        let nested = v.contains(")/(");
+        if let Some((index, lo, Some(hi))) = nested.then(|| self.digit_of(v)).flatten() {
+            let (_, top) = self.index_range(index)?;
+            return Some((0, (top / lo as i128).min((hi / lo) as i128 - 1)));
+        }
         if let Some((index, quotient, n)) = Self::part_of(v) {
             let (lo, hi) = self.index_range(index)?;
             return Some(match (n.parse::<i128>(), quotient) {
@@ -1370,8 +1468,17 @@ impl Proof<'_> {
             .iter()
             .filter(|(v, _)| !v.ends_with("#outside"))
             .map(|(v, c)| {
-                // The number of values that `v` can have.
+                // The number of values that `v` can have. A digit `(v % hi) / lo` has at most
+                // `hi / lo`.
+                let digit = match self.digit_of(v) {
+                    Some((_, lo, Some(hi))) if lo > 1 => Some(hi / lo),
+                    _ => None,
+                };
                 let span = match Self::part_of(v) {
+                    _ if digit.is_some() => self
+                        .index_range(v)
+                        .and_then(|(lo, hi)| i64::try_from(hi - lo + 1).ok())
+                        .or(digit),
                     Some((index, ..)) if self.ranges.get(index).copied().flatten().is_some() => {
                         self.index_range(v)
                             .and_then(|(lo, hi)| i64::try_from(hi - lo + 1).ok())
@@ -1472,6 +1579,74 @@ impl Proof<'_> {
             .any(|(own, _, n)| fixed(&format!("{own}/({n})")) && fixed(&format!("{own}%({n})")))
     }
 
+    /// Whether the indices of `x` and `y` together fix every digit of the loop's variable `v`.
+    /// The parts of `v` that they use cut `v` at numbers that each divide the next, such as
+    /// `v % 4`, `(v % 32) / 4` and `v / 32`, which cut it at 4 and 32. Each part becomes a sum
+    /// of the digits between the cuts, so `v / 4` is `(v % 32) / 4 + 8 * (v / 32)`. Then each
+    /// digit must be fixed, as `parts_fix_own` asks of `v / n` and `v % n`.
+    fn digits_fix_own(&self, x: &[Option<Affine>], y: &[Option<Affine>]) -> bool {
+        let own = self.own.as_str();
+        let mut cuts = std::collections::BTreeSet::from([1i64]);
+        for form in x.iter().chain(y).flatten() {
+            for (index, lo, hi) in form.terms.keys().filter_map(|k| self.digit_of(k)) {
+                if index == own {
+                    cuts.insert(lo);
+                    cuts.extend(hi);
+                }
+            }
+        }
+        let cuts: Vec<i64> = cuts.into_iter().collect();
+        if cuts.len() < 2 || cuts.windows(2).any(|w| w[1] % w[0] != 0) {
+            return false;
+        }
+        // The digits: one between each two cuts, and `v / last` above the last cut.
+        let digits: Vec<(i64, Option<i64>)> = cuts
+            .iter()
+            .enumerate()
+            .map(|(i, &lo)| (lo, cuts.get(i + 1).copied()))
+            .collect();
+        let split = |form: &Affine| -> Option<Affine> {
+            let mut out = Affine::constant(form.constant);
+            for (k, &c) in &form.terms {
+                let part = match self.digit_of(k) {
+                    Some((index, lo, hi)) if index == own => {
+                        // `(v % hi) / lo` is the sum of the digits from `lo` up to `hi`.
+                        let mut sum = Affine::constant(0);
+                        for &(cut, next) in digits
+                            .iter()
+                            .filter(|(cut, _)| *cut >= lo && hi.is_none_or(|hi| *cut < hi))
+                        {
+                            let digit = Affine::var(digit_key(own, cut, next));
+                            sum = sum.add(&digit.scale(cut / lo)?, 1)?;
+                        }
+                        sum
+                    }
+                    _ => Affine::var(k.clone()),
+                };
+                out = out.add(&part.scale(c)?, 1)?;
+            }
+            Some(out)
+        };
+        let x: Vec<Option<Affine>> = x.iter().map(|f| f.as_ref().and_then(split)).collect();
+        let y: Vec<Option<Affine>> = y.iter().map(|f| f.as_ref().and_then(split)).collect();
+        let fixed = |key: &str| {
+            x.iter().zip(&y).any(|(x, y)| match (x, y) {
+                (Some(x), Some(y)) if x == y => self.fixes_with(x, key, None),
+                (Some(x), Some(y)) if x.terms == y.terms => x
+                    .constant
+                    .checked_sub(y.constant)
+                    .and_then(i64::checked_abs)
+                    .is_some_and(|gap| self.fixes_with(x, key, Some(gap))),
+                _ => false,
+            })
+        };
+        // A digit that is zero in every pass needs no index.
+        digits.iter().all(|&(lo, hi)| {
+            let key = digit_key(own, lo, hi);
+            self.index_range(&key).is_some_and(|(a, b)| a == b) || fixed(&key)
+        })
+    }
+
     fn check(&self, own: &str, level: &str) -> Option<(String, Span)> {
         for (name, accesses) in &self.accesses {
             if accesses.iter().any(|a| a.atomic) {
@@ -1527,7 +1702,8 @@ impl Proof<'_> {
                             (Some(x), Some(y)) => self.own_term_decides(x, y),
                             _ => false,
                         })
-                        || self.parts_fix_own(&w.indices, &other.indices);
+                        || self.parts_fix_own(&w.indices, &other.indices)
+                        || self.digits_fix_own(&w.indices, &other.indices);
                     if apart {
                         continue;
                     }
@@ -1555,6 +1731,17 @@ impl Proof<'_> {
             }
         }
         None
+    }
+}
+
+/// The key of the digit `(index % hi) / lo` of a loop index, or of `index / lo` when there is no
+/// `hi`. The keys of `v / n` and `v % n` are those that `part` makes.
+fn digit_key(index: &str, lo: i64, hi: Option<i64>) -> String {
+    match (lo, hi) {
+        (1, None) => index.to_string(),
+        (lo, None) => format!("{index}/({lo})"),
+        (1, Some(hi)) => format!("{index}%({hi})"),
+        (lo, Some(hi)) => format!("{index}%({hi})/({lo})"),
     }
 }
 

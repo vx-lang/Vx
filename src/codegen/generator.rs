@@ -74,6 +74,7 @@ pub struct MeliorGenerator<'c> {
     pub(crate) enum_generics: HashMap<crate::symbol::Symbol, Vec<crate::symbol::Symbol>>,
     pub(crate) functions: HashMap<crate::symbol::Symbol, (Type<'c>, Vec<Type<'c>>)>,
     pub(crate) syntax_functions: HashMap<crate::symbol::Symbol, syntax::Function>,
+    extern_return_types: HashMap<crate::symbol::Symbol, syntax::Type>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
     /// The program's `const` tables by name; `generate_module` adds each one's global.
@@ -1100,6 +1101,7 @@ impl<'c> MeliorGenerator<'c> {
             enum_generics: HashMap::new(),
             functions: HashMap::new(),
             syntax_functions: HashMap::new(),
+            extern_return_types: HashMap::new(),
             enzyme_decls: std::collections::HashSet::new(),
             string_counter: 0,
             const_tables: HashMap::new(),
@@ -1351,6 +1353,8 @@ impl<'c> MeliorGenerator<'c> {
             }
         }
         for ext in &program.externs {
+            self.extern_return_types
+                .insert(ext.name.clone(), ext.return_type.clone());
             let ret_ty = self.lower_type(&ext.return_type)?;
             let mut arg_tys = Vec::new();
             for (_, ty) in &ext.params {
@@ -1383,6 +1387,8 @@ impl<'c> MeliorGenerator<'c> {
 
         for module_prog in sorted_modules.iter().copied() {
             for ext in &module_prog.externs {
+                self.extern_return_types
+                    .insert(ext.name.clone(), ext.return_type.clone());
                 let ret_ty = self.lower_type(&ext.return_type)?;
                 let mut arg_tys = Vec::new();
                 for (_, ty) in &ext.params {
@@ -1580,6 +1586,8 @@ impl<'c> MeliorGenerator<'c> {
         func: &Function,
     ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
+        // Without this, a local such as `v` kept the type it had in an earlier function.
+        self.ast_env.clear();
         self.allocs.clear();
         self.started_slots.clear();
         self.function_file = func.file.as_ref().map(|f| f.to_string());
@@ -2986,6 +2994,27 @@ impl<'c> MeliorGenerator<'c> {
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<syntax::Type> {
         match expr {
+            Expr::StringLiteral(_) => Some(syntax::Type::Pointer(
+                Box::new(syntax::Type::Scalar(syntax::ElementType::I8)),
+                None,
+                false,
+            )),
+            Expr::IndexAccess(ix) => {
+                let mut base = self.infer_ast_type(&ix.base)?;
+                if let syntax::Type::Borrow { inner, .. } | syntax::Type::Ref(inner, _) = base {
+                    base = *inner;
+                }
+                match base {
+                    syntax::Type::Pointer(inner, ..) => Some(*inner),
+                    syntax::Type::Tensor(el, dims, place) if dims.len() > 1 => {
+                        Some(syntax::Type::Tensor(el, dims[1..].to_vec(), place))
+                    }
+                    syntax::Type::Tensor(el, dims, _) if dims.len() == 1 => {
+                        Some(syntax::Type::Scalar(el))
+                    }
+                    _ => None,
+                }
+            }
             // A cast's value has the target type by definition (`my_closure as ||->i32`), and the
             // indirect-call path needs it in `ast_env` to rebuild the callee signature.
             Expr::AsCast(c) => Some(c.target_ty.clone()),
@@ -2994,6 +3023,8 @@ impl<'c> MeliorGenerator<'c> {
             // to a type the checker already computed -- and a redundant annotation then decides
             // which code is generated. The flat path's inference already sees through it.
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // A `spawn` block that gives a value has the type of its tail expression too.
+            Expr::SpawnOn(s) => self.infer_ast_type(s.ret.as_deref()?),
             // An `if` that gives a value has the type of its first branch's last expression.
             Expr::If(i) => match i.then_block.last()? {
                 syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
@@ -3158,6 +3189,7 @@ impl<'c> MeliorGenerator<'c> {
                 self.syntax_functions
                     .get(&fc.name)
                     .map(|decl| decl.return_type.clone())
+                    .or_else(|| self.extern_return_types.get(&fc.name).cloned())
             }
             // `transfer(x, space)` relocates x but preserves its shape, so a slice of a
             // transferred tensor (`q[i]` inside a spawn) can still recover its static dims.

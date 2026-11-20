@@ -1,3 +1,5 @@
+// REQUIRES: linux
+// On macOS the runtime has no crash handler for now, so it prints no report there.
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: LLVM_SYMBOLIZER_PATH= not vxc %s 2>&1 | FileCheck %s --check-prefix=NO-SYMBOLIZER
 

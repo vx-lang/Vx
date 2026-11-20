@@ -2471,9 +2471,11 @@ impl<'r> Lowerer<'r> {
                     lowered_ty(&sig.ret_ty, self.registry)
                 }
             },
+            // A name that the arm's pattern binds hides any outer local of that name, so the
+            // payload type comes first.
             Expr::Match(m) => m.arms.iter().find_map(|arm| {
-                self.infer_block_ty(&arm.body)
-                    .or_else(|| self.infer_payload_binding_ty(m, arm))
+                self.infer_payload_binding_ty(m, arm)
+                    .or_else(|| self.infer_block_ty(&arm.body))
             }),
             Expr::If(iff) => self.infer_if_ty(iff),
             // `t.extent(k)`, as the checker rewrites it: an `i32`, as `lower_expr` emits it.
@@ -2569,6 +2571,11 @@ impl<'r> Lowerer<'r> {
     fn infer_ast_type(&self, e: &Expr) -> Option<Type> {
         match e {
             Expr::Identifier(id) => self.ast_types.get(&id.name).cloned(),
+            Expr::StringLiteral(_) => Some(Type::Pointer(
+                Box::new(Type::Scalar(ElementType::I8)),
+                None,
+                false,
+            )),
             Expr::EnumVariant(ev) => enum_construct_type(ev),
             // A numeric literal's own scalar type (`let x = 5` -> `i32`), so an unannotated `let`
             // records its type in `ast_types` and a later chain resolves — `&x : &i32`, `&&x : &&i32`,

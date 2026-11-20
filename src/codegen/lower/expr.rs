@@ -901,7 +901,11 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             let mut inferred_el_ty_str = None;
             // A buffer of tensors holds the descriptor of each one.
             let mut tensor = None;
-            if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref())
+            if let Some(
+                syntax::Type::Pointer(inner, _, _)
+                | syntax::Type::Borrow { inner, .. }
+                | syntax::Type::Ref(inner, _),
+            ) = gen.infer_ast_type(self.base.as_ref())
             {
                 let el = gen.lower_type_str(&inner)?;
                 if let syntax::Type::Tensor(_, dims, _) = &*inner {
@@ -917,10 +921,11 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 base_ty_str[base_ty_str.find('<').unwrap() + 1..base_ty_str.len() - 1].to_string()
             } else if let Some(el_str) = inferred_el_ty_str {
                 el_str
-            } else if let Some(expected) = gen.expected_type {
-                expected.to_string()
             } else {
-                "f32".to_string()
+                return Err(LowerError::from(
+                    "internal compiler error: cannot determine the pointer element type for indexing"
+                        .to_string(),
+                ));
             };
             let inner_ty = Type::parse(gen.context, &inner_ty_str)
                 .unwrap_or_else(|| panic!("Failed to parse inner ptr type: {}", inner_ty_str));
@@ -5455,9 +5460,10 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
                     .unwrap_or_else(|| crate::parser::expr::default_number_elem(n.value.as_ref()));
                 gen.lower_type(&syntax::Type::Scalar(elem)).ok()
             }
-            other => gen
-                .infer_ast_type(other)
-                .or_else(|| payload_binding_type(gen, arm, other, scrutinee_ty.as_ref()))
+            // A name that the arm's pattern binds hides any outer local of that name, so the
+            // payload type comes first.
+            other => payload_binding_type(gen, arm, other, scrutinee_ty.as_ref())
+                .or_else(|| gen.infer_ast_type(other))
                 .or_else(|| match other {
                     // `r * 3`: the checker gives the operands' type, which is the result's.
                     Expr::BinaryOp(b) if b.op != syntax::expr::BinaryOp::MatMul => {

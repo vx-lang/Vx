@@ -1,3 +1,5 @@
+// REQUIRES: linux
+// On macOS the runtime has no crash handler for now, so it prints no report there.
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Caught SIGSEGV
 // CHECK: Backtrace:

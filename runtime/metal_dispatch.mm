@@ -16,15 +16,14 @@
 //
 // The launches of each host thread make one batch until a wait. The batch
 // commits its command buffer after every few launches, so the GPU runs them
-// while the CPU makes the next. A wait commits the rest and waits for the GPU:
-// each commit ends with a sentinel kernel that reads the buffers of the batch
-// and writes the value of the commit into a buffer of shared memory, and the
-// wait spins on that value, for the value of the GPU reaches the CPU when the
-// kernels end, and `waitUntilCompleted` follows it by about 60 µs (#3626). A
-// wait whose spin gave up blocks as before. The Mac dispatcher waits before
-// anything that can touch the memory of a kernel, but only for the launches
-// that use that memory. A `pub fn` waits before it returns to C. A failed
-// assert in a kernel stops the program at the wait that finishes its launch.
+// while the CPU makes the next. A wait commits the rest and waits for the GPU.
+// The GPU runs the launches of a command buffer at the same time, with a
+// barrier before each launch that uses memory that an earlier one writes, or
+// writes memory that an earlier one reads.
+// The Mac dispatcher waits before anything that can touch the memory of a
+// kernel, but only for the launches that use that memory. A `pub fn` waits
+// before it returns to C. A failed assert in a kernel stops the program at the
+// wait that finishes its launch.
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -78,6 +77,22 @@ bool syncEachLaunch() {
     return v && v[0] != '\0' && strcmp(v, "0") != 0;
   }();
   return on;
+}
+
+// VX_METAL_CONCURRENT=0 runs each launch after the launch before it ends, as
+// if every launch had a barrier.
+bool concurrent() {
+  static const bool on = [] {
+    const char *v = getenv("VX_METAL_CONCURRENT");
+    return !(v && strcmp(v, "0") == 0);
+  }();
+  return on;
+}
+
+id<MTLComputeCommandEncoder> newEncoder(id<MTLCommandBuffer> commands) {
+  return concurrent() ? [commands computeCommandEncoderWithDispatchType:
+                                      MTLDispatchTypeConcurrent]
+                      : [commands computeCommandEncoder];
 }
 
 [[noreturn]] void die(const char *kernel, const char *format, ...) {
@@ -233,6 +248,9 @@ struct Batch {
   std::vector<std::string> kernels;
   std::vector<Region> regions;
   std::vector<Access> accesses;
+  // The accesses of the launches in `encoder` after its last barrier. The GPU
+  // can run these launches at the same time as the next one.
+  std::vector<Access> sinceBarrier;
   std::vector<Check> checks;
   // The buffer that gives the next launch with asserts its word, and the words
   // it gave.
@@ -1187,14 +1205,7 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       here = std::make_shared<Batch>();
       here->owner = std::this_thread::get_id();
       here->commands = [gpu().queue commandBuffer];
-      here->encoder = [here->commands computeCommandEncoder];
-      // The buffer that the sentinels of the batch write into. The CPU spins
-      // on its first word, and the second word keeps the reads of the
-      // sentinel from going away (#3626).
-      here->done = [device newBufferWithLength:2 * sizeof(uint32_t)
-                                       options:MTLResourceStorageModeShared];
-      if (here->done)
-        memset(here->done.contents, 0, 2 * sizeof(uint32_t));
+      here->encoder = newEncoder(here->commands);
       batches().push_back(here);
       // Report a fault of a kernel that nothing waited for.
       static const bool waitAtExit = atexit(vx_metal_wait) == 0;
@@ -1209,6 +1220,22 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     for (const Access &a : accesses)
       here->add(a);
     id<MTLComputeCommandEncoder> encoder = here->encoder;
+    if (concurrent()) {
+      const bool after =
+          std::any_of(accesses.begin(), accesses.end(), [&](const Access &a) {
+            return std::any_of(
+                here->sinceBarrier.begin(), here->sinceBarrier.end(),
+                [&](const Access &b) { return a.mustFollow(b); });
+          });
+      if (after) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        here->sinceBarrier.clear();
+        if (verbose())
+          fprintf(stderr, "[Vx Metal] %s: a barrier before it\n", kernel);
+      }
+      here->sinceBarrier.insert(here->sinceBarrier.end(), accesses.begin(),
+                                accesses.end());
+    }
     [encoder setComputePipelineState:pipeline];
     for (size_t k = 0; k < bound.size(); ++k)
       [encoder setBuffer:bound[k].buffer offset:bound[k].offset atIndex:k];
@@ -1268,7 +1295,8 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       [here->commands commit];
       here->sent.push_back(here->commands);
       here->commands = [gpu().queue commandBuffer];
-      here->encoder = [here->commands computeCommandEncoder];
+      here->encoder = newEncoder(here->commands);
+      here->sinceBarrier.clear();
       here->unsent = 0;
     }
   }

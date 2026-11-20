@@ -658,7 +658,7 @@ impl<'a> TypeChecker<'a> {
                 // did not typecheck, and the stdlib `copy` is a copy-*into*
                 // rather than a duplication. That is enough for a test and never
                 // enough for a model, whose weights are read once per token.
-                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, _top_r))) = (
+                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, top_r))) = (
                     Self::as_tensor_operand(&lhs_ty),
                     Self::as_tensor_operand(&rhs_ty),
                 ) {
@@ -709,10 +709,44 @@ impl<'a> TypeChecker<'a> {
                                     return Type::Unknown;
                                 }
                             }
+                            // In a device region, tiles in two memories, such as weights in HBM
+                            // and activations in shared memory, give a product in the memory that
+                            // its target names. With no such target there is no default, which
+                            // would hide a copy.
+                            let top = match (top_l, top_r) {
+                                (Some(l), Some(r))
+                                    if l.space != r.space && self.device_spawn.is_some() =>
+                                {
+                                    let target = self
+                                        .expected_type
+                                        .as_ref()
+                                        .and_then(Self::as_tensor_operand)
+                                        .and_then(|(_, _, t)| t.clone());
+                                    if target.is_none() {
+                                        self.errors.error_with_code(
+                                            crate::diagnostic::DiagnosticCode::E3004,
+                                            format!(
+                                                "the tiles of this `@` are in {} and in {}, so \
+                                                 the product needs a target that names its \
+                                                 memory; assign it to a tensor whose type names \
+                                                 one",
+                                                l.as_written(),
+                                                r.as_written()
+                                            ),
+                                            Some(crate::diagnostic::SourceSpan::from_ast_span(
+                                                span,
+                                            )),
+                                        );
+                                        return Type::Unknown;
+                                    }
+                                    target
+                                }
+                                _ => top_l.clone(),
+                            };
                             return Type::Tensor(
                                 el_ty_l.clone(),
                                 vec![dims_l[0].clone(), dims_r[1].clone()],
-                                top_l.clone(),
+                                top,
                             );
                         }
                     }

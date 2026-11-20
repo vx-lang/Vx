@@ -87,8 +87,8 @@ pub struct Parser<'a> {
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
     uses_tuples: bool,
-    /// Set once `Distinct::check` is seen: the module then imports `core::distinct`, where the
-    /// check is.
+    /// Set once `Distinct::check` or `DisjointRanges::check` is seen: the module then imports
+    /// `core::distinct`, where the checks are.
     uses_distinct_check: bool,
     /// The names that a `let` without `mut` binds to a string literal. `==` on such a name
     /// compares text, so it needs `core::c_str` as a literal does.
