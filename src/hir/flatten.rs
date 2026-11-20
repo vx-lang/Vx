@@ -3234,6 +3234,13 @@ impl<'r> Lowerer<'r> {
             .agg_layout_indices
             .get(&gid)
             .expect("a generated enum layout exists after successful layout resolution");
+        // Maps the enum's generic names to this instance's types, to find each payload's type.
+        let generic_args: HashMap<_, _> = data
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
         let merge = self.new_block();
         // Each arm is a block: its pattern's names and its `let`s end with it.
         let depth = self.block_frames.len();
@@ -3281,16 +3288,10 @@ impl<'r> Lowerer<'r> {
                     self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
                     // Void payloads have names but occupy no storage fields.
                     if let Some(pats) = payload_pats {
-                        let mapping: HashMap<_, _> = data
-                            .generics
-                            .iter()
-                            .cloned()
-                            .zip(args.iter().cloned())
-                            .collect();
                         let mut field = 0;
                         for (i, pat) in pats.iter().enumerate() {
                             let payload_type =
-                                data.variants[ordinal as usize].1[i].substitute(&mapping);
+                                data.variants[ordinal as usize].1[i].substitute(&generic_args);
                             if crate::syntax::is_void_ty(&payload_type) {
                                 if let crate::syntax::Pattern::Identifier(pname) = pat {
                                     let placeholder = self.emit_value(
@@ -4737,7 +4738,10 @@ impl<'r> Lowerer<'r> {
             self.enum_field_index(gid, 0)?,
         );
         if let Some(payload) = &ev.payload {
-            for (i, pexpr) in payload.iter().enumerate() {
+            // The layout leaves out `void` payloads, so a payload's field counts only the
+            // non-void payloads before it.
+            let mut field = 0;
+            for pexpr in payload {
                 let mut v = self.lower_expr(pexpr)?;
                 // A `void` payload (`Ok(nothing())`) has no storage. The call still runs, and
                 // its placeholder result is not stored.
@@ -4747,6 +4751,7 @@ impl<'r> Lowerer<'r> {
                 {
                     continue;
                 }
+                field += 1;
                 // A struct built in place is its slot's address; the payload takes its value,
                 // as a struct literal's field does.
                 if construction_tail(pexpr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
@@ -4756,7 +4761,7 @@ impl<'r> Lowerer<'r> {
                     Opcode::FieldStore,
                     slot.reg,
                     v.reg,
-                    self.enum_field_index(gid, i + 1)?,
+                    self.enum_field_index(gid, field)?,
                 );
             }
         }
