@@ -292,6 +292,11 @@ a later NVIDIA GPU, each row is one `cp.async.bulk.prefetch.L2`. On an older NVI
 of 128 bytes is one `prefetch.L2`. On other GPUs and on the CPU, it does nothing.
 `tests/optimizations/pass/lane_prefetch_into_the_l2_cache.vx` is a complete program.
 
+A prefetch saves time only when other work runs between the prefetch and the reads of the part.
+A prefetch right before the reads costs time. On an H200, each block of a matrix-vector product
+prefetched the weight rows that it then read. The decode step of a language model got 4% slower
+than without the prefetch, with the kernels started early in both.
+
 ## Sums in registers
 
 The sums of a matmul of tiles can be in `Memory::REG`, as a tile with a row for each subgroup:
@@ -333,9 +338,8 @@ program of many short kernels, such as the decode step of a language model. It t
 
 - `VX_GPU_PDL=1` when you compile. Each kernel for `sm_90` or later then waits for the kernels
   before it (`griddepcontrol.wait`) before its first read or write of global memory. Before the
-  wait, the blocks can only compute values, fill shared memory and call `lanes::prefetch`. So a
-  kernel can bring its weights into L2 while the kernel before it ends. After a launch in the usual
-  way, the wait has nothing to wait for.
+  wait, the blocks can only compute values, fill shared memory and call `lanes::prefetch`. After a
+  launch in the usual way, the wait has nothing to wait for.
 - `VX_CUDA_PDL=1` when you run. Vx's runtime then launches each kernel that waits with
   programmatic dependent launch. It needs a CUDA 12 driver or later.
 
