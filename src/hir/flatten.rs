@@ -7765,13 +7765,6 @@ impl<'r> Lowerer<'r> {
             }
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
-                Expr::Match(_) if crate::syntax::expr::statement_always_exits(s, &|_| false) => {
-                    // Reuse return lowering to close the match's unused continuation block.
-                    self.lower_stmt(&Statement::Return(crate::syntax::ReturnStmt::new(
-                        Some(e.expr.clone()),
-                        e.span,
-                    )))
-                }
                 Expr::Match(m) => self.lower_match(m),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp, false).map(|_| ()),
                 Expr::UnsafeBlock(ub) if ub.task.is_some() => self
