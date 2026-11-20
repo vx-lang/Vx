@@ -8,13 +8,15 @@
 // Matmuls with 64 columns of K, in the code of a subgroup loop. In `from_hbm` the first tile is
 // `f8e4m3` in HBM, and in `from_smem` it is in shared memory. Both print the same sums.
 // `e4m3_by_f16` multiplies an `f8e4m3` tile by an `f16` tile in HBM, and `f16_tiles` multiplies
-// two `f16` tiles in HBM. With no GPU, the kernels run on the CPU.
+// two `f16` tiles in HBM. `e4m3_from_hbm_by_f16` multiplies an `f8e4m3` tile in HBM by an `f16` tile
+// in shared memory. With no GPU, the kernels run on the CPU.
 //
 // On the GPU, a sum over K does not depend on the order of K. So each lane takes its columns of K
 // for two `mma.sync` from 16 bytes of a row of the first tile, with one `ld.v4.b32`. In
-// `e4m3_by_f16`, each lane converts the fp8 values to f16, so one load reads 8 bytes. The rows of
-// the second tile take the same order of K: in `f16_tiles`, rows 0 to 3 of a lane go to the first
-// `mma.sync`, and rows 4 to 7 to the second.
+// `e4m3_by_f16`, each lane converts the fp8 values to f16, so one load gives four `mma.sync`. The
+// rows of the second tile take the same order of K: in `f16_tiles`, rows 0 to 3 of a lane go to the first
+// `mma.sync`, and rows 4 to 7 to the second. In `e4m3_from_hbm_by_f16`, `ldmatrix` loads the second
+// tile, and each lane gives it a row in the same order, so each `mma.sync` has an `ldmatrix` of its own.
 //
 // RUN: vxc %s --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -26,9 +28,14 @@
 // CHECK: {{^}}from shared memory: -5 -5 14 sum of all 1018{{$}}
 // CHECK: {{^}}e4m3 by f16: -6 -6 13 sum of all -6{{$}}
 // CHECK: {{^}}f16 tiles: -6 -6 13 sum of all -6{{$}}
+// CHECK: {{^}}e4m3 from HBM by f16: -6 -6 13 sum of all -6{{$}}
 // PTX-LABEL: .entry e4m3_by_f16(
-// PTX: ld.shared.v4.b16 {%rs[[P0:[0-9]+]], %rs[[P2:[0-9]+]], %rs[[P4:[0-9]+]], %rs[[P6:[0-9]+]]}, [%rd[[PROW:[0-9]+]]];
-// PTX-NEXT: ld.shared.v4.b16 {%rs[[P1:[0-9]+]], %rs[[P3:[0-9]+]], %rs[[P5:[0-9]+]], %rs[[P7:[0-9]+]]}, [%rd[[PROW]]+512];
+// PTX-DAG: ld.shared.v4.b32 {%r[[W0:[0-9]+]], %r[[W1:[0-9]+]], %r{{[0-9]+}}, %r{{[0-9]+}}}, [%rd[[PROW:[0-9]+]]];
+// PTX-DAG: ld.shared.v4.b32 {%r[[V0:[0-9]+]], %r[[V1:[0-9]+]], %r{{[0-9]+}}, %r{{[0-9]+}}}, [%rd[[PROW]]+512];
+// PTX-DAG: mov.b32 {%rs[[P0:[0-9]+]], %rs[[P2:[0-9]+]]}, %r[[W0]];
+// PTX-DAG: mov.b32 {%rs[[P1:[0-9]+]], %rs[[P3:[0-9]+]]}, %r[[V0]];
+// PTX-DAG: mov.b32 {%rs[[P4:[0-9]+]], %rs[[P6:[0-9]+]]}, %r[[W1]];
+// PTX-DAG: mov.b32 {%rs[[P5:[0-9]+]], %rs[[P7:[0-9]+]]}, %r[[V1]];
 // PTX: cvt.rn.f16x2.e4m3x2 %r[[H0:[0-9]+]], %rs[[P0]];
 // PTX: cvt.rn.f16x2.e4m3x2 %r[[H1:[0-9]+]], %rs[[P1]];
 // PTX: cvt.rn.f16x2.e4m3x2 %r[[H2:[0-9]+]], %rs[[P2]];
@@ -43,6 +50,26 @@
 // PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // PTX-NEXT: {{{.*}}},
 // PTX-NEXT: {%r[[H4]], %r[[H5]], %r[[H6]], %r[[H7]]},
+// PTX-LABEL: .entry e4m3_from_hbm_by_f16(
+// PTX: ld.global.nc.v4.b32 {%r{{[0-9]+}}, %r{{[0-9]+}}, %r{{[0-9]+}}, %r{{[0-9]+}}}, [%rd[[GROW:[0-9]+]]];
+// PTX-NOT: mma.sync
+// PTX: ld.global.nc.v4.b32 {%r{{[0-9]+}}, %r{{[0-9]+}}, %r{{[0-9]+}}, %r{{[0-9]+}}}, [%rd[[GROW]]+512];
+// PTX-NOT: mma.sync
+// PTX: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
+// PTX-NOT: ldmatrix
+// PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+// PTX-NOT: mma.sync
+// PTX: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
+// PTX-NOT: ldmatrix
+// PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+// PTX-NOT: mma.sync
+// PTX: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
+// PTX-NOT: ldmatrix
+// PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+// PTX-NOT: mma.sync
+// PTX: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
+// PTX-NOT: ldmatrix
+// PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // PTX-LABEL: .entry f16_tiles(
 // PTX: ld.global.nc.v4.b32 {%r[[F0:[0-9]+]], %r[[F2:[0-9]+]], %r[[F4:[0-9]+]], %r[[F6:[0-9]+]]}, [%rd[[FROW:[0-9]+]]];
 // PTX-NEXT: ld.global.nc.v4.b32 {%r[[F1:[0-9]+]], %r[[F3:[0-9]+]], %r[[F5:[0-9]+]], %r[[F7:[0-9]+]]}, [%rd[[FROW]]+1024];
@@ -164,6 +191,25 @@ fn e4m3_by_f16(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, b : &Tensor<f16, 
   return;
 }
 
+fn e4m3_from_hbm_by_f16(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, a : &Tensor<f8e4m3, [2, 32, 64], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sb = unsafe { Tensor<f16, [2, 64, 16], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          for k in 0..2 {
+            for j in 0..16 {
+              sb[w][i * 2 + k][j] = (((i * 2 + k) * 2 + j) % 5 - 2) as f16;
+            }
+          }
+        }
+        c[w] = (a[w] as f32) @ (sb[w] as f32);
+      }
+    }
+  }
+  return;
+}
+
 fn f16_tiles(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, a : &Tensor<f16, [2, 32, 64], Memory::HBM>, b : &Tensor<f16, [64, 16], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for blk in 0..1 across blocks {
@@ -234,5 +280,10 @@ fn main() -> i32 {
   let hf = transfer(f, Memory::CPU_DRAM);
   print!("f16 tiles: ");
   say(&hf);
+  let mut g = transfer(Tensor<f32, [2, 32, 16]>::fill(0.0), Memory::HBM);
+  e4m3_from_hbm_by_f16(&mut g, &a);
+  let hg = transfer(g, Memory::CPU_DRAM);
+  print!("e4m3 from HBM by f16: ");
+  say(&hg);
   return 0;
 }

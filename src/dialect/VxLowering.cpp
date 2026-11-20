@@ -4975,11 +4975,14 @@ static bool ldmatrixFits(Value tile) {
 /// the expansion on the host.
 ///
 /// A sum over K gives the same result in any order of K, if both tiles use
-/// that order. So when neither tile uses `ldmatrix`, the columns of K of a lane
-/// for two `mma.sync` are next to each other in a row of `lhs`, 16 bytes, and
-/// one vector load reads them. With r elements in one register, lane `l` takes
-/// the 4 * r columns from `(l % 4) * 4 * r` in each 16 * r columns. When K is
-/// not a multiple of 16 * r, it takes 2 * r columns of each 8 * r.
+/// that order. So when `lhs` does not use `ldmatrix`, a lane takes its columns
+/// of K for t `mma.sync` from 16 bytes next to each other in a row of `lhs`,
+/// and one vector load reads them. With r elements in one register, lane `l`
+/// takes the 2 * r * t columns from `(l % 4) * 2 * r * t` in each 8 * r * t
+/// columns. When K is not a multiple of 8 * r * t, t is smaller. When
+/// `rhs` uses `ldmatrix`, each lane gives it the row of K in that order. This
+/// puts the rows of one `ldmatrix` further apart in shared memory, with more
+/// bank conflicts, so it happens only when `lhs` is not in shared memory.
 static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                     Type elem, Value fragments = {}) {
   Location loc = op.getLoc();
@@ -5003,11 +5006,21 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
   Value pair = b.create<arith::MulIOp>(loc, quad, index(2));
   bool lhsLdmatrix = ldmatrixFits(op.getLhs());
   bool rhsLdmatrix = ldmatrixFits(op.getRhs());
-  // The `mma.sync` that take their columns of K from one run of a lane. With
-  // 0, the lane keeps the order of K that `ldmatrix` needs.
-  int64_t together = lhsLdmatrix || rhsLdmatrix ? 0
-                     : k % (2 * depthStep) == 0 ? 2
-                                                : 1;
+  auto lhsSpace = dyn_cast_or_null<IntegerAttr>(
+      cast<MemRefType>(op.getLhs().getType()).getMemorySpace());
+  bool lhsShared = lhsSpace && lhsSpace.getInt() == 3;
+  // The `mma.sync` that take their columns of K from one run of a lane, at
+  // most 16 bytes of `lhs`. With 0, the lane keeps the order of K that
+  // `ldmatrix` needs.
+  int64_t lhsBits =
+      cast<MemRefType>(op.getLhs().getType()).getElementTypeBitWidth();
+  assert(lhsBits >= 8 && "a tile of the tensor cores has bytes");
+  int64_t together = 0;
+  if (!lhsLdmatrix && !(rhsLdmatrix && lhsShared)) {
+    together = 16 * 8 / (2 * perRegister * lhsBits);
+    while (together > 1 && k % (depthStep * together))
+      together /= 2;
+  }
   int64_t steps = std::max<int64_t>(together, 1);
   // The first column of K of this lane in each half of a `mma.sync`, and the
   // distance to its first column in the second half.
@@ -5195,9 +5208,24 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                          fromRun(kb, kl, runs[1], 2 * step + 1)}
                     : SmallVector<Value>{lhs(row0, kA), lhs(row1, kA),
                                          lhs(row0, kB), lhs(row1, kB)};
+            // The row of `rhs` that this lane gives `ldmatrix`: row `l % 16`
+            // of the 16 rows of this `mma.sync`, in the order of K above.
+            auto rhsRow = [&]() -> Value {
+              if (!together)
+                return add(kb, kl, depth, row16);
+              assert(perRegister == 2 && "ldmatrix loads 16-bit elements");
+              Value inGroup = kb.create<arith::RemUIOp>(kl, row16, index(8));
+              Value q = kb.create<arith::DivUIOp>(kl, inGroup, index(2));
+              Value e = kb.create<arith::RemUIOp>(kl, row16, index(2));
+              Value s = kb.create<arith::DivUIOp>(kl, row16, index(8));
+              Value row = add(kb, kl, depth, index(4 * step));
+              row = add(kb, kl, row,
+                        kb.create<arith::MulIOp>(kl, q, index(4 * steps)));
+              row = add(kb, kl, row, kb.create<arith::MulIOp>(kl, s, index(2)));
+              return add(kb, kl, row, e);
+            };
             SmallVector<Value> bv =
-                rhsLdmatrix ? ldmatrix(kb, kl, op.getRhs(),
-                                       add(kb, kl, depth, row16), left, 2,
+                rhsLdmatrix ? ldmatrix(kb, kl, op.getRhs(), rhsRow(), left, 2,
                                        /*transpose=*/true)
                             : SmallVector<Value>{rhs(kA), rhs(kB)};
             Value sums;
