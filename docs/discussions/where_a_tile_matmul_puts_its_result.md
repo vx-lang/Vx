@@ -96,8 +96,9 @@ each lane holds its part of the tile. The compiler already does this when it can
 nothing else reads the tile (`k_loop` in `lane_matmuls_on_the_gpu.vx`), but no rule guarantees it.
 
 A later change can let a programmer write `Memory::REG` on a tile of a subgroup, with this
-meaning. The compiler would then check that the part of each lane fits in the register budget,
-and that only that subgroup reads the tile.
+meaning. The compiler would then check that the part of each lane fits in the `capacity` of
+`Memory::REG` in the machine file, and that only that subgroup reads the tile. When a part does
+not fit, the program does not compile. The compiler does not move the tile to another memory.
 
 The language requires this guarantee, and the lowering in MLIR gives it. Today, when the lowering
 cannot keep an accumulator in registers, it keeps the tile in shared memory, and says nothing.
