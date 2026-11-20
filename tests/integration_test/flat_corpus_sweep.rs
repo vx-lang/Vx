@@ -327,6 +327,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/disjoint_ranges_check_makes_ranges_for_a_kernel.vx",
         // needs --machine
+        "optimizations/pass/a_mult_of_fact_on_a_dimension_writes_the_values_it_states.vx",
+        // needs --machine
         "optimizations/pass/lanes_write_rows_from_nested_parts_of_the_lane_index.vx",
         // needs --machine
         "optimizations/pass/lanes_write_rows_in_two_loops_one_after_another.vx",
