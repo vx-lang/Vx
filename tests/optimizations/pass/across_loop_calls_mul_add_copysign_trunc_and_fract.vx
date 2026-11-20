@@ -1,0 +1,75 @@
+//===- across_loop_calls_mul_add_copysign_trunc_and_fract.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Four `across` loops call a float method that writes nothing: `mul_add`, `copysign`, `trunc`
+// and `fract`. The race check must accept each call, and each loop must become a GPU kernel.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-COUNT-4: toponame=Device
+
+import core::num;
+
+pub fn fused(y : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          y[i] = a[i].mul_add(2.0, y[i]);
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn signs(y : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          y[i] = y[i].copysign(a[i]);
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn whole_parts(y : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          y[i] = y[i].trunc();
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn fractions(y : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          y[i] = y[i].fract();
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
