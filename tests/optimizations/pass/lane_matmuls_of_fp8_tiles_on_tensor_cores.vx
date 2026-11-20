@@ -12,10 +12,10 @@
 // matmul adds to `acc` in each pass of a loop, so the lanes keep `acc` in registers until the loop
 // ends. `k16_tiles` has 16 columns, which is not a multiple of 32, so each lane multiplies and
 // adds its elements in f32. In `e4m3_by_f16` and `f16_by_e5m2`, one tile is f16 and the other is
-// fp8. Then each lane converts two fp8 elements to f16 with one `cvt.rn.f16x2`, and each chain is of
-// f16 `mma.sync.m16n8k16`. `ldmatrix` loads the f16 tile. `bf16_by_e4m3` has a bf16 tile, so each
-// lane multiplies and adds its elements in f32. An `sm_80` chip has no fp8 `mma.sync` and no
-// `cvt.rn.f16x2` from fp8, and its PTX stays at 7.6.
+// fp8. Then each lane converts two fp8 elements to f16 with one `cvt.rn.f16x2`, not as inline PTX,
+// and each chain is of f16 `mma.sync.m16n8k16`. `ldmatrix` loads the f16 tile. `bf16_by_e4m3` has a
+// bf16 tile, so each lane multiplies and adds its elements in f32. An `sm_80` chip has no fp8
+// `mma.sync` and no `cvt.rn.f16x2` from fp8, and its PTX stays at 7.6.
 //
 // RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h200.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s --implicit-check-not=local_depot < %t.ptx
@@ -40,11 +40,13 @@
 // CHECK-NOT: mma.sync
 // CHECK: mul.rn.f32
 // CHECK-LABEL: .entry e4m3_by_f16(
+// CHECK-NOT: begin inline asm
 // CHECK: cvt.rn.f16x2.e4m3x2
 // CHECK: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
 // CHECK: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // CHECK-LABEL: .entry f16_by_e5m2(
 // CHECK: ldmatrix.sync.aligned.m8n8.x4.shared.b16
+// CHECK-NOT: begin inline asm
 // CHECK: cvt.rn.f16x2.e5m2x2
 // CHECK: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // CHECK-LABEL: .entry bf16_by_e4m3(
