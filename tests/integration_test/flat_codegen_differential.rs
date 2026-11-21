@@ -4473,7 +4473,7 @@ fn flat_matches_ast_shape_query() {
 /// reads a position only the [4, 5] shape has, and 1.0 + 7.0 is the exit code.
 #[test]
 fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
-    let dir = std::env::temp_dir().join("vx_mono_shapes");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx_mono_shapes");
     let _ = std::fs::create_dir_all(&dir);
     let src = dir.join("mono_shapes.vx");
     std::fs::write(
