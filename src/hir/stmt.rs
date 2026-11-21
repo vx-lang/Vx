@@ -1397,9 +1397,6 @@ impl<'a> TypeChecker<'a> {
         }
         self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
 
-        // Prove invariants hold on entry, then assume them inside the loop
-        let prev_constraints_len = self.consteval.constraints.len();
-
         // A range loop constrains its induction variable: `for i in a..b` gives
         // `a <= i && i < b` for the body. Recorded as prover facts so bounds obligations
         // over `i` (the `raw::` primitives, Vx#353) and `Verified<T>` assertions can
@@ -1422,12 +1419,16 @@ impl<'a> TypeChecker<'a> {
             name: iter.clone().into(),
             span: Span::default(),
         });
-        // `for i in a..b` runs as `let mut i = a; while i < b { ..; i = i + 1; }`, so each
-        // invariant holds for `i == a` when the loop starts, and for `i + 1` after a pass.
+        // `for i in a..b` runs as `let mut i = a; let end = b; while i < end { ..; i = i + 1; }`,
+        // so each invariant holds for `i == a` when the loop starts, and for `i + 1` after a pass.
         let range = match &**iterable {
             Expr::Range(r) => Some((self.fold_raw_extent(&r.start), self.fold_raw_extent(&r.end))),
             _ => None,
         };
+        let range = range.map(|(lo, hi)| (lo, self.name_the_end_of_a_range(hi, iter)));
+        // The facts of the loop sit above this length, so the truncation after the loop drops
+        // them. The fact that names the end stays, for the facts after the loop.
+        let prev_constraints_len = self.consteval.constraints.len();
         let mut first = Vec::new();
         if let Some((lo, hi)) = range.as_ref().filter(|(lo, _)| usable(lo)) {
             first.push(Expr::RelationalOp(RelationalOpExpr {
@@ -1975,6 +1976,44 @@ impl<'a> TypeChecker<'a> {
         if !lp.breaks {
             constraints.push(relation(&exit, RelationalOp::Eq, &hi));
         }
+    }
+
+    /// A new name `$end_N` for the end `b` of `for var in a..b`. The loop reads `b` once, and the
+    /// name has the range of the type of `var`, so `i < b` keeps `i + 1` from wrapping also when
+    /// `b` is a call or a `let` with no range fact. `$end_N == b` is a fact as a `let` would give.
+    fn name_the_end_of_a_range(&mut self, end: Expr, var: &str) -> Expr {
+        if matches!(end, Expr::Number(_)) {
+            return end;
+        }
+        let int = match self.lookup(var).map(|(t, _)| t.clone()) {
+            Some(Type::Scalar(e)) if e.int_bits().is_some() && e != ElementType::Bool => e,
+            _ => return end,
+        };
+        let name: crate::symbol::Symbol = format!("$end_{}", self.end_values.len()).into();
+        self.end_values.push(int);
+        let named = Expr::Identifier(IdentifierExpr {
+            name: name.clone(),
+            span: Span::default(),
+        });
+        // In `for i in 0..i`, the end is the outer `i`, which a fact here would confuse with `var`.
+        // A call can change its arguments, and a later proof would read their new values.
+        let changes_an_argument = matches!(&end, Expr::FunctionCall(c)
+            if c.args.iter().any(|a| self.call_may_change_argument(a)));
+        if crate::hir::prover::is_modelled(&end)
+            && !crate::hir::check::raw::expr_mentions(&end, var)
+            && !changes_an_argument
+        {
+            self.consteval
+                .constraints
+                .push(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(named.clone()),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(end),
+                    span: Span::default(),
+                    operand_ty: None,
+                }));
+        }
+        named
     }
 
     /// A new name for the value of the integer variable `var` where its loop ends.
@@ -3180,6 +3219,14 @@ impl<'a> TypeChecker<'a> {
                 .ok()
                 .and_then(|i| self.exit_values.get(i));
             return Some((int.expect("each `$exit_N` has a type").clone(), true));
+        }
+        // The same for the end of a `for` loop over a range.
+        if let Some(end) = n.strip_prefix("$end_") {
+            let int = end
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| self.end_values.get(i));
+            return Some((int.expect("each `$end_N` has a type").clone(), true));
         }
         let (ty, ranged) = if n == "return" {
             (self.current_return_type.clone()?, false)
