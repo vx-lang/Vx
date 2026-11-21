@@ -39,6 +39,9 @@ apart.
 - `griddepcontrol.launch_dependents` is not a release. It only lets the GPU schedule the next
   kernel. Each kernel runs it after its own wait. So the kernel two launches back ended before
   the next kernel starts, and only the kernel just before matters.
+- This assumes that a kernel sees the writes of each kernel that ended before its launch,
+  although it did not wait for that kernel. The CUDA documentation does not say this. #3719 is
+  a litmus test for it on an H100 or an H200, and a Lean model of the argument.
 
 ## The type
 
@@ -52,7 +55,14 @@ apart.
 - A caller makes one with `Pending(&h)` or `Pending(&mut h)`. Vx has no implicit conversions, so
   `&h` alone does not become a `Pending`. `Pending(..)` is safe, because it allows less than the
   reference. It also shows the reader of the call which tensors order the two kernels.
+- Before the wait, a kernel can read `.len()` and the shape of a `Pending`. The sizes come
+  with the launch, as kernel parameters (`docs/lang/abi.md`), so the kernel before does not
+  write them.
+- A kernel can pass a `Pending` to a function whose parameter is a `Pending`. A struct cannot
+  hold a `Pending`.
 - A `Pending` is a parameter of a function, as `Distinct` is. So the claim is in the signature.
+  `&Distinct<T>` has the claim inside the borrow, because it is about the values. `Pending` is
+  around the borrow, because it says when the reference can be used.
 
 A sketch, with a tile of weights that loads while the kernel before ends:
 
@@ -74,11 +84,17 @@ h : Pending<&Tensor<f32, [256], Memory::HBM>>, rows : i32) -> void {
 
 ## What the compiler does
 
-- The wait goes where the program calls `.wait()`. `launch_dependents` follows each wait.
+- The wait goes where the program calls `.wait()`. The compiler does not move it out of a loop,
+  as it moves the wait of #3675. In the sketch, a wait above the loop would end the overlap
+  with `copy_async`. `launch_dependents` follows each wait.
 - A return that no wait comes before gets a wait, as in #3675. A kernel must not end before the
   kernel before it.
+- A `Pending` parameter keeps both safeguards of #3675. It does not get `readonly`, and its
+  pointer is an operand of each wait. Without them, LLVM can join a load below the wait with a
+  load of the same address above it, also through `ld.global.nc`.
 - The `&` parameters that are not `Pending` keep `noalias readonly`, so their loads keep the
-  read-only cache (`ld.global.nc`). A `Pending` parameter does not get `readonly`.
+  read-only cache (`ld.global.nc`). This is safe only because the launch check makes sure that
+  the kernel before does not write them.
 - The payload and the manifest mark each `Pending` parameter. The manifest already gives
   `"mutable"` for each parameter.
 - A kernel with no `Pending` parameter works as in #3675: with `VX_GPU_PDL=1`, all its tensors
@@ -133,5 +149,8 @@ holds:
 1. The launch check, in `cuda_dispatch.cpp` and in glm-vx's launcher.
 1. glm-vx times its decode step on one H200 and on 8.
 
-Open questions: the name (`Pending`, `AfterWait`), and whether `VX_GPU_PDL` and `VX_CUDA_PDL`
-stay switches after step 5.
+The method stays `.wait()`, as on a `Token` and on the handle of `copy_async`. Each one waits
+until something is ready.
+
+Open questions: the name of the type (`Pending`, `AfterWait`), and whether `VX_GPU_PDL` and
+`VX_CUDA_PDL` stay switches after step 5.
