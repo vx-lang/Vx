@@ -152,6 +152,9 @@ pub enum DiagnosticCode {
     /// matmul that keeps the tile in memory. With the tile in `Memory::REG`, the compiler keeps
     /// the tile in registers or reports an error (E6033).
     W1037,
+    /// A `tasks` block that can fail, whose value nothing uses. When the block fails, the code
+    /// after it goes on, and nothing sees the error.
+    W1038,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
