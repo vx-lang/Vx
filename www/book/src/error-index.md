@@ -16,7 +16,7 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1037` (28 codes)
+- [Warnings](#warnings) — `W1001`–`W1038` (29 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3065` (64 codes)
@@ -60,6 +60,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1035`](/errors/W1035/) | A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4). |
 | [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside the body of a call of `within`. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them gets the warning too, because it runs before the drop and should only return a time. |
 | [`W1037`](/errors/W1037/) | The tile of the sums of a lane matmul in a GPU kernel stays in shared memory, which makes the kernel slower. On a GPU with tensor cores, the compiler keeps the tile in registers when each use of the tile takes the row of its subgroup. The warning names the use or the matmul that keeps the tile in memory. With the tile in `Memory::REG`, the compiler keeps the tile in registers or reports an error (E6033). |
+| [`W1038`](/errors/W1038/) | A `tasks` block that can fail, whose value nothing uses. When the block fails, the code after it goes on, and nothing sees the error. |
 
 ## Parser Errors
 
@@ -281,4 +282,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-190 diagnostics.
+191 diagnostics.

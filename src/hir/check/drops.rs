@@ -2340,6 +2340,13 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.drops_return_type(&fc.name)
             }
+            // A `tasks` block that can fail gives its failure when it fails, also when nothing
+            // uses its value. So it is dropped as a call result is.
+            Expr::UnsafeBlock(u)
+                if u.task == Some(crate::syntax::TaskBlockKind::Tasks) && u.fails_as.is_some() =>
+            {
+                u.fails_as.clone()
+            }
             Expr::StructInit(si) => {
                 for (_, field) in si.fields.iter_mut() {
                     self.drops_scan_temps(field, false, scan);
