@@ -1,0 +1,40 @@
+//===- a_tensor_result_that_nothing_takes_is_freed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call whose tensor result nothing takes frees the result's buffer after the call, with both
+// code generators. `make` returns a buffer of its own. The caller makes the buffer for `make_big`,
+// on the heap, because it holds more than 4096 bytes.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=SMALL
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=BIG
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s --check-prefix=SMALL
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s --check-prefix=BIG
+// SMALL-LABEL: llvm.func {{(hidden )?}}@main(
+// SMALL: %[[R:.*]] = llvm.call @make(
+// SMALL-NEXT: %[[P:.*]] = llvm.extractvalue %[[R]][0]
+// SMALL-NEXT: llvm.call @free(%[[P]])
+// BIG-LABEL: llvm.func {{(hidden )?}}@main(
+// BIG: %[[B:.*]] = llvm.call @malloc(
+// BIG: llvm.call @make_big(%[[B]],
+// BIG-NEXT: llvm.call @free(%[[B]])
+
+fn make(n : i32) -> Tensor<f32, [?]> {
+  let t = Tensor<f32>([ n ]);
+  return t;
+}
+
+fn make_big() -> Tensor<f32, [2048]> {
+  let mut t = Tensor<f32, [2048]>::new();
+  t[0] = 1.0;
+  return t;
+}
+
+fn main() -> i32 {
+  make(4);
+  make_big();
+  return 0;
+}
