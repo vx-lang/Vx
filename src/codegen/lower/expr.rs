@@ -3995,31 +3995,37 @@ fn to_vector<'c>(
 }
 
 /// The memref type and alignment of a tensor of type `written` when it is a tile that the
-/// threads of a block share: a static shape in a `scope: sm` memory. The alignment is at least
-/// 16 bytes, the `alignment:` of the memory, and the `aligned(N)` of the type.
+/// threads of a block share, a static shape in a `scope: sm` memory, or a tensor in registers, a
+/// static shape in a `scope: thread` memory. The alignment is at least 16 bytes, the `alignment:`
+/// of the memory, and the `aligned(N)` of the type. The bool says that the tile is in registers.
 fn shared_tile(
     gen: &MeliorGenerator<'_>,
     written: Option<&syntax::Type>,
     elem: &str,
-) -> Option<(String, u64)> {
+) -> Option<(String, u64, bool)> {
     let syntax::Type::Tensor(_, dims, Some(p)) = written? else {
         return None;
     };
     let decl = gen.memories.get(&p.space)?;
-    if !matches!(decl.scope, Some(syntax::Scope::Sm)) {
-        return None;
-    }
+    let registers = match decl.scope {
+        Some(syntax::Scope::Sm) => false,
+        Some(syntax::Scope::Thread) => true,
+        _ => return None,
+    };
     let extents: Vec<&str> = dims.iter().map(|d| d.literal()).collect::<Option<_>>()?;
-    let arch = gen.spawn_arches.last().cloned().flatten();
-    let space =
-        crate::arch::address_space_for_arch(arch.as_deref(), crate::arch::AddressSpace::Workgroup);
     let align = decl
         .alignment
         .map_or(0, |a| a.0)
         .max(p.alignment.unwrap_or(0))
         .max(16);
     let shape = extents.iter().map(|e| format!("{e}x")).collect::<String>();
-    Some((format!("memref<{shape}{elem}, {space}>"), align))
+    if registers {
+        return Some((format!("memref<{shape}{elem}>"), align, true));
+    }
+    let arch = gen.spawn_arches.last().cloned().flatten();
+    let space =
+        crate::arch::address_space_for_arch(arch.as_deref(), crate::arch::AddressSpace::Workgroup);
+    Some((format!("memref<{shape}{elem}, {space}>"), align, false))
 }
 
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
@@ -4150,14 +4156,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     return lower_tensor_initializer(gen, Some(&mlir_ty_str), &shape, arr, block);
                 }
             }
-            if let Some((tile_str, align)) = shared_tile(gen, written, &mlir_ty_str) {
+            if let Some((tile_str, align, registers)) = shared_tile(gen, written, &mlir_ty_str) {
                 let tile_ty = Type::parse(gen.context, &tile_str)
                     .ok_or_else(|| LowerError::ParseType(tile_str.clone()))?;
+                let mut attrs = vec![(
+                    Identifier::new(gen.context, "alignment"),
+                    IntegerAttribute::new(gen.i64_ty, align as i64).into(),
+                )];
+                if registers {
+                    attrs.push((
+                        Identifier::new(gen.context, "vx.registers"),
+                        melior::ir::attribute::Attribute::unit(gen.context),
+                    ));
+                }
                 let alloca = OperationBuilder::new("memref.alloca", gen.loc())
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "alignment"),
-                        IntegerAttribute::new(gen.i64_ty, align as i64).into(),
-                    )])
+                    .add_attributes(&attrs)
                     .add_results(&[tile_ty])
                     .build()?;
                 // At the top of the region, so that a tile declared in a loop does not take a

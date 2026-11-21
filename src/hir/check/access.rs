@@ -1427,6 +1427,18 @@ impl<'a> TypeChecker<'a> {
                 .rev()
                 .find(|c| c.var == *name);
             match candidate {
+                // The row of a subgroup in a tile of sums in registers, `acc[w]`. Only such a
+                // tile may take the variable of an `across` loop, which is never unrolled. The
+                // end of the function decides (check/subgroup_registers.rs).
+                Some(c) if c.across => {
+                    if let Some((root, _)) = crate::hir::places::base_and_path(base) {
+                        self.across_register_indices.push((
+                            root.to_string(),
+                            name.to_string(),
+                            *ix_span,
+                        ));
+                    }
+                }
                 Some(c) => match c.bounds {
                     Some((lo, hi)) if hi - lo <= MAX_UNROLLED_PASSES => c.used = true,
                     Some((lo, hi)) => {

@@ -566,6 +566,9 @@ pub struct LaneMatmul<'a> {
     /// The tiles, without their `as f32`.
     pub lhs: &'a Expr,
     pub rhs: &'a Expr,
+    /// The types of the tiles before their `as f32`, once the type checker has seen them.
+    pub lhs_source: Option<&'a Type>,
+    pub rhs_source: Option<&'a Type>,
     /// Whether the products are added to the old `acc`.
     pub accumulate: bool,
     /// The `@`.
@@ -590,22 +593,27 @@ pub fn lane_matmul(a: &crate::syntax::AssignStmt) -> Option<LaneMatmul<'_>> {
     if mm.op != BinaryOp::MatMul {
         return None;
     }
+    let (lhs, lhs_source) = matmul_tile(&mm.lhs)?;
+    let (rhs, rhs_source) = matmul_tile(&mm.rhs)?;
     Some(LaneMatmul {
         acc: &a.lhs,
-        lhs: matmul_tile(&mm.lhs)?,
-        rhs: matmul_tile(&mm.rhs)?,
+        lhs,
+        rhs,
+        lhs_source,
+        rhs_source,
         accumulate,
         at: mm.span,
     })
 }
 
-/// The tile of an operand of a lane matmul: `t`, or `t` of `t as f32`.
-fn matmul_tile(e: &Expr) -> Option<&Expr> {
+/// The tile of an operand of a lane matmul, `t` or `t as f32`, and the type of `t` before the
+/// `as f32`.
+fn matmul_tile(e: &Expr) -> Option<(&Expr, Option<&Type>)> {
     match e {
         Expr::AsCast(c) if c.target_ty == Type::Scalar(ElementType::F32) && is_place(&c.expr) => {
-            Some(&c.expr)
+            Some((&c.expr, c.source_ty.as_ref()))
         }
-        e if is_place(e) => Some(e),
+        e if is_place(e) => Some((e, None)),
         _ => None,
     }
 }
@@ -1046,6 +1054,18 @@ impl crate::hir::TypeChecker<'_> {
         token
     }
 
+    /// Whether a tensor with placement `p` is a tile of sums: in a memory that the lanes of a block
+    /// share, or in registers (check/subgroup_registers.rs).
+    fn in_tile_memory(&self, p: &Option<crate::syntax::Placement>) -> bool {
+        self.in_shared_memory(p)
+            || p.as_ref().is_some_and(|p| {
+                self.env.memories.values().any(|d| {
+                    crate::syntax::MemorySpace::from_name(d.name.as_ref()) == p.space
+                        && d.scope == Some(crate::syntax::Scope::Thread)
+                })
+            })
+    }
+
     /// Whether a tensor with placement `p` is in a memory that the lanes of a block share.
     fn in_shared_memory(&self, p: &Option<crate::syntax::Placement>) -> bool {
         p.as_ref().is_some_and(|p| {
@@ -1119,13 +1139,13 @@ impl crate::hir::TypeChecker<'_> {
             );
             return void;
         };
-        let into_tile = self.in_shared_memory(&dst_place);
+        let into_tile = self.in_tile_memory(&dst_place);
         let tile = match (&src, into_tile) {
             (Some((e, dims, _, _)), true) if *e == elem && dims.len() == dst_dims.len() => {
                 tile_dims(&dst_dims)
             }
             (Some((e, dims, p, _)), false)
-                if *e == elem && dims.len() == dst_dims.len() && self.in_shared_memory(p) =>
+                if *e == elem && dims.len() == dst_dims.len() && self.in_tile_memory(p) =>
             {
                 tile_dims(dims)
             }
@@ -1135,8 +1155,8 @@ impl crate::hir::TypeChecker<'_> {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
-                    "`{name}` copies a tile in shared memory with a size that is a number, into \
-                     the first argument or out of the second. Both must borrow tensors of `{elem}` \
+                    "`{name}` copies a tile in shared memory or in registers with a size that is a \
+                     number, into the first argument or out of the second. Both must borrow tensors of `{elem}` \
                      with {} dimensions, but they are `{}` and `{}`",
                     dst_dims.len(),
                     arg_types[0],
@@ -1201,7 +1221,7 @@ impl crate::hir::TypeChecker<'_> {
                 ..
             } => match inner.as_ref() {
                 Type::Tensor(e, dims, p)
-                    if self.in_shared_memory(p)
+                    if self.in_tile_memory(p)
                         && dims.iter().all(|d| {
                             crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
                         }) =>
@@ -1216,9 +1236,9 @@ impl crate::hir::TypeChecker<'_> {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
-                    "the first argument of `{name}` must borrow a tile in shared memory as `&mut`, \
-                     with a size that is a number, such as `&mut acc[w]` for `Tensor<f32, [4, 32, \
-                     32], Memory::SMEM>`, but it is `{}`",
+                    "the first argument of `{name}` must borrow a tile in shared memory or in \
+                     registers as `&mut`, with a size that is a number, such as `&mut acc[w]` for \
+                     `Tensor<f32, [4, 32, 32], Memory::SMEM>`, but it is `{}`",
                     arg_types[0]
                 ),
                 span,
@@ -1266,16 +1286,20 @@ impl crate::hir::TypeChecker<'_> {
             );
             return void;
         }
-        // The sizes of an `f32` tile in shared memory, borrowed as `&mut` or as `&`.
+        // The sizes of an `f32` tile, borrowed as `&mut` or as `&`. The tile of sums can be in
+        // registers. Each lane reads the scales of its rows, so they are in shared memory.
         let f32_tile = |t: &Type, is_mut: bool| -> Option<Vec<i128>> {
             match t {
                 Type::Borrow {
                     inner, is_mut: m, ..
                 } if *m == is_mut => match inner.as_ref() {
-                    Type::Tensor(ElementType::F32, dims, p) if self.in_shared_memory(p) => dims
-                        .iter()
-                        .map(|d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1))
-                        .collect(),
+                    Type::Tensor(ElementType::F32, dims, p)
+                        if (is_mut && self.in_tile_memory(p)) || self.in_shared_memory(p) =>
+                    {
+                        dims.iter()
+                            .map(|d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1))
+                            .collect()
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -1285,9 +1309,9 @@ impl crate::hir::TypeChecker<'_> {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
-                    "the first argument of `{name}` must borrow an `f32` matrix in shared memory as \
-                     `&mut`, with sizes that are numbers, such as `&mut acc[w]` for `Tensor<f32, \
-                     [4, 16, 64], Memory::SMEM>`, but it is `{}`",
+                    "the first argument of `{name}` must borrow an `f32` matrix in shared memory or \
+                     in registers as `&mut`, with sizes that are numbers, such as `&mut acc[w]` \
+                     for `Tensor<f32, [4, 16, 64], Memory::SMEM>`, but it is `{}`",
                     arg_types[0]
                 ),
                 span,

@@ -850,14 +850,19 @@ impl<'a> TypeChecker<'a> {
             (rounded, cap)
         };
         let (rounded, cap) = sized;
-        // A tile of f32 in shared memory, with a row for each subgroup, which a lane matmul may
-        // keep in registers. The checker knows that only at the end of the function.
+        // A tile of f32 in shared memory or in registers, with a row for each subgroup, which a
+        // lane matmul may keep in registers. The checker knows that only at the end of the
+        // function.
         let shared_tile = {
             let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
             let shared = h.descriptor(space).is_some_and(|d| {
                 matches!(
                     d.scope,
-                    Some(crate::syntax::Scope::Sm | crate::syntax::Scope::Cta)
+                    Some(
+                        crate::syntax::Scope::Sm
+                            | crate::syntax::Scope::Cta
+                            | crate::syntax::Scope::Thread
+                    )
                 )
             });
             let sizes: Option<Vec<u64>> = dims

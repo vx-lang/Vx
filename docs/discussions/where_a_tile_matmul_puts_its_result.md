@@ -91,21 +91,24 @@ body, so it keeps the rules in
 [`language_rules_for_a_parallel_compiler.md`](../language_rules_for_a_parallel_compiler.md). It
 converts no value: the product is a new value, and the program says where it goes.
 
-## Open: registers as a target
+## Registers as a target
 
 `Memory::REG` has the scope of one thread. An accumulator of a subgroup "in registers" means that
-each lane holds its part of the tile. The compiler already does this when it can prove that
-nothing else reads the tile (`k_loop` in `lane_matmuls_on_the_gpu.vx`), but no rule guarantees it.
+each lane holds its part of the tile. For a tile in shared memory, the compiler does this when it
+can prove that nothing else reads the tile (`k_loop` in `lane_matmuls_on_the_gpu.vx`), but no rule
+guarantees it.
 
-A later change can let a programmer write `Memory::REG` on a tile of a subgroup, with this
-meaning. The compiler would then check that the part of each lane fits in the `capacity` of
-`Memory::REG` in the machine file, and that only that subgroup reads the tile. When a part does
+A programmer can write `Memory::REG` on a tile of sums with a row for each subgroup, with this
+meaning. The checker then checks that the part of each lane fits in the `capacity` of
+`Memory::REG` in the machine file, and that each use takes the row of its subgroup. When a part does
 not fit, the program does not compile. The compiler does not move the tile to another memory.
+`www/book/src/gpu.md` lists the uses.
 
-The language requires this guarantee, and the lowering in MLIR gives it. Today, when the lowering
-cannot keep an accumulator in registers, it keeps the tile in shared memory, and says nothing.
-Examples are another op that reads the tile, or an index that is not known at compile time. For a
-tile in `Memory::REG`, that case is a compile error that names the access that needs memory.
+The language requires this guarantee, and the lowering in MLIR gives it. When an accumulator is a
+tile in shared memory and the lowering cannot keep it in registers, the lowering keeps it in shared
+memory, and says nothing. Examples are another op that reads the tile, or an index that is not known at compile
+time. For a tile in `Memory::REG`, the checker reports that case as E6033 at the access that needs
+memory. When the checker and the lowering disagree, the lowering reports an error too.
 
 - The guarantee is about the code that Vx writes: Vx makes no buffer for the tile. `ptxas`
   assigns the registers later, and it can still spill some of them to local memory. That is

@@ -285,6 +285,37 @@ block or the subgroup sets a part of the tile, so it is faster than a loop on on
 Flash attention does this to its output sums between two matmuls. The sums of a tensor-core
 matmul can then stay in registers.
 
+## Sums in registers
+
+The sums of a matmul of tiles can be in `Memory::REG`, as a tile with a row for each subgroup:
+
+```rust
+let mut acc = unsafe { Tensor<f32, [4, 64, 64], Memory::REG>::uninit() };
+for w in 0..4 across subgroups {
+  lanes::fill(&mut acc[w], 0.0);
+  acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+  lanes::copy(c, &acc[w], [w * 64, 0]);
+}
+```
+
+Each lane holds its part of the row of its subgroup in its registers, so `acc` takes no shared
+memory. The compiler keeps the tile in registers, or it reports an error. It does not move the
+tile to memory. So each use takes the row of its subgroup, `acc[w]`, in one of these:
+
+- `lanes::fill`
+- `lanes::scale_rows`
+- a matmul that adds to it
+- `lanes::copy` out of it, into a tensor that is not in shared memory
+
+Another use, such as a read by the lanes, is an error (E6033). The part of each lane must fit in
+the `capacity` of `Memory::REG` (E6009). The compiler keeps at most 128 sums of a lane, which is a
+row of 64 x 64. On an NVIDIA GPU, the tile needs `mma.sync`, which `sm_80` and later have.
+
+A tile in `Memory::SMEM` with only these uses also stays in registers, but nothing guarantees it.
+In both cases the assembler of NVIDIA (`ptxas`) can still move some registers to local memory.
+`tests/optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx` is a complete
+program.
+
 ## Math functions in a kernel
 
 `x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel
