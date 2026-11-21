@@ -1,24 +1,15 @@
-//===- nvptx_device_image_result_slot.vx - NVPTX says nothing here -------*- Vx -*-===//
+//===- nvptx_region_that_ends_in_a_number_gets_an_image.vx --------*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A `nvptx64` region that yields a value gets no device image, and the
-// compiler says nothing about it. The host stack slot is news to a `spirv64`
-// program, where the author expects an image and gets a local run. NVPTX never
-// imaged this shape, so it has nothing to report, and one pipeline's warning
-// must not arrive for the other pipeline's kernels.
-//
-// device_image_test.rs is what asserts the silence, next to the `spirv64`
-// program that does say it.
+// A `nvptx64` region that ends in a number gets a PTX image. The kernel adds `ad[0][0]` and
+// `ad[1][1]`, the element 12 bytes after it, and stores the sum in global memory.
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
-// The warning would come before the IR, so the payload's global is the anchor
-// after it: nothing about a host stack slot may appear on the way there.
-// CHECK-NOT: host stack slot
-// CHECK: @vx_npu_kernel_0_str
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}format=ptx\00image={{.*}}ld.global.b32 \09{{%r[0-9]+}}, [{{%rd[0-9]+}}+12];{{.*}}add.s32 \09[[SUM:%r[0-9]+]], {{.*}}st.global.b32 \09[{{%rd[0-9]+}}], [[SUM]];
 // EXPECT: 6
 
 Memory CPU_DRAM {}

@@ -2318,7 +2318,8 @@ static LogicalResult diagnoseHostSharedMemoryTransfers(Operation *root) {
 /// question is whether this *program* can execute as written, and one asking
 /// for a kernel the compiler cannot emit for the device it named cannot, on any
 /// machine. Answering it differently per build box is how the fault hid.
-static bool spawnRunsOnDevice(vx::SpawnOp spawn);
+static bool spawnRunsOnDevice(vx::SpawnOp spawn,
+                              bool valueInDeviceMemory = false);
 
 static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
   bool failed = false;
@@ -6642,6 +6643,70 @@ static void forwardCapturedSpawnResults(ModuleOp module) {
   }
 }
 
+// A GPU region that ends in a number it computes gives the number back through
+// a buffer of one element in the memory of the GPU. A transfer makes the
+// buffer before the region, the region stores the number in it, and a
+// transfer copies it back after the region. Without this, the region hands the
+// number back through a host stack slot, which a GPU cannot write, and the
+// region runs on the host. An `index` goes through the buffer as an `i64`.
+static void returnSpawnNumbersThroughDeviceMemory(ModuleOp module) {
+  SmallVector<vx::SpawnOp> spawns;
+  module.walk([&](vx::SpawnOp s) { spawns.push_back(s); });
+  for (vx::SpawnOp spawn : spawns) {
+    if (spawn.getTopology() == 0 || spawn.getNumResults() != 1 ||
+        !spawn.getResult(0).getType().isIntOrIndexOrFloat() ||
+        pipelineOfKernel(spawn) == DevicePipeline::None ||
+        !spawnRunsOnDevice(spawn, /*valueInDeviceMemory=*/true))
+      continue;
+    Location loc = spawn.getLoc();
+    Type type = spawn.getResult(0).getType();
+    Type elem =
+        type.isIndex() ? Type(IntegerType::get(type.getContext(), 64)) : type;
+    auto slotType = MemRefType::get({1}, elem);
+    OpBuilder builder(spawn);
+    // In the entry block, so that a region in a loop does not grow the stack.
+    Operation *scope =
+        spawn->getParentWithTrait<OpTrait::AutomaticAllocationScope>();
+    assert(scope && "a spawn sits inside a function");
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(&scope->getRegion(0).front());
+      Value host = memref::AllocaOp::create(builder, loc, slotType);
+      builder.setInsertionPoint(spawn);
+      Value out = vx::TransferOp::create(builder, loc, slotType, host,
+                                         spawn.getTopologyAttr());
+      spawn.getBody().walk([&](vx::YieldOp y) {
+        if (y.getNumOperands() == 0)
+          return;
+        OpBuilder at(y);
+        Value zero = arith::ConstantIndexOp::create(at, y.getLoc(), 0);
+        Value value = y.getOperand(0);
+        if (type.isIndex())
+          value = arith::IndexCastOp::create(at, y.getLoc(), elem, value);
+        memref::StoreOp::create(at, y.getLoc(), value, out, ValueRange{zero});
+        y->setOperands({});
+      });
+      builder.setInsertionPointAfter(spawn);
+      auto bare = vx::SpawnOp::create(builder, loc, TypeRange{},
+                                      spawn.getTopologyAttr());
+      bare->setDiscardableAttrs(spawn->getDiscardableAttrDictionary());
+      bare.getBody().takeBody(spawn.getBody());
+      auto home = vx::TransferOp::create(builder, loc, slotType, out,
+                                         builder.getI32IntegerAttr(0));
+      home->setAttr("source_topology", spawn.getTopologyAttr());
+      Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+      Value number =
+          memref::LoadOp::create(builder, loc, home, ValueRange{zero});
+      if (type.isIndex())
+        number = arith::IndexCastOp::create(builder, loc, type, number);
+      spawn.getResult(0).replaceAllUsesWith(number);
+      placeTransferFree(cast<vx::TransferOp>(out.getDefiningOp()));
+      placeTransferFree(home);
+    }
+    spawn.erase();
+  }
+}
+
 /// The most static `.shared` storage a CUDA kernel can declare.
 static constexpr int64_t kMaxStaticSharedBytes = 48 * 1024;
 
@@ -6714,7 +6779,9 @@ static bool dropsOwnBuffer(vx::SpawnOp spawn, Value buffer) {
   });
 }
 
-static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
+/// With `valueInDeviceMemory`, a value that the region yields counts as a
+/// store into GPU memory, as `returnSpawnNumbersThroughDeviceMemory` makes it.
+static bool spawnRunsOnDevice(vx::SpawnOp spawn, bool valueInDeviceMemory) {
   // No pipeline compiles the region, so it gets no device image.
   const DevicePipeline pipeline = pipelineOfKernel(spawn);
   if (pipeline == DevicePipeline::None)
@@ -6731,7 +6798,8 @@ static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
   // which no device can address whatever the pipeline: a memref of memrefs,
   // the shape a `vx.kernel` carries as `vx.result_slot`. A value from outside
   // the region is given back by `forwardCapturedSpawnResults`.
-  bool forwarded = static_cast<bool>(capturedSpawnResult(spawn));
+  bool forwarded =
+      valueInDeviceMemory || static_cast<bool>(capturedSpawnResult(spawn));
   WalkResult r = spawn.getBody().walk<WalkOrder::PreOrder>([&](Operation *op) {
     if (auto y = dyn_cast<vx::YieldOp>(op);
         y && y.getNumOperands() > 0 && !forwarded)
@@ -8920,6 +8988,7 @@ struct ConvertVxToStandardPass
     // After the cells are promoted, so that a value the region reads from a
     // cell is a plain value.
     forwardCapturedSpawnResults(getOperation());
+    returnSpawnNumbersThroughDeviceMemory(getOperation());
     // After the cells are promoted, so that most buffers a drop names are
     // plain values again.
     if (failed(placeDrops(getOperation()))) {
