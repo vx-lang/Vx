@@ -50,6 +50,14 @@
       in the numbers that the program uses. The same two facts, in Lean and in Vx.</p>
     </li>
     <li>
+      <a href="/blog/handing-the-ptx-back-to-the-compiler.html">Handing the PTX back to the compiler</a>
+      <time datetime="2026-11-20">20 November 2026</time>
+      <p>glm-vx's GPU kernels had 99 pieces of hand-written PTX. We moved most of them to MLIR ops,
+      with a test that pins every instruction the old PTX had. 14 of 20 kernels got the same PTX.
+      In 6, the compiler saw the code around the old asm and wrote fewer instructions. Four
+      places got worse: one needed a fix, and three keep their asm.</p>
+    </li>
+    <li>
       <a href="/blog/an-escape-hatch-the-size-of-one-fact.html">An escape hatch the size of one fact</a>
       <time datetime="2026-11-17">17 November 2026</time>
       <p>No analysis can prove that a GPU kernel writing at rows from an index tensor is free of

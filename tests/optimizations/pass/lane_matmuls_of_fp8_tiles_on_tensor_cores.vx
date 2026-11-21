@@ -27,13 +27,13 @@
 // RUN: FileCheck %s --check-prefix=SM80 --implicit-check-not=mma.sync < %t.sm80.ptx
 // CHECK: .version 8.4
 // CHECK-LABEL: .entry e4m3_tiles(
-// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32
+// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
 // CHECK-LABEL: .entry e5m2_tiles(
-// CHECK-COUNT-2: mma.sync.aligned.m16n8k32.row.col.f32.e5m2.e5m2.f32
+// CHECK-COUNT-2: mma.sync.aligned.m16n8k32.row.col.f32.e5m2.e5m2.f32{{ *$}}
 // CHECK-LABEL: .entry k_loop(
-// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32
+// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
 // CHECK-NOT: st.shared
-// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32
+// CHECK: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
 // CHECK-NOT: st.shared
 // CHECK: bar.sync 0;
 // CHECK-LABEL: .entry k16_tiles(

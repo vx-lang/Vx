@@ -29,12 +29,15 @@
 // PTX-LABEL: .entry a_in_hbm(
 // PTX: ld.global.nc.v2.b32 {%r[[A0:[0-9]+]], %r[[A2:[0-9]+]]}, [%rd[[ROW:[0-9]+]]];
 // PTX-NEXT: ld.global.nc.v2.b32 {%r[[A1:[0-9]+]], %r[[A3:[0-9]+]]}, [%rd[[ROW]]+256];
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[A0]], %r[[A1]], %r[[A2]], %r[[A3]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[A0]], %r[[A1]], %r[[A2]], %r[[A3]]},
 // PTX-LABEL: .entry b_in_hbm(
 // PTX: ld.global.nc.b8
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
 // PTX-LABEL: .entry into_hbm(
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%r[[C0:[0-9]+]], %r[[C1:[0-9]+]],
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {%r[[C0:[0-9]+]], %r[[C1:[0-9]+]],
 // PTX: st.global.v2.b32 [{{.*}}], {%r[[C0]], %r[[C1]]}
 
 fn a_in_hbm(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, a : &Tensor<f8e4m3, [2, 32, 32], Memory::HBM>) -> void {
