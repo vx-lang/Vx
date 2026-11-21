@@ -1266,6 +1266,36 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             }
         }
 
+        // A tensor and a scalar, or two tensors of different float types.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            let number = |t: Type<'c>| {
+                let s = t.to_string();
+                crate::mlir_ty::float_elem_of_mlir(&s).is_some()
+                    || s.strip_prefix('i')
+                        .is_some_and(|w| w.parse::<u32>().is_ok())
+            };
+            let float = |e: &str| crate::mlir_ty::float_elem_of_mlir(e).is_some();
+            let same_or_floats = |a: &str, b: &str| a == b || float(a) && float(b);
+            let mixed = match (tensor_elem(lhs_ty), tensor_elem(rhs_ty)) {
+                (Some(e), None) => number(rhs_ty) && same_or_floats(&e, &rhs_ty.to_string()),
+                (None, Some(e)) => number(lhs_ty) && same_or_floats(&lhs_ty.to_string(), &e),
+                (Some(a), Some(b)) => a != b && float(&a) && float(&b),
+                (None, None) => false,
+            };
+            if mixed {
+                return lower_mixed_tensor_operation(
+                    gen,
+                    block,
+                    op,
+                    (lhs_val, lhs_ty),
+                    (rhs_val, rhs_ty),
+                );
+            }
+        }
+
         let mut final_ty = lhs_ty;
         // A row of a larger tensor, such as `acc[w]`, is a strided view. An element operation
         // reads it as it is, so two operands that differ only in that layout need no cast.
@@ -7116,6 +7146,114 @@ fn each_element<'c>(
         .build()?;
     block.append_operation(generic);
     Ok(())
+}
+
+/// The element type of a tensor's memref type: `f16` in `memref<?xf16, strided<[1]>>`. `None` for
+/// a scalar, and for a memref with no dimensions or with memrefs in it.
+fn tensor_elem(ty: Type) -> Option<String> {
+    let s = ty.to_string();
+    let inner = s.strip_prefix("memref<")?.split([',', '>']).next()?;
+    let (dims, elem) = inner.rsplit_once('x')?;
+    (!dims.is_empty() && !elem.is_empty() && !inner.starts_with("memref")).then(|| elem.to_string())
+}
+
+/// `t + s` or `s * t` for a tensor `t` and a scalar `s`, or `a - b` for tensors of two float
+/// types. A `linalg.generic` reads the scalar for each element, and converts each operand to
+/// the element type of the result. One element type stays. Two compute in f32, as in the slice
+/// path of `BinaryOpExpr`.
+fn lower_mixed_tensor_operation<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    op: &BinaryOp,
+    (lhs, lhs_ty): (Value<'c, 'c>, Type<'c>),
+    (rhs, rhs_ty): (Value<'c, 'c>, Type<'c>),
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let elem_of = |t: Type<'c>| tensor_elem(t).unwrap_or_else(|| t.to_string());
+    let (le, re) = (elem_of(lhs_ty), elem_of(rhs_ty));
+    let out_elem = if le == re {
+        le.clone()
+    } else {
+        "f32".to_string()
+    };
+    let (shape, shape_ty) = if tensor_elem(lhs_ty).is_some() {
+        (lhs, lhs_ty)
+    } else {
+        (rhs, rhs_ty)
+    };
+    let (out, out_ty, rank, _) = alloc_like(gen, block, shape, shape_ty, Some(&out_elem))?;
+    let parse =
+        |t: &str| Type::parse(gen.context, t).ok_or_else(|| LowerError::ParseType(t.to_string()));
+    let (l_el, r_el, o_el, f32_ty) = (parse(&le)?, parse(&re)?, parse(&out_elem)?, parse("f32")?);
+    let body = melior::ir::Block::new(&[(l_el, gen.loc()), (r_el, gen.loc()), (o_el, gen.loc())]);
+    let bits = |t: &str| crate::mlir_ty::float_elem_of_mlir(t).and_then(|e| e.bits());
+    let convert = |op: &str, ty: Type<'c>, v: Value<'c, '_>| -> Result<Value<'c, '_>, LowerError> {
+        let op = OperationBuilder::new(op, gen.loc())
+            .add_operands(&[v])
+            .add_results(&[ty])
+            .build()?;
+        Ok(body.append_operation(op).result(0)?.into())
+    };
+    let mut operands = Vec::new();
+    for (k, elem) in [(0, &le), (1, &re)] {
+        let x: Value = body.argument(k)?.into();
+        let x = match (bits(elem), bits(&out_elem)) {
+            _ if *elem == out_elem => x,
+            (Some(from), Some(to)) if from < to => convert("arith.extf", o_el, x)?,
+            (Some(from), Some(to)) if from > to => convert("arith.truncf", o_el, x)?,
+            (Some(_), Some(_)) => convert("arith.truncf", o_el, convert("arith.extf", f32_ty, x)?)?,
+            _ => return Err(format!("a tensor operation on {le} and {re}").into()),
+        };
+        operands.push(x);
+    }
+    let is_float = crate::mlir_ty::float_elem_of_mlir(&out_elem).is_some();
+    let arith = OperationBuilder::new(op.get_op_name(is_float, false), gen.loc())
+        .add_operands(&operands)
+        .add_results(&[o_el])
+        .build()?;
+    let value: Value = body.append_operation(arith).result(0)?.into();
+    body.append_operation(
+        OperationBuilder::new("linalg.yield", gen.loc())
+            .add_operands(&[value])
+            .build()?,
+    );
+    let region = Region::new();
+    region.append_block(body);
+    let dims: Vec<String> = (0..rank).map(|k| format!("d{k}")).collect();
+    let dims = dims.join(", ");
+    let map = |to: &str| {
+        Attribute::parse(gen.context, &format!("affine_map<({dims}) -> ({to})>"))
+            .ok_or_else(|| LowerError::from("an affine map that does not parse".to_string()))
+    };
+    let (each, scalar) = (map(&dims)?, map("")?);
+    let map_of = |t: Type<'c>| {
+        if tensor_elem(t).is_some() {
+            each
+        } else {
+            scalar
+        }
+    };
+    let parallel = Attribute::parse(gen.context, "#linalg.iterator_type<parallel>")
+        .ok_or_else(|| "an iterator type that does not parse".to_string())?;
+    let generic = OperationBuilder::new("linalg.generic", gen.loc())
+        .add_operands(&[lhs, rhs, out])
+        .add_attributes(&[
+            (
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "indexing_maps"),
+                ArrayAttribute::new(gen.context, &[map_of(lhs_ty), map_of(rhs_ty), each]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "iterator_types"),
+                ArrayAttribute::new(gen.context, &vec![parallel; rank]).into(),
+            ),
+        ])
+        .add_regions([region])
+        .build()?;
+    block.append_operation(generic);
+    Ok((out, out_ty, block))
 }
 
 /// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses

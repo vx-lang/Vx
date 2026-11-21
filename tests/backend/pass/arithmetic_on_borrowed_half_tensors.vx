@@ -6,11 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 // `&a + &b` reads two f16 tensors and gives an f16 tensor, so f16 rounds 2048 + 1 to 2048.
-// `&a + one` adds an f32 value, so it gives an f32 tensor, and 2048 + 1 stays 2049. The AST
-// code generator cannot add a tensor and a scalar yet, so only the default one runs this.
+// `&a + one` adds an f32 value, so it gives an f32 tensor, and 2048 + 1 stays 2049.
 //
-// REQUIRES: flat-codegen
 // RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}2048 2049{{$}}
 
 fn main() -> i32 {
