@@ -8,15 +8,13 @@
 // The last `if` of a `spawn` body is the value of the task. A `return` in that `if` must drop
 // the tensor `b` and the `Loud` `l` that the task made. `l` prints when it is dropped.
 //
-// Only the default code generator runs this program. The AST code generator crashes on a
-// `return` in the last value of a task.
-//
-// REQUIRES: flat-codegen
 // RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DROPS
+// RUN: env VX_PRINT_DROPS=1 vxc %s --legacy-codegen --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DROPS
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 //
-// DROPS-DAG: drop in leaves: b, before the return on line 44
-// DROPS-DAG: drop in leaves: l, before the return on line 44
+// DROPS-DAG: drop in leaves: b, before the return on line 42
+// DROPS-DAG: drop in leaves: l, before the return on line 42
 //
 // CHECK: {{^}}task sees 6{{$}}
 // CHECK-NEXT: {{^}}drop loud 2{{$}}
