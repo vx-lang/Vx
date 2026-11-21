@@ -72,9 +72,11 @@ without `login`, or to use one value twice:
 
 - **#3746 and #3754.** Only the file that declares a struct or an enum can write a plain `impl` of
   it, with or without a trait. An impl that must be in another file, because of an import cycle or
-  to keep a module apart, is `unsafe impl`. So `impl Copy for AdminCap` in another file is an
-  error, and `unsafe impl Copy for AdminCap` there is trusted code (section 4). The module of the
-  type can still make a capability that copies, such as a read-only right that is safe to share.
+  to keep a module apart, is `extern impl`. So `impl Copy for AdminCap` in another file is an
+  error, and `extern impl Copy for AdminCap` there is trusted code (section 4). `extern impl` is
+  new syntax, and `unsafe impl` keeps its meaning: only `Send`, `Sync` and `Owned` take it. The
+  module of the type can still make a capability that copies, such as a read-only right that is
+  safe to share.
 - **#3747.** Outside the module of a type with an invariant, an `mlir!` block cannot give a value
   of the type. This is the rule for a struct literal, and `unsafe` does not lift it either.
 - **#3748.** An `extern` function that returns a type with an invariant, or takes a `&mut` to one,
@@ -85,16 +87,16 @@ without `login`, or to use one value twice:
 ## 4. Trusted code
 
 `unsafe` code can always make a value, because it can read one from any address. Rust has the
-same rule. So the guarantee is this: code with no `unsafe`, no `unsafe impl`, no `mlir!` and no
+same rule. So the guarantee is this: code with no `unsafe`, no `extern impl`, no `mlir!` and no
 `extern` cannot forge a capability. The modules that use them are the trusted code of the program,
 and a review reads each of them.
 
 Two tools keep the trusted code small and easy to find:
 
-- A package setting that refuses `unsafe`, `unsafe impl`, `mlir!` and `extern` in the package, as
+- A package setting that refuses `unsafe`, `extern impl`, `mlir!` and `extern` in the package, as
   `#![forbid(unsafe_code)]` does in Rust. A dependency then cannot add trusted code without a
   change to its manifest.
-- `vxc --audit` lists each use of `unsafe`, `unsafe impl`, `mlir!` and `extern`, with its file and
+- `vxc --audit` lists each use of `unsafe`, `extern impl`, `mlir!` and `extern`, with its file and
   line. Today it lists the facts that the compiler trusts, such as each `assume`, but not each
   use.
 
