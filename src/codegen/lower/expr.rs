@@ -2895,16 +2895,21 @@ fn lower_task_region<'c>(
             }
         }
     }
+    // A `return` or a `?` in the last value, as in its last `if`, leaves the task too.
+    let last = this.ret.as_ref().filter(|_| reached_end).map(|ret_expr| {
+        let waiting = std::mem::take(&mut gen.queued_drops);
+        let lowered = gen.generate_expr(ret_expr, body);
+        gen.queued_drops.extend(waiting);
+        lowered
+    });
     if task {
         gen.task_bodies.pop();
     }
     let mut result_types = Vec::new();
     let mut yielded = Vec::new();
     {
-        if let Some(ret_expr) = this.ret.as_ref().filter(|_| reached_end) {
-            let waiting = std::mem::take(&mut gen.queued_drops);
-            let (val, ty, cur) = gen.generate_expr(ret_expr, body)?;
-            gen.queued_drops.extend(waiting);
+        if let Some(lowered) = last {
+            let (val, ty, cur) = lowered?;
             body = gen.run_queued_drops(cur)?;
             if this.cancels_on_err.is_some() && wants_value {
                 body = cancel_on_err(gen, body, val)?;
