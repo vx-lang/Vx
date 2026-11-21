@@ -353,24 +353,9 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
     ) -> Self::Output {
         let (mut src_val, mut src_ty, block) = gen.generate_expr(&self.expr, block)?;
         let location = gen.loc();
-        // `&g` is the slot that holds g's memref, so the transfer reads the tensor out of it.
-        if matches!(
-            gen.infer_ast_type(&self.expr),
-            Some(syntax::Type::Borrow { .. })
-        ) {
-            if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(src_ty) {
-                use melior::ir::r#type::ShapedTypeLike;
-                let inner = outer.element();
-                if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
-                    let load = OperationBuilder::new("memref.load", location)
-                        .add_operands(&[src_val])
-                        .add_results(&[inner])
-                        .build()?;
-                    src_val = block.append_operation(load).result(0)?.into();
-                    src_ty = inner;
-                }
-            }
-        }
+        // `&g` is the slot that holds g's memref, so the transfer reads the tensor out of it. The
+        // type of the lowered value says so, also for `&view` of a view of raw memory.
+        src_val = super::expr::load_tensor_slot(gen, &block, src_val, &mut src_ty)?;
 
         // Static byte size of the transferred tile, for the SS2 sub-space bump allocator.
         let tile_bytes = gen.infer_ast_type(&self.expr).and_then(|ty| {
