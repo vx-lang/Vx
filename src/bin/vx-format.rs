@@ -17,8 +17,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use vx_config::{default_format_config_toml, resolve_format_config, FormatConfig};
-use vxc::formatter::format_file;
+use vx_config::{resolve_format_config, FormatConfig, SettingOverride};
+use vxc::formatter::{check_rule_names, default_config_toml, format_file_with_report};
 
 use clap::{Parser, ValueEnum};
 use rayon::prelude::*;
@@ -32,7 +32,7 @@ enum PrintConfig {
 #[command(author, version, about = "Vx Code Formatter")]
 struct Cli {
     /// Print built-in configuration as TOML without formatting files
-    #[arg(long, value_enum, conflicts_with_all = ["indent", "config", "files", "check"])]
+    #[arg(long, value_enum, conflicts_with_all = ["indent", "set", "config", "files", "check"])]
     print_config: Option<PrintConfig>,
 
     /// Show formatting differences without modifying files
@@ -42,6 +42,10 @@ struct Cli {
     /// Override indentation width (defaults to two spaces without configuration)
     #[arg(long)]
     indent: Option<usize>,
+
+    /// Override one setting of [format], as in `max_width=80` or `rules.function_headers=false`
+    #[arg(long, value_name = "KEY=VALUE", value_parser = SettingOverride::parse)]
+    set: Vec<SettingOverride>,
 
     /// Configuration file for all inputs (otherwise discover vx-format.toml per input)
     #[arg(long)]
@@ -59,7 +63,11 @@ fn process_file(
     check: bool,
 ) -> anyhow::Result<bool> {
     let path = Path::new(file_path);
-    let formatted = format_file(content, config.indent);
+    let outcome = format_file_with_report(content, config);
+    for warning in &outcome.warnings {
+        eprintln!("{}", warning.render(file_path, content));
+    }
+    let formatted = outcome.text;
     let changed = formatted != content;
     if changed {
         if check {
@@ -75,7 +83,7 @@ fn process_file(
                 .map_err(|error| anyhow::anyhow!("{}: {}", path.display(), error))?;
             println!("Formatted {}", file_path);
         }
-    } else if !check {
+    } else if !check && outcome.warnings.is_empty() {
         println!("Unchanged {}", file_path);
     }
     Ok(changed)
@@ -85,8 +93,23 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
     if let Some(PrintConfig::Default) = cli.print_config {
         std::io::stdout()
             .lock()
-            .write_all(default_format_config_toml().as_bytes())?;
+            .write_all(default_config_toml().as_bytes())?;
         return Ok(false);
+    }
+
+    let mut overrides: Vec<SettingOverride> = cli
+        .indent
+        .map(|indent| SettingOverride::parse(&format!("indent={indent}")))
+        .transpose()
+        .map_err(anyhow::Error::msg)?
+        .into_iter()
+        .collect();
+    overrides.extend(cli.set.iter().cloned());
+    for setting in &overrides {
+        if let Some(rule) = setting.key().strip_prefix("rules.") {
+            check_rule_names(&FormatConfig::default().with_rule(rule, true))
+                .map_err(|message| anyhow::anyhow!("--set {}: {message}", setting.text()))?;
+        }
     }
 
     // Validate every configuration and read every input before modifying files.
@@ -95,7 +118,12 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
         .iter()
         .map(|file_path| {
             let path = Path::new(file_path);
-            let config = resolve_format_config(path, cli.config.as_deref(), cli.indent)?;
+            let config = resolve_format_config(path, cli.config.as_deref(), &overrides)?;
+            // The rules from `--set` are already checked, so an unknown one is in the file.
+            check_rule_names(&config.settings).map_err(|message| match &config.source {
+                Some(source) => anyhow::anyhow!("{}: {message}", source.display()),
+                None => anyhow::Error::msg(message),
+            })?;
             let content = fs::read_to_string(path)
                 .map_err(|error| anyhow::anyhow!("{}: {}", path.display(), error))?;
             Ok((file_path, content, config.settings))

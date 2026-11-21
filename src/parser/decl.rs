@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+use super::formatting::{ClauseKind, RecordedKind};
 use super::*;
 
 impl<'a> Parser<'a> {
@@ -34,6 +35,7 @@ impl<'a> Parser<'a> {
         let mut params: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
+                let start = self.pos;
                 let is_mut = self.match_token(&TokenType::Mut);
                 // Keep the name token so a missing type on `self` can point at the name.
                 let name_token = self.peek().clone();
@@ -50,7 +52,10 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 self.consume(&TokenType::Colon, "Expected ':'")?;
+                let type_start = self.pos;
                 let ty = self.parse_type()?;
+                self.record(RecordedKind::ParameterType, type_start);
+                self.record(RecordedKind::Parameter, start);
                 params.push((name.into(), ty));
 
                 if !self.match_token(&TokenType::Comma) {
@@ -63,6 +68,7 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_generic_params(&mut self) -> ParseResult<'a, Vec<GenericParam>> {
         let mut generics = Vec::new();
+        let start = self.pos;
         if self.match_token(&TokenType::LeftAngle) {
             while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
                 if self.check(&TokenType::Identifier("const")) {
@@ -100,6 +106,7 @@ impl<'a> Parser<'a> {
                 &TokenType::RightAngle,
                 "Expected '>' after generic parameters",
             )?;
+            self.record(RecordedKind::GenericParameters, start);
         }
         Ok(generics)
     }
@@ -153,11 +160,37 @@ impl<'a> Parser<'a> {
             || (self.check(&TokenType::Unsafe) && matches!(self.peek_n(1).kind, TokenType::Fn))
     }
 
+    /// The type after a function's `->`.
+    fn parse_recorded_return_type(&mut self) -> ParseResult<'a, Type> {
+        let start = self.pos;
+        let return_type = self.parse_return_type()?;
+        self.record(RecordedKind::ReturnType, start);
+        Ok(return_type)
+    }
+
+    /// Each `requires` or `ensures` clause of a function, as `keyword` says.
+    fn parse_contract_clauses(
+        &mut self,
+        keyword: &TokenType<'a>,
+        kind: ClauseKind,
+    ) -> ParseResult<'a, Vec<Expr>> {
+        let mut conditions = Vec::new();
+        loop {
+            let start = self.pos;
+            if !self.match_token(keyword) {
+                return Ok(conditions);
+            }
+            conditions.push(self.parse_expr()?);
+            self.record(RecordedKind::Clause(kind), start);
+        }
+    }
+
     pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
         // A top-level `pub fn` has its `pub` read before this, so one here is on a method.
         if self.check(&TokenType::Pub) {
             return Err(self.error("`pub` on a method is not supported yet"));
         }
+        let start = self.pos;
         let is_unsafe = self.match_token(&TokenType::Unsafe);
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
@@ -172,15 +205,19 @@ impl<'a> Parser<'a> {
 
         let mut generics = self.parse_generic_params()?;
 
+        let parameters_start = self.pos;
         self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
         self.mut_params.clear();
         let params = self.parse_comma_separated_params()?;
         let mut_params = std::mem::take(&mut self.mut_params);
         self.consume(&TokenType::RightParen, "Expected ')'")?;
+        self.record(RecordedKind::ParameterList, parameters_start);
 
         let mut topology = Topology::CPU;
+        let clause_start = self.pos;
         if self.match_token(&TokenType::On) {
             topology = self.parse_topology_or_any()?;
+            self.record(RecordedKind::Clause(ClauseKind::On), clause_start);
         }
         // `on Topology::Any` is short for `<D : Topology> .. on Topology::D` with a `D` that no
         // parameter names.
@@ -199,17 +236,10 @@ impl<'a> Parser<'a> {
             // In Vx, '->' is currently required for functions in parse_function
             return Err(self.error("Expected '->'"));
         }
-        let return_type = self.parse_return_type()?;
+        let return_type = self.parse_recorded_return_type()?;
 
-        let mut requires = Vec::new();
-        while self.match_token(&TokenType::Requires) {
-            requires.push(self.parse_expr()?);
-        }
-
-        let mut ensures = Vec::new();
-        while self.match_token(&TokenType::Ensures) {
-            ensures.push(self.parse_expr()?);
-        }
+        let requires = self.parse_contract_clauses(&TokenType::Requires, ClauseKind::Requires)?;
+        let ensures = self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures)?;
 
         // `where Reachable<A, B> [, Reachable<C, D>]*` -- topology transfer constraints.
         //
@@ -219,6 +249,7 @@ impl<'a> Parser<'a> {
         // the name the edge lowering now uses (`impl Transfer<Memory::A, Memory::B> for
         // Topology::X`) with a different kind of argument -- so the two had to part.
         let mut where_transfers: Vec<(crate::symbol::Symbol, crate::symbol::Symbol)> = Vec::new();
+        let where_start = self.pos;
         if self.match_token(&TokenType::Where) {
             loop {
                 let cname = self
@@ -248,13 +279,13 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+            self.record(RecordedKind::Clause(ClauseKind::Where), where_start);
         }
+        self.record(RecordedKind::FunctionHeader, start);
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut body = Vec::new();
-        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            self.parse_statement_into(&mut body)?;
-        }
+        self.parse_function_body(&mut body)?;
 
         // Transform implicit return
         if let Some(Statement::ExprStmt(ExprStmtStmt {
@@ -279,6 +310,7 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        self.record(RecordedKind::FunctionDeclaration, start);
 
         // Remove generic params from scope
         for _ in 0..generics.len() {
@@ -1104,6 +1136,11 @@ impl<'a> Parser<'a> {
         name: &crate::symbol::Symbol,
         start: &Token<'a>,
     ) -> ParseResult<'a, ()> {
+        // A second definition is a compile error, not a syntax error. The formatter still
+        // formats the file.
+        if self.recording() {
+            return Ok(());
+        }
         if let Some((line, column)) = defined_at.get(name) {
             return Err(self.error_at(
                 start,
@@ -1216,6 +1253,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_extern_block(&mut self) -> ParseResult<'a, Vec<ExternDecl>> {
+        let block_start = self.pos;
         self.consume(&TokenType::Extern, "Expected 'extern'")?;
 
         // Optional "C" ABI string literal (we ignore it for now but parse it if it exists)
@@ -1248,6 +1286,7 @@ impl<'a> Parser<'a> {
             }
             let decl_line = self.peek().line;
             let decl_column = self.peek().column;
+            let start = self.pos;
             let is_safe = self.match_token(&TokenType::Safe);
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = self.expect_identifier("Expected function name")?;
@@ -1271,17 +1310,18 @@ impl<'a> Parser<'a> {
                 }
             }
 
+            let parameters_start = self.pos;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
             let params = self.parse_comma_separated_params()?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
+            self.record(RecordedKind::ParameterList, parameters_start);
 
             self.consume(&TokenType::Arrow, "Expected '->'")?;
-            let return_type = self.parse_return_type()?;
-            let mut ensures = Vec::new();
-            while self.match_token(&TokenType::Ensures) {
-                ensures.push(self.parse_expr()?);
-            }
+            let return_type = self.parse_recorded_return_type()?;
+            let ensures = self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures)?;
+            self.record(RecordedKind::FunctionHeader, start);
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
+            self.record(RecordedKind::FunctionDeclaration, start);
             for _ in 0..generics.len() {
                 self.generic_params.pop();
             }
@@ -1303,11 +1343,13 @@ impl<'a> Parser<'a> {
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        self.record(RecordedKind::ExternBlock, block_start);
 
         Ok(externs)
     }
 
     pub(crate) fn parse_trait_decl(&mut self) -> ParseResult<'a, TraitDecl> {
+        let block_start = self.pos;
         self.consume(&TokenType::Trait, "Expected 'trait'")?;
         let place_span = self.next_span();
         let name = self.expect_type_name("Expected trait name")?;
@@ -1353,29 +1395,28 @@ impl<'a> Parser<'a> {
             if self.check(&TokenType::Pub) {
                 return Err(self.error("`pub` on a method is not supported yet"));
             }
+            let start = self.pos;
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
             let method_name = self.expect_identifier("Expected method name")?;
             // The method's own parameters, on top of the trait's. They stay in scope for
             // this signature only, so they are popped once its body or `;` is read.
             let method_generics = self.parse_generic_params()?;
+            let parameters_start = self.pos;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
             self.mut_params.clear();
             let params = self.parse_comma_separated_params()?;
             let mut_params = std::mem::take(&mut self.mut_params);
             self.consume(&TokenType::RightParen, "Expected ')'")?;
+            self.record(RecordedKind::ParameterList, parameters_start);
             self.consume(&TokenType::Arrow, "Expected '->'")?;
-            let return_type = self.parse_return_type()?;
-            let mut ensures = Vec::new();
-            while self.match_token(&TokenType::Ensures) {
-                ensures.push(self.parse_expr()?);
-            }
+            let return_type = self.parse_recorded_return_type()?;
+            let ensures = self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures)?;
+            self.record(RecordedKind::FunctionHeader, start);
             // A trait method is either a requirement, ending in `;`, or a default, whose body
             // an impl inherits unless it writes its own.
             let default_body = if self.match_token(&TokenType::LeftBrace) {
                 let mut body = Vec::new();
-                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                    self.parse_statement_into(&mut body)?;
-                }
+                self.parse_function_body(&mut body)?;
                 self.consume(
                     &TokenType::RightBrace,
                     "Expected '}' after trait method body",
@@ -1388,6 +1429,7 @@ impl<'a> Parser<'a> {
                 )?;
                 None
             };
+            self.record(RecordedKind::FunctionDeclaration, start);
             for _ in 0..method_generics.len() {
                 self.generic_params.pop();
             }
@@ -1403,6 +1445,7 @@ impl<'a> Parser<'a> {
             });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        self.record(RecordedKind::TraitBlock, block_start);
 
         for _ in 0..generics.len() {
             self.generic_params.pop();
@@ -1421,6 +1464,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_impl_block(&mut self) -> ParseResult<'a, ImplBlock> {
+        let block_start = self.pos;
         let place_span = self.next_span();
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
 
@@ -1527,6 +1571,7 @@ impl<'a> Parser<'a> {
             methods.push(method);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        self.record(RecordedKind::ImplBlock, block_start);
         self.impl_self = outer_self;
 
         for _ in 0..generics.len() {
@@ -1736,7 +1781,7 @@ impl<'a> Parser<'a> {
                 let mut at = self.peek().clone();
                 let block = self.parse_extern_block()?;
                 // A C function keeps its name, so a Vx function cannot share it.
-                for e in &block {
+                for e in block.iter().filter(|_| !self.recording()) {
                     if let Some((line, column)) = defined_at.get(&e.name) {
                         (at.line, at.column) = (e.span.line, e.span.column);
                         return Err(self.error_at(
@@ -1802,7 +1847,7 @@ impl<'a> Parser<'a> {
                 let mut f = self.parse_function()?;
                 // A generic function becomes one copy per type, each with its own name, so
                 // there is no single name to export.
-                if is_pub && !f.generics.is_empty() {
+                if is_pub && !f.generics.is_empty() && !self.recording() {
                     return Err(self.error_at(&start, "a generic function cannot be `pub` yet"));
                 }
                 f.is_pub = is_pub;
@@ -1812,7 +1857,7 @@ impl<'a> Parser<'a> {
                     let e = externs.iter().find(|e: &&ExternDecl| e.name == f.name)?;
                     Some((e.span.line, e.span.column))
                 });
-                if let Some((line, column)) = earlier {
+                if let Some((line, column)) = earlier.filter(|_| !self.recording()) {
                     return Err(self.error_at(
                         &start,
                         &format!("`{}` is already defined at {line}:{column}", f.name),
@@ -1915,6 +1960,7 @@ impl<'a> Parser<'a> {
     /// edge. Two parts can declare the same edge and move it with different instructions
     /// (`cp.async` on Ampere, TMA on Hopper), and before Vx#353 only one of them could say so.
     pub(crate) fn parse_transfer_impl(&mut self) -> ParseResult<'a, TransferImplDecl> {
+        let block_start = self.pos;
         let place_span = self.next_span();
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
         // The old spelling, `impl transfer Memory::A -> Memory::B`, used the lowercase keyword.
@@ -1993,6 +2039,7 @@ impl<'a> Parser<'a> {
             &TokenType::RightBrace,
             "Expected '}' to close 'impl Transfer'",
         )?;
+        self.record(RecordedKind::ImplBlock, block_start);
         Ok(TransferImplDecl {
             place: crate::syntax::DeclPlace {
                 file: None,

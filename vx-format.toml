@@ -1,2 +1,12 @@
 [format]
 indent = 2
+max_width = 100
+space_before_colon = true
+
+[format.rules]
+# Preserve existing mixed header styles until the repository migrates them together.
+function_headers = false
+# Switch these on in a separate change that formats the repository again.
+struct_literals = false
+match_arms = false
+if_values = false
