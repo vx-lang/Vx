@@ -753,9 +753,15 @@ fn lower_lane_matmul<'c>(
 ) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
     let routine = crate::hir::check::lanes::matmul_routine(m.accumulate);
     let (_, block) = super::expr::lower_lane_call(gen, block, routine, &[m.acc, m.lhs, m.rhs])?;
-    // Each lane of the subgroup writes some elements of `acc`, and reads the others after this.
+    // Each lane of the subgroup or the block writes some elements of `acc`, and reads the others
+    // after this.
     if gen.across_map.is_some() {
-        super::across::barrier(gen, block, super::across::Level::Subgroup)?;
+        let level = if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Blocks) {
+            super::across::Level::Block
+        } else {
+            super::across::Level::Subgroup
+        };
+        super::across::barrier(gen, block, level)?;
     }
     Ok(block)
 }
@@ -775,7 +781,9 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         } = self;
 
         // A lane matmul in the code of a subgroup.
-        if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
+        if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups)
+            || gen.across_kinds.last() == Some(&crate::arch::LevelKind::Blocks)
+        {
             if let Some(m) = crate::hir::check::lanes::lane_matmul(self) {
                 return lower_lane_matmul(gen, block, &m).map(Some);
             }

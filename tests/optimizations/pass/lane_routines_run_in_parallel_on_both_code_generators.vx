@@ -25,7 +25,7 @@
 // CHECK: matmul 1 17 33
 //
 // MLIR-LABEL: func.func @tile_matmul(
-// MLIR: "vx.lane_matmul"({{.*}}) <{accumulate, subgroup, subgroup_row}>
+// MLIR: "vx.lane_matmul"({{.*}}) <{accumulate, lanes = 32 : i64, subgroup, subgroup_row}>
 // MLIR-NEXT: vx.barrier {subgroup}
 // MLIR-LABEL: func.func @sorted(
 // MLIR: memref.store {{.*}} {vx.lane_element = "block", vx.lane_own = "whole", vx.lanes = 64 : i64} : memref<64xi64, 3>

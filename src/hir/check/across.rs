@@ -662,7 +662,7 @@ impl Walk<'_> {
             ctx.region.clone(),
             ctx.axes.last(),
         ) {
-            if axis.kind != LevelKind::Subgroups {
+            if !matches!(axis.kind, LevelKind::Subgroups | LevelKind::Blocks) {
                 return;
             }
             self.reads_lane0(lanes::MATMUL, &[m.acc, m.lhs, m.rhs], ctx);

@@ -302,7 +302,7 @@ def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>,
         DeclareOpInterfaceMethods<Vx_LaneOpInterface>]> {
     let summary = "A matmul of tiles with the lanes of a subgroup.";
     let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$rhs,
-                     UnitAttr:$accumulate, UnitAttr:$subgroup,
+                     I64Attr:$lanes, UnitAttr:$accumulate, UnitAttr:$subgroup,
                      UnitAttr:$serial, UnitAttr:$subgroup_row);
 }
 
