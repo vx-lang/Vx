@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // A program of the book chapter on files, input and time (www/book/src/files-input-time.md):
-// it writes a file, reads it back byte by byte, and moves the position with `seek`.
+// it writes a file, reads it back byte by byte, and moves the position with `seek_to`.
 // The RUN lines give the path in NOTES. The test runner gives no such variable, so NO_EXEC.
 //
 // NO_EXEC
@@ -28,28 +28,28 @@ extern {
 }
 
 // Writes `text` to a new file at `path`. The file closes when `out` goes out of scope.
-fn write_text(path : *const i8, text : *const i8) -> void {
+unsafe fn write_text(path : *const i8, text : *const i8) -> void {
   let mut bytes = Vec<u8>::new();
   let length = unsafe { string_length(text) };
   for i in 0..length {
     bytes.push(unsafe { text[i] } as u8);
   }
-  let mut out = unsafe { File::open(path, OpenMode::Write()) };
+  let mut out = (unsafe { File::create_raw(path) }).unwrap();
   let written = unsafe {
-    out.write(bytes.as_mut_ptr() as *const u8, length as u64)
+    out.write_raw(bytes.as_mut_ptr() as *const u8, length as usize)
   };
-  println!("wrote {} bytes", written);
+  println!("wrote {} bytes", written.unwrap());
 }
 
 fn main() -> i32 {
   let path = unsafe { getenv("NOTES") };
-  write_text(path, "one\ntwo\nthree\n");
+  unsafe { write_text(path, "one\ntwo\nthree\n"); }
 
-  let mut input = unsafe { File::open(path, OpenMode::Read()) };
+  let mut input = (unsafe { File::open_raw(path) }).unwrap();
   let mut byte : u8 = 0;
   let mut lines = 0;
   loop {
-    let n = unsafe { input.read((&mut byte) as *mut u8, 1) };
+    let n = (unsafe { input.read_raw((&mut byte) as *mut u8, 1) }).unwrap();
     if n == 0 {
       break;
     }
@@ -58,10 +58,10 @@ fn main() -> i32 {
     }
   }
   println!("read {} lines", lines);
-  println!("the file ends at byte {}", input.seek(0, 2));
+  println!("the file ends at byte {}", input.seek_to(SeekFrom::End(0)).unwrap());
 
-  input.seek(4, 0);
-  unsafe { input.read((&mut byte) as *mut u8, 1) };
+  input.seek_to(SeekFrom::Start(4)).unwrap();
+  (unsafe { input.read_raw((&mut byte) as *mut u8, 1) }).unwrap();
   println!("byte 4 is {}, the letter t", byte);
   return 0;
 }

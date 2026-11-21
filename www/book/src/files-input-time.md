@@ -39,17 +39,24 @@ gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
 ## Files
 
-`File::open(path, mode)` opens a file. `path` is a text that ends with a zero byte, such as a
-string literal. The mode is one of the three values of `OpenMode`:
+`File::open_raw(path)` opens a file that exists, for reading. `File::create_raw(path)` makes a
+file for writing. If the file exists, it makes the file empty. `path` is a text that ends with a
+zero byte, such as a string literal. Both functions give a `Result`: `Ok` holds the `File`, and
+`Err` holds an `Error`. [Errors](errors.md) explains `Result`.
 
-- `OpenMode::Read()` opens a file that exists, for reading.
-- `OpenMode::Write()` makes the file, or makes an existing file empty, for writing.
-- `OpenMode::ReadWriteCreate()` opens the file for both, and makes it if it does not exist. It
-  keeps the bytes that the file has.
+For other ways to open a file, use `OpenOptions`. Start with `OpenOptions::new()`, and turn on
+each choice that you want: `read`, `write`, `append`, `create`, `truncate` or `create_new`.
 
-`write(buffer, len)` writes `len` bytes from a buffer and gives how many it wrote. `read(buffer, len)` reads up to `len` bytes into a buffer and gives how many it read. 0 means the end of the
-file. `seek(offset, whence)` moves the position of the next read or write, and gives the new
-position. `whence` is 0 for the start of the file, 1 for the current position and 2 for the end.
+`write_raw(buffer, len)` writes up to `len` bytes from a buffer, and gives how many it wrote.
+`read_raw(buffer, len)` reads up to `len` bytes into a buffer, and gives how many it read. A count
+of 0 from `read_raw` means the end of the file. Both functions give a `Result`, so an error is an
+`Err` and not a count. The buffer is a raw pointer, and Vx cannot check its size. So each call
+goes in an `unsafe` block.
+
+`seek_to` moves the position of the next read or write, and gives the new position.
+`SeekFrom::Start(n)` counts from the start of the file, `SeekFrom::Current(n)` from the current
+position, and `SeekFrom::End(n)` from the end. `stream_position()` gives the position and does
+not move it.
 
 `File` implements `Drop`, so a file closes at the end of its scope. You do not close it by hand.
 [Ownership and borrowing](ownership.md) explains `Drop`.
@@ -70,11 +77,15 @@ the file ends at byte 14
 byte 4 is 116, the letter t
 ```
 
-`write_text` copies the literal into a `Vec<u8>`, because `write` takes a pointer to `u8` bytes.
-`out` closes at the end of `write_text`. So `main` reads all 14 bytes.
+`write_text` copies the literal into a `Vec<u8>`, because `write_raw` takes a pointer to `u8`
+bytes. `out` closes at the end of `write_text`. So `main` reads all 14 bytes.
 
-A failed `open` gives a `File` that does nothing: each later `read` and `write` gives 0. A missing
-file and an empty file look the same. So check the count that `read` and `write` give.
+The program calls `unwrap`, which stops the program on an `Err`. A real program checks the error.
+For example, `error.kind()` gives `ErrorKind::NotFound()` when the file does not exist.
+
+The older `File::open(path, mode)`, `read`, `write` and `seek` are deprecated. A failed `open`
+gives a `File` that does nothing, and the program cannot tell a missing file from an empty one.
+Use the functions above in new code.
 
 ## Standard input and output
 

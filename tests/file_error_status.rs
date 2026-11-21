@@ -610,3 +610,284 @@ fn fallible_file_write_preserves_the_os_error() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn fallible_open_reports_missing_paths_and_clears_invalid_outputs() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|error| format!("create directory: {error}"))?;
+    let missing = dir.path().join("missing");
+    let path = std::ffi::CString::new(missing.to_str().ok_or("temporary path is not UTF-8")?)
+        .map_err(|error| format!("encode path: {error}"))?;
+    let mut out = std::ptr::null_mut();
+    let (mut code, mut has_code) = (99, false);
+    let status = unsafe { vx_file_try_open(path.as_ptr(), 0, &mut out, &mut code, &mut has_code) };
+    expect_equal(status, 1, "missing path category")?;
+    expect_equal(out.is_null(), true, "failed open must not return a handle")?;
+    let expected = std::fs::File::open(&missing)
+        .err()
+        .ok_or("missing path unexpectedly opened")?
+        .raw_os_error();
+    expect_equal(Some(code), expected, "open must preserve the native code")?;
+    expect_equal(has_code, true, "missing path must have a native code")?;
+
+    for null_output in 0..5 {
+        out = std::ptr::dangling_mut();
+        code = 99;
+        has_code = true;
+        let status = unsafe {
+            vx_file_try_open(
+                if null_output == 4 {
+                    std::ptr::null()
+                } else {
+                    path.as_ptr()
+                },
+                if null_output == 0 { -1 } else { 0 },
+                if null_output == 1 {
+                    std::ptr::null_mut()
+                } else {
+                    &mut out
+                },
+                if null_output == 2 {
+                    std::ptr::null_mut()
+                } else {
+                    &mut code
+                },
+                if null_output == 3 {
+                    std::ptr::null_mut()
+                } else {
+                    &mut has_code
+                },
+            )
+        };
+        expect_equal(status, -1, "invalid open arguments")?;
+        if null_output != 1 {
+            expect_equal(out.is_null(), true, "clear handle output")?;
+        }
+        if null_output != 2 {
+            expect_equal(code, 0, "clear native output")?;
+        }
+        if null_output != 3 {
+            expect_equal(!has_code, true, "clear native flag")?;
+        }
+    }
+    let status = unsafe { vx_file_try_open(path.as_ptr(), 1, &mut out, &mut code, &mut has_code) };
+    expect_equal(
+        (status, code, has_code),
+        (0, 0, false),
+        "successful open outputs",
+    )?;
+    expect_equal(
+        !out.is_null(),
+        true,
+        "successful open returns an owned handle",
+    )?;
+    vx_file_drop(out);
+    expect_equal(missing.exists(), true, "write mode creates the file")?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn fallible_read_does_not_clear_unused_buffer_bytes() -> Result<(), String> {
+    let mut file = tempfile::tempfile().map_err(|error| format!("create file: {error}"))?;
+    file.write_all(b"R")
+        .map_err(|error| format!("seed file: {error}"))?;
+    file.rewind()
+        .map_err(|error| format!("rewind file: {error}"))?;
+    let file = into_ffi_file(file);
+    let mut buffer = [0xa5; 8192];
+    let (mut count, mut code, mut has_code) = (99, 99, true);
+    let status = unsafe {
+        vx_file_try_read(
+            file,
+            buffer.as_mut_ptr(),
+            buffer.len() as u64,
+            &mut count,
+            &mut code,
+            &mut has_code,
+        )
+    };
+    let short_result = (status, count, code, has_code);
+    let tail_unchanged = buffer[1..].iter().all(|&byte| byte == 0xa5);
+    buffer.fill(0xb6);
+    let status = unsafe {
+        vx_file_try_read(
+            file,
+            buffer.as_mut_ptr(),
+            buffer.len() as u64,
+            &mut count,
+            &mut code,
+            &mut has_code,
+        )
+    };
+    vx_file_drop(file);
+    expect_equal(short_result, (0, 1, 0, false), "short read result")?;
+    expect_equal(
+        tail_unchanged,
+        true,
+        "short read must not clear the unused buffer",
+    )?;
+    expect_equal(
+        (status, count, code, has_code),
+        (0, 0, 0, false),
+        "EOF result",
+    )?;
+    expect_equal(
+        buffer.iter().all(|&byte| byte == 0xb6),
+        true,
+        "EOF must not clear the buffer",
+    )
+}
+
+#[test]
+fn options_open_validates_flags_and_preserves_native_errors() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|error| format!("create directory: {error}"))?;
+    let options_path = dir.path().join("options");
+    let path = std::ffi::CString::new(options_path.to_str().ok_or("temporary path is not UTF-8")?)
+        .map_err(|error| format!("encode path: {error}"))?;
+    for flags in [-1, 64] {
+        let mut out = std::ptr::dangling_mut();
+        let (mut code, mut has_code) = (99, true);
+        let status = unsafe {
+            vx_file_open_options(path.as_ptr(), flags, &mut out, &mut code, &mut has_code)
+        };
+        expect_equal(
+            (status, code, has_code),
+            (-1, 0, false),
+            "reject unknown option bits",
+        )?;
+        expect_equal(out.is_null(), true, "invalid options clear the handle")?;
+    }
+    let mut out = std::ptr::null_mut();
+    let (mut code, mut has_code) = (99, true);
+    let status =
+        unsafe { vx_file_open_options(path.as_ptr(), 0, &mut out, &mut code, &mut has_code) };
+    expect_equal(status, 4, "no access mode is InvalidInput")?;
+    expect_equal(out.is_null(), true, "invalid combinations return no handle")?;
+    let status =
+        unsafe { vx_file_open_options(path.as_ptr(), 1, &mut out, &mut code, &mut has_code) };
+    expect_equal(status, 1, "read-only opening does not create")?;
+    expect_equal(has_code, true, "open preserves native error presence")?;
+    expect_equal(
+        vx_io_error_kind(code),
+        1,
+        "native constructor classifies the captured code",
+    )?;
+    expect_equal(
+        vx_io_error_kind(12345),
+        12,
+        "unrecognized native error is Other",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn fallible_seek_reports_positions_errors_and_invalid_arguments() -> Result<(), String> {
+    let mut file = tempfile::tempfile().map_err(|error| format!("create file: {error}"))?;
+    file.write_all(b"R")
+        .map_err(|error| format!("seed file: {error}"))?;
+    let file = into_ffi_file(file);
+    let (mut position, mut code, mut has_code) = (99, 99, true);
+    for (offset, whence, expected) in [(0, 0, 0), (1, 1, 1), (0, 2, 1)] {
+        let status = unsafe {
+            vx_file_try_seek(
+                file,
+                offset,
+                whence,
+                &mut position,
+                &mut code,
+                &mut has_code,
+            )
+        };
+        expect_equal(
+            (status, position, code, has_code),
+            (0, expected, 0, false),
+            "seek success outputs",
+        )?;
+    }
+    for null_output in 0..5 {
+        position = 99;
+        code = 99;
+        has_code = true;
+        let status = unsafe {
+            vx_file_try_seek(
+                if null_output == 0 {
+                    std::ptr::null_mut()
+                } else {
+                    file
+                },
+                0,
+                if null_output == 4 { 3 } else { 0 },
+                if null_output == 1 {
+                    std::ptr::null_mut()
+                } else {
+                    &mut position
+                },
+                if null_output == 2 {
+                    std::ptr::null_mut()
+                } else {
+                    &mut code
+                },
+                if null_output == 3 {
+                    std::ptr::null_mut()
+                } else {
+                    &mut has_code
+                },
+            )
+        };
+        expect_equal(status, -1, "invalid seek arguments")?;
+        if null_output != 1 {
+            expect_equal(position, 0, "clear seek position")?;
+        }
+        if null_output != 2 {
+            expect_equal(code, 0, "clear seek code")?;
+        }
+        if null_output != 3 {
+            expect_equal(!has_code, true, "clear seek native flag")?;
+        }
+    }
+    let status = unsafe { vx_file_try_seek(file, -1, 0, &mut position, &mut code, &mut has_code) };
+    vx_file_drop(file);
+    expect_equal(status > 0, true, "large absolute positions report an error")?;
+    expect_equal(position, 0, "failed seek does not return a position")?;
+    Ok(())
+}
+
+// macOS refuses a `read` call that asks for more than `i32::MAX` bytes. A read of 3 GiB from a
+// 1-byte file must still succeed with a count of 1, as a short read. The buffer is reserved
+// memory that the read never touches past its first byte, so the test uses no disk and little RAM.
+#[test]
+fn a_read_larger_than_i32_max_is_a_short_read() -> Result<(), String> {
+    use std::io::Write;
+
+    let mut file = tempfile::tempfile().map_err(|error| format!("create file: {error}"))?;
+    file.write_all(b"A")
+        .map_err(|error| format!("write file: {error}"))?;
+    std::io::Seek::rewind(&mut file).map_err(|error| format!("rewind file: {error}"))?;
+    let file = into_ffi_file(file);
+
+    let len: usize = 3 << 30;
+    let layout = std::alloc::Layout::from_size_align(len, 1).map_err(|error| error.to_string())?;
+    let buffer = unsafe { std::alloc::alloc(layout) };
+    if buffer.is_null() {
+        vx_file_drop(file);
+        return Err("could not reserve a 3 GiB buffer".to_string());
+    }
+    let (mut count, mut code, mut has_code) = (0u64, 0, false);
+    let status = unsafe {
+        vx_file_try_read(
+            file,
+            buffer,
+            len as u64,
+            &mut count,
+            &mut code,
+            &mut has_code,
+        )
+    };
+    let first = unsafe { *buffer };
+    unsafe { std::alloc::dealloc(buffer, layout) };
+    vx_file_drop(file);
+    expect_equal((status, code, has_code), (0, 0, false), "large read status")?;
+    expect_equal(count, 1, "large read count")?;
+    expect_equal(first, b'A', "large read byte")?;
+    Ok(())
+}

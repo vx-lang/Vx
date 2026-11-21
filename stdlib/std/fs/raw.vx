@@ -1,0 +1,24 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Runtime and C declarations for low-level file access. Prefer File methods.
+extern {
+  /// Open with a validated options bitset. Other outputs follow the file error ABI.
+  fn vx_file_open_options(path : *const i8, options : i32, out : *mut *mut i8,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  /// Seek with an unsigned start offset or signed relative offset, encoded in `offset`.
+  fn vx_file_try_seek(ptr : *mut i8, offset : i64, whence : i32, position : *mut u64,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+
+  /// Fallible open with the same status and native-code outputs as byte transfers.
+  fn vx_file_try_open(path : *const i8, mode : i32, out : *mut *mut i8,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  /// Fallible read. Outputs are separate writable locals.
+  fn vx_file_try_read(ptr : *mut i8, buffer : *mut u8, len : u64, count : *mut u64,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  /// Fallible write. Outputs are separate writable locals.
+  fn vx_file_try_write(ptr : *mut i8, buffer : *const u8, len : u64, count : *mut u64,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+
+}

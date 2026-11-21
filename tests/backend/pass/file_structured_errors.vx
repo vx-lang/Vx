@@ -1,0 +1,116 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// EXPECT: public file operations preserve structured errors
+// Public file calls distinguish errors, short reads, empty requests, and EOF.
+// The bridge tests in tests/file_error_status.rs check a null buffer. A Vx caller must not pass one.
+import core::mem;
+import core::result;
+import core::option;
+import std::fs;
+import std::io;
+
+extern {
+  fn malloc(size : i64) -> *mut u8;
+  fn free(ptr : *mut u8) -> void;
+  fn vx_get_temp_file(name : *const i8) -> *mut i8;
+  fn vx_free_temp_file(path : *mut i8) -> i32;
+  fn remove(path : *const i8) -> i32;
+}
+
+fn main() -> i32 {
+  let path = unsafe { vx_get_temp_file("structured_file_errors") };
+  unsafe { remove(path); }
+  let missing = (unsafe { File::open_raw(path) }).unwrap_err();
+  let missing_category = match missing.kind() {
+    ErrorKind::NotFound() => {
+      true
+    },
+    _ => {
+      false
+    }
+  };
+  assert(missing_category, "missing file category");
+  let missing_operation = match missing.operation() {
+    Operation::Open() => {
+      true
+    },
+    _ => {
+      false
+    }
+  };
+  assert(missing_operation, "missing file operation");
+  assert(missing.raw_os_error().is_some(), "missing file native code");
+
+  let unknown = Error::from_raw_os_error(12345).with_operation(Operation::Read());
+  let unknown_category = match unknown.kind() {
+    ErrorKind::Other() => {
+      true
+    },
+    _ => {
+      false
+    }
+  };
+  assert(unknown_category, "unknown native category");
+  assert(unknown.raw_os_error().unwrap() == 12345, "unknown native code");
+  let invalid = Error::from_kind(ErrorKind::InvalidInput()).with_operation(Operation::Seek());
+  let invalid_category = match invalid.kind() {
+    ErrorKind::InvalidInput() => {
+      true
+    },
+    _ => {
+      false
+    }
+  };
+  assert(invalid_category, "Vx error category");
+  let invalid_operation = match invalid.operation() {
+    Operation::Seek() => {
+      true
+    },
+    _ => {
+      false
+    }
+  };
+  assert(invalid_operation, "Vx error operation");
+  assert(invalid.raw_os_error().is_none(), "Vx error has no native code");
+
+  let byte : u8 = 65;
+  let mut writer = (unsafe { File::create_raw(path) }).unwrap();
+  assert((unsafe { writer.write_raw((&byte) as *const u8, 1) }).unwrap() == 1, "write count");
+  let output = unsafe { malloc(2) };
+  let read_error = (unsafe { writer.read_raw(output, 1) }).unwrap_err();
+  let read_operation = match read_error.operation() {
+    Operation::Read() => {
+      true
+    },
+    _ => {
+      false
+    }
+  };
+  assert(read_operation, "read error operation");
+  assert(read_error.raw_os_error().is_some(), "read error native code");
+  drop(writer);
+
+  let mut reader = (unsafe { File::open_raw(path) }).unwrap();
+  assert((unsafe { reader.read_raw(output, 2) }).unwrap() == 1, "short read count");
+  assert(unsafe { *output } == 65u8, "read byte");
+  assert((unsafe { reader.read_raw(output, 1) }).unwrap() == 0, "EOF count");
+  assert((unsafe { reader.read_raw(output, 0) }).unwrap() == 0, "empty read count");
+  assert((unsafe { reader.write_raw(output as *const u8, 0) }).unwrap() == 0, "empty write count");
+  let write_error = (unsafe { reader.write_raw((&byte) as *const u8, 1) }).unwrap_err();
+  let write_operation = match write_error.operation() {
+    Operation::Write() => {
+      true
+    },
+    _ => {
+      false
+    }
+  };
+  assert(write_operation, "write error operation");
+  assert(write_error.raw_os_error().is_some(), "write error native code");
+  drop(reader);
+  unsafe { free(output); remove(path); vx_free_temp_file(path); }
+  println!("public file operations preserve structured errors");
+  return 0;
+}

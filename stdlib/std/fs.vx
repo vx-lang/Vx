@@ -5,7 +5,28 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+// Files on the host: open, read, write and seek.
+//
+// Layer: the OS layer. Runs on: the host only. `File` is `HostOnly`.
+//
+// Stage: `OpenOptions`, the `File` methods that end in `_raw`, and `Seek for File` are
+// incubating, with the feature name `file_io_errors`. `OpenMode` and the methods `File::open`,
+// `read`, `write` and `seek` are deprecated.
+//
+// Differences from Rust:
+//
+// - A path or a buffer is a raw pointer, because Vx has no slices and no path type yet. So each
+//   method that takes one is `unsafe`, and its name ends in `_raw`.
+// - A buffer must not be null, also for an empty request.
+// - `Seek::seek_to` is Rust's `Seek::seek`. The deprecated `File::seek` has the name `seek`.
+// - `OpenOptions` setters take the options by value and return them. Rust's take `&mut self`.
+//===----------------------------------------------------------------------===//
+import core::marker;
 import core::ops;
+import core::result;
+import std::io;
+
+import std::fs::raw;
 
 extern {
   /// The Rust core behind `File::open`. Null when the open fails.
@@ -38,7 +59,20 @@ extern {
   fn munmap(addr: *mut i8, len: i64) -> i32;
 }
 
-/// The three file-opening behaviors supported by the current host bridge.
+
+// The bits of `OpenOptions`. The Rust bridge reads the same bits in `vx_file_open_options`.
+const _OPEN_READ : i32 = 1;
+const _OPEN_WRITE : i32 = 2;
+const _OPEN_APPEND : i32 = 4;
+const _OPEN_CREATE : i32 = 8;
+const _OPEN_TRUNCATE : i32 = 16;
+const _OPEN_CREATE_NEW : i32 = 32;
+
+/// The three ways that `File::open` can open a file.
+///
+/// # Stage
+///
+/// Deprecated since 0.0.5. Use `OpenOptions`, which sets each choice on its own.
 enum OpenMode {
   Read,
   Write,
@@ -47,29 +81,137 @@ enum OpenMode {
 
 impl Copy for OpenMode {}
 
-/// An open file, held by the Rust core behind an opaque pointer.
+/// An open file on the host. Dropping a `File` closes it.
 ///
-/// Closed when it is dropped.
+/// The Rust runtime holds the file behind an opaque pointer. A `File` cannot go into device code,
+/// because it holds a host handle.
 struct File {
   ptr : *mut i8,
 }
 
 // The handle may move to another task. It is not `Sync`, because each method takes
-// `*mut File`, so a shared `&File` has no use yet.
+// a mutable receiver. A shared `&File` cannot perform file operations.
 unsafe impl Send for File {}
+impl HostOnly for File {}
 
 impl File {
-  /// Open `path` with a named mode.
+  /// Open the file at `path` for reading. The file must exist.
   ///
-  /// Writing creates the file and truncates it; read-and-write creates it and does not
-  /// truncate. Reading does not create it.
+  /// # Errors
   ///
-  /// **A failed open cannot be detected.** The returned `File` holds a null pointer, and Vx
-  /// cannot compare a raw pointer against null or cast one to an integer (Vx#714) -- so a
-  /// missing file is indistinguishable from an empty one until that closes. Every later call
-  /// on it answers 0 or -1 rather than doing anything.
+  /// The error that the operating system reports, with the operation `Open`. A missing file
+  /// gives `NotFound`, and a file that the program cannot read gives `PermissionDenied`.
   ///
-  /// Unsafe because nothing checks that `path` points at a NUL-terminated string.
+  /// # Safety
+  ///
+  /// `path` must point to a NUL-terminated string that stays valid during the call.
+  ///
+  /// # Stage
+  ///
+  /// Incubating, with the feature name `file_io_errors`.
+  ///
+  /// # Example
+  ///
+  /// ```vx
+  /// let error = (unsafe { File::open_raw("/tmp/vx_example_missing_file") }).unwrap_err();
+  /// let missing = match error.kind() {
+  ///   ErrorKind::NotFound() => { true },
+  ///   _ => { false }
+  /// };
+  /// assert(missing, "a missing file gives NotFound");
+  /// ```
+  unsafe fn open_raw(path : *const i8) -> Result<File, Error>
+  requires valid(path, 1)
+  requires initialized(path, 1)
+  {
+    let options = OpenOptions::new().read(true);
+    return unsafe { options.open_raw(path) };
+  }
+
+  /// Open the file at `path` for writing. Make the file if it does not exist, and make it empty
+  /// if it does.
+  ///
+  /// # Errors
+  ///
+  /// The error that the operating system reports, with the operation `Open`. For example, a
+  /// folder in `path` that does not exist gives `NotFound`.
+  ///
+  /// # Safety
+  ///
+  /// `path` must point to a NUL-terminated string that stays valid during the call.
+  ///
+  /// # Stage
+  ///
+  /// Incubating, with the feature name `file_io_errors`.
+  ///
+  /// # Example
+  ///
+  /// ```vx
+  /// let mut file = (unsafe { File::create_raw("/tmp/vx_example_create.txt") }).unwrap();
+  /// assert(file.seek_to(SeekFrom::End(0)).unwrap() == 0, "the new file is empty");
+  /// ```
+  unsafe fn create_raw(path : *const i8) -> Result<File, Error>
+  requires valid(path, 1)
+  requires initialized(path, 1)
+  {
+    let options = OpenOptions::new().write(true).create(true).truncate(true);
+    return unsafe { options.open_raw(path) };
+  }
+
+  /// Make a new file at `path`, and open it for reading and writing. Fail if the file exists.
+  ///
+  /// The check and the creation are one step, so another program cannot make the file between
+  /// them.
+  ///
+  /// # Errors
+  ///
+  /// `AlreadyExists` when the file exists. Otherwise, the error that the operating system
+  /// reports. Each error has the operation `Open`.
+  ///
+  /// # Safety
+  ///
+  /// `path` must point to a NUL-terminated string that stays valid during the call.
+  ///
+  /// # Stage
+  ///
+  /// Incubating, with the feature name `file_io_errors`.
+  ///
+  /// # Example
+  ///
+  /// ```vx
+  /// let path = "/tmp/vx_example_create_new.txt";
+  /// let _old = unsafe { File::create_raw(path) };
+  /// let error = (unsafe { File::create_new_raw(path) }).unwrap_err();
+  /// let exists = match error.kind() {
+  ///   ErrorKind::AlreadyExists() => { true },
+  ///   _ => { false }
+  /// };
+  /// assert(exists, "the file exists already");
+  /// ```
+  unsafe fn create_new_raw(path : *const i8) -> Result<File, Error>
+  requires valid(path, 1)
+  requires initialized(path, 1)
+  {
+    let options = OpenOptions::new().read(true).write(true).create_new(true);
+    return unsafe { options.open_raw(path) };
+  }
+
+  /// Open `path` in one of the three ways of `OpenMode`.
+  ///
+  /// `Write` makes the file, or makes an existing file empty. `ReadWriteCreate` makes the file if
+  /// it does not exist, and keeps its bytes. `Read` does not make the file.
+  ///
+  /// A failed open gives a `File` that holds a null handle. The program cannot see that the
+  /// open failed.
+  ///
+  /// # Safety
+  ///
+  /// `path` must point to a NUL-terminated string. Nothing checks it.
+  ///
+  /// # Stage
+  ///
+  /// Deprecated since 0.0.5. Use `File::open_raw`, `File::create_raw` or `OpenOptions::open_raw`.
+  /// They return an error when the open fails.
   unsafe fn open(path : *const i8, mode : OpenMode) -> File {
     // Read uses code 0; the other modes replace it below.
     let mut mode_code : i32 = 0;
@@ -88,29 +230,153 @@ impl File {
     }
   }
 
-  /// Read up to `len` bytes into `buffer` and answer how many arrived.
+  /// Read at most `len` bytes into `buffer`, and return the number of bytes that the read got.
   ///
-  /// Zero means end of file, a null file or buffer, or a read error -- the four are not told
-  /// apart. A short read is normal and is not an error.
+  /// A read can get fewer bytes than `len`. That is not an error. A count of 0 means the end of
+  /// the file, or a `len` of 0. Only the first bytes, up to the count, hold data from the file.
+  /// The read can also change the other bytes of `buffer`.
   ///
-  /// Unsafe because `buffer` must have room for `len` bytes; nothing here checks.
+  /// # Errors
+  ///
+  /// The error that the operating system reports, with the operation `Read`. For example, a
+  /// read from a file that is open only for writing gives an error.
+  ///
+  /// # Safety
+  ///
+  /// `buffer` must point to `len` bytes that the program can write. The bytes need not hold
+  /// values. `buffer` must not be null, also when `len` is 0.
+  ///
+  /// # Contract
+  ///
+  /// `buffer` is valid for `len` bytes.
+  ///
+  /// # Stage
+  ///
+  /// Incubating, with the feature name `file_io_errors`.
+  ///
+  /// # Example
+  ///
+  /// ```vx
+  /// let path = "/tmp/vx_example_read.txt";
+  /// let mut out = (unsafe { File::create_raw(path) }).unwrap();
+  /// let letter : u8 = 65;
+  /// (unsafe { out.write_raw((&letter) as *const u8, 1) }).unwrap();
+  /// drop(out);
+  ///
+  /// let mut file = (unsafe { File::open_raw(path) }).unwrap();
+  /// let mut byte : u8 = 0;
+  /// let count = (unsafe { file.read_raw((&mut byte) as *mut u8, 1) }).unwrap();
+  /// assert(count == 1 && byte == 65, "the read got the letter A");
+  /// let end = (unsafe { file.read_raw((&mut byte) as *mut u8, 1) }).unwrap();
+  /// assert(end == 0, "a count of 0 is the end of the file");
+  /// ```
+  unsafe fn read_raw(self : &mut File, buffer : *mut u8, len : usize) -> Result<usize, Error>
+  requires valid(buffer, len)
+  {
+    let mut count : u64 = 0;
+    let mut code : i32 = 0;
+    let mut has_code : bool = false;
+    let status = unsafe {
+      vx_file_try_read(self.ptr, buffer, len as u64, &mut count, &mut code, &mut has_code)
+    };
+    if status != 0 {
+      return Result<usize, Error>::Err(io_error_from_bridge(status, Operation::Read(), code, has_code));
+    }
+    return Result<usize, Error>::Ok(count as usize);
+  }
+
+  /// Write at most `len` bytes from `buffer`, and return the number of bytes that the write
+  /// took.
+  ///
+  /// A write can take fewer bytes than `len`. That is not an error, and this method does not try
+  /// again. A `len` of 0 writes nothing and returns 0.
+  ///
+  /// # Errors
+  ///
+  /// The error that the operating system reports, with the operation `Write`. For example, a
+  /// write to a file that is open only for reading gives an error.
+  ///
+  /// # Safety
+  ///
+  /// `buffer` must point to `len` bytes that hold values. `buffer` must not be null, also when
+  /// `len` is 0.
+  ///
+  /// # Contract
+  ///
+  /// `buffer` is valid for `len` bytes, and each of these bytes holds a value.
+  ///
+  /// # Stage
+  ///
+  /// Incubating, with the feature name `file_io_errors`.
+  ///
+  /// # Example
+  ///
+  /// ```vx
+  /// let mut file = (unsafe { File::create_raw("/tmp/vx_example_write.txt") }).unwrap();
+  /// let mut letters = Vec<u8>::new();
+  /// letters.push(72u8);
+  /// letters.push(105u8);
+  /// let count = (unsafe { file.write_raw(letters.as_mut_ptr() as *const u8, 2) }).unwrap();
+  /// assert(count == 2, "the write took both bytes");
+  /// ```
+  unsafe fn write_raw(self : &mut File, buffer : *const u8, len : usize) -> Result<usize, Error>
+  requires valid(buffer, len)
+  requires initialized(buffer, len)
+  {
+    let mut count : u64 = 0;
+    let mut code : i32 = 0;
+    let mut has_code : bool = false;
+    let status = unsafe {
+      vx_file_try_write(self.ptr, buffer, len as u64, &mut count, &mut code, &mut has_code)
+    };
+    if status != 0 {
+      return Result<usize, Error>::Err(io_error_from_bridge(status, Operation::Write(), code, has_code));
+    }
+    return Result<usize, Error>::Ok(count as usize);
+  }
+
+  /// Read up to `len` bytes into `buffer`, and return how many bytes the read got.
+  ///
+  /// A count of 0 means one of four things: the end of the file, a null file, a null buffer, or
+  /// a read error. The program cannot tell them apart. A short read is not an error.
+  ///
+  /// # Safety
+  ///
+  /// `buffer` must have room for `len` bytes. Nothing checks it.
+  ///
+  /// # Stage
+  ///
+  /// Deprecated since 0.0.5. Use `File::read_raw`, which returns an error when the read fails.
   unsafe fn read(self : *mut File, buffer : *mut u8, len : u64) -> u64 {
     unsafe { vx_file_read(self.ptr, buffer, len) }
   }
 
-  /// Write up to `len` bytes from `buffer` and answer how many were taken.
+  /// Write up to `len` bytes from `buffer`, and return how many bytes the write took.
   ///
-  /// Zero means a null file or buffer, or a write error, with the same lack of distinction
-  /// `read` has. A short write is not an error and the remainder is not retried here.
+  /// A count of 0 means a null file, a null buffer, or a write error. The program cannot tell
+  /// them apart. A short write is not an error, and this method does not write the rest.
+  ///
+  /// # Safety
+  ///
+  /// `buffer` must hold `len` bytes. Nothing checks it.
+  ///
+  /// # Stage
+  ///
+  /// Deprecated since 0.0.5. Use `File::write_raw`, which returns an error when the write fails.
   unsafe fn write(self : *mut File, buffer : *const u8, len : u64) -> u64 {
     unsafe { vx_file_write(self.ptr, buffer, len) }
   }
 
-  /// Move the read and write position, answering where it ended up.
+  /// Move the position of the next read or write, and return the new position.
   ///
-  /// `whence` is 0 from the start, 1 from the current position, 2 from the end, as libc's
-  /// `SEEK_SET`, `SEEK_CUR` and `SEEK_END`. Answers -1 for a null file, an unknown `whence`,
-  /// or a seek the operating system refuses.
+  /// `whence` is 0 for the start of the file, 1 for the current position, and 2 for the end. These
+  /// are libc's `SEEK_SET`, `SEEK_CUR` and `SEEK_END`. The result is -1 for a null file, for an
+  /// unknown `whence`, or for a seek that the operating system refuses.
+  ///
+  /// # Stage
+  ///
+  /// Deprecated since 0.0.5. Use `seek_to` with a `SeekFrom`, which returns an error when the
+  /// seek fails.
   fn seek(self : *mut File, offset : i64, whence : i32) -> i64 {
     unsafe { vx_file_seek(self.ptr, offset, whence) }
   }
@@ -120,5 +386,181 @@ impl Drop for File {
   /// Close the file and release it.
   fn drop(self : &mut File) -> void {
     unsafe { vx_file_drop(self.ptr) };
+  }
+}
+
+impl Seek for File {
+  /// Move the position of the next read or write, and return the new position from the start of
+  /// the file.
+  ///
+  /// # Errors
+  ///
+  /// The error that the operating system reports, with the operation `Seek`. A position before
+  /// the start of the file gives `InvalidInput`.
+  ///
+  /// # Stage
+  ///
+  /// Incubating, with the feature name `file_io_errors`.
+  ///
+  /// # Example
+  ///
+  /// ```vx
+  /// let mut file = (unsafe { File::create_raw("/tmp/vx_example_seek.txt") }).unwrap();
+  /// let mut letters = Vec<u8>::new();
+  /// letters.push(97u8);
+  /// letters.push(98u8);
+  /// letters.push(99u8);
+  /// (unsafe { file.write_raw(letters.as_mut_ptr() as *const u8, 3) }).unwrap();
+  /// assert(file.seek_to(SeekFrom::Start(1)).unwrap() == 1, "from the start");
+  /// assert(file.seek_to(SeekFrom::Current(1)).unwrap() == 2, "from the current position");
+  /// assert(file.seek_to(SeekFrom::End(-3)).unwrap() == 0, "from the end");
+  /// assert(file.seek_to(SeekFrom::Current(-1)).is_err(), "before the start");
+  /// ```
+  fn seek_to(self : &mut File, from : SeekFrom) -> Result<u64, Error> {
+    let mut offset : i64 = 0;
+    let mut whence : i32 = 0;
+    match from {
+      SeekFrom::Start(position) => {
+        offset = position as i64;
+      }
+      SeekFrom::Current(delta) => {
+        offset = delta; whence = 1;
+      }
+      SeekFrom::End(delta) => {
+        offset = delta; whence = 2;
+      }
+    }
+    let mut position : u64 = 0;
+    let mut code : i32 = 0;
+    let mut has_code : bool = false;
+    let status = unsafe {
+      vx_file_try_seek(self.ptr, offset, whence, &mut position, &mut code, &mut has_code)
+    };
+    if status != 0 {
+      return Result<u64, Error>::Err(io_error_from_bridge(status, Operation::Seek(), code, has_code));
+    }
+    return Result<u64, Error>::Ok(position);
+  }
+}
+
+/// The choices for opening a file: read, write, append, create, truncate and create new. Each
+/// choice is on or off on its own.
+///
+/// `OpenOptions::new()` turns every choice off. Each setter returns new options, so that a
+/// program can chain the calls. Options with no choice turned on cannot open a file.
+///
+/// # Stage
+///
+/// Incubating, with the feature name `file_io_errors`.
+///
+/// # Example
+///
+/// One example covers `new`, the six setters and `open_raw`.
+///
+/// ```vx
+/// let path = "/tmp/vx_example_options.txt";
+/// let create = OpenOptions::new().write(true).create(true).truncate(true);
+/// let mut file = (unsafe { create.open_raw(path) }).unwrap();
+/// let letter : u8 = 65;
+/// (unsafe { file.write_raw((&letter) as *const u8, 1) }).unwrap();
+/// drop(file);
+///
+/// let append = OpenOptions::new().append(true);
+/// let mut log = (unsafe { append.open_raw(path) }).unwrap();
+/// (unsafe { log.write_raw((&letter) as *const u8, 1) }).unwrap();
+/// assert(log.stream_position().unwrap() == 2, "append writes at the end");
+/// drop(log);
+///
+/// let exclusive = OpenOptions::new().write(true).create_new(true);
+/// assert((unsafe { exclusive.open_raw(path) }).is_err(), "the file exists");
+/// let nothing = OpenOptions::new().read(true).read(false);
+/// assert((unsafe { nothing.open_raw(path) }).is_err(), "no choice is on");
+/// ```
+struct OpenOptions {
+  flags : i32,
+}
+impl Copy for OpenOptions {}
+
+impl OpenOptions {
+  /// Options with every choice turned off.
+  fn new() -> OpenOptions {
+    return OpenOptions {
+      flags : 0
+    };
+  }
+
+  // Turn the choice `bit` on or off.
+  fn _with_flag(self : OpenOptions, bit : i32, enabled : bool) -> OpenOptions {
+    let mut options = self;
+    if enabled {
+      options.flags = options.flags | bit;
+    } else {
+      options.flags = options.flags & !bit;
+    }
+    return options;
+  }
+
+  /// Turn reading on or off.
+  fn read(self : OpenOptions, enabled : bool) -> OpenOptions {
+    return self._with_flag(_OPEN_READ, enabled);
+  }
+
+  /// Turn writing on or off. Writing alone does not make the file and does not make it empty.
+  fn write(self : OpenOptions, enabled : bool) -> OpenOptions {
+    return self._with_flag(_OPEN_WRITE, enabled);
+  }
+
+  /// Turn appending on or off. Each write then goes to the end of the file. Appending also turns
+  /// writing on.
+  fn append(self : OpenOptions, enabled : bool) -> OpenOptions {
+    return self._with_flag(_OPEN_APPEND, enabled);
+  }
+
+  /// Make the file if it does not exist. Writing or appending must also be on.
+  fn create(self : OpenOptions, enabled : bool) -> OpenOptions {
+    return self._with_flag(_OPEN_CREATE, enabled);
+  }
+
+  /// Make an existing file empty. Writing must also be on, and appending must be off.
+  fn truncate(self : OpenOptions, enabled : bool) -> OpenOptions {
+    return self._with_flag(_OPEN_TRUNCATE, enabled);
+  }
+
+  /// Make a new file, and fail if the file exists. The check and the creation are one step.
+  /// This choice ignores `create` and `truncate`. Writing or appending must also be on.
+  fn create_new(self : OpenOptions, enabled : bool) -> OpenOptions {
+    return self._with_flag(_OPEN_CREATE_NEW, enabled);
+  }
+
+  /// Open the file at `path` with these options.
+  ///
+  /// On Unix, the path can hold bytes that are not UTF-8. The method gives them to the operating
+  /// system as they are.
+  ///
+  /// # Errors
+  ///
+  /// `InvalidInput` when no choice is on, or when the choices do not go together. For example,
+  /// `create` without `write` or `append`, or `truncate` with `append`. Otherwise, the error that
+  /// the operating system reports. Each error has the operation `Open`.
+  ///
+  /// # Safety
+  ///
+  /// `path` must point to a NUL-terminated string that stays valid during the call.
+  unsafe fn open_raw(self : &OpenOptions, path : *const i8) -> Result<File, Error>
+  requires valid(path, 1)
+  requires initialized(path, 1)
+  {
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let mut code : i32 = 0;
+    let mut has_code : bool = false;
+    let status = unsafe {
+      vx_file_open_options(path, self.flags, &mut ptr, &mut code, &mut has_code)
+    };
+    if status != 0 {
+      return Result<File, Error>::Err(io_error_from_bridge(status, Operation::Open(), code, has_code));
+    }
+    return Result<File, Error>::Ok(File {
+      ptr : ptr
+    });
   }
 }
