@@ -45,6 +45,10 @@ For example: "46.8 against 45.0 generated tokens a second (1.04×), Qwen3-Coder-
 
 - **Release builds.** Use the release binary of each program. If that is not possible, record the
   commit and the build type.
+- **Optimized Vx programs.** Compile the measured Vx program with `-O2` or higher, and give the `-O`
+  level in each command. vxc compiles at `-O0` by default, as clang does. At `-O0`, the code that
+  runs on the CPU can take much of the time. In the Qwen3.6 app, zeroing a tensor of 98 MB took 52 ms
+  at `-O0` and 0.9 ms at `-O2`. A release build of llama.cpp compiles at `-O3`.
 - **Resolve every "auto".** Record the value that each `auto` or default setting chose, for example
   flash attention or the thread count.
 - **At least 3 runs** of each case. Alternate the order of the programs between rounds, and wait for
@@ -102,6 +106,7 @@ Before a number goes out:
 - [ ] tuning inputs apart from measured inputs, or a note
 - [ ] 3 or more runs, all kept, with the median and range
 - [ ] release builds, or commits and build types
+- [ ] the Vx program at `-O2` or higher, with the level in each command
 - [ ] every `auto` setting resolved
 - [ ] the losses in the same table
 - [ ] the data folder, linked from the claim
