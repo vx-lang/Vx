@@ -1,6 +1,7 @@
 # Capability types
 
-Status: proposed, for review. Issue: #3750. Gaps: #3746, #3747, #3748 and #3751.
+Status: proposed, for review. Issue: #3750. Gaps: #3746, #3747, #3748 and #3751. Where an `impl`
+can be: #3754.
 
 A capability is a value that gives the right to do one thing, such as deleting the data or reading
 the files of one folder. Code that does not hold the value cannot do the thing. This note answers
@@ -55,6 +56,7 @@ without `login`, or to use one value twice:
 |---|---|
 | `AdminCap {}` | E8014 |
 | `impl Copy for AdminCap {}`, then one value used twice | **Compiles** (#3746) |
+| `impl AdminCap { .. }` with new methods | **Compiles** (#3754) |
 | `impl Clone` or `impl Default` that builds one | E8014. A `clone` that returns `*self` gets E4008 |
 | A closure that passes a captured `AdminCap` on, called twice | **Compiles** (#3751). With a `Vec`, the second call frees it again |
 | `mlir!` with `returns : AdminCap`, outside `unsafe` | **Compiles** (#3747) |
@@ -68,8 +70,11 @@ without `login`, or to use one value twice:
 
 ## 3. Close the four gaps
 
-- **#3746.** Only the module of a type with an invariant can implement `Copy` for it. That module
-  can still make a capability that copies, such as a read-only right that is safe to share.
+- **#3746 and #3754.** Only the file that declares a struct or an enum can write a plain `impl` of
+  it, with or without a trait. An impl that must be in another file, because of an import cycle or
+  to keep a module apart, is `unsafe impl`. So `impl Copy for AdminCap` in another file is an
+  error, and `unsafe impl Copy for AdminCap` there is trusted code (section 4). The module of the
+  type can still make a capability that copies, such as a read-only right that is safe to share.
 - **#3747.** Outside the module of a type with an invariant, an `mlir!` block cannot give a value
   of the type. This is the rule for a struct literal, and `unsafe` does not lift it either.
 - **#3748.** An `extern` function that returns a type with an invariant, or takes a `&mut` to one,
@@ -80,17 +85,18 @@ without `login`, or to use one value twice:
 ## 4. Trusted code
 
 `unsafe` code can always make a value, because it can read one from any address. Rust has the
-same rule. So the guarantee is this: code with no `unsafe`, no `mlir!` and no `extern` cannot
-forge a capability. The modules that use them are the trusted code of the program, and a review
-reads each of them.
+same rule. So the guarantee is this: code with no `unsafe`, no `unsafe impl`, no `mlir!` and no
+`extern` cannot forge a capability. The modules that use them are the trusted code of the program,
+and a review reads each of them.
 
 Two tools keep the trusted code small and easy to find:
 
-- A package setting that refuses `unsafe`, `mlir!` and `extern` in the package, as
+- A package setting that refuses `unsafe`, `unsafe impl`, `mlir!` and `extern` in the package, as
   `#![forbid(unsafe_code)]` does in Rust. A dependency then cannot add trusted code without a
   change to its manifest.
-- `vxc --audit` lists each use of `unsafe`, `mlir!` and `extern`, with its file and line. Today it
-  lists the facts that the compiler trusts, such as each `assume`, but not each use.
+- `vxc --audit` lists each use of `unsafe`, `unsafe impl`, `mlir!` and `extern`, with its file and
+  line. Today it lists the facts that the compiler trusts, such as each `assume`, but not each
+  use.
 
 ## 5. No ambient authority
 
@@ -141,7 +147,8 @@ runs no code. Native code runs only through `extern`. With sections 3 to 5:
 [language_rules_for_a_parallel_compiler.md](../language_rules_for_a_parallel_compiler.md) asks that
 no global fact depend on a function body. Each new check reads one declaration:
 
-- #3746 reads the `impl` and the type. It agrees with the rule "Copy and drop belong to the type".
+- #3754 reads the `impl` and the file that declares the type. It agrees with the rule "Copy and
+  drop belong to the type".
 - #3747 reads one `mlir!` block and the type that it returns.
 - #3748 reads one `extern` declaration.
 - #3751 reads the body of the closure, in the function that makes it.
@@ -160,7 +167,7 @@ no global fact depend on a function body. Each new check reads one declaration:
 ## 9. Steps
 
 1. #3751, because it is a memory bug too.
-1. #3746, #3747 and #3748.
+1. #3754, which also closes #3746. Then #3747 and #3748.
 1. #3749.
 1. `vxc --audit` lists each use of `unsafe`, `mlir!` and `extern`.
 1. The package setting.
