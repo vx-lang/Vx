@@ -91,16 +91,24 @@
 // PTX: ld.global.nc.v4.b32 {%r[[A0:[0-9]+]], %r[[A2:[0-9]+]], %r[[A4:[0-9]+]], %r[[A6:[0-9]+]]}, [%rd[[ROW:[0-9]+]]];
 // PTX-NEXT: ld.global.nc.v4.b32 {%r[[A1:[0-9]+]], %r[[A3:[0-9]+]], %r[[A5:[0-9]+]], %r[[A7:[0-9]+]]}, [%rd[[ROW]]+512];
 // PTX-NOT: mma.sync
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[A0]], %r[[A1]], %r[[A2]], %r[[A3]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[A0]], %r[[A1]], %r[[A2]], %r[[A3]]},
 // PTX-NOT: mma.sync
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[A4]], %r[[A5]], %r[[A6]], %r[[A7]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[A4]], %r[[A5]], %r[[A6]], %r[[A7]]},
 // PTX-LABEL: .entry from_smem(
 // PTX: ld.shared.v4.b32 {%r[[S0:[0-9]+]], %r[[S2:[0-9]+]], %r[[S4:[0-9]+]], %r[[S6:[0-9]+]]}, [%rd[[SROW:[0-9]+]]];
 // PTX-NEXT: ld.shared.v4.b32 {%r[[S1:[0-9]+]], %r[[S3:[0-9]+]], %r[[S5:[0-9]+]], %r[[S7:[0-9]+]]}, [%rd[[SROW]]+512];
 // PTX-NOT: mma.sync
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[S0]], %r[[S1]], %r[[S2]], %r[[S3]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[S0]], %r[[S1]], %r[[S2]], %r[[S3]]},
 // PTX-NOT: mma.sync
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[S4]], %r[[S5]], %r[[S6]], %r[[S7]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[S4]], %r[[S5]], %r[[S6]], %r[[S7]]},
 
 fn from_hbm(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, a : &Tensor<f8e4m3, [2, 32, 64], Memory::HBM>) -> void {
   spawn on(Topology::Device) {

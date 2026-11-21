@@ -4259,13 +4259,15 @@ static Type mmaElementFor(vx::LaneMatmulOp op, StringRef chip) {
 }
 
 /// The block-scaled `mma.sync` of a scaled lane matmul: its kind, the number
-/// of scales in a register, the type of a scale, and the values of k that
-/// share one scale.
+/// of scales in a register, the type of a scale, the values of k that share
+/// one scale, and its LLVM intrinsic. LLVM 22 has no intrinsic for `mxf4nvf4`
+/// with 4 `ue8m0` scales, so that one form is PTX text.
 struct ScaledMma {
   StringRef kind;
   int64_t scales;
   StringRef scaleType;
   int64_t block;
+  StringRef intrinsic;
 };
 
 /// The block-scaled `mma.sync.m16n8k64` that `chip` has for `op`, if any.
@@ -4290,11 +4292,15 @@ static std::optional<ScaledMma> scaledMmaFor(vx::LaneMatmulScaledOp op,
   int64_t block = k / lhsScale.getDimSize(1);
   Type scale = lhsScale.getElementType();
   if (isa<Float8E4M3FNType>(scale) && block == 16)
-    return ScaledMma{"mxf4nvf4", 4, "ue4m3", 16};
+    return ScaledMma{"mxf4nvf4", 4, "ue4m3", 16,
+                     "llvm.nvvm.mma.block.scale.m16n8k64.row.col.mxf4nvf4."
+                     "scale.4x.f32.e2m1.e2m1.f32.ue4m3"};
   if (isa<Float8E8M0FNUType>(scale) && block == 16)
-    return ScaledMma{"mxf4nvf4", 4, "ue8m0", 16};
+    return ScaledMma{"mxf4nvf4", 4, "ue8m0", 16, ""};
   if (isa<Float8E8M0FNUType>(scale) && block == 32)
-    return ScaledMma{"mxf4", 2, "ue8m0", 32};
+    return ScaledMma{"mxf4", 2, "ue8m0", 32,
+                     "llvm.nvvm.mma.block.scale.m16n8k64.row.col.mxf4."
+                     "scale.2x.f32.e2m1.e2m1.f32.ue8m0"};
   return std::nullopt;
 }
 
@@ -4406,16 +4412,31 @@ static void expandLaneMatmulScaledWithMma(OpBuilder &b,
                                          lhs(row0, kB), lhs(row1, kB),
                                          rhs(kA),       rhs(kB)};
           llvm::append_range(operands, c);
-          operands.push_back(pack(kb, kl, rowScales));
-          operands.push_back(pack(kb, kl, colScales));
-          Value sums = kb.create<LLVM::InlineAsmOp>(
-                             kl, result, operands, text,
-                             "=f,=f,=f,=f,r,r,r,r,r,r,0,1,2,3,r,r",
-                             /*has_side_effects=*/false,
-                             /*is_align_stack=*/false,
-                             LLVM::tailcallkind::TailCallKind::None,
-                             LLVM::AsmDialectAttr(), ArrayAttr())
-                           .getResult(0);
+          Value rowScale = pack(kb, kl, rowScales);
+          Value colScale = pack(kb, kl, colScales);
+          Value sums;
+          if (!mma.intrinsic.empty()) {
+            // The byte and the thread that each scale comes from: 0 and 0.
+            Value none = kb.create<LLVM::ConstantOp>(kl, kb.getI16Type(),
+                                                     kb.getI16IntegerAttr(0));
+            llvm::append_range(
+                operands,
+                SmallVector<Value>{rowScale, none, none, colScale, none, none});
+            sums = kb.create<LLVM::CallIntrinsicOp>(
+                         kl, result, kb.getStringAttr(mma.intrinsic), operands)
+                       .getResult(0);
+          } else {
+            operands.push_back(rowScale);
+            operands.push_back(colScale);
+            sums = kb.create<LLVM::InlineAsmOp>(
+                         kl, result, operands, text,
+                         "=f,=f,=f,=f,r,r,r,r,r,r,0,1,2,3,r,r",
+                         /*has_side_effects=*/false,
+                         /*is_align_stack=*/false,
+                         LLVM::tailcallkind::TailCallKind::None,
+                         LLVM::AsmDialectAttr(), ArrayAttr())
+                       .getResult(0);
+          }
           SmallVector<Value> d;
           for (int64_t e = 0; e < 4; ++e)
             d.push_back(kb.create<LLVM::ExtractValueOp>(kl, sums, e));
@@ -5121,14 +5142,14 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
     return regs;
   };
   Type result = LLVM::LLVMStructType::getLiteral(ctx, {f32, f32, f32, f32});
-  // NVVM has no fp8 `mma.sync`, so it goes in as PTX, which needs PTX 8.4.
+  // `nvvm.mma.sync` refuses fp8, so the fp8 `mma.sync` is a call of its LLVM
+  // intrinsic, which needs PTX 8.4.
   std::string fp8Mma;
   if (fp8) {
     StringRef name = isa<Float8E4M3FNType>(elem) ? "e4m3" : "e5m2";
-    fp8Mma = ("mma.sync.aligned.m16n8k32.row.col.f32." + name + "." + name +
-              ".f32 {$0, $1, $2, $3}, {$4, $5, $6, $7}, {$8, $9}, "
-              "{$10, $11, $12, $13};")
-                 .str();
+    fp8Mma =
+        ("llvm.nvvm.mma.m16n8k32.row.col.f32." + name + "." + name + ".f32")
+            .str();
     needPtx(op, 84);
   }
   std::array<NVVM::MMATypes, 2> types = {
@@ -5233,13 +5254,8 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
               SmallVector<Value> operands(a);
               llvm::append_range(operands, bv);
               llvm::append_range(operands, c);
-              sums = kb.create<LLVM::InlineAsmOp>(
-                           kl, result, operands, fp8Mma,
-                           "=f,=f,=f,=f,r,r,r,r,r,r,0,1,2,3",
-                           /*has_side_effects=*/false,
-                           /*is_align_stack=*/false,
-                           LLVM::tailcallkind::TailCallKind::None,
-                           LLVM::AsmDialectAttr(), ArrayAttr())
+              sums = kb.create<LLVM::CallIntrinsicOp>(
+                           kl, result, kb.getStringAttr(fp8Mma), operands)
                          .getResult(0);
             } else {
               sums = kb.create<NVVM::MmaOp>(
