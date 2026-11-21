@@ -261,9 +261,13 @@ with the invariant <code>2 * total == i * (i + 1)</code>. z3 found neither a pro
 It may have reached its limit of a million steps. In Lean, you add proof steps until the proof
 passes. In Vx, you state a simpler fact, or check it at run time with <code>assert</code>.</li>
 <li><strong>Some loops are not proved yet.</strong> The Vx example above takes a tensor of 64
-numbers. With a <code>Vec</code>, the loop ends at <code>v.len()</code>, and the prover does not
-know <code>i &lt; v.len()</code> in the body, so it cannot prove the same invariant
-(<a href="https://github.com/vx-lang/Vx/issues/3706">#3706</a>).</li>
+numbers. With a <code>Vec</code>, the prover proves the same invariant, but not
+<code>return &lt;= v.len()</code> after the loop. <code>Vec</code> says that its length is never
+below zero, but the prover does not use the invariants of a struct yet
+(<a href="https://github.com/vx-lang/Vx/issues/2832">#2832</a>). Until we fix
+<a href="https://github.com/vx-lang/Vx/issues/2984">#2984</a>, the prover also loses the invariant
+when the condition of an <code>if</code> calls a function, and <code>v[i]</code> is such a
+call.</li>
 <li><strong>More code to trust.</strong> Lean's small kernel checks each step of a proof. Vx
 trusts z3, and its own translation of the program into questions for z3. In five months, each
 bug that we found was on the side of Vx, not in z3
@@ -277,7 +281,7 @@ promises, next to its code. The compiler checks it on every build, in the number
 uses. The <a href="/docs/contracts.html">contracts chapter</a> shows what the prover knows, and
 how to give it a fact that it is missing.</p>
 
-<p>We compiled the Vx programs with <code>vxc</code> from main at commit 5b7e01eb8 and z3 4.13.3 on
+<p>We compiled the Vx programs with <code>vxc</code> from main at commit ed4d20318 and z3 4.13.3 on
 Ubuntu, and checked the Lean files with Lean 4.35.0. Lean 4.35 warns that <code>mvcgen</code> is
 deprecated. Tell us about a fact that you want Vx to prove, on
 <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
