@@ -817,6 +817,16 @@ pub fn substitute_names(
             c.expr = sub(&c.expr);
             Expr::AsCast(c)
         }
+        Expr::FunctionCall(c) => {
+            let mut c = c.clone();
+            c.args = c.args.iter().map(|a| *sub(a)).collect();
+            Expr::FunctionCall(c)
+        }
+        Expr::Borrow(b) => {
+            let mut b = b.clone();
+            b.expr = sub(&b.expr);
+            Expr::Borrow(b)
+        }
         _ => e.clone(),
     }
 }
