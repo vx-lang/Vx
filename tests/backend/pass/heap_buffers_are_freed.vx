@@ -22,7 +22,6 @@
 // The checks read `--action emit-llvm`: the `free`s are added on the way to machine code. After
 // `pick`'s `if`, LLVM joins its two `free`s into one call on whichever tensor that side made.
 //
-// REQUIRES: flat-codegen
 // Only because the older code generator cannot build `make`'s tensor: a size known only at run
 // time gives it a one-element buffer, and the program fails to compile (#646).
 //
