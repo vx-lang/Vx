@@ -1214,6 +1214,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       kernelOp->setAttr("arch", arch);
     if (auto chip = op->getAttrOfType<StringAttr>("chip"))
       kernelOp->setAttr("chip", chip);
+    if (auto maxnreg = op->getAttrOfType<IntegerAttr>("vx.maxnreg"))
+      kernelOp->setAttr("vx.maxnreg", maxnreg);
     if (auto bytes = op->getAttrOfType<IntegerAttr>("shared_bytes"))
       kernelOp->setAttr("shared_bytes", bytes);
     // The function that holds the region, and the function parameter that
@@ -8353,6 +8355,9 @@ struct ConvertVxToStandardPass
           gpuFunc->setAttr("nvvm.maxntid",
                            inner.getDenseI32ArrayAttr({blockThreads, 1, 1}));
       }
+
+      if (auto maxnreg = kernel->getAttrOfType<IntegerAttr>("vx.maxnreg"))
+        gpuFunc->setAttr("nvvm.maxnreg", maxnreg);
 
       // The whole region, not its entry block. What the outliner produces is
       // raw CFG -- `cf.br` and `cf.cond_br` over a dozen blocks, every

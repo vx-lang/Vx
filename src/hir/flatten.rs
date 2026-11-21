@@ -426,10 +426,11 @@ enum Binding {
 }
 
 /// The launch shape of a `spawn` region: each size with its axis, from its `across` loops, and
-/// whether it has `across` loops.
+/// whether it has `across` loops. `max_registers` is the register budget of `on(...)`, or 0.
 struct RegionLaunch<'a> {
     shape: &'a [(u64, Val)],
     across: bool,
+    max_registers: u64,
 }
 
 /// A name a `let` in a block shadows, with the binding and type it had before the block.
@@ -4122,6 +4123,7 @@ impl<'r> Lowerer<'r> {
             RegionLaunch {
                 shape: &shape,
                 across: lanes.is_some(),
+                max_registers: s.max_registers.unwrap_or(0),
             },
             &s.stmts,
             s.ret.as_deref(),
@@ -4227,6 +4229,7 @@ impl<'r> Lowerer<'r> {
         let launch = RegionLaunch {
             shape: &[],
             across: false,
+            max_registers: 0,
         };
         let exits = kind == crate::syntax::TaskBlockKind::Tasks && has_tasks_exit(&u.stmts);
         if !exits {
@@ -4516,7 +4519,12 @@ impl<'r> Lowerer<'r> {
         } else {
             Vec::new()
         };
-        self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
+        self.emit_effect(
+            Opcode::Spawn,
+            Register(launch.max_registers as u32),
+            Register(0),
+            imm,
+        );
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
         }
@@ -7223,7 +7231,8 @@ impl<'r> Lowerer<'r> {
             return false;
         }
         for (i, ins) in self.code.iter().enumerate().skip(r.0 as usize + 1) {
-            let uses = ins.operand1 == r
+            // `Spawn`'s `operand1` carries the register budget, not a register (bytecode.rs).
+            let uses = (ins.operand1 == r && ins.opcode != Opcode::Spawn)
                 || ins.operand2 == r
                 || (ins.opcode == Opcode::MatmulInto && ins.imm == r.0 as u64)
                 || (ins.opcode == Opcode::ElementwiseInto

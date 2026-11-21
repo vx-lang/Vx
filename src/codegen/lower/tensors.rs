@@ -313,6 +313,13 @@ fn lower_spawn_region<'c>(
         spawn_builder = spawn_builder.add_results(&result_types);
     }
 
+    if let Some(maxnreg) = this.max_registers {
+        let maxnreg_attr =
+            melior::ir::attribute::IntegerAttribute::new(gen.i32_ty, maxnreg as i64).into();
+        spawn_builder = spawn_builder
+            .add_attributes(&[(Identifier::new(gen.context, "vx.maxnreg"), maxnreg_attr)]);
+    }
+
     let spawn_op = spawn_builder.build()?;
     let spawn_ref = block.append_operation(spawn_op);
     if let Some(count) = count {
