@@ -1081,6 +1081,16 @@ pub struct MatchArm {
     pub span: Span,
 }
 
+impl MatchArm {
+    /// True if the arm's body has a `let` of `name`, as in `Some(v) => { let v = v as f32; v }`.
+    /// That `let` hides the payload, so the arm's value may have another type.
+    pub fn body_declares(&self, name: &str) -> bool {
+        self.body
+            .iter()
+            .any(|s| matches!(s, Statement::LetDecl(l) if l.name.as_ref() == name))
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchExpr {
     pub expr: Box<Expr>,
