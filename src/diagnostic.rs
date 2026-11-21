@@ -146,6 +146,12 @@ pub enum DiagnosticCode {
     /// default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them
     /// gets the warning too, because it runs before the drop and should only return a time.
     W1036,
+    /// The tile of the sums of a lane matmul in a GPU kernel stays in shared memory, which makes
+    /// the kernel slower. On a GPU with tensor cores, the compiler keeps the tile in registers
+    /// when each use of the tile takes the row of its subgroup. The warning names the use or the
+    /// matmul that keeps the tile in memory. With the tile in `Memory::REG`, the compiler keeps
+    /// the tile in registers or reports an error (E6033).
+    W1037,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
