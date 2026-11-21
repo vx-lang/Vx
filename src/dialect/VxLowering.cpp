@@ -5080,7 +5080,8 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
     return word;
   };
   // Two fp8 elements as the two f16 halves of a register, the first in the low
-  // half. f16 holds each fp8 value exactly.
+  // half. f16 holds each fp8 value exactly. The LLVM intrinsic of
+  // `cvt.rn.f16x2` from fp8 needs PTX 7.8.
   auto widen = [&](OpBuilder &nb, Location l, ArrayRef<Value> values) -> Value {
     Type i8 = nb.getI8Type(), i16 = nb.getI16Type();
     auto byte = [&](Value v) -> Value {
@@ -5091,17 +5092,15 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
         l, byte(values[0]),
         nb.create<arith::ShLIOp>(l, byte(values[1]),
                                  nb.create<arith::ConstantIntOp>(l, i16, 8)));
-    StringRef name =
-        isa<Float8E4M3FNType>(values[0].getType()) ? "e4m3x2" : "e5m2x2";
-    Value word =
-        nb.create<LLVM::InlineAsmOp>(
-              l, i32, ValueRange{pair},
-              ("cvt.rn.f16x2." + name + " $0, $1;").str(), "=r,h",
-              /*has_side_effects=*/false,
-              /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
-              LLVM::AsmDialectAttr(), ArrayAttr())
-            .getResult(0);
-    return nb.create<LLVM::BitcastOp>(l, VectorType::get({2}, elem), word);
+    StringRef intrinsic = isa<Float8E4M3FNType>(values[0].getType())
+                              ? "llvm.nvvm.e4m3x2.to.f16x2.rn"
+                              : "llvm.nvvm.e5m2x2.to.f16x2.rn";
+    needPtx(op, 78);
+    return nb
+        .create<LLVM::CallIntrinsicOp>(l, VectorType::get({2}, elem),
+                                       nb.getStringAttr(intrinsic),
+                                       ValueRange{pair})
+        .getResult(0);
   };
   // Register `r` of a lane from `run`, its columns of K in a row of `lhs`.
   auto fromRun = [&](OpBuilder &nb, Location l, Value run, int64_t r) -> Value {
