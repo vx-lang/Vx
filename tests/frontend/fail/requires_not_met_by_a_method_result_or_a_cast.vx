@@ -83,11 +83,9 @@ requires k > 5u64
   return need_above_5(k as i64);
 }
 
-// CHECK-DAG: E8006] at {{.*}}requires_not_met_by_a_method_result_or_a_cast.vx:[[@LINE+5]]:3: this call to 'bump_below_5' may not meet its precondition `c.n < 5`
+// CHECK-DAG: E8006] at {{.*}}requires_not_met_by_a_method_result_or_a_cast.vx:[[@LINE+3]]:3: this call to 'bump_below_5' may not meet its precondition `c.n < 5`
 fn a_borrowed_argument_with_no_fact() -> i64 {
-  let mut c = C {
-    n : 7i64
-  };
+  let mut c = C { n : 7i64 };
   bump_below_5(&mut c);
   return c.n;
 }

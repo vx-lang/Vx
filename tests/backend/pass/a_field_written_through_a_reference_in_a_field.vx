@@ -22,13 +22,8 @@ struct Holder {
 }
 
 fn main() -> i32 {
-  let mut p = Point {
-    x : 1,
-    y : 2
-  };
-  let mut h = Holder {
-    r : &mut p
-  };
+  let mut p = Point { x : 1, y : 2 };
+  let mut h = Holder { r : &mut p };
   h.r.x = 7;
   println!("x {} y {}", p.x, p.y);
   return 0;

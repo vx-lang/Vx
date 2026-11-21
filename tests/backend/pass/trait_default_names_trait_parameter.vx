@@ -57,17 +57,13 @@ fn show(b : bool) -> i32 {
 }
 
 fn main() -> i32 {
-  let w : Wide = Wide {
-    n : 9223372036854775807i64
-  };
+  let w : Wide = Wide { n : 9223372036854775807i64 };
   print(w.some_of().unwrap());
   print!(" ");
   show(w.none_of().is_none());
   print!(" ");
 
-  let f : Flag = Flag {
-    b : true
-  };
+  let f : Flag = Flag { b : true };
   show(f.some_of().unwrap());
   print!(" ");
   show(f.none_of().is_none());

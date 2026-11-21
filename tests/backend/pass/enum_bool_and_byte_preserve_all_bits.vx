@@ -66,9 +66,7 @@ fn borrowed(value: &Value<u8>) -> u8 {
   }
 }
 fn field(value: Value<u8>) -> u8 {
-  let holder: Holder<u8> = Holder<u8> {
-    value: value, tail: 23
-  };
+  let holder: Holder<u8> = Holder<u8> { value: value, tail: 23 };
   return read(holder.value);
 }
 fn main() -> i32 {

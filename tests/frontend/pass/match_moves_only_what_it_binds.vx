@@ -35,9 +35,7 @@ fn is_some(o : &Opt<Pair>) -> bool {
 }
 
 fn used_after_a_match_that_binds_nothing() -> bool {
-  let g = Opt<Pair>::Some(Pair {
-    a: 1
-  });
+  let g = Opt<Pair>::Some(Pair { a: 1 });
   match g {
     Opt<Pair>::Some(_) => {
       print(1);

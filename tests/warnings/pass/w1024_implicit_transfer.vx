@@ -22,9 +22,7 @@ fn process(m_host: MyModel) -> MyModel {
   spawn on(Topology::NPU[0]) {
     let m_device = m_host;
   }
-  return MyModel {
-    weights: Tensor<f32>([1, 1])
-  };
+  return MyModel { weights: Tensor<f32>([1, 1]) };
 }
 
 fn main() -> i32 {

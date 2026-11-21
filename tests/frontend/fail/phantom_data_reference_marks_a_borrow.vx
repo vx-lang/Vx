@@ -26,17 +26,20 @@ struct Tagged {
 
 fn span_of(x : &i32) -> Span<i32> {
   return Span<i32> {
-    ptr : x, len : 1i32, borrows : PhantomData<&i32> { }
+    ptr : x,
+    len : 1i32,
+    borrows : PhantomData<&i32> { }
   };
 }
 
 fn tagged_of(x : &i32) -> Tagged {
   return Tagged {
-    ptr : x, kind : PhantomData<i32> { }
+    ptr : x,
+    kind : PhantomData<i32> { }
   };
 }
 
-// CHECK: Error[E4005] at {{.*}}phantom_data_reference_marks_a_borrow.vx:42:{{.*}}this returns a value that points into this function's stack frame
+// CHECK: Error[E4005] at {{.*}}phantom_data_reference_marks_a_borrow.vx:45:{{.*}}this returns a value that points into this function's stack frame
 fn span_over_a_local() -> Span<i32> {
   let x = 5i32;
   return span_of(&x);

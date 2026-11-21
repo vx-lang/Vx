@@ -18,8 +18,6 @@ fn good(m : &Map) -> &i32 {
   return f(m);
 }
 fn main() -> i32 {
-  let x = Map {
-    slot : 7, present : 1
-  };
+  let x = Map { slot : 7, present : 1 };
   return *good(&x);
 }

@@ -62,9 +62,7 @@ impl dispatch for topology_test {
 }
 
 fn main() -> i32 {
-  let t = topology_test {
-    workload : 10
-  };
+  let t = topology_test { workload : 10 };
   // `return f()` returns f()'s value (#210): main's exit code is the id of the
   // device it dispatched to (GPU = 500).
   return t.run(Topology::GPU);

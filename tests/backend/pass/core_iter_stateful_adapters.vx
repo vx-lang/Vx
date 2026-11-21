@@ -56,18 +56,14 @@ fn show<I : Iterator>(it : I) -> i32 {
 
 fn main() -> i32 {
   show(range(1i64, 10i64).scan(0i64, | acc : &mut i64, x : i64 | running_total(acc, x)));
-  let mut b = Blink {
-    at : 0i64
-  };
+  let mut b = Blink { at : 0i64 };
   print(b.next().unwrap());
   if b.next().is_none() {
     print(0);
   }
   print(b.next().unwrap());
   print!(" ");
-  let mut f = Blink {
-    at : 0i64
-  }.fuse();
+  let mut f = Blink { at : 0i64 }.fuse();
   print(f.next().unwrap());
   if f.next().is_none() && f.next().is_none() {
     print(0);

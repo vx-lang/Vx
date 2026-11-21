@@ -21,9 +21,7 @@ struct Count {
 }
 
 fn count() -> Count {
-  return Count {
-    a : 1, b : 2
-  };
+  return Count { a : 1, b : 2 };
 }
 
 fn iter() -> i32 {
@@ -35,9 +33,7 @@ fn core() -> i32 {
 }
 
 fn main() -> i32 {
-  let r = Range {
-    lo : 1, hi : 5
-  };
+  let r = Range { lo : 1, hi : 5 };
   print(r.hi - r.lo);
   print!(" ");
   let c = count();

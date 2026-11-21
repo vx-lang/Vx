@@ -21,9 +21,7 @@ struct Pt {
 
 impl Clone for Pt {
   fn clone(self : &Pt) -> Pt {
-    return Pt {
-      x : self.x + 1i64
-    };
+    return Pt { x : self.x + 1i64 };
   }
 }
 
@@ -70,12 +68,8 @@ fn main() -> i32 {
   print!(" | ");
 
   let mut ps = Vec<Pt>::new();
-  ps.push(Pt {
-    x : 1i64
-  });
-  ps.push(Pt {
-    x : 0i64
-  });
+  ps.push(Pt { x : 1i64 });
+  ps.push(Pt { x : 0i64 });
   let mut first = ps.iter().cloned();
   print(first.next().unwrap().x);
   print!(" ");

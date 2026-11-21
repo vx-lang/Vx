@@ -20,14 +20,10 @@ struct S {
 }
 
 fn main() -> i32 {
-  let mut s = S {
-    n : 0
-  };
+  let mut s = S { n : 0 };
   if true {
     let y = 7;
-    let h = H {
-      p : &y, v : 3
-    };
+    let h = H { p : &y, v : 3 };
     s.n = h.v;
   }
   // CHECK-NOT: Error

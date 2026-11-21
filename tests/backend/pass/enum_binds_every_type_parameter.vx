@@ -39,10 +39,12 @@ enum Pair<T, E> {
 impl<T, E> Pair<T, E> {
   fn left_or(self : Pair<T, E>, d : T) -> T {
     match self {
-      Pair<T, E>::Left(v) => {
+      Pair<T,
+      E>::Left(v) => {
         return v;
       }
-      Pair<T, E>::Right(e) => {
+      Pair<T,
+      E>::Right(e) => {
         return d;
       }
     }
@@ -51,10 +53,12 @@ impl<T, E> Pair<T, E> {
   /// The second parameter handed to another generic type.
   fn right_opt(self : Pair<T, E>) -> Option<E> {
     match self {
-      Pair<T, E>::Left(v) => {
+      Pair<T,
+      E>::Left(v) => {
         return Option<E>::None();
       }
-      Pair<T, E>::Right(e) => {
+      Pair<T,
+      E>::Right(e) => {
         return Option<E>::Some(e);
       }
     }
@@ -63,10 +67,12 @@ impl<T, E> Pair<T, E> {
   /// The first parameter, the same way.
   fn left_opt(self : Pair<T, E>) -> Option<T> {
     match self {
-      Pair<T, E>::Left(v) => {
+      Pair<T,
+      E>::Left(v) => {
         return Option<T>::Some(v);
       }
-      Pair<T, E>::Right(e) => {
+      Pair<T,
+      E>::Right(e) => {
         return Option<T>::None();
       }
     }
@@ -74,10 +80,12 @@ impl<T, E> Pair<T, E> {
 
   fn right_or(self : Pair<T, E>, d : E) -> E {
     match self {
-      Pair<T, E>::Left(v) => {
+      Pair<T,
+      E>::Left(v) => {
         return d;
       }
-      Pair<T, E>::Right(e) => {
+      Pair<T,
+      E>::Right(e) => {
         return e;
       }
     }

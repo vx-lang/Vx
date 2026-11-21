@@ -38,60 +38,40 @@ struct Outer {
 fn sub() -> void {
   let mut o = Outer {
     p : Pair {
-      a : Noisy {
-        id : 1
-      },
-      b : Noisy {
-        id : 2
-      }
+      a : Noisy { id : 1 },
+      b : Noisy { id : 2 }
     }
   };
   // The store drops what is left of the old `o.p` (2); the new `o.p` drops all of itself.
   let y = o.p.a;
   o.p = Pair {
-    a : Noisy {
-      id : 3
-    },
-    b : Noisy {
-      id : 4
-    }
+    a : Noisy { id : 3 },
+    b : Noisy { id : 4 }
   };
   print!("| ");
 }
 
 fn maybe(c : bool) -> void {
   let mut p = Pair {
-    a : Noisy {
-      id : 5
-    },
-    b : Noisy {
-      id : 6
-    }
+    a : Noisy { id : 5 },
+    b : Noisy { id : 6 }
   };
   // `p.a` is moved only when `c` is true, and then `y` drops 5. Otherwise the store drops it.
   if c {
     let y = p.a;
   }
-  p.a = Noisy {
-    id : 7
-  };
+  p.a = Noisy { id : 7 };
   print!("| ");
 }
 
 fn moved() -> void {
   let mut p = Pair {
-    a : Noisy {
-      id : 1
-    },
-    b : Noisy {
-      id : 2
-    }
+    a : Noisy { id : 1 },
+    b : Noisy { id : 2 }
   };
   // `p.a` was moved to `x`, so only `x` drops 1.
   let x = p.a;
-  p.a = Noisy {
-    id : 3
-  };
+  p.a = Noisy { id : 3 };
   print!("| ");
 }
 

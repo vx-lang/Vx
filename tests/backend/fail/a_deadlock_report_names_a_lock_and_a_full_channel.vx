@@ -16,16 +16,16 @@
 // RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
 
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
-// CHECK-NEXT: {{^}}  the main code waits in `send` at {{.*}}.vx:52 on channel 1, made at {{.*}}.vx:80{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `lock` at {{.*}}.vx:47 on lock 1, made at {{.*}}.vx:76, held by the task from the `spawn` at {{.*}}.vx:86{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:83{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:37 on channel 2, made at {{.*}}.vx:79{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:86{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `send` at {{.*}}.vx:69 on channel 1, made at {{.*}}.vx:80{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:89{{$}}
+// CHECK-NEXT: {{^}}  the main code waits in `send` at {{.*}}.vx:54 on channel 1, made at {{.*}}.vx:90{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `lock` at {{.*}}.vx:49 on lock 1, made at {{.*}}.vx:86, held by the task from the `spawn` at {{.*}}.vx:96{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:93{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:37 on channel 2, made at {{.*}}.vx:89{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:96{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `send` at {{.*}}.vx:77 on channel 1, made at {{.*}}.vx:90{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:99{{$}}
 // CHECK-NEXT: {{^}}  the channels of these waits:{{$}}
-// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:80: 0 waits in `recv` and 2 in `send`. 2 `Sender`s are not dropped.{{$}}
-// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:79: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:90: 0 waits in `recv` and 2 in `send`. 2 `Sender`s are not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:89: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
 
 import std::sync::channel;
 import std::sync::mutex;
@@ -35,8 +35,10 @@ fn hold_and_wait(m : &Mutex<i64>, held : &AtomicI64, rx : Receiver<i64>) -> void
   let g = m.lock();
   held.store(1, AtomicOrdering::SeqCst);
   match rx.recv() {
-    Result<i64, RecvError>::Ok(_v) => {}
-    Result<i64, RecvError>::Err(_e) => {}
+    Result<i64,
+    RecvError>::Ok(_v) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {}
   }
   drop(g);
 }
@@ -50,25 +52,33 @@ fn take_the_lock(m : &Mutex<i64>, held : &AtomicI64) -> void {
 
 fn send_two(tx : &Sender<i64>) -> void {
   match tx.send(1) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {}
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {}
   }
   match tx.send(2) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {}
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {}
   }
 }
 
 // Sends one value, notes it in `sent`, and sends one more.
 fn send_two_from_a_task(tx : Sender<i64>, sent : &AtomicI64) -> void {
   match tx.send(1) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {}
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {}
   }
   sent.store(1, AtomicOrdering::SeqCst);
   match tx.send(2) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {}
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {}
   }
 }
 

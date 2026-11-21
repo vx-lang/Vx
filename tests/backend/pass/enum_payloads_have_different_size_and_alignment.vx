@@ -24,24 +24,16 @@ enum Reversed {
 }
 
 fn big() -> Value {
-  return Value::Big(Wide {
-    a: 5, b: 6, c: 7
-  }, 101);
+  return Value::Big(Wide { a: 5, b: 6, c: 7 }, 101);
 }
 fn small() -> Value {
-  return Value::Small(Aligned {
-    value: 17
-  }, 103);
+  return Value::Small(Aligned { value: 17 }, 103);
 }
 fn reversed_big() -> Reversed {
-  return Reversed::Big(Wide {
-    a: 11, b: 12, c: 13
-  }, 103);
+  return Reversed::Big(Wide { a: 11, b: 12, c: 13 }, 103);
 }
 fn reversed_small() -> Reversed {
-  return Reversed::Small(Aligned {
-    value: 31
-  }, 109);
+  return Reversed::Small(Aligned { value: 31 }, 109);
 }
 fn read(value: Value) -> i64 {
   match value {

@@ -39,9 +39,7 @@ fn slice_returned(n : i32) -> &mut f32 {
 
 fn slice_returned_in_a_struct(n : i32) -> Slice {
   let mut v : Vec<f32> = Vec<f32>::with_capacity(n);
-  return Slice {
-    s : v.as_mut_slice()
-  };
+  return Slice { s : v.as_mut_slice() };
 }
 
 fn main() -> i32 {

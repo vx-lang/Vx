@@ -59,11 +59,7 @@ fn mix(h : u64, v : u64) -> u64 {
 }
 
 fn put(h : u64, d : LibmDyadic128, show : bool) -> u64 {
-  let neg : u64 = if d.negative {
-    1u64
-  } else {
-    0u64
-  };
+  let neg : u64 = if d.negative { 1u64 } else { 0u64 };
   if show {
     print(neg as i32);
     print!(" ");
@@ -124,7 +120,10 @@ fn main() -> i32 {
     let p = libm_dyadic_mul(a, b);
     let s = libm_dyadic_add(p, c);
     let nb = LibmDyadic128 {
-      negative: !b.negative, exponent: b.exponent, hi: b.hi, lo: b.lo
+      negative: !b.negative,
+      exponent: b.exponent,
+      hi: b.hi,
+      lo: b.lo
     };
     let q = libm_dyadic_add(a, nb);
     let m = libm_dyadic_mul(s, c);

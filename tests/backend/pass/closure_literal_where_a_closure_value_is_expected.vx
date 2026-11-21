@@ -43,21 +43,15 @@ fn add_forty() -> Closure1<i64, i64> {
 
 fn main() -> i32 {
   let ten = 10i64;
-  let h = Holder {
-    f : | x : i64 | x + ten
-  };
+  let h = Holder { f : | x : i64 | x + ten };
   println!("field {}", call(h.f, 1));
 
   let fifteen = 15i64;
-  let gen = Generic<i64> {
-    f : | x : i64 | x + fifteen
-  };
+  let gen = Generic<i64> { f : | x : i64 | x + fifteen };
   println!("generic field {}", call(gen.f, 1));
 
   let twenty = 20i64;
-  let mut g = Holder {
-    f : | x : i64 | x
-  };
+  let mut g = Holder { f : | x : i64 | x };
   g.f = | x : i64 | x + twenty;
   println!("assigned {}", call(g.f, 1));
 

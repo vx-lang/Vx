@@ -19,7 +19,8 @@ fn main() -> i32 {
     // CHECK: Error[E3003] at {{.*}}tuple_pattern_shorter_than_a_tuple_variable.vx:[[@LINE+1]]:5: Failed to deduce types for generic function 'has_2_elements': Expected &Tuple2<A, B>, got &Tuple3<i32, i32, i32>
     (4, y) => {
       print(y);
-    }, _ => {
+    },
+    _ => {
       print(0);
     }
   }

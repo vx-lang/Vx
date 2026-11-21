@@ -12,8 +12,8 @@
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 //
-// DROPS-DAG: drop in leaves: b, before the return on line 40
-// DROPS-DAG: drop in leaves: l, before the return on line 40
+// DROPS-DAG: drop in leaves: b, before the return on line 38
+// DROPS-DAG: drop in leaves: l, before the return on line 38
 //
 // CHECK: {{^}}block sees 5{{$}}
 // CHECK-NEXT: {{^}}drop loud 1{{$}}
@@ -32,9 +32,7 @@ impl Drop for Loud {
 fn leaves(leave : bool) -> i32 {
   tasks {
     let b = Tensor<f32, [4]>::fill(5.0);
-    let l = Loud {
-      id: 1
-    };
+    let l = Loud { id: 1 };
     if leave {
       println!("block sees {}", b[0]);
       return l.id;

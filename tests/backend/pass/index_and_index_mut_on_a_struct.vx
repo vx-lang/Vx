@@ -41,9 +41,7 @@ impl IndexMut for Pair {
 }
 
 fn main() -> i32 {
-  let mut p = Pair {
-    a: 1, b: 2
-  };
+  let mut p = Pair { a: 1, b: 2 };
   p[1] = 30;
   p[0] = p[0] + 5;
   print(p[0]);

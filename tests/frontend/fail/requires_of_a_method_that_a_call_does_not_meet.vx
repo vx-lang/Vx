@@ -41,11 +41,9 @@ impl<T> Holder<T> {
   }
 }
 
-// CHECK-DAG: E8006] at {{.*}}requires_of_a_method_that_a_call_does_not_meet.vx:[[@LINE+5]]:12: this call to 'take_below_5' may not meet its precondition `x < 5`
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_method_that_a_call_does_not_meet.vx:[[@LINE+3]]:12: this call to 'take_below_5' may not meet its precondition `x < 5`
 fn an_argument_that_breaks_it() -> i64 {
-  let c = C {
-    n : 0i64
-  };
+  let c = C { n : 0i64 };
   return c.take_below_5(10i64);
 }
 

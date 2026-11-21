@@ -23,9 +23,7 @@ fn probe(q : &Map) -> &i32 {
   return &q.slot;
 }
 fn main() -> i32 {
-  let x = Map {
-    slot : 7, present : 1
-  };
+  let x = Map { slot : 7, present : 1 };
   let f = probe;
   return *f(&x);
 }

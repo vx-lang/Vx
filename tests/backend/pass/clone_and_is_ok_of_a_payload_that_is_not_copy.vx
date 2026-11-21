@@ -21,9 +21,7 @@ struct Noisy {
 
 impl Clone for Noisy {
   fn clone(self : &Noisy) -> Noisy {
-    return Noisy {
-      id: self.id + 10
-    };
+    return Noisy { id: self.id + 10 };
   }
 }
 
@@ -34,9 +32,7 @@ impl Drop for Noisy {
 }
 
 fn clone_an_option() -> void {
-  let o = Option<Noisy>::Some(Noisy {
-    id: 1
-  });
+  let o = Option<Noisy>::Some(Noisy { id: 1 });
   let c = o.clone();
   match c {
     Option<Noisy>::Some(v) => {
@@ -47,27 +43,27 @@ fn clone_an_option() -> void {
 }
 
 fn clone_a_result() -> void {
-  let ok = Result<Noisy, Noisy>::Ok(Noisy {
-    id: 2
-  });
-  let err = Result<Noisy, Noisy>::Err(Noisy {
-    id: 3
-  });
+  let ok = Result<Noisy, Noisy>::Ok(Noisy { id: 2 });
+  let err = Result<Noisy, Noisy>::Err(Noisy { id: 3 });
   let a = ok.clone();
   let b = err.clone();
   match a {
-    Result<Noisy, Noisy>::Ok(v) => {
+    Result<Noisy,
+    Noisy>::Ok(v) => {
       print!("ok{} ", v.id);
     }
-    Result<Noisy, Noisy>::Err(e) => {
+    Result<Noisy,
+    Noisy>::Err(e) => {
       print!("err{} ", e.id);
     }
   }
   match b {
-    Result<Noisy, Noisy>::Ok(v) => {
+    Result<Noisy,
+    Noisy>::Ok(v) => {
       print!("ok{} ", v.id);
     }
-    Result<Noisy, Noisy>::Err(e) => {
+    Result<Noisy,
+    Noisy>::Err(e) => {
       print!("err{} ", e.id);
     }
   }
@@ -75,9 +71,7 @@ fn clone_a_result() -> void {
 
 fn ask_a_result() -> void {
   let ok = Result<i64, Noisy>::Ok(5);
-  let err = Result<i64, Noisy>::Err(Noisy {
-    id: 4
-  });
+  let err = Result<i64, Noisy>::Err(Noisy { id: 4 });
   print!("{} {} {} {} ", ok.is_ok(), ok.is_err(), err.is_ok(), err.is_err());
 }
 

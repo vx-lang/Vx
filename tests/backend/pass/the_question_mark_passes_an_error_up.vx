@@ -25,25 +25,17 @@ impl Drop for Noisy {
 
 fn make(id : i32, fails : bool) -> Result<Noisy, Noisy> {
   if fails {
-    return Result<Noisy, Noisy>::Err(Noisy {
-      id: id
-    });
+    return Result<Noisy, Noisy>::Err(Noisy { id: id });
   }
-  return Result<Noisy, Noisy>::Ok(Noisy {
-    id: id
-  });
+  return Result<Noisy, Noisy>::Ok(Noisy { id: id });
 }
 
 // The second `?` returns the error 2. `a` and `local` are dropped on the way out.
 fn two(fails : bool) -> Result<Noisy, Noisy> {
-  let local = Noisy {
-    id: 9
-  };
+  let local = Noisy { id: 9 };
   let a = make(1, false)?;
   let b = make(2, fails)?;
-  return Result<Noisy, Noisy>::Ok(Noisy {
-    id: a.id + b.id + local.id
-  });
+  return Result<Noisy, Noisy>::Ok(Noisy { id: a.id + b.id + local.id });
 }
 
 fn first<T>(r : Result<T, i32>) -> Result<T, i32> {
@@ -70,10 +62,12 @@ fn looped(step : i32) -> Result<i32, i32> {
 
 fn show(r : Result<Noisy, Noisy>) -> i32 {
   match r {
-    Result<Noisy, Noisy>::Ok(v) => {
+    Result<Noisy,
+    Noisy>::Ok(v) => {
       println!("ok {}", v.id);
     }
-    Result<Noisy, Noisy>::Err(e) => {
+    Result<Noisy,
+    Noisy>::Err(e) => {
       println!("err {}", e.id);
     }
   }
@@ -82,10 +76,12 @@ fn show(r : Result<Noisy, Noisy>) -> i32 {
 
 fn show_number(r : Result<i32, i32>) -> i32 {
   match r {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       println!("ok {}", v);
     }
-    Result<i32, i32>::Err(e) => {
+    Result<i32,
+    i32>::Err(e) => {
       println!("err {}", e);
     }
   }

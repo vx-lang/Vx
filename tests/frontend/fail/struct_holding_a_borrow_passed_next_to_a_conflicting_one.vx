@@ -46,36 +46,26 @@ fn write_through_struct_then_read(s : Writer, b : &i64) -> i64 {
 
 fn struct_holding_a_shared_borrow() -> i64 {
   let mut x = 1i64;
-  let s = View {
-    r : &x
-  };
+  let s = View { r : &x };
   return write_then_read(&mut x, s);
 }
 
 fn struct_passed_first() -> i64 {
   let mut x = 1i64;
-  let s = View {
-    r : &x
-  };
+  let s = View { r : &x };
   return read_then_write(s, &mut x);
 }
 
 fn struct_holding_a_mutable_borrow() -> i64 {
   let mut x = 1i64;
-  let s = Writer {
-    w : &mut x
-  };
+  let s = Writer { w : &mut x };
   return write_through_struct_then_read(s, &x);
 }
 
 fn method_call() -> i64 {
-  let t = Tool {
-    k : 0i64
-  };
+  let t = Tool { k : 0i64 };
   let mut x = 1i64;
-  let s = View {
-    r : &x
-  };
+  let s = View { r : &x };
   return t.write_then_read(&mut x, s);
 }
 
@@ -83,8 +73,8 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4003] at {{.*}}struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx:52:10: Cannot borrow 'x' as mutable and as immutable in one call.
-// CHECK-DAG: Error[E4003] at {{.*}}struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx:60:10: Cannot borrow 'x' as mutable and as immutable in one call.
-// CHECK-DAG: Error[E4003] at {{.*}}struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx:68:10: Cannot borrow 'x' as mutable and as immutable in one call.
-// CHECK-DAG: Error[E4003] at {{.*}}struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx:79:12: Cannot borrow 'x' as mutable and as immutable in one call.
+// CHECK-DAG: Error[E4003] at {{.*}}struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx:50:10: Cannot borrow 'x' as mutable and as immutable in one call.
+// CHECK-DAG: Error[E4003] at {{.*}}struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx:56:10: Cannot borrow 'x' as mutable and as immutable in one call.
+// CHECK-DAG: Error[E4003] at {{.*}}struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx:62:10: Cannot borrow 'x' as mutable and as immutable in one call.
+// CHECK-DAG: Error[E4003] at {{.*}}struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx:69:12: Cannot borrow 'x' as mutable and as immutable in one call.
 // CHECK: 4 error(s) emitted

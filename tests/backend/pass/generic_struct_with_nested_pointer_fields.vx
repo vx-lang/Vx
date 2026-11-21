@@ -29,14 +29,10 @@ fn read_node(pointer: *const Node) -> i32 {
 
 fn main() -> i32 {
   let value: i32 = 17;
-  let node = Node {
-    value: 31
-  };
+  let node = Node { value: 31 };
   let pair = Pair<i32> {
     first: 5,
-    items: Buffer<i32> {
-      data: (&value) as *const i32, len: 1
-    },
+    items: Buffer<i32> { data: (&value) as *const i32, len: 1 },
     pointer: (&node) as *const Node
   };
   print(pair.first); print(" "); print(pair.items.len); print(" ");

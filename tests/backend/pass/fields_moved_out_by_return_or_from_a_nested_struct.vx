@@ -45,12 +45,8 @@ struct Outer {
 
 fn make() -> Pair {
   return Pair {
-    a : Noisy {
-      id : 1
-    },
-    b : Noisy {
-      id : 2
-    }
+    a : Noisy { id : 1 },
+    b : Noisy { id : 2 }
   };
 }
 
@@ -68,19 +64,13 @@ fn returned() -> void {
 
 // `_x` is `b` (2) and is dropped first; then `f` drops `a` (1).
 fn nested_field() -> void {
-  let f = Frame {
-    pair : make()
-  };
+  let f = Frame { pair : make() };
   let _x = f.pair.b;
 }
 
 // A struct with a tensor field has something to drop too: the tensor's memory.
 fn field_that_holds_a_tensor() -> void {
-  let o = Outer {
-    h : Holder {
-      t : Tensor<f32>([4])
-    }
-  };
+  let o = Outer { h : Holder { t : Tensor<f32>([4]) } };
   let _h = o.h;
 }
 

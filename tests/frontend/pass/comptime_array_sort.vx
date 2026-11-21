@@ -24,72 +24,32 @@ fn main() -> i32 {
     let mut a : Tensor<i64, [4]> = [ 3i64, 1i64, 4i64, 2i64 ];
 
     // Compare-exchange (0,1).
-    let lo01 : i64 = if a[0] < a[1] {
-      a[0]
-    } else {
-      a[1]
-    };
-    let hi01 : i64 = if a[0] < a[1] {
-      a[1]
-    } else {
-      a[0]
-    };
+    let lo01 : i64 = if a[0] < a[1] { a[0] } else { a[1] };
+    let hi01 : i64 = if a[0] < a[1] { a[1] } else { a[0] };
     a[0] = lo01;
     a[1] = hi01;
 
     // Compare-exchange (2,3).
-    let lo23 : i64 = if a[2] < a[3] {
-      a[2]
-    } else {
-      a[3]
-    };
-    let hi23 : i64 = if a[2] < a[3] {
-      a[3]
-    } else {
-      a[2]
-    };
+    let lo23 : i64 = if a[2] < a[3] { a[2] } else { a[3] };
+    let hi23 : i64 = if a[2] < a[3] { a[3] } else { a[2] };
     a[2] = lo23;
     a[3] = hi23;
 
     // Compare-exchange (0,2).
-    let lo02 : i64 = if a[0] < a[2] {
-      a[0]
-    } else {
-      a[2]
-    };
-    let hi02 : i64 = if a[0] < a[2] {
-      a[2]
-    } else {
-      a[0]
-    };
+    let lo02 : i64 = if a[0] < a[2] { a[0] } else { a[2] };
+    let hi02 : i64 = if a[0] < a[2] { a[2] } else { a[0] };
     a[0] = lo02;
     a[2] = hi02;
 
     // Compare-exchange (1,3).
-    let lo13 : i64 = if a[1] < a[3] {
-      a[1]
-    } else {
-      a[3]
-    };
-    let hi13 : i64 = if a[1] < a[3] {
-      a[3]
-    } else {
-      a[1]
-    };
+    let lo13 : i64 = if a[1] < a[3] { a[1] } else { a[3] };
+    let hi13 : i64 = if a[1] < a[3] { a[3] } else { a[1] };
     a[1] = lo13;
     a[3] = hi13;
 
     // Compare-exchange (1,2).
-    let lo12 : i64 = if a[1] < a[2] {
-      a[1]
-    } else {
-      a[2]
-    };
-    let hi12 : i64 = if a[1] < a[2] {
-      a[2]
-    } else {
-      a[1]
-    };
+    let lo12 : i64 = if a[1] < a[2] { a[1] } else { a[2] };
+    let hi12 : i64 = if a[1] < a[2] { a[2] } else { a[1] };
     a[1] = lo12;
     a[2] = hi12;
 

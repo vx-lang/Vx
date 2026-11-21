@@ -37,9 +37,7 @@ impl Drop for Noisy {
 }
 
 fn make(id : i32) -> Noisy {
-  return Noisy {
-    id: id
-  };
+  return Noisy { id: id };
 }
 
 fn run(c : bool) -> void {
@@ -52,11 +50,7 @@ fn run(c : bool) -> void {
   } else {
     make(40)
   };
-  let _k = if c {
-    make(5)
-  } else {
-    make(50)
-  };
+  let _k = if c { make(5) } else { make(50) };
   let v = make(6);
   v;
   println!("taken");

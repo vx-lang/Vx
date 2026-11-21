@@ -32,39 +32,23 @@ impl Drop for Noisy {
 
 fn whole() -> void {
   let mut v = Vec<Noisy>::new();
-  v.push(Noisy {
-    id: 1
-  });
-  v.push(Noisy {
-    id: 2
-  });
-  v.push(Noisy {
-    id: 3
-  });
+  v.push(Noisy { id: 1 });
+  v.push(Noisy { id: 2 });
+  v.push(Noisy { id: 3 });
 }
 
 fn set() -> void {
   let mut v = Vec<Noisy>::new();
-  v.push(Noisy {
-    id: 4
-  });
-  v.set(0, Noisy {
-    id: 5
-  });
+  v.push(Noisy { id: 4 });
+  v.set(0, Noisy { id: 5 });
   print!("s ");
 }
 
 fn iterated() -> void {
   let mut v = Vec<Noisy>::new();
-  v.push(Noisy {
-    id: 6
-  });
-  v.push(Noisy {
-    id: 7
-  });
-  v.push(Noisy {
-    id: 8
-  });
+  v.push(Noisy { id: 6 });
+  v.push(Noisy { id: 7 });
+  v.push(Noisy { id: 8 });
   for n in v {
     break;
   }
@@ -73,9 +57,7 @@ fn iterated() -> void {
 
 fn read() -> void {
   let mut v = Vec<Noisy>::new();
-  v.push(Noisy {
-    id: 9
-  });
+  v.push(Noisy { id: 9 });
   print(v[0].id);
   print!(" r ");
 }

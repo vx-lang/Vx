@@ -41,18 +41,12 @@ fn take(_s : Slot) -> void {
 }
 
 fn run() -> void {
-  let _first = Slot::Thing(Noisy {
-    id : 1
-  });
+  let _first = Slot::Thing(Noisy { id : 1 });
   let _number = Slot::Number(5);
-  take(Slot::Thing(Noisy {
-    id : 2
-  }));
+  take(Slot::Thing(Noisy { id : 2 }));
   println!("after take");
   let _count = Pick<Noisy>::Count(4);
-  let _item = Pick<Noisy>::Item(Noisy {
-    id : 3
-  });
+  let _item = Pick<Noisy>::Item(Noisy { id : 3 });
 }
 
 fn main() -> i32 {

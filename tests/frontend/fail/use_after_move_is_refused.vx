@@ -20,25 +20,19 @@ fn take(s : S) -> i64 {
 }
 
 fn use_after_assignment() -> i64 {
-  let a = S {
-    v : 1i64
-  };
+  let a = S { v : 1i64 };
   let b = a;
   return a.v + b.v;
 }
 
 fn use_after_call() -> i64 {
-  let a = S {
-    v : 1i64
-  };
+  let a = S { v : 1i64 };
   take(a);
   return a.v;
 }
 
 fn use_after_a_move_in_one_branch(n : i32) -> i64 {
-  let a = S {
-    v : 1i64
-  };
+  let a = S { v : 1i64 };
   if n > 0 {
     take(a);
   }
@@ -49,7 +43,7 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4001] at {{.*}}use_after_move_is_refused.vx:27:10: Use of moved or consumed linear variable: a
-// CHECK-DAG: Error[E4001] at {{.*}}use_after_move_is_refused.vx:35:10: Use of moved or consumed linear variable: a
-// CHECK-DAG: Error[E4001] at {{.*}}use_after_move_is_refused.vx:45:10: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4001] at {{.*}}use_after_move_is_refused.vx:25:10: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4001] at {{.*}}use_after_move_is_refused.vx:31:10: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4001] at {{.*}}use_after_move_is_refused.vx:39:10: Use of moved or consumed linear variable: a
 // CHECK: 3 error(s) emitted

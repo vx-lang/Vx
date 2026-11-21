@@ -16,11 +16,7 @@ fn main(reborrow_outer : &mut &mut i32, n : i32) -> i32 {
   let _callback = touch;
   // CHECK: Error[E3033]{{.*}}writes to 'reborrow_outer'
   let value = comptime {
-    let _ignored = if n > 0i32 {
-      _callback(*reborrow_outer)
-    } else {
-      1i32
-    };
+    let _ignored = if n > 0i32 { _callback(*reborrow_outer) } else { 1i32 };
     7i32
   };
   return value;

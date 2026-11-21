@@ -52,13 +52,11 @@ fn into_a_parameter() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E4015] at {{.*}}.vx:[[@LINE+5]]:10: this `spawn` region moves 't'
+// CHECK: Error[E4015] at {{.*}}.vx:[[@LINE+4]]:26: this `spawn` region moves 't'
 fn into_a_struct_field() -> i32 {
   let t = Tensor<f32, [4]>::fill(1.0);
   spawn on(Topology::Current) {
-    let _h = Holder {
-      t: t
-    };
+    let _h = Holder { t: t };
   }
   return 0;
 }
@@ -73,11 +71,9 @@ fn into_a_variable_that_exists() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E4015] at {{.*}}.vx:[[@LINE+6]]:14: this `spawn` region moves 'n'
+// CHECK: Error[E4015] at {{.*}}.vx:[[@LINE+4]]:14: this `spawn` region moves 'n'
 fn a_value_with_a_drop() -> i32 {
-  let n = Noisy {
-    id: 1
-  };
+  let n = Noisy { id: 1 };
   spawn on(Topology::Current) {
     let _m = n;
   }

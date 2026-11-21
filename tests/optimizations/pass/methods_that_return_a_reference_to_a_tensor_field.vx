@@ -66,20 +66,23 @@ fn main() -> i32 {
   a[0] = 1.5;
   let mut b = Tensor<f32>([4]);
   b[0] = 2.5;
-  let p = Pair {
-    a: a, b: b
-  };
+  let p = Pair { a: a, b: b };
   println!("pick {} {}", first_value(p.pick(true)), first_value(p.pick(false)));
 
   let mut q = FixedPair {
-    a: Tensor<f32, [4]>::fill(1.0), b: Tensor<f32, [4]>::fill(2.0)
+    a: Tensor<f32,
+    [4]>::fill(1.0),
+    b: Tensor<f32,
+    [4]>::fill(2.0)
   };
   let t = q.pick_mut(false);
   t[3] = 7.5;
   println!("pick_mut {} {}", q.a[3], q.b[3]);
 
   let w = Weights {
-    embed: transfer(Tensor<f32>([4]), Memory::HBM), head: transfer(Tensor<f32>([4]), Memory::HBM), tied: false
+    embed: transfer(Tensor<f32>([4]), Memory::HBM),
+    head: transfer(Tensor<f32>([4]), Memory::HBM),
+    tied: false
   };
   println!("output {}", w.output().len());
   return 0;

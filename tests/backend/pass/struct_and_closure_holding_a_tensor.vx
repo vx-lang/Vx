@@ -28,24 +28,18 @@ fn main() -> i32 {
   let mut t = Tensor<f32, [4]>::new();
   t[0] = 1.0;
   t[3] = 2.0;
-  let mut h = H {
-    t : t
-  };
+  let mut h = H { t : t };
   print(ends(h));
   print!(" ");
   let mut t2 = Tensor<f32, [4]>::new();
   t2[3] = 6.0;
-  let mut h2 = H {
-    t : Tensor<f32, [4]>::new()
-  };
+  let mut h2 = H { t : Tensor<f32, [4]>::new() };
   h2.t = t2;
   print(h2.t[3]);
   print!(" ");
   let mut m = Tensor<f32>([2, 3]);
   m[1][2] = 7.0;
-  let d = D {
-    m : m
-  };
+  let d = D { m : m };
   print(d.m[1][2]);
   print!(" ");
   let mut a = Tensor<f32, [4]>::new();

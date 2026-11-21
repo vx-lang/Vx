@@ -42,18 +42,12 @@ impl Ord for Version {
 }
 
 fn main() -> i32 {
-  let old = Version {
-    major: 1, minor: 9
-  };
-  let new = Version {
-    major: 2, minor: 0
-  };
+  let old = Version { major: 1, minor: 9 };
+  let new = Version { major: 2, minor: 0 };
   println!("{} {} {}", old < new, old >= new, old == old);
   let high = old.max(new);
   let low = old.min(new);
-  let held = Version {
-    major: 3, minor: 1
-  }.clamp(old, new);
+  let held = Version { major: 3, minor: 1 }.clamp(old, new);
   println!("max {}.{}", high.major, high.minor);
   println!("min {}.{}", low.major, low.minor);
   println!("clamp {}.{}", held.major, held.minor);

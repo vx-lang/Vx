@@ -58,9 +58,7 @@ fn main() -> i32 {
   let h = unsafe { Handle { p : 0 as *mut i32 } };
   let c = SharedCell<i32>::new(1);
   let cells = Vec<SharedCell<i32>>::new();
-  let n = Node {
-    v : 1, next : Option<Box<Node>>::None
-  };
+  let n = Node { v : 1, next : Option<Box<Node>>::None };
   let mut total = is_send(&n) + is_sync(&n) + is_send(&h) + is_send(&c);
   // CHECK-DAG: Error at {{.*}}types_that_are_not_send_or_sync.vx:[[@LINE+1]]:3: Type 'Raw' does not implement trait 'Send' required by parameter 'T': field 'p' of 'Raw' has type '*mut i32', and '*mut i32' is a raw pointer, which is not `Send`
   total = total + is_send(&r);

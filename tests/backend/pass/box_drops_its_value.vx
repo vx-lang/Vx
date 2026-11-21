@@ -29,9 +29,7 @@ impl Drop for Noisy {
 }
 
 fn in_a_function() -> void {
-  let c = Box<Noisy>::new(Noisy {
-    id: 3
-  });
+  let c = Box<Noisy>::new(Noisy { id: 3 });
 }
 
 fn given_away(b : Box<Noisy>) -> void {
@@ -39,17 +37,11 @@ fn given_away(b : Box<Noisy>) -> void {
 }
 
 fn main() -> i32 {
-  let a = Box<Noisy>::new(Noisy {
-    id: 1
-  });
-  let b = Box<Box<Noisy>>::new(Box<Noisy>::new(Noisy {
-    id: 2
-  }));
+  let a = Box<Noisy>::new(Noisy { id: 1 });
+  let b = Box<Box<Noisy>>::new(Box<Noisy>::new(Noisy { id: 2 }));
   in_a_function();
   print!("| ");
-  given_away(Box<Noisy>::new(Noisy {
-    id: 4
-  }));
+  given_away(Box<Noisy>::new(Noisy { id: 4 }));
   print!("| end ");
   return 0;
 }

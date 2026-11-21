@@ -27,9 +27,7 @@ fn main() -> i32 {
     d[0]
   };
   let field : i64 = comptime {
-    let mut p = P {
-      x : 1i64
-    };
+    let mut p = P { x : 1i64 };
     if true {
       let q : &mut P = &mut p;
       q.x = 5i64;

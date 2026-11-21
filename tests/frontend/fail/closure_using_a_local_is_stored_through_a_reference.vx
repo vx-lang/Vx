@@ -22,9 +22,7 @@ fn fill(out : &mut Holder, k : i32) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut h : Holder = Holder {
-    f : | x : i32 | x
-  };
+  let mut h : Holder = Holder { f : | x : i32 | x };
   fill(&mut h, 10);
   return 0;
 }

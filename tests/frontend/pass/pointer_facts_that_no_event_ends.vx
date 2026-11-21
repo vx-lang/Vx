@@ -72,9 +72,7 @@ requires valid(p, n)
 fn after_a_method_call_on_a_struct_of_numbers(p : *const i64, n : i64) -> i64
 requires valid(p, n)
 {
-  let mut c = Counter {
-    n: 0i64
-  };
+  let mut c = Counter { n: 0i64 };
   c.bump();
   return need_valid(p, n) + c.n;
 }

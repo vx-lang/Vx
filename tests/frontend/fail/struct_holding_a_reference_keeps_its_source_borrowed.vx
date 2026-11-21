@@ -20,16 +20,12 @@ struct W {
 
 impl W {
   fn view(self : &W) -> View {
-    return View {
-      r : &self.x
-    };
+    return View { r : &self.x };
   }
 }
 
 fn view_of(p : &i32) -> View {
-  return View {
-    r : p
-  };
+  return View { r : p };
 }
 
 fn from_a_function() -> i32 {
@@ -41,9 +37,7 @@ fn from_a_function() -> i32 {
 }
 
 fn from_a_method() -> i32 {
-  let mut w = W {
-    x : 1i32
-  };
+  let mut w = W { x : 1i32 };
   let v = w.view();
   // CHECK: Error[E4009]{{.*}}`w.x` is assigned while it is borrowed
   w.x = 5i32;

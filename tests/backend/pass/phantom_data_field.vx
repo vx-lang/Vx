@@ -23,7 +23,9 @@ struct Span<T> {
 
 fn span_of(x : &i32) -> Span<i32> {
   return Span<i32> {
-    ptr : x, len : 1i32, borrows : PhantomData<&i32> { }
+    ptr : x,
+    len : 1i32,
+    borrows : PhantomData<&i32> { }
   };
 }
 
@@ -33,7 +35,8 @@ fn first(s : &Span<i32>) -> i32 {
 
 fn main() -> i32 {
   let c = Counted {
-    n : 3i32, kind : PhantomData<f64> { }
+    n : 3i32,
+    kind : PhantomData<f64> { }
   };
   let x = 42i32;
   let s = span_of(&x);

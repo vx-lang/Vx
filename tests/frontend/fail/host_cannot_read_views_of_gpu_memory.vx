@@ -59,17 +59,13 @@ fn a_reshape() -> f32 {
 
 fn a_field() -> f32 {
   let host = Tensor<f32, [4]>::fill(1.0);
-  let h = H {
-    t : transfer(host, Memory::GPU_HBM)
-  };
+  let h = H { t : transfer(host, Memory::GPU_HBM) };
   return h.t[3];
 }
 
 fn a_field_through_a_variable() -> f32 {
   let host = Tensor<f32, [4]>::fill(1.0);
-  let h = H {
-    t : transfer(host, Memory::GPU_HBM)
-  };
+  let h = H { t : transfer(host, Memory::GPU_HBM) };
   let t = h.t;
   return t[3];
 }

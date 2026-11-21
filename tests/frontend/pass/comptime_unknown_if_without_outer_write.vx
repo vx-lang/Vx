@@ -10,11 +10,7 @@
 
 fn main(n : i32) -> i32 {
   let value = comptime {
-    let _unused = if n > 0i32 {
-      1i32
-    } else {
-      2i32
-    };
+    let _unused = if n > 0i32 { 1i32 } else { 2i32 };
     7i32
   };
   return value;

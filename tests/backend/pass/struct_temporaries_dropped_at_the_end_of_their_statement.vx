@@ -26,9 +26,7 @@ impl Drop for Noisy {
 }
 
 fn noisy(id : i32) -> Noisy {
-  return Noisy {
-    id: id, t: Tensor<i32>([4])
-  };
+  return Noisy { id: id, t: Tensor<i32>([4]) };
 }
 
 fn look(n : &Noisy) -> i32 {

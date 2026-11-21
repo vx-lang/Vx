@@ -25,10 +25,7 @@ fn main() -> i32 {
   let mut a = Vec<i64>::with_capacity(1);
   a.push(1i64);
   let zero : i64 = 0i64;
-  let mut w = W {
-    n : 0,
-    r : &zero
-  };
+  let mut w = W { n : 0, r : &zero };
   w.n = count(&a, if true {
     w.r = a.get_ref(0);
     0i64

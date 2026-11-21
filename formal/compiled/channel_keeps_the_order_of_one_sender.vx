@@ -11,8 +11,10 @@ fn main() -> i32 {
       let first : i64 = 1;
       for i in first..3 {
         match t.send(i) {
-          Result<void, SendError<i64>>::Ok() => {}
-          Result<void, SendError<i64>>::Err(_) => {
+          Result<void,
+          SendError<i64>>::Ok() => {}
+          Result<void,
+          SendError<i64>>::Err(_) => {
             panic("the receiver is gone");
           }
         }
@@ -21,12 +23,14 @@ fn main() -> i32 {
     let first : i64 = 1;
     for want in first..3 {
       match rx.recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           if v != want {
             panic("a value came out of order");
           }
         }
-        Result<i64, RecvError>::Err(_) => {
+        Result<i64,
+        RecvError>::Err(_) => {
           panic("the channel closed early");
         }
       }

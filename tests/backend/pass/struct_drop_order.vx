@@ -69,16 +69,12 @@ fn take_tagged(t : Tagged<i32>) -> void {
 }
 
 fn generic_given_away() -> void {
-  let t = Tagged<i32> {
-    x: 0, id: 10
-  };
+  let t = Tagged<i32> { x: 0, id: 10 };
   take_tagged(t);
 }
 
 fn noisy(id : i32) -> Noisy {
-  return Noisy {
-    id: id, t: Tensor<f32>([4])
-  };
+  return Noisy { id: id, t: Tensor<f32>([4]) };
 }
 
 fn take(x : Noisy) -> void {
@@ -86,9 +82,7 @@ fn take(x : Noisy) -> void {
 }
 
 fn nested() -> void {
-  let p = Pair {
-    a: noisy(1), b: noisy(2)
-  };
+  let p = Pair { a: noisy(1), b: noisy(2) };
   print!("");
 }
 
@@ -110,9 +104,7 @@ fn moved_on_one_path(give : bool) -> void {
 }
 
 fn boxed() -> void {
-  let b = Boxed {
-    n: 107, inner: noisy(7)
-  };
+  let b = Boxed { n: 107, inner: noisy(7) };
 }
 
 fn main() -> i32 {

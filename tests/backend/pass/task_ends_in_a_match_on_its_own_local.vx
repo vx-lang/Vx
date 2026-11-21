@@ -23,17 +23,17 @@ fn check(h : Holder) -> Result<i64, i32> {
 }
 
 fn main() -> i32 {
-  let b = Holder {
-    v : 5
-  };
+  let b = Holder { v : 5 };
   tasks {
     spawn {
       let t = b;
       match check(t) {
-        Result<i64, i32>::Ok(v) => {
+        Result<i64,
+        i32>::Ok(v) => {
           println!("ok {}", v);
         }
-        Result<i64, i32>::Err(_e) => {}
+        Result<i64,
+        i32>::Err(_e) => {}
       }
     };
   };

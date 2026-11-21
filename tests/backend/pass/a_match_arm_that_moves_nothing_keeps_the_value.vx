@@ -33,17 +33,11 @@ impl Drop for Noisy {
 }
 
 fn pair(id : i32) -> Parts {
-  return Parts::Pair(Noisy {
-    id: id
-  }, Noisy {
-    id: id + 1
-  });
+  return Parts::Pair(Noisy { id: id }, Noisy { id: id + 1 });
 }
 
 fn one(id : i32) -> Parts {
-  return Parts::One(Noisy {
-    id: id
-  });
+  return Parts::One(Noisy { id: id });
 }
 
 fn take(_t : Parts) -> void {
@@ -132,9 +126,7 @@ enum Two {
 
 fn every_arm_moves() -> void {
   let mut x = 7;
-  let t = Two::Has(Reader {
-    r: &x
-  });
+  let t = Two::Has(Reader { r: &x });
   match t {
     Two::Has(a) => {
       print!("h ");

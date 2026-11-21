@@ -28,14 +28,8 @@ fn immutable_holder(n : i32) -> i32 {
   let mut immutable_outer : i32 = 0i32;
   // CHECK: Error[E3033]{{.*}}writes to 'immutable_outer'
   let value = comptime {
-    let holder = Holder {
-      value : &mut immutable_outer
-    };
-    let _ignored = if n > 0i32 {
-      through_immutable_borrow(&holder)
-    } else {
-      1i32
-    };
+    let holder = Holder { value : &mut immutable_outer };
+    let _ignored = if n > 0i32 { through_immutable_borrow(&holder) } else { 1i32 };
     7i32
   };
   return value;
@@ -45,14 +39,8 @@ fn mutable_holder(n : i32) -> i32 {
   let mut mutable_outer : i32 = 0i32;
   // CHECK: Error[E3033]{{.*}}writes to 'mutable_outer'
   let value = comptime {
-    let mut holder = Holder {
-      value : &mut mutable_outer
-    };
-    let _ignored = if n > 0i32 {
-      through_mutable_borrow(&mut holder)
-    } else {
-      1i32
-    };
+    let mut holder = Holder { value : &mut mutable_outer };
+    let _ignored = if n > 0i32 { through_mutable_borrow(&mut holder) } else { 1i32 };
     7i32
   };
   return value;

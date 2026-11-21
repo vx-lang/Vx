@@ -29,13 +29,14 @@ fn first(b : &Buf<4>) -> f32 {
 }
 
 fn main() -> i32 {
-  let g = Buf<4> {
-    data: Tensor<f32, [4]>::fill(9.0)
-  };
+  let g = Buf<4> { data: Tensor<f32, [4]>::fill(9.0) };
   print(first(&g));
   print!(" ");
   let p = Pair {
-    a: Tensor<f32, [4]>::fill(2.0), b: Tensor<f32, [8]>::fill(3.0)
+    a: Tensor<f32,
+    [4]>::fill(2.0),
+    b: Tensor<f32,
+    [8]>::fill(3.0)
   };
   print(p.a[3] + p.b[7]);
   return 0;

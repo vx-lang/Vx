@@ -34,9 +34,7 @@ fn never_reads_it(never_read : i32) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut c = Counter {
-    n : 0.0
-  };
+  let mut c = Counter { n : 0.0 };
   print(c.range(0.0, 2.0));
 
   let mut v = Vec<i32>::new();

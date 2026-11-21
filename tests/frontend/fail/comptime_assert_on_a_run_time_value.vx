@@ -42,11 +42,7 @@ fn main(argc : i32) -> i32 {
   };
   // `f` is `is_zero` only when `argc > 1`.
   let c = comptime {
-    let f = if argc > 1i32 {
-      is_zero
-    } else {
-      is_zero_too
-    };
+    let f = if argc > 1i32 { is_zero } else { is_zero_too };
     let _ok : bool = f(5i64);
     3i32
   };

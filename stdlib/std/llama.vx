@@ -193,9 +193,7 @@ impl Tokenizer {
   /// Read a tokenizer file. `vocab_size` must match the checkpoint's.
   fn load(filepath: *const i8, vocab_size: i32) -> Tokenizer {
     let ptr = unsafe { vx_build_tokenizer(filepath, vocab_size) };
-    return Tokenizer {
-      ptr: ptr
-    };
+    return Tokenizer { ptr: ptr };
   }
 
   /// The text for one token, as an owned `String`.

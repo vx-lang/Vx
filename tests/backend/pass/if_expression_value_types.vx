@@ -12,22 +12,14 @@
 //
 // EXPECT: 3 2 6 3 3 9 3 2
 fn other_extent(t : &Tensor<f32, [?, ?]>, axis : i32) -> i32 {
-  return if axis == 0 {
-    t.extent(1)
-  } else {
-    t.extent(0)
-  };
+  return if axis == 0 { t.extent(1) } else { t.extent(0) };
 }
 
 fn add_up(axis : i32) -> i32 {
   let mut total = 0;
   for i in 0..2 {
     for j in 0..3 {
-      let k = if axis == 0 {
-        j
-      } else {
-        i
-      };
+      let k = if axis == 0 { j } else { i };
       total = total + k;
     }
   }
@@ -37,11 +29,7 @@ fn add_up(axis : i32) -> i32 {
 fn loop_or_literal(use_loop : bool) -> i32 {
   let mut total = 0;
   for j in 0..3 {
-    let k = if use_loop {
-      j
-    } else {
-      3
-    };
+    let k = if use_loop { j } else { 3 };
     total = total + k;
   }
   return total;

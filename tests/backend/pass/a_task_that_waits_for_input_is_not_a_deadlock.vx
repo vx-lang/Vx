@@ -52,10 +52,12 @@ fn main() -> i32 {
       count_the_input(tx);
     };
     match rx.recv() {
-      Result<i64, RecvError>::Ok(n) => {
+      Result<i64,
+      RecvError>::Ok(n) => {
         println!("the task read {} bytes", n);
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("the recv failed");
       }
     }

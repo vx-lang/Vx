@@ -27,9 +27,7 @@ enum Two {
 
 fn main() -> i32 {
   let mut x = 1;
-  let t = Two::Has(Reader {
-    r: &x
-  });
+  let t = Two::Has(Reader { r: &x });
   match t {
     Two::Has(a) => {
       print!("h ");

@@ -18,9 +18,7 @@ fn touch(value : &mut i32) -> i32 {
 
 fn main() -> i32 {
   let mut outside = 1i32;
-  let wrapper = Wrapper {
-    reference : &mut outside
-  };
+  let wrapper = Wrapper { reference : &mut outside };
   // CHECK: Error[E3033]{{.*}}writes to 'wrapper'
   let value = comptime {
     let _ignored = touch(wrapper.reference);

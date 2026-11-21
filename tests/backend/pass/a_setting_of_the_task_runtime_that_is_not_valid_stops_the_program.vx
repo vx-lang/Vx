@@ -59,10 +59,12 @@ fn name(e : RecvError) -> *const i8 {
 // A task that waits a little, so that the program uses the task runtime.
 fn wait_a_little(rx : Receiver<i64>) -> void {
   match rx.recv_for(Duration::from_millis(10)) {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("the task ran: got {}", v);
     }
-    Result<i64, RecvError>::Err(e) => {
+    Result<i64,
+    RecvError>::Err(e) => {
       println!("the task ran: {}", name(e));
     }
   }

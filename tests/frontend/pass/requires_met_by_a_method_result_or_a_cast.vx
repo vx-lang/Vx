@@ -115,9 +115,7 @@ requires c.small < 5
 }
 
 fn a_borrowed_argument_with_a_fact() -> i64 {
-  let mut c = C {
-    n : 0i64, small : 0
-  };
+  let mut c = C { n : 0i64, small : 0 };
   if c.n < 5i64 {
     bump_below_5(&mut c);
   }

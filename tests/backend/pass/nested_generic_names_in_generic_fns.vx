@@ -25,25 +25,21 @@ struct Holder<P> {
 }
 
 fn wrap<T>(x : T, y : T) -> Holder<Pair<T, T>> {
-  return Holder<Pair<T, T>> {
-    p : Pair<T, T> {
-      a : x, b : y
-    }
-  };
+  return Holder<Pair<T, T>> { p : Pair<T, T> { a : x, b : y } };
 }
 
 fn some_pair<T>(x : T, y : T) -> Option<Pair<T, T>> {
-  return Option<Pair<T, T>>::Some(Pair<T, T> {
-    a : x, b : y
-  });
+  return Option<Pair<T, T>>::Some(Pair<T, T> { a : x, b : y });
 }
 
 fn second<T>(o : Option<Pair<T, T>>, d : T) -> T {
   match o {
-    Option<Pair<T, T>>::Some(p) => {
+    Option<Pair<T,
+    T>>::Some(p) => {
       return p.b;
     }
-    Option<Pair<T, T>>::None => {
+    Option<Pair<T,
+    T>>::None => {
       return d;
     }
   }

@@ -81,27 +81,19 @@ fn copy_out(v : &Num) -> i32 {
 fn next(h : &Holder) -> Noisy {
   match h {
     Holder::Full(n) => {
-      let n = Noisy {
-        id : n.id + 1
-      };
+      let n = Noisy { id : n.id + 1 };
       return n;
     }
     Holder::Empty => {
-      return Noisy {
-        id : 0
-      };
+      return Noisy { id : 0 };
     }
   }
 }
 
 fn main() -> i32 {
-  let h = Holder::Full(Noisy {
-    id : 7
-  });
+  let h = Holder::Full(Noisy { id : 7 });
   print(read_twice(&h));
-  let m = Maybe<Noisy>::Some(Noisy {
-    id : 5
-  });
+  let m = Maybe<Noisy>::Some(Noisy { id : 5 });
   print!(", ");
   print(read_generic(&m));
   let v = Num::Val(3);

@@ -44,12 +44,18 @@ fn main() -> i32 {
     let mut open = true;
     while open {
       match rx.recv() {
-        Result<Tensor<f32, [1024], Memory::W>, RecvError>::Ok(t) => {
+        Result<Tensor<f32,
+        [1024],
+        Memory::W>,
+        RecvError>::Ok(t) => {
           let here = transfer(t, Memory::CPU_DRAM);
           count = count + 1;
           sum = sum + here[0];
         }
-        Result<Tensor<f32, [1024], Memory::W>, RecvError>::Err(_e) => {
+        Result<Tensor<f32,
+        [1024],
+        Memory::W>,
+        RecvError>::Err(_e) => {
           open = false;
         }
       }

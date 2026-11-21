@@ -83,9 +83,7 @@ impl File {
       }
     }
     let ptr = unsafe { vx_file_open(path, mode_code) };
-    File {
-      ptr: ptr
-    }
+    File { ptr: ptr }
   }
 
   /// Read up to `len` bytes into `buffer` and answer how many arrived.

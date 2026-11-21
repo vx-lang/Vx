@@ -70,11 +70,7 @@ fn main() -> i32 {
     },
   }
   print!(" ");
-  let outer = Outer {
-    i : Inner {
-      a : 3,
-    },
-  };
+  let outer = Outer { i : Inner { a : 3 } };
   let first = outer;
   let second = outer;
   print(first.i.a + second.i.a);

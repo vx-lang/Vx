@@ -27,16 +27,12 @@ fn read(x: Opt<&Node>) -> i32 {
 }
 
 fn first() -> i32 {
-  let node = Node {
-    value: 11
-  };
+  let node = Node { value: 11 };
   return read(Opt<&Node>::Some(&node));
 }
 
 fn second() -> i32 {
-  let node = Node {
-    value: 23
-  };
+  let node = Node { value: 23 };
   return read(Opt<&Node>::Some(&node));
 }
 

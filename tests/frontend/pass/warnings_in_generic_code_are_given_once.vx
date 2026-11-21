@@ -37,21 +37,15 @@ impl<T> Wrap<T> {
 
   fn make(v : T) -> Wrap<T> {
     let in_static : i32 = 5;
-    return Wrap<T> {
-      v : v
-    };
+    return Wrap<T> { v : v };
   }
 }
 
 fn main() -> i32 {
   let a = same(1);
   let b = same(2.0);
-  let w = Wrap<i32> {
-    v : 3
-  };
-  let x = Wrap<f64> {
-    v : 4.0
-  };
+  let w = Wrap<i32> { v : 3 };
+  let x = Wrap<f64> { v : 4.0 };
   let m = Wrap<i32>::make(5);
   let n = Wrap<f64>::make(6.0);
   print(n.v);

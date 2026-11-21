@@ -30,10 +30,12 @@ struct Quick {
 impl Drop for Quick {
   fn drop(self : &mut Quick) -> void {
     match self.rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         println!("the drop got {}", v);
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("the drop gave up, cancelled {}", cancelled());
       }
     }
@@ -46,9 +48,7 @@ impl Drop for Quick {
 
 fn main() -> i32 {
   let (tx, rx) = channel<i64>(1);
-  let q = Quick {
-    rx : rx
-  };
+  let q = Quick { rx : rx };
   let start = Instant::now();
   drop(q);
   println!("the drop took less than 5 seconds: {}", start.elapsed() < Duration::from_secs(5));

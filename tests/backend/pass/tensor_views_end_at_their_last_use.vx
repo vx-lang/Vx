@@ -19,11 +19,7 @@ fn take(t : Tensor<f32, [2, 4]>) -> f32 {
 fn chosen_by_if(c : bool) -> f32 {
   let mut q = Tensor<f32, [2, 4]>::new();
   q[1][1] = 1.0;
-  let r = if c {
-    q[0]
-  } else {
-    q[1]
-  };
+  let r = if c { q[0] } else { q[1] };
   let x = r[1];
   return x + take(q);
 }

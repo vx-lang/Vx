@@ -67,10 +67,7 @@ fn main() -> i32 {
   let c = top(3);
   let d = wraps_signed(127i8);
   let e = wraps_unsigned(255u8);
-  let f = sum(Pair {
-    x : 1,
-    y : 2
-  });
+  let f = sum(Pair { x : 1, y : 2 });
   println!("{} {} {} {} {} {} {}", a, b, c, d, e, f, small());
   return 0;
 }

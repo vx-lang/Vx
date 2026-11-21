@@ -33,7 +33,10 @@ fn sum(t : &Tensor<f32, [8]>) -> f32 {
 
 fn main() -> i32 {
   let mut p = Pair {
-    a: Tensor<f32, [4]>::new(), b: Tensor<f32, [8]>::new()
+    a: Tensor<f32,
+    [4]>::new(),
+    b: Tensor<f32,
+    [8]>::new()
   };
   fill(&mut p.b, 4.0);
   fill(&mut p.a, 2.0);

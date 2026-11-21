@@ -62,9 +62,7 @@ fn main() -> i32 {
   }));
 
   // The literal borrows `log` for reading, and the code after the call writes it.
-  let mut log = Log {
-    count: 15
-  };
+  let mut log = Log { count: 15 };
   let sum = twice(|| -> i64 {
     log.count
   });

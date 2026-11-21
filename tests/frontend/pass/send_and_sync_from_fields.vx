@@ -41,9 +41,7 @@ fn is_sync<T : Sync>(_x : &T) -> i32 {
 }
 
 fn main() -> i32 {
-  let p = Point {
-    x : 1.0, y : 2.0
-  };
+  let p = Point { x : 1.0, y : 2.0 };
   let v = Vec<Point>::new();
   let b = Box<i64>::new(2);
   let s = String::new();

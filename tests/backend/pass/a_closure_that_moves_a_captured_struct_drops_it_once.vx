@@ -42,18 +42,14 @@ fn call(f : || -> void) -> void {
 }
 
 fn as_argument() -> void {
-  let a = Noisy {
-    n : 1
-  };
+  let a = Noisy { n : 1 };
   call(|| -> void {
     take(a);
   });
 }
 
 fn in_a_let() -> void {
-  let b = Noisy {
-    n : 2
-  };
+  let b = Noisy { n : 2 };
   let f = || -> void {
     take(b);
   };
@@ -61,9 +57,7 @@ fn in_a_let() -> void {
 }
 
 fn in_a_task() -> void {
-  let c = Noisy {
-    n : 3
-  };
+  let c = Noisy { n : 3 };
   call(|| -> void {
     tasks {
       spawn {

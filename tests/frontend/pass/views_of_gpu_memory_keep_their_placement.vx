@@ -32,9 +32,7 @@ fn main() -> i32 {
   let host3 = Tensor<f32, [2, 4, 4]>::fill(1.0);
   let on_gpu3 = transfer(host3, Memory::GPU_HBM);
   let host_row = Tensor<f32, [4]>::fill(1.0);
-  let h = H {
-    t : transfer(host_row, Memory::GPU_HBM)
-  };
+  let h = H { t : transfer(host_row, Memory::GPU_HBM) };
 
   spawn on(Topology::Dev) {
     let row : Tensor<f32, [4], Memory::GPU_HBM> = on_gpu[1];

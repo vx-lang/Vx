@@ -52,9 +52,7 @@ fn main() -> i32 {
   let a = through_reference(&mut y);
   print(y * 10i32 + a);
   print!(" ");
-  let b = through_field(Holder {
-    r: &mut y
-  });
+  let b = through_field(Holder { r: &mut y });
   print(y * 10i32 + b);
   print!(" ");
   let pointer : *mut i32 = &mut y;

@@ -15,9 +15,11 @@ fn tag(a : Option<i32>, n : i32) -> i32 {
   let r : i32 = match t {
     (Option<i32>::None(), 0) => {
       1
-    }, (Option<i32>::Some(v), k) => {
+    },
+    (Option<i32>::Some(v), k) => {
       v + k
-    }, _ => {
+    },
+    _ => {
       2
     }
   };

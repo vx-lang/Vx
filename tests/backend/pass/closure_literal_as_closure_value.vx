@@ -38,7 +38,8 @@ fn show(b : bool) -> i32 {
 fn main() -> i32 {
   let k : i32 = 10;
   let r : Rules = Rules {
-    add : | x : i32 | x + k, big : | x : i32 | x > k
+    add : | x : i32 | x + k,
+    big : | x : i32 | x > k
   };
 
   let add = r.add.func;

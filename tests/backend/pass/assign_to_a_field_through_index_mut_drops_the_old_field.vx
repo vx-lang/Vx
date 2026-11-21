@@ -44,15 +44,9 @@ impl IndexMut for Rows {
 
 fn main() -> i32 {
   let mut r = Rows {
-    only : Named {
-      name : Noisy {
-        id : 1
-      }, n : 0
-    }
+    only : Named { name : Noisy { id : 1 }, n : 0 }
   };
-  r[0].name = Noisy {
-    id : 2
-  };
+  r[0].name = Noisy { id : 2 };
   print!("replaced, ");
   return 0;
 }

@@ -55,14 +55,12 @@ fn stop_flag() -> void {
 }
 
 // A write through `&mut`, a `&mut self` method call and a write in another task are writes too.
-// CHECK: Error[E4003] at {{.*}}writes_to_a_variable_that_a_task_copied.vx:[[@LINE+12]]:12: Cannot borrow 'n' as mutable because it is also borrowed as immutable. The task from the `spawn` at line [[@LINE+9]] copied it at line [[@LINE+10]], and it is not joined yet. So it must not change until the task ends.
-// CHECK: Error[E4003] at {{.*}}writes_to_a_variable_that_a_task_copied.vx:[[@LINE+12]]:7: Cannot borrow 'p' as mutable because it is also borrowed as immutable. The task from the `spawn` at line [[@LINE+8]] copied it at line [[@LINE+9]], and it is not joined yet. So it must not change until the task ends.
-// CHECK: Error[E4009] at {{.*}}writes_to_a_variable_that_a_task_copied.vx:[[@LINE+13]]:7: `n` is assigned while it is borrowed, and the borrow is used after the assignment. The task from the `spawn` at line [[@LINE+7]] copied it at line [[@LINE+8]], and it is not joined yet. So it must not change until the task ends.
+// CHECK: Error[E4003] at {{.*}}writes_to_a_variable_that_a_task_copied.vx:[[@LINE+10]]:12: Cannot borrow 'n' as mutable because it is also borrowed as immutable. The task from the `spawn` at line [[@LINE+7]] copied it at line [[@LINE+8]], and it is not joined yet. So it must not change until the task ends.
+// CHECK: Error[E4003] at {{.*}}writes_to_a_variable_that_a_task_copied.vx:[[@LINE+10]]:7: Cannot borrow 'p' as mutable because it is also borrowed as immutable. The task from the `spawn` at line [[@LINE+6]] copied it at line [[@LINE+7]], and it is not joined yet. So it must not change until the task ends.
+// CHECK: Error[E4009] at {{.*}}writes_to_a_variable_that_a_task_copied.vx:[[@LINE+11]]:7: `n` is assigned while it is borrowed, and the borrow is used after the assignment. The task from the `spawn` at line [[@LINE+5]] copied it at line [[@LINE+6]], and it is not joined yet. So it must not change until the task ends.
 fn other_writes() -> i32 {
   let mut n = 0;
-  let mut p = Point {
-    x: 0
-  };
+  let mut p = Point { x: 0 };
   tasks {
     spawn {
       n + p.x;

@@ -28,16 +28,12 @@ impl Iterator for Walk {
       return Option<Point>::None();
     }
     self.left = self.left - 1i64;
-    return Option<Point>::Some(Point {
-      x : 1i64, y : 2i64
-    });
+    return Option<Point>::Some(Point { x : 1i64, y : 2i64 });
   }
 }
 
 fn main() -> i32 {
-  let mut w = Walk {
-    left : 3i64
-  };
+  let mut w = Walk { left : 3i64 };
   // CHECK: Undefined static method 'Point::sum'
   let total = w.sum();
   return (total.x + total.y) as i32;

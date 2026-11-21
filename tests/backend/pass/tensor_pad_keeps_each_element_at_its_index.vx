@@ -90,9 +90,7 @@ fn main() -> i32 {
 ");
 
   // CHECK-NEXT: 7
-  let s = Text {
-    len : 4
-  };
+  let s = Text { len : 4 };
   print(s.pad(3));
   print("
 ");

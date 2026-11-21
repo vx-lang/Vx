@@ -14,9 +14,7 @@ fn apply_lambda_bad_args<F>(f : F) -> i32 {
 fn main() -> i32 {
   // Test 1: A closure whose body moves a struct takes the struct.
   let i = 10;
-  let cap = Captures {
-    i : 10
-  };
+  let cap = Captures { i : 10 };
   let cp_lambda = | x : i32 | {
     let c = cap;
     x + c.i + i

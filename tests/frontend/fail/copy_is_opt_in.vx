@@ -23,14 +23,10 @@ struct Plain {
 }
 
 fn main() -> i32 {
-  let m = Marked {
-    a : 1,
-  };
+  let m = Marked { a : 1 };
   let _also_m = m;
   let _m_again = m;
-  let p = Plain {
-    a : 2,
-  };
+  let p = Plain { a : 2 };
   let _moved = p;
   return p.a;
 }

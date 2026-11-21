@@ -48,9 +48,7 @@ fn main() -> i32 {
   let mut b = transfer(Tensor<f32, [4]>::fill(0.0), Memory::W);
   b = a;
   let c = pass_on(b);
-  let counter = Counter {
-    n : 1
-  };
+  let counter = Counter { n : 1 };
   let seven = transfer(Tensor<f32, [4]>::fill(7.0), Memory::W);
   let d = counter.give_back(seven);
   let first = transfer(c, Memory::CPU_DRAM);

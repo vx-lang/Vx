@@ -61,9 +61,7 @@ struct ManuallyDrop<T> {
 
 /// Ends the value's life without dropping it: what it owns is never released.
 fn forget<T>(x : T) -> void {
-  let _kept = ManuallyDrop<T> {
-    value : x
-  };
+  let _kept = ManuallyDrop<T> { value : x };
 }
 
 /// Whether dropping a `T` does any work: runs a `drop`, or frees memory. The checker answers

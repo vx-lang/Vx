@@ -25,11 +25,9 @@ fn look(n : &Noisy) -> void {
   println!("{}", n.id);
 }
 
-// CHECK: Error[E4014] at {{.*}}.vx:[[@LINE+11]]:{{[0-9]+}}: this `return` leaves two `tasks` blocks, and it drops 'n' first
+// CHECK: Error[E4014] at {{.*}}.vx:[[@LINE+9]]:{{[0-9]+}}: this `return` leaves two `tasks` blocks, and it drops 'n' first
 fn leave_two(stop : bool) -> i32 {
-  let n = Noisy {
-    id: 1
-  };
+  let n = Noisy { id: 1 };
   tasks {
     spawn {
       look(&n);

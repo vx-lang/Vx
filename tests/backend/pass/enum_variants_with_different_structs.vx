@@ -58,12 +58,8 @@ fn read_value(value : Owned) -> i32 {
 }
 
 fn main() -> i32 {
-  let a = First {
-    value: 17
-  };
-  let b = Second {
-    prefix: 99, value: 25
-  };
+  let a = First { value: 17 };
+  let b = Second { prefix: 99, value: 25 };
   print(read_pointer(Borrowed::First(&a)));
   print!(" ");
   print(read_pointer(Borrowed::Second(&b)));
@@ -72,15 +68,9 @@ fn main() -> i32 {
   print!(" ");
   print(read_value(Owned::Second(b)));
   print!(" ");
-  let item = First {
-    value: 7
-  };
-  let target = First {
-    value: 29
-  };
-  let holder : Holder<First> = Holder<First> {
-    value: item, pointer: &target
-  };
+  let item = First { value: 7 };
+  let target = First { value: 29 };
+  let holder : Holder<First> = Holder<First> { value: item, pointer: &target };
   print(unsafe { (*holder.pointer).value });
   return 0;
 }

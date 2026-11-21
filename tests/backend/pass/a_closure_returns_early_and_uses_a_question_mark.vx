@@ -41,10 +41,12 @@ fn plus_one_below_six(n : i32) -> Result<i32, i32> {
 
 fn show(name : i32, r : Result<i32, i32>) -> void {
   match r {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       println!("doubled {}: ok {}", name, v);
     }
-    Result<i32, i32>::Err(e) => {
+    Result<i32,
+    i32>::Err(e) => {
       println!("doubled {}: err {}", name, e);
     }
   }

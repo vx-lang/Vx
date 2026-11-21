@@ -27,18 +27,14 @@ impl Copy for Money {}
 impl Add for Money {
   type Output = Money;
   fn add(self : Money, other : Money) -> Money {
-    return Money {
-      cents : self.cents + other.cents
-    };
+    return Money { cents : self.cents + other.cents };
   }
 }
 
 impl Sub for Money {
   type Output = Money;
   fn sub(self : Money, other : Money) -> Money {
-    return Money {
-      cents : self.cents - other.cents
-    };
+    return Money { cents : self.cents - other.cents };
   }
 }
 
@@ -51,29 +47,15 @@ struct Wallet {
 }
 
 fn main() -> i32 {
-  let mut a = Money {
-    cents : 1
-  };
-  a += Money {
-    cents : 2
-  };
+  let mut a = Money { cents : 1 };
+  a += Money { cents : 2 };
   println!("after += {}", a.cents);
-  a -= Money {
-    cents : 1
-  };
+  a -= Money { cents : 1 };
   println!("after -= {}", a.cents);
-  let mut w = Wallet {
-    cash : Money {
-      cents : 10
-    }
-  };
-  w.cash += Money {
-    cents : 5
-  };
+  let mut w = Wallet { cash : Money { cents : 10 } };
+  w.cash += Money { cents : 5 };
   println!("a field: {}", w.cash.cents);
-  pay(&mut w.cash, Money {
-    cents : 5
-  });
+  pay(&mut w.cash, Money { cents : 5 });
   println!("through a reference: {}", w.cash.cents);
   return 0;
 }

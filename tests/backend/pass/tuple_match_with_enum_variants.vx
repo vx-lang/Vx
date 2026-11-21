@@ -16,11 +16,14 @@ fn both(a : Option<i32>, b : Option<i32>) -> i32 {
   match (a, b) {
     (Option<i32>::Some(x), Option<i32>::Some(y)) => {
       return x + y;
-    }, (Option<i32>::Some(x), _) => {
+    },
+    (Option<i32>::Some(x), _) => {
       return x;
-    }, (_, Option<i32>::Some(0)) => {
+    },
+    (_, Option<i32>::Some(0)) => {
       return 100;
-    }, _ => {
+    },
+    _ => {
       return -1;
     }
   }

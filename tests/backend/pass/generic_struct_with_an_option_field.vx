@@ -35,9 +35,7 @@ impl<T> Peek<T> {
 }
 
 fn make(v : f64) -> Peek<f64> {
-  return Peek<f64> {
-    count: 1, peeked: Option<f64>::Some(v)
-  };
+  return Peek<f64> { count: 1, peeked: Option<f64>::Some(v) };
 }
 
 fn peeked_or(p : Peek<f64>, d : f64) -> f64 {
@@ -45,9 +43,7 @@ fn peeked_or(p : Peek<f64>, d : f64) -> f64 {
 }
 
 fn main() -> i32 {
-  let a = Peek<i32> {
-    count: 3, peeked: Option<i32>::Some(9)
-  };
+  let a = Peek<i32> { count: 3, peeked: Option<i32>::Some(9) };
   print!("read: ");
   print(a.count);
   print!(" ");
@@ -60,9 +56,7 @@ fn main() -> i32 {
   print!("passed and returned: ");
   print(peeked_or(make(2.5), 0.0));
   print!(" ");
-  let b = Peek<i8> {
-    count: 4, peeked: Option<i8>::Some(-4i8)
-  };
+  let b = Peek<i8> { count: 4, peeked: Option<i8>::Some(-4i8) };
   print(b.peeked.unwrap());
   print!(" ");
   print(b.count);
@@ -71,9 +65,7 @@ fn main() -> i32 {
   // CHECK-NEXT: {{^}}passed and returned: 2.5 -4 4{{$}}
   // VALUES-NEXT: {{^}}passed and returned: 2.5 -4 4{{$}}
 
-  let mut c = Peek<i32> {
-    count: 5, peeked: Option<i32>::None()
-  };
+  let mut c = Peek<i32> { count: 5, peeked: Option<i32>::None() };
   print!("assigned: ");
   print(c.has_value());
   c.peeked = Option<i32>::Some(7);
@@ -85,7 +77,8 @@ fn main() -> i32 {
   // VALUES-NEXT: {{^}}assigned: 0 7{{$}}
 
   let mut d = Peek<i64> {
-    count: 6, peeked: Option<i64>::Some(8i64)
+    count: 6,
+    peeked: Option<i64>::Some(8i64)
   };
   print!("methods: ");
   print(d.has_value());

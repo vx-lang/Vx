@@ -57,9 +57,7 @@ fn main() -> i32 {
   println!("doubled twice {}", n);
 
   // A method call and a field write in the body change `log`.
-  let mut log = Log {
-    count: 0, last: 0
-  };
+  let mut log = Log { count: 0, last: 0 };
   let note = |v : i64| -> void {
     log.add(v);
     log.last = log.last + 1;

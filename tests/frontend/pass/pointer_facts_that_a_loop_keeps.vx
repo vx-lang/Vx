@@ -63,9 +63,7 @@ requires valid(p, n)
 fn after_a_loop_that_calls_methods_on_a_struct_of_numbers(p : *const i64, n : i64) -> i64
 requires valid(p, n)
 {
-  let mut c = Counter {
-    n: 0i64
-  };
+  let mut c = Counter { n: 0i64 };
   let mut t = 0i64;
   for _i in 0i64..3i64 {
     c.bump();

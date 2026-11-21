@@ -40,9 +40,7 @@ fn main() -> i32 {
   println!("total {}", total);
 
   // This closure only reads `c`, so it borrows `c`.
-  let c = Counter {
-    count : 3
-  };
+  let c = Counter { count : 3 };
   let peek = || -> i64 {
     c.count
   };

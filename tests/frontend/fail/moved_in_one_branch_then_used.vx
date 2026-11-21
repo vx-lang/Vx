@@ -24,9 +24,7 @@ fn take(s : S) -> i32 {
 }
 
 fn moved_in_else(c : bool) -> i32 {
-  let s = S {
-    v : 1
-  };
+  let s = S { v : 1 };
   if c {
     print!(1);
   } else {
@@ -37,9 +35,7 @@ fn moved_in_else(c : bool) -> i32 {
 }
 
 fn moved_in_second_match_arm(e : E) -> i32 {
-  let s = S {
-    v : 1
-  };
+  let s = S { v : 1 };
   match e {
     E::A => {
       print!(1);

@@ -22,9 +22,7 @@ fn main() -> i32 {
   let mut outside : i32 = 0i32;
   // CHECK: Error[E3033]{{.*}}writes to 'outside'
   let _value = comptime {
-    Cell {
-      value : touch(&mut outside)
-    }
+    Cell { value : touch(&mut outside) }
   };
   return 0i32;
 }

@@ -21,9 +21,7 @@ struct Holder<T> {
 }
 
 fn wrap<T>(f : Closure1<T, T>) -> Holder<T> {
-  return Holder<T> {
-    f : f
-  };
+  return Holder<T> { f : f };
 }
 
 fn put(out : &mut Holder<i32>, f : Closure1<i32, i32>) -> i32 {
@@ -32,17 +30,13 @@ fn put(out : &mut Holder<i32>, f : Closure1<i32, i32>) -> i32 {
 }
 
 fn used_here(k : i32) -> i32 {
-  let h : Holder<i32> = Holder<i32> {
-    f : | x : i32 | x + k
-  };
+  let h : Holder<i32> = Holder<i32> { f : | x : i32 | x + k };
   let p = h.f.func;
   return p(h.f.env, 4);
 }
 
 fn into_a_local(k : i32) -> i32 {
-  let mut h : Holder<i32> = Holder<i32> {
-    f : | x : i32 | x
-  };
+  let mut h : Holder<i32> = Holder<i32> { f : | x : i32 | x };
   put(&mut h, | x : i32 | x * k);
   let p = h.f.func;
   return p(h.f.env, 4);

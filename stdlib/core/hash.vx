@@ -123,9 +123,7 @@ struct FxHasher {
 
 impl FxHasher {
   fn new() -> FxHasher {
-    return FxHasher {
-      acc : 0u64
-    };
+    return FxHasher { acc : 0u64 };
   }
 }
 
@@ -170,9 +168,7 @@ fn sip_round(s : SipState) -> SipState {
   v1 = v1.rotate_left(17u64);
   v1 = v1 ^ v2;
   v2 = v2.rotate_left(32u64);
-  return SipState {
-    v0 : v0, v1 : v1, v2 : v2, v3 : v3
-  };
+  return SipState { v0 : v0, v1 : v1, v2 : v2, v3 : v3 };
 }
 
 /// SipHash-1-3: one round per block, three to finish.

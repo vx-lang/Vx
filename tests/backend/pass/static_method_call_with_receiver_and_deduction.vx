@@ -17,9 +17,7 @@ struct Holder<T> {
 
 impl<T> Holder<T> {
   fn make(x : T) -> Holder<T> {
-    return Holder<T> {
-      v : x,
-    };
+    return Holder<T> { v : x };
   }
 
   fn get(self : &Holder<T>) -> T {
@@ -28,9 +26,7 @@ impl<T> Holder<T> {
 }
 
 fn main() -> i32 {
-  let h = Holder<i32> {
-    v : 4,
-  };
+  let h = Holder<i32> { v : 4 };
   print(Holder<i32>::get(&h));
   print!(" ");
   let m = Holder::make(7i32);

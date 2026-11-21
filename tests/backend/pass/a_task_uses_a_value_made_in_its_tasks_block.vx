@@ -132,9 +132,7 @@ fn leaves_early(stop : bool) -> i32 {
 
 fn a_struct_with_a_drop() -> void {
   tasks {
-    let l = Loud {
-      id: 9
-    };
+    let l = Loud { id: 9 };
     spawn {
       println!("task sees loud {}", l.id);
     };
@@ -143,10 +141,12 @@ fn a_struct_with_a_drop() -> void {
 
 fn send_five(tx : &Sender<i64>) -> bool {
   match tx.send(5) {
-    Result<void, SendError<i64>>::Ok(_) => {
+    Result<void,
+    SendError<i64>>::Ok(_) => {
       return true;
     }
-    Result<void, SendError<i64>>::Err(_e) => {
+    Result<void,
+    SendError<i64>>::Err(_e) => {
       return false;
     }
   }
@@ -161,10 +161,12 @@ fn the_value_of_the_block_sends_to_the_task() -> void {
     spawn {
       let r = rx;
       match r.recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           println!("task got {} and sees {}", v, b[0]);
         }
-        Result<i64, RecvError>::Err(_e) => {
+        Result<i64,
+        RecvError>::Err(_e) => {
           println!("task got nothing");
         }
       }
@@ -183,10 +185,12 @@ fn the_wait_cancels_no_task() -> void {
     spawn {
       let r = rx;
       match r.recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           println!("first task got {} and sees {}", v, b[0]);
         }
-        Result<i64, RecvError>::Err(_e) => {
+        Result<i64,
+        RecvError>::Err(_e) => {
           println!("first task got nothing");
         }
       }

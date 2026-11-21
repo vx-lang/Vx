@@ -12,10 +12,7 @@ struct Config {
 }
 
 fn main() -> i32 {
-  let conf = Config {
-    dim : 288,
-    norm_eps : 0.00001,
-  };
+  let conf = Config { dim : 288, norm_eps : 0.00001 };
 
   let a = conf.dim;
   let b = conf.norm_eps;

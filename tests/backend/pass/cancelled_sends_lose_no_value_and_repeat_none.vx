@@ -32,10 +32,12 @@ fn send_from(tx : Sender<i64>, next : Arc<AtomicI64>) -> void {
   loop {
     let v = next.get().load(AtomicOrdering::SeqCst);
     match tx.send(v) {
-      Result<void, SendError<i64>>::Ok() => {
+      Result<void,
+      SendError<i64>>::Ok() => {
         next.get().store(v + 1, AtomicOrdering::SeqCst);
       }
-      Result<void, SendError<i64>>::Err(_e) => {
+      Result<void,
+      SendError<i64>>::Err(_e) => {
         return;
       }
     }
@@ -49,7 +51,8 @@ fn round(rx : &Receiver<i64>, tx : Sender<i64>, next : Arc<AtomicI64>, want : i6
       send_from(tx, next);
     };
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         if v != want {
           println!("got {} instead of {}", v, want);
         }
@@ -59,7 +62,8 @@ fn round(rx : &Receiver<i64>, tx : Sender<i64>, next : Arc<AtomicI64>, want : i6
         }
         return v + 1;
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("the recv failed instead of giving {}", want);
         return want;
       }

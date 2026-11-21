@@ -202,7 +202,11 @@ fn ryu_trimmed(negative : bool, digits : u64, exponent : i64) -> FloatDecimal {
     e = e + 1i64;
   }
   return FloatDecimal {
-    negative: negative, is_nan: false, is_infinite: false, digits: d, exponent: e
+    negative: negative,
+    is_nan: false,
+    is_infinite: false,
+    digits: d,
+    exponent: e
   };
 }
 
@@ -359,12 +363,20 @@ fn float_decimal_from_f64_bits(bits : u64) -> FloatDecimal {
   let ieee_exponent = (bits >> 52u64) & 2047u64;
   if ieee_exponent == 2047u64 {
     return FloatDecimal {
-      negative: negative, is_nan: ieee_mantissa != 0u64, is_infinite: ieee_mantissa == 0u64, digits: 0u64, exponent: 0i64
+      negative: negative,
+      is_nan: ieee_mantissa != 0u64,
+      is_infinite: ieee_mantissa == 0u64,
+      digits: 0u64,
+      exponent: 0i64
     };
   }
   if ieee_exponent == 0u64 && ieee_mantissa == 0u64 {
     return FloatDecimal {
-      negative: negative, is_nan: false, is_infinite: false, digits: 0u64, exponent: 0i64
+      negative: negative,
+      is_nan: false,
+      is_infinite: false,
+      digits: 0u64,
+      exponent: 0i64
     };
   }
   // `d2d_small_int`: an integer below 2^53 is its own shortest form.
@@ -526,12 +538,20 @@ fn float_decimal_from_f32_bits(bits : u32) -> FloatDecimal {
   let ieee_exponent = (b >> 23u64) & 255u64;
   if ieee_exponent == 255u64 {
     return FloatDecimal {
-      negative: negative, is_nan: ieee_mantissa != 0u64, is_infinite: ieee_mantissa == 0u64, digits: 0u64, exponent: 0i64
+      negative: negative,
+      is_nan: ieee_mantissa != 0u64,
+      is_infinite: ieee_mantissa == 0u64,
+      digits: 0u64,
+      exponent: 0i64
     };
   }
   if ieee_exponent == 0u64 && ieee_mantissa == 0u64 {
     return FloatDecimal {
-      negative: negative, is_nan: false, is_infinite: false, digits: 0u64, exponent: 0i64
+      negative: negative,
+      is_nan: false,
+      is_infinite: false,
+      digits: 0u64,
+      exponent: 0i64
     };
   }
   return ryu_f32_digits(negative, ieee_mantissa, ieee_exponent);

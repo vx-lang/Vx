@@ -26,24 +26,18 @@ struct Celsius {
 
 impl From<Fahrenheit> for Celsius {
   fn from(f : Fahrenheit) -> Celsius {
-    return Celsius {
-      degrees: (f.degrees - 32.0) * 5.0 / 9.0
-    };
+    return Celsius { degrees: (f.degrees - 32.0) * 5.0 / 9.0 };
   }
 }
 
 impl From<i32> for Celsius {
   fn from(d : i32) -> Celsius {
-    return Celsius {
-      degrees: f64::from(d)
-    };
+    return Celsius { degrees: f64::from(d) };
   }
 }
 
 fn main() -> i32 {
-  let hot = Celsius::from(Fahrenheit {
-    degrees: 212.0
-  });
+  let hot = Celsius::from(Fahrenheit { degrees: 212.0 });
   let room = Celsius::from(20);
   let small : u8 = 200;
   let wide = i32::from(small) + 100;

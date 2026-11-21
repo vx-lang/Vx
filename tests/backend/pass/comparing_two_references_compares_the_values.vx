@@ -41,15 +41,9 @@ fn below(a : &i64, b : &i64) -> bool {
 }
 
 fn main() -> i32 {
-  let a = Cell {
-    row : 1
-  };
-  let b = Cell {
-    row : 1
-  };
-  let c = Cell {
-    row : 2
-  };
+  let a = Cell { row : 1 };
+  let b = Cell { row : 1 };
+  let c = Cell { row : 2 };
   println!("equal cells: {}, other cells: {}", &a == &b, &a == &c);
   println!("not equal: {} {}", not_equal(&a, &b), not_equal(&a, &c));
   println!("in a generic function: {} {}", same(&a, &b), same(&a, &c));

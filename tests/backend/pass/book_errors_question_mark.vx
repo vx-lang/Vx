@@ -62,10 +62,12 @@ fn report_error(e : AddError) -> void {
 
 fn report(r : Result<i64, AddError>) -> void {
   match r {
-    Result<i64, AddError>::Ok(sum) => {
+    Result<i64,
+    AddError>::Ok(sum) => {
       println!("sum {}", sum);
     }
-    Result<i64, AddError>::Err(e) => {
+    Result<i64,
+    AddError>::Err(e) => {
       report_error(e);
     }
   }

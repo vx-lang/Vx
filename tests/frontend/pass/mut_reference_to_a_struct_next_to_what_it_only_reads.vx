@@ -26,9 +26,7 @@ fn main() -> i32 {
   let mut v : Vec<i32> = Vec<i32>::new();
   v.push(1);
   let mut n = 0;
-  let mut p = Pair {
-    count : &mut n, val : &v
-  };
+  let mut p = Pair { count : &mut n, val : &v };
   // CHECK-NOT: Error
   // CHECK: {{^}}2{{$}}
   print(add_lengths(&mut p, &v));

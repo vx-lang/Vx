@@ -48,10 +48,12 @@ fn half(n : i64) -> Result<i64, i64> {
 
 fn wait_for_nothing(rx : Receiver<i64>) -> i64 {
   match rx.recv_for(Duration::from_secs(10)) {
-    Result<i64, RecvError>::Ok(_v) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {
       println!("the waiter got a value");
     }
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Err(_e) => {
       println!("the waiter gave up, cancelled {}", cancelled());
     }
   }
@@ -121,14 +123,10 @@ impl Drop for Note {
 }
 
 fn noted() -> void {
-  let outer = Note {
-    text : 1
-  };
+  let outer = Note { text : 1 };
   let r = tasks {
     let h = spawn {
-      let inner = Note {
-        text : 2
-      };
+      let inner = Note { text : 2 };
       if inner.text == 2 {
         return 7;
       }
@@ -155,26 +153,32 @@ fn say_odd(n : i64) -> void {
 
 fn main() -> i32 {
   match quarter(12) {
-    Result<i64, i64>::Ok(v) => {
+    Result<i64,
+    i64>::Ok(v) => {
       println!("quarter of 12 is {}", v);
     }
-    Result<i64, i64>::Err(e) => {
+    Result<i64,
+    i64>::Err(e) => {
       println!("quarter of 12 failed at {}", e);
     }
   }
   match quarter(6) {
-    Result<i64, i64>::Ok(v) => {
+    Result<i64,
+    i64>::Ok(v) => {
       println!("quarter of 6 is {}", v);
     }
-    Result<i64, i64>::Err(e) => {
+    Result<i64,
+    i64>::Err(e) => {
       println!("quarter of 6 failed at {}", e);
     }
   }
   match fail_while_another_task_waits() {
-    Result<i64, i64>::Ok(v) => {
+    Result<i64,
+    i64>::Ok(v) => {
       println!("the block gave {}", v);
     }
-    Result<i64, i64>::Err(e) => {
+    Result<i64,
+    i64>::Err(e) => {
       println!("the block failed at {}", e);
     }
   }

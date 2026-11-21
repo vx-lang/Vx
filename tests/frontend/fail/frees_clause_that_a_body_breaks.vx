@@ -52,13 +52,11 @@ ensures !frees(p)
   h.p = p;
 }
 
-// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+5]]:8: `puts_it_in_a_value` says `!frees(p)`, but its body can free memory through `p`: it puts `p` in a value of `Holder`
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:23: `puts_it_in_a_value` says `!frees(p)`, but its body can free memory through `p`: it puts `p` in a value of `Holder`
 fn puts_it_in_a_value(p : *const i64) -> i64
 ensures !frees(p)
 {
-  let h = Holder {
-    p: p
-  };
+  let h = Holder { p: p };
   return 0i64;
 }
 
@@ -130,21 +128,17 @@ struct Keeps {
   k : i64,
 }
 
-// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:10: `Keeps::read_one` says `!frees(p)`, but its body can free memory through `p`: it puts `p` in a value of `Holder`
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+3]]:25: `Keeps::read_one` says `!frees(p)`, but its body can free memory through `p`: it puts `p` in a value of `Holder`
 impl Reads for Keeps {
   fn read_one(self : &Keeps, p : *const i64) -> i64 {
-    let h = Holder {
-      p: p
-    };
+    let h = Holder { p: p };
     return self.k;
   }
 }
 
 fn main() -> i32 {
   let x = 5i64;
-  let k = Keeps {
-    k: 1i64
-  };
+  let k = Keeps { k: 1i64 };
   return k.read_one(&x) as i32;
 }
 

@@ -33,27 +33,21 @@ impl Copy for Point {}
 impl Add for Point {
   type Output = Point;
   fn add(self : Point, rhs : Point) -> Point {
-    return Point {
-      x: self.x + rhs.x, y: self.y + rhs.y
-    };
+    return Point { x: self.x + rhs.x, y: self.y + rhs.y };
   }
 }
 
 impl Sub for Point {
   type Output = Point;
   fn sub(self : Point, rhs : Point) -> Point {
-    return Point {
-      x: self.x - rhs.x, y: self.y - rhs.y
-    };
+    return Point { x: self.x - rhs.x, y: self.y - rhs.y };
   }
 }
 
 impl Neg for Point {
   type Output = Point;
   fn neg(self : Point) -> Point {
-    return Point {
-      x: 0 - self.x, y: 0 - self.y
-    };
+    return Point { x: 0 - self.x, y: 0 - self.y };
   }
 }
 
@@ -81,20 +75,14 @@ fn show(p : Point) -> void {
 }
 
 fn main() -> i32 {
-  let a = Point {
-    x: 1, y: 2
-  };
-  let b = Point {
-    x: 10, y: 20
-  };
+  let a = Point { x: 1, y: 2 };
+  let b = Point { x: 10, y: 20 };
   show(a + b);
   show(b - a);
   show(-a);
   show(a + b + a);
   print!("| ");
-  print((a + b == Point {
-    x: 11, y: 22
-  }) as i32);
+  print((a + b == Point { x: 11, y: 22 }) as i32);
   print!(" ");
   print((a != b) as i32);
   print!(" ");

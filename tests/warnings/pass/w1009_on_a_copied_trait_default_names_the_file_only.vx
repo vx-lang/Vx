@@ -15,8 +15,6 @@ struct Thing {
 impl Greet for Thing {}
 
 fn main() -> i32 {
-  let t = Thing {
-    n : 1
-  };
+  let t = Thing { n : 1 };
   return t.greet(2);
 }

@@ -23,9 +23,7 @@ fn read_and_drop(a : Arc<Counted>, sum : &AtomicI64) -> void {
 
 fn main() -> i32 {
   let sum = AtomicI64::new(0);
-  let a = Arc<Counted>::new(Counted {
-    id : 7
-  });
+  let a = Arc<Counted>::new(Counted { id : 7 });
   let b = a.clone();
   tasks {
     spawn {

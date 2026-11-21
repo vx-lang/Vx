@@ -13,27 +13,15 @@
 fn main() -> i32 {
   let x = 3;
   // The inner `else` runs and gives `true`.
-  if (if x == 0 {
-    false
-  } else {
-    true
-  }) {
+  if (if x == 0 { false } else { true }) {
     print!("a ");
   }
   // The inner `then` runs and gives `false`.
-  if (if x == 3 {
-    false
-  } else {
-    true
-  }) {
+  if (if x == 3 { false } else { true }) {
     print!("b ");
   }
   // The inner `else` runs and gives `x == 3`.
-  if (if x == 0 {
-    x == 0
-  } else {
-    x == 3
-  }) {
+  if (if x == 0 { x == 0 } else { x == 3 }) {
     print!("c ");
   }
   println!("end");

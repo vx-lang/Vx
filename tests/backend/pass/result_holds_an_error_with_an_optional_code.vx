@@ -52,10 +52,12 @@ fn other_write() -> Result<u64, Error> {
 
 fn value_of(r: Result<u64, Error>) -> u64 {
   match r {
-    Result<u64, Error>::Ok(v) => {
+    Result<u64,
+    Error>::Ok(v) => {
       return v;
     }
-    Result<u64, Error>::Err(e) => {
+    Result<u64,
+    Error>::Err(e) => {
       return 0u64;
     }
   }
@@ -63,14 +65,16 @@ fn value_of(r: Result<u64, Error>) -> u64 {
 
 fn error_of(r: Result<u64, Error>) -> Error {
   match r {
-    Result<u64, Error>::Ok(v) => {
+    Result<u64,
+    Error>::Ok(v) => {
       return Error {
         kind: Kind::Other,
         operation: Operation::Read,
         native_code: Option<i32>::Some(0)
       };
     }
-    Result<u64, Error>::Err(e) => {
+    Result<u64,
+    Error>::Err(e) => {
       return e;
     }
   }

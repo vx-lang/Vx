@@ -43,7 +43,8 @@ fn unwrap_or(r: Result, default: i32) -> i32 {
     Result::Ok(val) => {
       out = val;
     }
-    , Result::Err(code) => {
+    ,
+    Result::Err(code) => {
       out = 0 - code;
     }
   }

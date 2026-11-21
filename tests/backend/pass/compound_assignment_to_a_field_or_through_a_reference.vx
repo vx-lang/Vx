@@ -27,9 +27,7 @@ fn bump(x : &mut i32) -> void {
 }
 
 fn main() -> i32 {
-  let mut p = Point {
-    x: 10, y: 20
-  };
+  let mut p = Point { x: 10, y: 20 };
   p.x += 12;
   print!("field: ");
   print!(p.x);

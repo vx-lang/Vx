@@ -19,9 +19,7 @@ struct View {
 }
 
 fn from_parameter(p : &i32) -> View {
-  return View {
-    r : p
-  };
+  return View { r : p };
 }
 
 fn set_in_a_block(k : i32) -> i32 {

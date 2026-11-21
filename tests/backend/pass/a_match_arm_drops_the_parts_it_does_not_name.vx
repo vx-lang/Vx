@@ -43,17 +43,11 @@ impl Drop for Noisy {
 }
 
 fn one(id : i32) -> One {
-  return One::It(Noisy {
-    id: id
-  });
+  return One::It(Noisy { id: id });
 }
 
 fn two(id : i32) -> Two {
-  return Two::Pair(Noisy {
-    id: id
-  }, Noisy {
-    id: id + 1
-  });
+  return Two::Pair(Noisy { id: id }, Noisy { id: id + 1 });
 }
 
 fn in_a_wildcard() -> void {
@@ -148,9 +142,7 @@ fn main() -> i32 {
   print!("| ");
   let r = early();
   print!("r{} | ", r);
-  generic(Noisy {
-    id: 10
-  });
+  generic(Noisy { id: 10 });
   let n = in_a_value();
   print!("n{} | ", n);
   print!("end\n");

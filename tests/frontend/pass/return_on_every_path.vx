@@ -21,7 +21,8 @@ fn every_arm(x : i32) -> i32 {
   match x {
     0 => {
       return 7;
-    }, _ => {
+    },
+    _ => {
       return 9;
     }
   }

@@ -20,8 +20,10 @@ fn send_three(tx : Sender<i64>) -> void {
   let first : i64 = 0;
   for i in first..3 {
     match tx.send(i) {
-      Result<void, SendError<i64>>::Ok() => {}
-      Result<void, SendError<i64>>::Err(_e) => {}
+      Result<void,
+      SendError<i64>>::Ok() => {}
+      Result<void,
+      SendError<i64>>::Err(_e) => {}
     }
   }
 }
@@ -44,11 +46,13 @@ fn main() -> i32 {
     let mut open = true;
     while open {
       match sel.select() {
-        Result<Selected<i64>, RecvError>::Ok(s) => {
+        Result<Selected<i64>,
+        RecvError>::Ok(s) => {
           counts[s.index] = counts[s.index] + 1;
         }
         // Both channels are closed and empty.
-        Result<Selected<i64>, RecvError>::Err(_e) => {
+        Result<Selected<i64>,
+        RecvError>::Err(_e) => {
           open = false;
         }
       }

@@ -44,10 +44,12 @@ fn show_failure(f : Failure) -> void {
 
 fn show(r : Result<u64, Failure>) -> void {
   match r {
-    Result<u64, Failure>::Ok(v) => {
+    Result<u64,
+    Failure>::Ok(v) => {
       println!("ok {}", v);
     }
-    Result<u64, Failure>::Err(f) => {
+    Result<u64,
+    Failure>::Err(f) => {
       show_failure(f);
     }
   }

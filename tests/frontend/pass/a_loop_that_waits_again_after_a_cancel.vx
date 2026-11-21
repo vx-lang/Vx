@@ -15,15 +15,17 @@
 
 import std::sync::channel;
 
-// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+8]]:7: this arm can take 'Cancelled' and stays in the loop
+// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+9]]:7: this arm can take 'Cancelled' and stays in the loop
 fn recv_in_a_loop(rx : &Receiver<i64>) -> i64 {
   let mut total : i64 = 0;
   loop {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         total = total + v;
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("no value");
       }
     }
@@ -35,12 +37,13 @@ fn recv_in_a_loop(rx : &Receiver<i64>) -> i64 {
 }
 
 // `SendError` says `cancelled` in a field. A `while` is a loop too, and so is a `_` arm.
-// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+8]]:7: this arm can take 'Cancelled'
+// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+9]]:7: this arm can take 'Cancelled'
 fn send_in_a_while(tx : &Sender<i64>) -> void {
   let mut sent : i64 = 0;
   while sent < 3 {
     match tx.send(sent) {
-      Result<void, SendError<i64>>::Ok() => {
+      Result<void,
+      SendError<i64>>::Ok() => {
         sent = sent + 1;
       }
       _ => {
@@ -50,14 +53,16 @@ fn send_in_a_while(tx : &Sender<i64>) -> void {
   }
 }
 
-// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+7]]:7: this arm can take 'Cancelled'
+// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+8]]:7: this arm can take 'Cancelled'
 fn select_in_a_loop(sel : &mut Selector<i64>) -> void {
   loop {
     match sel.select() {
-      Result<Selected<i64>, RecvError>::Ok(s) => {
+      Result<Selected<i64>,
+      RecvError>::Ok(s) => {
         println!("channel {} gave {}", s.index, s.value);
       }
-      Result<Selected<i64>, RecvError>::Err(_) => {
+      Result<Selected<i64>,
+      RecvError>::Err(_) => {
         println!("no value");
       }
     }
@@ -67,10 +72,12 @@ fn select_in_a_loop(sel : &mut Selector<i64>) -> void {
 fn leaves_with_break(rx : &Receiver<i64>) -> void {
   loop {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         println!("{}", v);
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         break;
       }
     }
@@ -80,8 +87,10 @@ fn leaves_with_break(rx : &Receiver<i64>) -> void {
 fn leaves_with_a_break_in_an_if(tx : &Sender<i64>, stop : bool) -> void {
   loop {
     match tx.send(1) {
-      Result<void, SendError<i64>>::Ok() => {}
-      Result<void, SendError<i64>>::Err(_e) => {
+      Result<void,
+      SendError<i64>>::Ok() => {}
+      Result<void,
+      SendError<i64>>::Err(_e) => {
         if stop {
           break;
         }
@@ -94,8 +103,10 @@ fn leaves_with_a_break_in_an_if(tx : &Sender<i64>, stop : bool) -> void {
 fn names_the_error(tx : &Sender<i64>) -> void {
   loop {
     match tx.send(1) {
-      Result<void, SendError<i64>>::Ok() => {}
-      Result<void, SendError<i64>>::Err(e) => {
+      Result<void,
+      SendError<i64>>::Ok() => {}
+      Result<void,
+      SendError<i64>>::Err(e) => {
         println!("cancelled {}", e.cancelled);
       }
     }
@@ -107,10 +118,12 @@ fn clears_the_condition(rx : &Receiver<i64>) -> void {
   let mut open = true;
   while open {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         println!("{}", v);
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         open = false;
       }
     }
@@ -122,10 +135,12 @@ fn counts_every_pass(rx : &Receiver<i64>) -> void {
   let mut round : i64 = 0;
   while round < 3 {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         println!("{}", v);
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("no value");
       }
     }
@@ -136,10 +151,12 @@ fn counts_every_pass(rx : &Receiver<i64>) -> void {
 fn recv_in_a_for_loop(rx : &Receiver<i64>) -> void {
   for _i in 0..3 {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         println!("{}", v);
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("no value");
       }
     }
@@ -161,10 +178,12 @@ fn an_error_that_is_not_a_cancel() -> void {
   let mut x : i64 = 7;
   while x > 0 {
     match half(x) {
-      Result<i64, HalfError>::Ok(h) => {
+      Result<i64,
+      HalfError>::Ok(h) => {
         x = h;
       }
-      Result<i64, HalfError>::Err(_e) => {
+      Result<i64,
+      HalfError>::Err(_e) => {
         x = x - 1;
       }
     }
@@ -179,10 +198,12 @@ fn a_task_in_a_loop() -> void {
       spawn {
         let r = rx;
         match r.recv() {
-          Result<i64, RecvError>::Ok(v) => {
+          Result<i64,
+          RecvError>::Ok(v) => {
             println!("{}", v);
           }
-          Result<i64, RecvError>::Err(_e) => {
+          Result<i64,
+          RecvError>::Err(_e) => {
             println!("no value");
           }
         }

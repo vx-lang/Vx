@@ -24,19 +24,13 @@ impl N {
     if b.v.len() > 1 {
       v.push((self.v.len() % b.v.len()) as i32);
     }
-    return N {
-      v : v
-    };
+    return N { v : v };
   }
 }
 
 fn main() -> i32 {
-  let mut a = N {
-    v : Vec<i32>::new()
-  };
-  let mut b = N {
-    v : Vec<i32>::new()
-  };
+  let mut a = N { v : Vec<i32>::new() };
+  let mut b = N { v : Vec<i32>::new() };
   b.v.push(1i32);
   while b.v.len() > 0 {
     let r = a.rest(&b);

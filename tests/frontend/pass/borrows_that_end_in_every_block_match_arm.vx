@@ -229,9 +229,7 @@ fn assign_while_a_struct_holds_a_borrow_match_arm(k : i32) -> i32 {
   let mut y = 0;
   match k {
     0 => {
-      let h = Holder {
-        r: &x
-      };
+      let h = Holder { r: &x };
       y = *h.r;
       x = 2;
     }
@@ -246,9 +244,7 @@ fn assign_while_a_struct_holds_a_borrow_match_arm(k : i32) -> i32 {
 fn assign_while_a_struct_holds_a_borrow_match_arm_borrowed_outside(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
-  let h = Holder {
-    r: &x
-  };
+  let h = Holder { r: &x };
   y = *h.r;
   match k {
     0 => {

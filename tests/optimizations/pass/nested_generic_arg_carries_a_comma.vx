@@ -31,13 +31,8 @@ struct Hold<T> {
   v : T,
 }
 fn main() -> i32 {
-  let inner = Two<i32, i32> {
-    a : 3,
-    b : 4,
-  };
-  let outer : Hold<Two<i32, i32>> = Hold<Two<i32, i32>> {
-    v : inner,
-  };
+  let inner = Two<i32, i32> { a : 3, b : 4 };
+  let outer : Hold<Two<i32, i32>> = Hold<Two<i32, i32>> { v : inner };
   print(outer.v.a + outer.v.b);
   return 0;
 }

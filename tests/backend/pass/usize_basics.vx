@@ -25,9 +25,7 @@ fn main() -> i32 {
   let c = twice(a) - b;
   let d = c * 2 / 3 % 5;
   let e = largest >> 60;
-  let buf = Buf {
-    len : c
-  };
+  let buf = Buf { len : c };
   let mut v = Vec<usize>::new();
   v.push(c);
   print(c);

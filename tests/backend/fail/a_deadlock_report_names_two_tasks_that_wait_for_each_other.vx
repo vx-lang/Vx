@@ -15,17 +15,17 @@
 // RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
 
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
-// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:53{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:35 on channel 1, made at {{.*}}.vx:50, which only the task from the `spawn` at {{.*}}.vx:56 can send on{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:53{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:35 on channel 2, made at {{.*}}.vx:51, which only the task from the `spawn` at {{.*}}.vx:53 can send on{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:56{{$}}
+// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:57{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:35 on channel 1, made at {{.*}}.vx:54, which only the task from the `spawn` at {{.*}}.vx:60 can send on{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:57{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:35 on channel 2, made at {{.*}}.vx:55, which only the task from the `spawn` at {{.*}}.vx:57 can send on{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:60{{$}}
 // CHECK-NEXT: {{^}}  the waits form a cycle:{{$}}
-// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:53 waits in `recv` at {{.*}}.vx:35 on channel 1, made at {{.*}}.vx:50, which only the task from the `spawn` at {{.*}}.vx:56 can send on{{$}}
-// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:56 waits in `recv` at {{.*}}.vx:35 on channel 2, made at {{.*}}.vx:51, which only the task from the `spawn` at {{.*}}.vx:53 can send on{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:57 waits in `recv` at {{.*}}.vx:35 on channel 1, made at {{.*}}.vx:54, which only the task from the `spawn` at {{.*}}.vx:60 can send on{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:60 waits in `recv` at {{.*}}.vx:35 on channel 2, made at {{.*}}.vx:55, which only the task from the `spawn` at {{.*}}.vx:57 can send on{{$}}
 // CHECK-NEXT: {{^}}  the channels of these waits:{{$}}
-// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:50: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
-// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:51: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:54: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:55: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
 
 import std::sync::channel;
 
@@ -33,16 +33,20 @@ import std::sync::channel;
 fn pass_on(rx : Receiver<i64>, tx : Sender<i64>) -> void {
   let mut v : i64 = 0;
   match rx.recv() {
-    Result<i64, RecvError>::Ok(got) => {
+    Result<i64,
+    RecvError>::Ok(got) => {
       v = got;
     }
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Err(_e) => {
       return;
     }
   }
   match tx.send(v + 1) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {}
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {}
   }
 }
 

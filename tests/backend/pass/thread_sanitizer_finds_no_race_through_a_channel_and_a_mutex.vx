@@ -22,12 +22,14 @@ fn add_all(rx : Receiver<i64>, total : &Mutex<i64>) -> void {
   let mut open = true;
   while open {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         let mut g = total.lock();
         let t = g.get();
         *t = *t + v;
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         open = false;
       }
     }
@@ -36,8 +38,10 @@ fn add_all(rx : Receiver<i64>, total : &Mutex<i64>) -> void {
 
 fn send_one(tx : &Sender<i64>, v : i64) -> void {
   match tx.send(v) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {
       println!("a receiver ended early");
     }
   }

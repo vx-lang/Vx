@@ -29,9 +29,7 @@ impl Copy for Size {}
 
 impl Default for Size {
   fn default() -> Size {
-    return Size {
-      width: 80, height: 24
-    };
+    return Size { width: 80, height: 24 };
   }
 }
 
@@ -45,9 +43,7 @@ impl Clone for Basket {
     for i in 0..self.items.len() {
       items.push(*self.items.get_ref(i));
     }
-    return Basket {
-      items: items
-    };
+    return Basket { items: items };
   }
 }
 
@@ -55,9 +51,7 @@ fn main() -> i32 {
   let a = Size::default();
   let b = a;
   println!("{} {} {}", a.width, b.height, i64::default());
-  let mut first = Basket {
-    items: Vec<i64>::new()
-  };
+  let mut first = Basket { items: Vec<i64>::new() };
   first.items.push(5);
   let mut second = first.clone();
   second.items.push(7);

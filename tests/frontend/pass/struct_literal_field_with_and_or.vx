@@ -21,7 +21,10 @@ struct Flags {
 
 fn make(a : bool, b : bool, n : i32) -> Flags {
   return Flags {
-    both: a && n > 0, neither: !a || b, either: b || n > 5, n: n
+    both: a && n > 0,
+    neither: !a || b,
+    either: b || n > 5,
+    n: n
   };
 }
 

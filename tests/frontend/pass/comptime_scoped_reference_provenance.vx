@@ -18,11 +18,7 @@ fn reassigned_to_local(n : i32) -> i32 {
     let mut alias = &mut outside;
     let mut local : i32 = 0i32;
     alias = &mut local;
-    let _ignored = if n > 0i32 {
-      touch(alias)
-    } else {
-      1i32
-    };
+    let _ignored = if n > 0i32 { touch(alias) } else { 1i32 };
     7i32
   };
   return value;
@@ -38,11 +34,7 @@ fn shadowed_local(n : i32) -> i32 {
       1i32
     };
     let mut alias : i32 = 0i32;
-    let _ignored = if n > 0i32 {
-      touch(&mut alias)
-    } else {
-      1i32
-    };
+    let _ignored = if n > 0i32 { touch(&mut alias) } else { 1i32 };
     7i32
   };
   return value;

@@ -132,9 +132,7 @@ fn main() -> i32 {
 
   // closure_passed
   let i = 10;
-  let cap = Captures {
-    i : 10
-  };
+  let cap = Captures { i : 10 };
   let cp_lambda = | x : i32 | x + cap.i + i;
   // x(32) + cap.i(10) + i(10) = 52
   assert(apply_lambda(cp_lambda, 32) == 52);

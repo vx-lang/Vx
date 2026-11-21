@@ -64,12 +64,8 @@ impl<T> Wrap<T> {
 }
 
 fn main() -> i32 {
-  let a = Wrap<i32> {
-    v : 4,
-  };
-  let b = Wrap<i32> {
-    v : 4,
-  };
+  let a = Wrap<i32> { v : 4 };
+  let b = Wrap<i32> { v : 4 };
   if a.same(b) {
     print(1);
   } else {

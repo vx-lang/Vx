@@ -41,9 +41,7 @@ fn after_a_call_through_mut() -> void {
 // The block writes to a field of a struct.
 fn after_a_field_write() -> void {
   comptime {
-    let mut p = P {
-      x : 1i64
-    };
+    let mut p = P { x : 1i64 };
     p.x = 5i64;
     // CHECK-DAG: Error[E8002] at {{.*}}comptime_false_assert_after_a_write.vx:[[@LINE+1]]:5: Comptime assert failed: p.x is 5
     assert(p.x == 1i64, "p.x is 5");

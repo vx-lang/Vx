@@ -47,9 +47,7 @@ fn first(p : &Pair) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut q = Pair {
-    a: 1, b: 2
-  };
+  let mut q = Pair { a: 1, b: 2 };
   set_second(&mut q);
   print(first(&q));
   print!(" ");
