@@ -4258,9 +4258,9 @@ impl<'r> Lowerer<'r> {
             return lowered;
         }
         // The value of a block that can fail is in a slot: its last value, or the failure of a
-        // join that leaves it.
+        // join that leaves it. When nothing uses the value, nothing reads the failure either.
         let value = match (&u.fails_as, &u.ret) {
-            (Some(ty), Some(_)) => {
+            (Some(ty), _) => {
                 let lty = self.lower_ty_synth(ty).ok_or(Decline::TypeNotModelled {
                     what: "the type of a tasks block that can fail",
                 })?;
@@ -4476,9 +4476,7 @@ impl<'r> Lowerer<'r> {
             .tasks_exits
             .last()
             .and_then(|t| t.value.clone())
-            .ok_or(Decline::Unsupported {
-                what: "a failed join in a tasks block whose value is not used",
-            })?;
+            .expect("a tasks block that can fail has a slot for its failure");
         let failure = Expr::EnumVariant(crate::syntax::failure_of(&ty, value.clone(), span));
         let v = self.lower_expr(&failure)?;
         let v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);

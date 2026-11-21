@@ -2207,9 +2207,10 @@ impl TaskBody<'_> {
     }
 }
 
-/// Whether a `return`, or a `?` that leaves the task, is in the body of the task `this`.
+/// Whether a `return`, or a `?` that leaves the task, is in the body of the task `this`, also
+/// in its last value.
 fn task_has_exit(this: &UnsafeBlockExpr) -> bool {
-    leaves_the_block(&this.stmts, true)
+    leaves_the_block(&this.stmts, true) || this.ret.as_deref().is_some_and(|r| expr_leaves(r, true))
 }
 
 /// Whether a `return` or a `?` here leaves a task.
