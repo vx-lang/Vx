@@ -1,0 +1,93 @@
+//===- prover_keeps_facts_with_a_call_in_them.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A fact can hold a call, such as the condition `score(k) > 0` of an `if`. The prover keeps such
+// a fact when a variable in the call changes, and a call in a contract reads its own arguments.
+
+// CHECK: 3 2 6 60 64
+
+fn id(x : i32) -> i32
+ensures return == x {
+  return x;
+}
+
+fn need_below(i : i32, x : i32) -> i32
+requires i < id(x) {
+  return i;
+}
+
+// `need_below(i, y)` asks for `i < y`, not for `i < x`.
+fn requires_with_a_call(i : i32, x : i32, y : i32) -> i32
+requires i < y && x <= i {
+  return need_below(i, y);
+}
+
+fn twice(x : i32) -> i32
+ensures return == x + x {
+  return x + x;
+}
+
+fn twice_again(x : i32) -> i32
+ensures return == twice(x) {
+  return twice(x);
+}
+
+// The `ensures` of `twice_again` gives `r == twice(a)`, and `twice` gives `a + a`.
+fn ensures_with_a_call(a : i32) -> i32
+requires 0 <= a && a < 100
+ensures return == a + a {
+  let r = twice_again(a);
+  return r;
+}
+
+fn score(i : i32) -> i32 {
+  return i - 3;
+}
+
+// The `if` gives `c <= a + 1`. The assignment `k = 0` after it does not end that fact.
+fn change_the_argument(a : i32) -> i32
+requires 0 <= a && a < 100
+ensures return <= a + 1 {
+  let mut c = a;
+  let mut k = a;
+  if score(k) > 0 {
+    c = c + 1;
+  }
+  k = 0;
+  return c + k;
+}
+
+// The step `i = i + 1` of the loop is an assignment to `i`, as `k = 0` above.
+fn count_positive() -> i32 {
+  let mut count : i32 = 0;
+  for i in 0..64 invariant 0 <= count && count <= i {
+    if score(i) > 0 {
+      count = count + 1;
+    }
+  }
+  return count;
+}
+
+// After the loop, `i` is 64 in the invariant, so `count <= id(64)`.
+fn invariant_with_a_call() -> i32
+ensures return <= 64 {
+  let mut count : i32 = 0;
+  for i in 0..64 invariant 0 <= count && count <= id(i) {
+    count = count + 1;
+  }
+  return count;
+}
+
+fn main() -> i32 {
+  let r = requires_with_a_call(3, 1, 5);
+  let e = ensures_with_a_call(1);
+  let c = change_the_argument(5);
+  println!("{} {} {} {} {}", r, e, c, count_positive(), invariant_with_a_call());
+  return 0;
+}
