@@ -106,8 +106,8 @@ not fit, the program does not compile. The compiler does not move the tile to an
 
 The language requires this guarantee, and the lowering in MLIR gives it. When an accumulator is a
 tile in shared memory and the lowering cannot keep it in registers, the lowering keeps it in shared
-memory, and says nothing. Examples are another op that reads the tile, or an index that is not known at compile
-time. For a tile in `Memory::REG`, the checker reports that case as E6033 at the access that needs
+memory. Examples are another op that reads the tile, or an index that is not known at compile
+time. The checker warns about that case (W1037). For a tile in `Memory::REG`, the checker reports that case as E6033 at the access that needs
 memory. When the checker and the lowering disagree, the lowering reports an error too.
 
 - The guarantee is about the code that Vx writes: Vx makes no buffer for the tile. `ptxas`

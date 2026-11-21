@@ -11,7 +11,7 @@
 //
 // The last run uses a copy of the A100 machine file with `chip: sm_75`, a GPU without `mma.sync`.
 //
-// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=W1037
 // RUN: sed 's/chip: sm_80/chip: sm_75/' fleet/a100-40.vx > %t.sm75.vx
 // RUN: sed -n '/^pub fn no_tensor_cores/,/^}/p' %s > %t.no_tensor_cores.vx
 // RUN: not vxc %t.no_tensor_cores.vx --host default --machine %t.sm75.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SM75 --implicit-check-not=Error

@@ -20,6 +20,9 @@
 // the rule does not take is an error (E6033), and so is a part of a lane that does not fit in the
 // registers (E6009). The lowering reports the tiles that it does not keep in registers, too.
 //
+// A tile of sums in shared memory that does not stay in registers makes the kernel slower, so
+// the rule warns about it (W1037), and names the use that keeps it in memory.
+//
 //===----------------------------------------------------------------------===//
 
 use std::collections::{HashMap, HashSet};
@@ -35,6 +38,11 @@ const REGISTERS_A_LANE: u64 = 128;
 
 /// The lanes of a subgroup that holds a row of a tile of sums.
 const SUBGROUP_LANES: u64 = 32;
+
+/// The uses of the row of a tile of sums that keep the tile in registers.
+const REGISTER_USES: &str = "a `lanes::fill`, a `lanes::scale_rows`, a lane matmul that adds to \
+                             it, or a `lanes::copy` out of it into a tensor that is not in shared \
+                             memory";
 
 /// The GPU of a kernel, as far as matmuls of tiles in registers go.
 #[derive(Clone, Copy, PartialEq)]
@@ -53,11 +61,29 @@ struct Uses {
     other: HashMap<String, Span>,
     /// Tiles that a lane matmul adds to, with the type that the matmul multiplies.
     added_to: HashMap<String, ElementType>,
+    /// Tiles that a lane matmul writes, and the first such matmul.
+    written: HashMap<String, Span>,
+    /// Tiles with a lane matmul that the lowering does not take, and the first such matmul.
+    not_taken: HashMap<String, (Span, NotTaken)>,
+}
+
+/// Why the lowering does not take a lane matmul.
+#[derive(Clone, Copy)]
+enum NotTaken {
+    /// It is not `t[w] = t[w] + a @ b`, with a row of `t` for each subgroup.
+    Form,
+    /// The GPU has no matmul for its tiles that keeps the sums in registers.
+    Tiles,
 }
 
 impl Uses {
     fn other(&mut self, name: &str, at: Span) {
         self.other.entry(name.to_string()).or_insert(at);
+    }
+
+    fn not_taken(&mut self, name: &str, at: Span, why: NotTaken) {
+        self.other(name, at);
+        self.not_taken.entry(name.to_string()).or_insert((at, why));
     }
 }
 
@@ -112,15 +138,23 @@ impl crate::hir::TypeChecker<'_> {
         // The tiles that only take uses that the lowering takes.
         let mut added = HashSet::new();
         let mut refused: HashMap<String, Refused> = HashMap::new();
+        let mut written: HashMap<String, Span> = HashMap::new();
+        let mut not_taken: HashMap<String, (Span, NotTaken)> = HashMap::new();
         if !tiles.is_empty() {
             crate::syntax::visit_exprs(body, &mut |e| {
                 if let Expr::SpawnOn(sp) = e {
                     match self.tiles_in_registers(sp, &tiles) {
-                        Some((kept, other)) => {
-                            added.extend(kept);
-                            for (name, at) in other {
+                        Some(uses) => {
+                            added.extend(
+                                uses.added_to
+                                    .into_keys()
+                                    .filter(|name| !uses.other.contains_key(name)),
+                            );
+                            for (name, at) in uses.other {
                                 refused.insert(name, Refused::Use(at));
                             }
+                            written.extend(uses.written);
+                            not_taken.extend(uses.not_taken);
                         }
                         None => {
                             let mut made = HashMap::new();
@@ -170,10 +204,8 @@ impl crate::hir::TypeChecker<'_> {
                     Refused::Use(use_at) => (
                         format!(
                             "this use of `{name}` needs it in memory, but it is a tile in \
-                             registers. Each use must take the row of its subgroup, `{name}[w]`: \
-                             a `lanes::fill`, a `lanes::scale_rows`, a lane matmul that adds to \
-                             it, or a `lanes::copy` out of it into a tensor that is not in shared \
-                             memory"
+                             registers. Each use must take the row of its subgroup, \
+                             `{name}[w]`: {REGISTER_USES}"
                         ),
                         use_at,
                     ),
@@ -219,6 +251,20 @@ impl crate::hir::TypeChecker<'_> {
                 _ => {}
             }
         }
+        let mut in_shared_memory: Vec<(&String, &Span)> = written
+            .iter()
+            .filter(|(name, _)| !registers.contains(*name) && !in_registers.contains_key(*name))
+            .collect();
+        in_shared_memory.sort_by_key(|(_, at)| (at.line, at.column));
+        for (name, matmul) in in_shared_memory {
+            let (elem, sizes) = &tiles[name];
+            let why = match (not_taken.get(name), refused.get(name)) {
+                (Some(&(_, why)), _) => Err(why),
+                (None, Some(Refused::Use(at))) => Ok(*at),
+                _ => Err(NotTaken::Tiles),
+            };
+            self.warn_sums_in_shared_memory(name, elem, sizes, matmul, why);
+        }
         for (root, var, at) in across_indices {
             if !in_registers.contains_key(&root) {
                 self.e6033(
@@ -248,6 +294,81 @@ impl crate::hir::TypeChecker<'_> {
         }
     }
 
+    /// W1037 for the tile `name` of the sums of the lane matmul at `matmul`, which stays in shared
+    /// memory. `why` is the use that needs the tile in memory, or why the lowering does not take
+    /// the matmul.
+    fn warn_sums_in_shared_memory(
+        &mut self,
+        name: &str,
+        elem: &ElementType,
+        sizes: &[u64],
+        matmul: &Span,
+        why: Result<Span, NotTaken>,
+    ) {
+        let bytes =
+            sizes.iter().product::<u64>() * crate::hir::memory::element_bytes(elem).unwrap_or(4);
+        let stay = format!(
+            "the tile `{name}` of the sums of this matmul stays in shared memory, {bytes} bytes"
+        );
+        let sums = match sizes {
+            [_, rows, cols] => rows * cols / SUBGROUP_LANES,
+            _ => 0,
+        };
+        let (message, at) = match why {
+            Ok(use_at) => (
+                format!(
+                    "this use of `{name}` keeps the tile of the sums of the matmul on line {} in \
+                     shared memory, {bytes} bytes. For the tile to stay in registers, each use \
+                     must take the row of its subgroup, `{name}[w]`: {REGISTER_USES}",
+                    matmul.line
+                ),
+                use_at,
+            ),
+            Err(NotTaken::Form) => (
+                format!(
+                    "{stay}. The compiler keeps the tile in registers only for `{name}[w] = \
+                     {name}[w] + a @ b`, with a row of `{name}` for each subgroup. `w` must be \
+                     the variable of a loop across subgroups that gives each subgroup one pass"
+                ),
+                *matmul,
+            ),
+            Err(NotTaken::Tiles) if sums > REGISTERS_A_LANE => (
+                format!(
+                    "{stay}, because each lane would hold {sums} sums. The compiler keeps at most \
+                     {REGISTERS_A_LANE} sums of a lane in registers: a 64 x 64 tile for each \
+                     subgroup"
+                ),
+                *matmul,
+            ),
+            Err(NotTaken::Tiles) => (
+                format!(
+                    "{stay}. This GPU has no matmul for these tiles that keeps the sums in \
+                     registers"
+                ),
+                *matmul,
+            ),
+        };
+        let d = self.errors.warn(
+            DiagnosticCode::W1037,
+            message,
+            Some(SourceSpan::from_ast_span(&at)),
+        );
+        if why.is_ok() {
+            d.notes.push(crate::diagnostic::Note {
+                message: "the matmul is here".into(),
+                span: Some(SourceSpan::from_ast_span(matmul)),
+            });
+        }
+        d.notes.push(crate::diagnostic::Note {
+            message: format!(
+                "with `{name}` in `Memory::REG`, the compiler keeps the tile in registers or \
+                 reports an error"
+            )
+            .into(),
+            span: None,
+        });
+    }
+
     fn e6033(&mut self, message: String, at: &Span) {
         self.errors.error_with_code(
             DiagnosticCode::E6033,
@@ -256,14 +377,13 @@ impl crate::hir::TypeChecker<'_> {
         );
     }
 
-    /// The tiles of `tiles` that a lane matmul of the kernel of `sp` adds to, with no use that the
-    /// lowering does not take, and the first such use of each other tile. None when the GPU of the
-    /// kernel keeps no tiles in registers.
+    /// The uses of the tiles of `tiles` in the kernel of `sp`. None when the GPU of the kernel
+    /// keeps no tiles in registers.
     fn tiles_in_registers(
         &self,
         sp: &crate::syntax::expr::SpawnOnExpr,
         tiles: &HashMap<String, (ElementType, Vec<u64>)>,
-    ) -> Option<(Vec<String>, HashMap<String, Span>)> {
+    ) -> Option<Uses> {
         let desc = self.transfer_cost_graph.descriptor(&sp.top.kind());
         let gpu = match desc.and_then(|d| d.arch.as_deref()) {
             Some("applegpu") => Gpu::Simdgroups,
@@ -285,13 +405,7 @@ impl crate::hir::TypeChecker<'_> {
         };
         let mut uses = Uses::default();
         walk.stmts(&sp.stmts, None, &mut uses);
-        let other = uses.other;
-        let kept = uses
-            .added_to
-            .into_keys()
-            .filter(|name| !other.contains_key(name))
-            .collect();
-        Some((kept, other))
+        Some(uses)
     }
 }
 
@@ -465,13 +579,27 @@ impl Walk<'_> {
     fn matmul(&self, m: &crate::hir::check::lanes::LaneMatmul, row: Option<&str>, uses: &mut Uses) {
         self.other(m.lhs, uses);
         self.other(m.rhs, uses);
+        let mut root = m.acc;
+        while let Expr::IndexAccess(ix) = root {
+            root = &ix.base;
+        }
+        if let Expr::Identifier(id) = root {
+            if self.tiles.contains_key(id.name.as_ref()) {
+                uses.written.entry(id.name.to_string()).or_insert(m.at);
+            }
+        }
         let Some(acc) = self.row_of(m.acc, row).filter(|_| m.accumulate) else {
+            if let Expr::Identifier(id) = root {
+                if self.tiles.contains_key(id.name.as_ref()) {
+                    uses.not_taken(id.name.as_ref(), m.at, NotTaken::Form);
+                }
+            }
             self.other(m.acc, uses);
             return;
         };
         let (elem, sizes) = &self.tiles[acc];
         let [_, rows, cols] = sizes[..] else {
-            uses.other(acc, m.at);
+            uses.not_taken(acc, m.at, NotTaken::Form);
             return;
         };
         let multiplied = match (
@@ -488,7 +616,7 @@ impl Walk<'_> {
         match multiplied {
             // All the matmuls that add to a tile multiply one type.
             Some(t) if *uses.added_to.entry(acc.to_string()).or_insert(t.clone()) == t => {}
-            _ => uses.other(acc, m.at),
+            _ => uses.not_taken(acc, m.at, NotTaken::Tiles),
         }
     }
 

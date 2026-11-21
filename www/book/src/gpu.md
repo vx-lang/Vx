@@ -312,7 +312,9 @@ the `capacity` of `Memory::REG` (E6009). The compiler keeps at most 128 sums of 
 row of 64 x 64. On an NVIDIA GPU, the tile needs `mma.sync`, which `sm_80` and later have.
 
 A tile in `Memory::SMEM` with only these uses also stays in registers, but nothing guarantees it.
-In both cases the assembler of NVIDIA (`ptxas`) can still move some registers to local memory.
+When such a tile stays in shared memory, the compiler warns (W1037) and names the use that keeps
+it there. With both `Memory::REG` and `Memory::SMEM`, the assembler of NVIDIA (`ptxas`) can still
+move some registers to local memory.
 `tests/optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx` is a complete
 program.
 
