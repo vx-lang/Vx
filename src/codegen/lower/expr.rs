@@ -1214,6 +1214,11 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         gen.expected_type = Some(lhs_ty);
         let (mut rhs_val, mut rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
+        // A borrowed tensor arrives as the slot that holds it, `memref<memref<?x?xf32>>`. `&a @ &b`
+        // and `&a + &b` are the spellings of `a @ b` and `a + b` that do not consume (#335), so
+        // load the descriptor out of the slot.
+        lhs_val = load_tensor_slot(gen, &block, lhs_val, &mut lhs_ty)?;
+        rhs_val = load_tensor_slot(gen, &block, rhs_val, &mut rhs_ty)?;
 
         // Slice elementwise (S3): if either operand is a rank-1 f32 slice/vector, lower to
         // `vector.load`/`vector.broadcast` + `arith.{mulf,addf,subf,divf}` -> `vector<Dxf32>`
@@ -1259,21 +1264,6 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 let res: Value = block.append_operation(arith_op).result(0)?.into();
                 return Ok((res, vec_ty, block));
             }
-        }
-
-        // A borrowed tensor arrives as the slot holding it --
-        // `memref<memref<?x?xf32>>` -- because a borrow is the address and not
-        // the value. `&a @ &b` is the non-consuming spelling of `a @ b` (#335)
-        // and has to lower to the same operation, so load the descriptor out.
-        //
-        // Without this the operand reached `linalg.matmul` as a memref of
-        // memref. The shape check below reads the type as a string and would
-        // have accepted it -- `memref<memref<?x?xf32>>` still yields three parts
-        // once the wrappers are stripped -- so the mistake surfaced as MLIR
-        // verification failing rather than as a rejected program.
-        if op == &BinaryOp::MatMul {
-            lhs_val = load_tensor_slot(gen, &block, lhs_val, &mut lhs_ty)?;
-            rhs_val = load_tensor_slot(gen, &block, rhs_val, &mut rhs_ty)?;
         }
 
         let mut final_ty = lhs_ty;
