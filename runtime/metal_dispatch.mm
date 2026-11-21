@@ -264,12 +264,16 @@ struct Batch {
   // of the commit whose sentinel `finish` waits for, and whether the spin saw
   // the sentinel write it. The sentinel runs after every kernel of its
   // commit, and its value reaches the CPU when the kernels end, while the
-  // status of the buffers follows about 60 µs later (#3626). So `finish`
-  // spins on the value, and a batch whose spin saw it needs no check of the
-  // status. `done` is nil when Metal refused to make it, and then a commit
-  // writes no sentinel, and the wait blocks as before.
+  // status of the buffers follows about 60 µs later. So `finish` spins on the
+  // value, and a batch whose spin saw it needs no check of the status. `done`
+  // is nil when Metal refused to make it, and then a commit writes no
+  // sentinel, and the wait blocks as before.
   id<MTLBuffer> done;
   std::atomic<uint32_t> sentinel{0};
+  // Whether the last commit of the batch dispatched a sentinel. A commit with
+  // more buffers than the sentinel takes gets none, and an older value in
+  // `done` does not stand for it, so the wait blocks.
+  bool hasSentinel = false;
   bool proved = false;
 
   bool open() const { return encoder != nil; }
@@ -367,26 +371,28 @@ void report(const Batch &b) {
   all.push_back(b.commands);
   double seconds = 0;
   for (id<MTLCommandBuffer> commands : all) {
-    if (commands.status != MTLCommandBufferStatusCompleted) {
+    // A fault is a fault even in a proved batch: the sentinel of the next
+    // command buffer still runs after a fault stops this one.
+    const bool fault = commands.status == MTLCommandBufferStatusError;
+    if (fault ||
+        (!b.proved && commands.status != MTLCommandBufferStatusCompleted)) {
       // The spin saw the sentinel write its value, and the sentinel ran after
       // every kernel of the batch, so the kernels ended. The status of the
-      // buffers follows the end of the kernels by about 60 µs (#3626), so a
-      // proved batch is not checked. A batch whose spin gave up is checked:
-      // a fault stops the GPU before the sentinel runs, and the spin then
-      // gives up, and the wait of the fallback finds the fault here.
-      if (!b.proved) {
-        std::string names;
-        for (const std::string &k : b.kernels)
-          names += (names.empty() ? "" : ", ") + k;
-        fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
-                names.c_str(), commands.error.localizedDescription.UTF8String);
-        if (count > 1)
-          fprintf(stderr, "           Set VX_METAL_SYNC=1 to name the kernel "
-                          "that failed.\n");
-        abort();
-      }
-      continue;
+      // buffers follows the end of the kernels, so a proved batch does not
+      // wait for it. A batch whose spin gave up is checked here: a fault
+      // stops the GPU before the sentinel runs, and the spin then gives up.
+      std::string names;
+      for (const std::string &k : b.kernels)
+        names += (names.empty() ? "" : ", ") + k;
+      fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
+              names.c_str(), commands.error.localizedDescription.UTF8String);
+      if (count > 1)
+        fprintf(stderr, "           Set VX_METAL_SYNC=1 to name the kernel "
+                        "that failed.\n");
+      abort();
     }
+    if (commands.status != MTLCommandBufferStatusCompleted)
+      continue;
     seconds += commands.GPUEndTime - commands.GPUStartTime;
   }
   if (verbose())
@@ -407,11 +413,16 @@ id<MTLComputePipelineState> sentinelPipeline();
 // it after. A batch with more buffers than the sentinel takes gets no
 // sentinel, and its wait blocks as before.
 static void dispatchSentinel(id<MTLComputeCommandEncoder> encoder, Batch &b) {
+  b.hasSentinel = false;
   if (b.done == nil || b.regions.size() + b.copies.size() > 8)
     return;
   id<MTLComputePipelineState> pipeline = sentinelPipeline();
   if (!pipeline)
     return;
+  // The launches of a concurrent encoder run beside each other, so a barrier
+  // holds the sentinel behind them.
+  if (concurrent())
+    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
   [encoder setComputePipelineState:pipeline];
   [encoder setBuffer:b.done offset:0 atIndex:0];
   const uint32_t value = b.sentinel.load(std::memory_order_relaxed) + 1;
@@ -428,31 +439,29 @@ static void dispatchSentinel(id<MTLComputeCommandEncoder> encoder, Batch &b) {
   [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
   b.sentinel.store(value, std::memory_order_release);
+  b.hasSentinel = true;
 }
 
 // Spins until the sentinel of the batch's last commit wrote its value into
 // `done`, and returns true when it did. The sentinel runs after every kernel
 // of the batch, so its value says the kernels ended, and their writes are in
 // the shared memory that the CPU reads. `waitUntilCompleted` blocks until the
-// driver marked the buffers completed, which follows the end of the kernels
-// by about 60 µs on this GPU (#3626). A `yield`-style pause keeps the spin
-// from taking a core from the threads that feed the GPU. The spin gives up
-// after 2 ms, so a kernel longer than that blocks as before, and a faulted
-// kernel is reported by the wait of the fallback, for a fault stops the GPU
-// before the sentinel runs. The spin reads `done` without the lock, like the
-// waits of the fallback.
+// driver marked the buffers completed, which follows the end of the kernels.
+// A `yield`-style pause keeps the spin from taking a core from the threads
+// that feed the GPU. The spin gives up after 2 ms, so a kernel longer than
+// that blocks as before, and a faulted kernel is reported by the wait of the
+// fallback, for a fault stops the GPU before the sentinel runs. The spin reads
+// `done` without the lock, like the waits of the fallback.
 static bool spin(Batch &b) {
-  b.proved = false;
-  if (b.done == nil)
+  if (b.done == nil || !b.hasSentinel)
     return false;
   const uint32_t value = b.sentinel.load(std::memory_order_acquire);
   if (value == 0)
     return false;
-  const volatile uint32_t *word =
-      static_cast<const volatile uint32_t *>(b.done.contents);
+  const uint32_t *word = static_cast<const uint32_t *>(b.done.contents);
   const auto giveUp =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
-  while (*word < value) {
+  while (__atomic_load_n(word, __ATOMIC_ACQUIRE) < value) {
     if (std::chrono::steady_clock::now() > giveUp)
       return false;
 #if defined(__aarch64__)
@@ -461,8 +470,33 @@ static bool spin(Batch &b) {
     __builtin_ia32_pause();
 #endif
   }
-  b.proved = true;
   return true;
+}
+
+// Reports a fault that Metal finds after the wait. A proved batch does not
+// block in `waitUntilCompleted`, so this handler is what reports the fault.
+// A failed assert stops the GPU, and Metal then marks the command buffer
+// failed too, so the handler reads the words of the asserts first, like the
+// wait of the fallback, and names the kernel whose assert failed.
+static void reportLateFault(id<MTLCommandBuffer> commands, const Batch &b) {
+  std::string names;
+  for (const std::string &k : b.kernels)
+    names += (names.empty() ? "" : ", ") + k;
+  const std::vector<Check> checks = b.checks;
+  [commands addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+    if (buffer.status != MTLCommandBufferStatusError)
+      return;
+    for (const Check &c : checks) {
+      const uint32_t number =
+          static_cast<const volatile uint32_t *>(c.words.contents)[c.at];
+      if (number != 0)
+        die(c.kernel.c_str(), "%s",
+            assertMessage(c.image, c.kernel.c_str(), number).c_str());
+    }
+    fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
+            names.c_str(), buffer.error.localizedDescription.UTF8String);
+    abort();
+  }];
 }
 
 // Commits each batch in `chosen` that is open, and waits until the GPU
@@ -480,23 +514,35 @@ void finish(const std::vector<std::shared_ptr<Batch>> &chosen,
         dispatchSentinel(b->encoder, *b);
       [b->encoder endEncoding];
       b->encoder = nil;
+      reportLateFault(b->commands, *b);
       [b->commands commit];
     }
   hold.unlock();
-  for (const std::shared_ptr<Batch> &b : chosen)
-    if (!spin(*b)) {
-      for (id<MTLCommandBuffer> commands : b->sent)
-        [commands waitUntilCompleted];
-      [b->commands waitUntilCompleted];
-    }
+  std::vector<bool> proved(chosen.size(), false);
+  for (size_t i = 0; i < chosen.size(); ++i) {
+    proved[i] = spin(*chosen[i]);
+    if (proved[i])
+      continue;
+    for (id<MTLCommandBuffer> commands : chosen[i]->sent)
+      [commands waitUntilCompleted];
+    [chosen[i]->commands waitUntilCompleted];
+  }
   hold.lock();
   std::vector<std::shared_ptr<Batch>> &all = batches();
-  for (const std::shared_ptr<Batch> &b : chosen) {
+  for (size_t i = 0; i < chosen.size(); ++i) {
+    const std::shared_ptr<Batch> &b = chosen[i];
     auto at = std::find(all.begin(), all.end(), b);
     // Another thread waited for this batch too, and reported it.
     if (at == all.end())
       continue;
     all.erase(at);
+    // Another thread may have proved the batch, so the flag is set under the
+    // lock, and never reset.
+    b->proved = proved[i];
+    if (proved[i] && verbose())
+      fprintf(stderr,
+              "[Vx Metal] the sentinel ended the wait for %zu kernel%s\n",
+              b->kernels.size(), b->kernels.size() == 1 ? "" : "s");
     report(*b);
   }
 }
@@ -1206,6 +1252,13 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       here->owner = std::this_thread::get_id();
       here->commands = [gpu().queue commandBuffer];
       here->encoder = newEncoder(here->commands);
+      // The buffer that the sentinels of the batch write into. The CPU spins
+      // on its first word, and the second word keeps the reads of the
+      // sentinel from going away.
+      here->done = [device newBufferWithLength:2 * sizeof(uint32_t)
+                                       options:MTLResourceStorageModeShared];
+      if (here->done)
+        memset(here->done.contents, 0, 2 * sizeof(uint32_t));
       batches().push_back(here);
       // Report a fault of a kernel that nothing waited for.
       static const bool waitAtExit = atexit(vx_metal_wait) == 0;
@@ -1214,7 +1267,7 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     here->regions.insert(here->regions.end(), made.begin(), made.end());
     // The buffers the kernels of this launch write on a copy of their tensor:
     // the sentinel reads them, for Metal orders only the launches that use
-    // the same buffer object (#3626).
+    // the same buffer object.
     here->copies.insert(here->copies.end(), launchCopies.begin(),
                         launchCopies.end());
     for (const Access &a : accesses)
@@ -1292,6 +1345,7 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
                 here->unsent);
       dispatchSentinel(here->encoder, *here);
       [here->encoder endEncoding];
+      reportLateFault(here->commands, *here);
       [here->commands commit];
       here->sent.push_back(here->commands);
       here->commands = [gpu().queue commandBuffer];

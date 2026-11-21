@@ -35,36 +35,36 @@
 // OUT-NEXT: {{^}}w 65535{{$}}
 //
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+// GPU: [Vx Metal] waited for 1 kernel,
 //
 // Part 1.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: Falling back to CPU libffi dispatch
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU-NEXT: [Vx Metal] waited for 2 kernels,
+// GPU: [Vx Metal] waited for 2 kernels,
 //
 // Part 2.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+// GPU: [Vx Metal] waited for 1 kernel,
 // GPU-NEXT: Falling back to CPU libffi dispatch
 //
 // Part 3.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+// GPU: [Vx Metal] waited for 1 kernel,
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+// GPU: [Vx Metal] waited for 1 kernel,
 //
 // Part 4.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU-NEXT: [Vx Metal] waited for 2 kernels,
-// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+// GPU: [Vx Metal] waited for 2 kernels,
+// GPU: [Vx Metal] waited for 1 kernel,
 //
 // Part 5.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU-NEXT: [Vx Metal] waited for 2 kernels,{{.*}}
+// GPU: [Vx Metal] waited for 2 kernels,{{.*}}
 // GPU-NOT: {{.}}
 
 // dst = position

@@ -1,0 +1,47 @@
+// A wait of the Apple GPU spins on the sentinel the GPU writes, and blocks in `waitUntilCompleted`
+// only when the spin gives up. A short kernel ends before the deadline, so the spin proves the
+// wait, and the verbose line names the batch the sentinel ended.
+//
+// The deadline is 2 ms and the GPU's first submission of a batch takes about as long, so one
+// batch can miss it. Eight batches make it certain that one proves, and the checks need one.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: grep -e "Vx Metal" %t.gpu | grep -v -e "bytes of GPU memory" -e "bytes for a batch" | FileCheck %s --check-prefix=GPU
+//
+// OUT: {{^}}sum 8{{$}}
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 256
+// GPU: [Vx Metal] the sentinel ended the wait for 1 kernel
+// GPU: [Vx Metal] waited for 1 kernel,{{.*}}
+
+// dst[i] = 1
+fn fill(dst : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..1 across blocks {
+      for l in 0..256 across lanes(256) {
+        let i = g * 256 + l;
+        if i < n {
+          dst[i] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Reads x[0] on the CPU, through a `&` parameter, so the read is in place.
+fn read_first(x : &Tensor<f32, [?], Memory::HBM>) -> f32 {
+  return transfer(x, Memory::CPU_DRAM)[0];
+}
+
+fn main() -> i32 {
+  let mut x = transfer(Tensor<f32, [256]>::fill(0.0), Memory::HBM);
+  let mut sum = 0.0;
+  for round in 0..8 {
+    fill(&mut x, 256);
+    sum = sum + read_first(&x);
+  }
+  println!("sum {}", sum);
+  return 0;
+}

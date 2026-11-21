@@ -21,7 +21,7 @@
 // GPU-NOT: waited
 // GPU: [Vx Metal] committed 16 kernels before the wait
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 256
-// GPU-NEXT: [Vx Metal] waited for 17 kernels,{{.*}}
+// GPU: [Vx Metal] waited for 17 kernels,{{.*}}
 // GPU-NOT: {{.}}
 
 // x[i] = x[i] + 1

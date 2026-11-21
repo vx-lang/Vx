@@ -68,5 +68,12 @@ fn main() -> i32 {
       once, each, check);
     }
   }
+  // Each read returns x[0] after the launches before it, so `check` has one
+  // value that a stale read cannot give: 10.5 * launches * (launches + 1).
+  let expected = 10.5 * f64::from(launches) * f64::from(launches + 1);
+  if f64::from(check) != expected {
+    println!("check WRONG {} != {}", check, expected);
+    return 1;
+  }
   return 0;
 }
