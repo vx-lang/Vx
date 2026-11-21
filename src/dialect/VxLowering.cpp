@@ -9570,6 +9570,9 @@ struct DeviceImage {
   std::string bytes;
   /// The kernels whose last parameter is the flag a failed `assert` sets.
   llvm::StringSet<> assertFlag;
+  /// The kernels that wait for the kernels before them (`VX_GPU_PDL=1`), so a
+  /// launch may start them early.
+  llvm::StringSet<> waits;
 
   /// Whether the image can ride in a NUL-terminated `image=` entry.
   bool isText() const { return format == "ptx" || format == "msl"; }
@@ -9772,6 +9775,12 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
         // pointer to a 4-byte flag that a failed `assert` sets.
         if (image->second.assertFlag.contains(callee)) {
           payload += "assert_flag=1";
+          payload.push_back('\0');
+        }
+        // The kernel waits for the kernels before it, so the runtime may
+        // start it while they still run (`VX_CUDA_PDL=1`).
+        if (image->second.waits.contains(callee)) {
+          payload += "waits_for_earlier_kernels=1";
           payload.push_back('\0');
         }
         // What the image is, before the image itself: a dispatch library that
@@ -10396,6 +10405,150 @@ static bool weakRelaxedAtomics(Operation *op) {
   return module && module->hasAttr("vx.weak_relaxed_atomics");
 }
 
+/// The wait for the kernels before this one on the stream (sm_90 and later).
+constexpr StringLiteral gridDependencyWait = "griddepcontrol.wait;";
+
+/// Whether the compile asked for kernels that wait for the kernels before them
+/// (`VX_GPU_PDL=1`). A launch with programmatic dependent launch can then start
+/// such a kernel while the kernel before it still runs.
+static bool gridDependenciesRequested() {
+  const char *on = ::getenv("VX_GPU_PDL");
+  return on && StringRef(on) == "1";
+}
+
+/// Whether `v`, a memref or a pointer, may point into global memory, which
+/// another kernel can read or write. Shared memory, a lane's own stack slot,
+/// and a view of either are not global.
+static bool mayBeGlobal(Value v) {
+  while (true) {
+    Type type = v.getType();
+    if (auto m = dyn_cast<MemRefType>(type)) {
+      Attribute space = m.getMemorySpace();
+      if (auto n = dyn_cast_or_null<IntegerAttr>(space))
+        if (n.getInt() == 3 || n.getInt() == 5)
+          return false;
+      if (auto g = dyn_cast_or_null<gpu::AddressSpaceAttr>(space))
+        if (g.getValue() != gpu::AddressSpace::Global)
+          return false;
+    }
+    if (auto p = dyn_cast<LLVM::LLVMPointerType>(type))
+      if (p.getAddressSpace() == 3 || p.getAddressSpace() == 5)
+        return false;
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return true;
+    if (isa<memref::AllocaOp, LLVM::AllocaOp>(def))
+      return false;
+    auto view = dyn_cast<ViewLikeOpInterface>(def);
+    if (!view)
+      return true;
+    v = view.getViewSource();
+  }
+}
+
+/// Whether `op` may read or write global memory. An op with regions answers
+/// only for itself, because the ops in its regions answer for themselves. A
+/// call answers for its callee. An op whose effects are unknown counts.
+static bool touchesGlobalMemory(Operation *op,
+                                DenseMap<Operation *, bool> &callees) {
+  if (isa<gpu::BarrierOp, NVVM::Barrier0Op, NVVM::BarrierOp, NVVM::SyncWarpOp>(
+          op) ||
+      op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+    return false;
+  if (auto call = dyn_cast<CallOpInterface>(op)) {
+    auto callee = dyn_cast_or_null<FunctionOpInterface>(call.resolveCallable());
+    if (!callee || callee.isExternal())
+      return true;
+    // A recursive call counts until its callee is known.
+    auto [known, added] = callees.try_emplace(callee, true);
+    if (!added)
+      return known->second;
+    WalkResult walk = callee->walk([&](Operation *inner) {
+      if (inner != callee.getOperation() && touchesGlobalMemory(inner, callees))
+        return WalkResult::interrupt();
+      return WalkResult::advance();
+    });
+    return callees[callee] = walk.wasInterrupted();
+  }
+  auto memory = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!memory)
+    return !op->hasTrait<OpTrait::IsTerminator>();
+  SmallVector<MemoryEffects::EffectInstance> effects;
+  memory.getEffects(effects);
+  return llvm::any_of(effects, [](const MemoryEffects::EffectInstance &e) {
+    if (isa<MemoryEffects::Allocate, MemoryEffects::Free>(e.getEffect()))
+      return false;
+    if (Value v = e.getValue())
+      return mayBeGlobal(v);
+    return e.getResource() !=
+           SideEffects::AutomaticAllocationScopeResource::get();
+  });
+}
+
+/// Makes each kernel of `device` wait for the kernels before it on the stream,
+/// and gives the names of the kernels.
+///
+/// - The wait goes before the first read or write of global memory, in the
+///   block that dominates all of them. It moves out of each loop inside the
+///   outermost loop, so it runs once for each pass of the block loop, never in
+///   a lane loop.
+/// - `griddepcontrol.launch_dependents` follows it, so the next kernel starts
+///   only after the kernel before this one ended.
+/// - A second wait goes before each return that the first wait does not
+///   dominate. This kernel must not end before the kernels before it, because
+///   the kernel after it may wait only for this one.
+static llvm::StringSet<> waitForEarlierKernels(ModuleOp device) {
+  llvm::StringSet<> waiting;
+  DenseMap<Operation *, bool> callees;
+  device.walk([&](gpu::GPUFuncOp f) {
+    if (!f.isKernel() || f.getBody().empty())
+      return;
+    Region &body = f.getBody();
+    SmallVector<Operation *> touching;
+    f.walk([&](Operation *op) {
+      if (op != f.getOperation() && touchesGlobalMemory(op, callees))
+        touching.push_back(body.findAncestorOpInRegion(*op));
+    });
+    DominanceInfo dominance(f);
+    OpBuilder b(f.getContext());
+    Location loc = f.getLoc();
+    Block *at = nullptr;
+    if (!touching.empty()) {
+      at = &body.front();
+      if (!body.hasOneBlock()) {
+        at = touching.front()->getBlock();
+        for (Operation *op : touching)
+          at = dominance.findNearestCommonDominator(at, op->getBlock());
+        auto &tree = dominance.getDomTree(&body);
+        CFGLoopInfo loops(tree);
+        while (loops.getLoopDepth(at) > 1)
+          at = tree.getNode(loops.getLoopFor(at)->getHeader())
+                   ->getIDom()
+                   ->getBlock();
+      }
+      Operation *before = at->getTerminator();
+      for (Operation &op : *at) {
+        if (llvm::is_contained(touching, &op)) {
+          before = &op;
+          break;
+        }
+      }
+      b.setInsertionPoint(before);
+      lanePtx(b, loc, gridDependencyWait, "~{memory}", {});
+      lanePtx(b, loc, "griddepcontrol.launch_dependents;", "", {});
+    }
+    f.walk([&](gpu::ReturnOp ret) {
+      if (at &&
+          (at == ret->getBlock() || dominance.dominates(at, ret->getBlock())))
+        return;
+      b.setInsertionPoint(ret);
+      lanePtx(b, loc, gridDependencyWait, "~{memory}", {});
+    });
+    waiting.insert(f.getName());
+  });
+  return waiting;
+}
+
 /// Mark the buffers of each kernel in `device`, the lowered copy of
 /// `original`. A buffer that nothing writes while the kernel runs is `noalias
 /// readonly`, as Rust marks a `&T`, so NVPTX loads it through the read-only
@@ -10404,12 +10557,20 @@ static bool weakRelaxedAtomics(Operation *op) {
 /// 3 + 2 * rank of them, and drops these marks, so they go on its two pointers.
 /// The alignment of the buffer's memory space goes on the aligned pointer, the
 /// one that loads use. The runtime checks it at launch.
-static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
+///
+/// A kernel in `waiting` can run while the kernel before it still writes its
+/// buffers, so none of them is `readonly`. LLVM may take the memory of a
+/// `noalias readonly` pointer as constant, and then move its loads above the
+/// wait. Each wait also takes the aligned pointers as operands. Without them,
+/// LLVM finds that a buffer the kernel only reads is `readonly` by itself.
+static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device,
+                              const llvm::StringSet<> &waiting) {
   MLIRContext *ctx = device.getContext();
   original.walk([&](gpu::GPUFuncOp f) {
     auto access = f->getAttrOfType<ArrayAttr>("vx.arg_access");
     auto align = f->getAttrOfType<ArrayAttr>("vx.arg_align");
-    if (!access && !align)
+    const bool waits = waiting.contains(f.getName());
+    if (!access && !align && !waits)
       return;
     LLVM::LLVMFuncOp lowered;
     device.walk([&](LLVM::LLVMFuncOp g) {
@@ -10419,6 +10580,7 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
     if (!lowered)
       return;
     unsigned at = 0;
+    SmallVector<Value> pointers;
     for (auto [i, ty] : llvm::enumerate(f.getArgumentTypes())) {
       auto memref = dyn_cast<MemRefType>(ty);
       StringRef kind = access && i < access.size()
@@ -10427,7 +10589,7 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
       if (memref && (kind == "readonly" || kind == "noalias")) {
         for (unsigned p : {at, at + 1}) {
           lowered.setArgAttr(p, "llvm.noalias", UnitAttr::get(ctx));
-          if (kind == "readonly")
+          if (kind == "readonly" && !waits)
             lowered.setArgAttr(p, "llvm.readonly", UnitAttr::get(ctx));
         }
       }
@@ -10436,10 +10598,29 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
       if (memref && bytes != 0)
         lowered.setArgAttr(at + 1, "llvm.align",
                            IntegerAttr::get(IntegerType::get(ctx, 64), bytes));
+      if (memref)
+        pointers.push_back(lowered.getArgument(at + 1));
       at += memref ? 3 + 2 * memref.getRank() : 1;
     }
     assert(at == lowered.getNumArguments() &&
            "a kernel's memref parameter is 3 + 2 * rank LLVM parameters");
+    if (!waits)
+      return;
+    SmallVector<LLVM::InlineAsmOp> waitOps;
+    lowered.walk([&](LLVM::InlineAsmOp a) {
+      if (a.getAsmString() == gridDependencyWait)
+        waitOps.push_back(a);
+    });
+    assert(!waitOps.empty() && "a kernel that waits has a wait");
+    std::string constraints;
+    for (size_t k = 0; k < pointers.size(); ++k)
+      constraints += "l,";
+    constraints += "~{memory}";
+    for (LLVM::InlineAsmOp a : waitOps) {
+      OpBuilder b(a);
+      lanePtx(b, a.getLoc(), gridDependencyWait, constraints, pointers);
+      a.erase();
+    }
   });
 }
 
@@ -10744,6 +10925,9 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
 
   GpuNVVMAttachTargetOptions attach;
   attach.chip = deviceChip(gpuModule);
+  llvm::StringSet<> waiting;
+  if (gridDependenciesRequested() && chipNumber(attach.chip) >= 90)
+    waiting = waitForEarlierKernels(*device);
   attach.features = ptxFeatureFor(attach.chip);
   unsigned ptx = 0;
   StringRef(attach.features).drop_front(4).getAsInteger(10, ptx);
@@ -10811,7 +10995,7 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
     error = "the NVPTX pipeline failed";
     return {};
   }
-  markKernelBuffers(gpuModule, *device);
+  markKernelBuffers(gpuModule, *device, waiting);
   // The conversion gives each function a C wrapper, `_mlir_ciface_<name>`. The
   // host cannot call a device function, and a wrapper is public, so it would
   // keep its callee in the PTX after the kernels inline that callee.
@@ -10890,7 +11074,7 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
     error = "the device image is not text (it contains a NUL)";
     return {};
   }
-  return DeviceImage{"ptx", std::move(image)};
+  return DeviceImage{"ptx", std::move(image), {}, std::move(waiting)};
 }
 
 /// The SPIR-V target, registered once per process.
@@ -12766,6 +12950,12 @@ struct ConvertVxToLLVMPass
         std::string target = *pipeline == DevicePipeline::Metal
                                  ? std::string("applegpu")
                                  : deviceChip(m);
+        for (llvm::json::Value &kernel : exported) {
+          llvm::json::Object *entry = kernel.getAsObject();
+          std::optional<StringRef> name = entry->getString("name");
+          if (name && image.waits.contains(*name))
+            (*entry)["waits_for_earlier_kernels"] = true;
+        }
         llvm::json::Object manifest{{"target", target},
                                     {"kernels", std::move(exported)}};
         std::string text;
