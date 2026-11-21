@@ -723,6 +723,8 @@ pub enum Dim {
     Static(Expr),
     /// `?`: the extent is a run-time value. Carries nothing; the rank is the list's length.
     Dyn,
+    /// `? mult_of N`: a run-time extent that the caller states is a multiple of N.
+    DynMult(u64),
 }
 
 impl Dim {
@@ -731,6 +733,7 @@ impl Dim {
         match self {
             Dim::Static(e) => Some(e),
             Dim::Dyn => None,
+            Dim::DynMult(_) => None,
         }
     }
 
@@ -742,10 +745,18 @@ impl Dim {
         }
     }
 
+    pub fn mult_of(&self) -> Option<u64> {
+        match self {
+            Dim::DynMult(n) => Some(*n),
+            _ => None,
+        }
+    }
+
     pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Dim {
         match self {
             Dim::Static(e) => Dim::Static(e.substitute(mapping)),
             Dim::Dyn => Dim::Dyn,
+            Dim::DynMult(n) => Dim::DynMult(*n),
         }
     }
 }
@@ -1585,6 +1596,7 @@ impl std::fmt::Display for Type {
                         }
                         Dim::Static(_) => write!(f, "{{..}}")?,
                         Dim::Dyn => write!(f, "?")?,
+                        Dim::DynMult(n) => write!(f, "? mult_of {n}")?,
                     }
                 }
                 write!(f, "]")?;
@@ -1675,6 +1687,7 @@ impl Mangle for Type {
                         Dim::Static(Expr::Identifier(id)) => write!(w, "{}", id.name)?,
                         Dim::Static(_) => write!(w, "d")?,
                         Dim::Dyn => write!(w, "_")?,
+                        Dim::DynMult(n) => write!(w, "mult_of{}", n)?,
                     }
                 }
                 Ok(())

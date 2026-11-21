@@ -1,0 +1,59 @@
+//===- a_kernel_states_a_dimension_is_a_multiple_of_a_number.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `? mult_of 4` dimension states that the run-time extent is a multiple of 4 (#3668).
+// The compiler assumes the fact at the kernel's entry, so the four adjacent bf16 stores of
+// a lane merge into one `st.global.v2.b32`. Without the fact, a run-time pitch leaves the
+// stores narrow: the address of a row is `row * pitch`, and LLVM cannot prove that
+// aligned. A compile-time pitch of 4 merges the same stores without any fact, which is
+// what the kernel cannot spell here: the pitch is the GEMM's N, a run-time value.
+//
+// REQUIRES: flat-codegen
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx
+//
+// CHECK-LABEL: .entry write_rows_dynamic_pitch(
+// CHECK-COUNT-4: st.global.b16
+// CHECK-LABEL: .entry write_rows_stated_multiple(
+// CHECK:       st.global.v2.b32
+// CHECK-NOT:   st.global.b16
+
+fn write_rows_dynamic_pitch(out : &mut Tensor<bf16, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..n across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[t][0] as i64) + (r as i64);
+        if row < (tiles[t][1] as i64) {
+          let v = (10 * t + r) as f32;
+          out[row][0] = v as bf16;
+          out[row][1] = (v + 1.0) as bf16;
+          out[row][2] = (v + 2.0) as bf16;
+          out[row][3] = (v + 3.0) as bf16;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn write_rows_stated_multiple(out : &mut Tensor<bf16, [?, ? mult_of 4], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..n across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[t][0] as i64) + (r as i64);
+        if row < (tiles[t][1] as i64) {
+          let v = (10 * t + r) as f32;
+          out[row][0] = v as bf16;
+          out[row][1] = (v + 1.0) as bf16;
+          out[row][2] = (v + 2.0) as bf16;
+          out[row][3] = (v + 3.0) as bf16;
+        }
+      }
+    }
+  }
+  return;
+}

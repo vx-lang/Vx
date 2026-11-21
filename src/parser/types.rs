@@ -539,7 +539,29 @@ impl<'a> Parser<'a> {
                                 && !self.check(&TokenType::Eof)
                             {
                                 if self.match_token(&TokenType::Question) {
-                                    dims.push(Dim::Dyn);
+                                    // `? mult_of N`: the caller states that the run-time extent
+                                    // is a multiple of N (#3668). The fact is part of the same
+                                    // dimension, so one dim goes in either way.
+                                    let says_mult_of = match &self.peek().kind {
+                                        TokenType::Identifier(s) => *s == "mult_of",
+                                        _ => false,
+                                    };
+                                    if says_mult_of {
+                                        self.advance();
+                                        let n = match &self.advance().kind {
+                                            TokenType::Number(s) => s.parse::<u64>().ok(),
+                                            _ => None,
+                                        };
+                                        let Some(n) = n.filter(|n| n.is_power_of_two()) else {
+                                            return Err(self.error(
+                                                "`? mult_of N` needs N to be a power of two, \
+                                                 such as 4",
+                                            ));
+                                        };
+                                        dims.push(Dim::DynMult(n));
+                                    } else {
+                                        dims.push(Dim::Dyn);
+                                    }
                                 } else {
                                     let mut dim = self.parse_expr()?;
                                     super::expr::stamp_dim_literals(&mut dim);

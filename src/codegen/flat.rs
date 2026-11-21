@@ -271,7 +271,7 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
             let mut shape = Vec::with_capacity(dims.len());
             for d in dims {
                 shape.push(match d {
-                    Dim::Dyn => DYN_DIM.to_string(),
+                    Dim::Dyn | Dim::DynMult(_) => DYN_DIM.to_string(),
                     _ => d.literal()?.parse::<i64>().ok()?.to_string(),
                 });
             }
@@ -2324,6 +2324,10 @@ pub(crate) struct FnEmit<'a> {
     /// its own alias-scope `distinct[]` id and its disjoint-sibling ids. Numbered from the
     /// module-global counter, so scopes stay distinct across functions.
     pub(crate) alias_scope_of: HashMap<usize, (u32, Vec<u32>)>,
+    /// The `? mult_of N` assume marks of each open device region: one `(start, end, arg)`
+    /// per parameter assumed, positions into `body`, pushed at `Spawn` and consumed at
+    /// `SpawnEnd`, which prunes the marks for parameters the region body never reads.
+    pub(crate) mult_of_marks: Vec<Vec<(usize, usize, String)>>,
     /// Callees this function reaches, collected so the module can declare them.
     pub(crate) calls: &'a mut Vec<(String, Vec<String>, String)>,
     /// The SSA name each register carries.
@@ -2902,6 +2906,7 @@ pub fn emit_function_mlir(
         ret_slot,
         arg_offset,
         alias_scope_of,
+        mult_of_marks: Vec::new(),
         calls,
         names: vec![String::new(); hir.len()],
         etypes: vec![None; hir.len()],

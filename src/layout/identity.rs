@@ -247,6 +247,7 @@ fn aggregate_type_key(ty: &Type, identities: &AggregateIdentities) -> Option<Str
                     match dim {
                         Dim::Dyn => key.atom("dynamic", ""),
                         Dim::Static(expr) => write_const_key(expr, key)?,
+                        Dim::DynMult(n) => key.atom("mult_of", format_args!("{n:?}")),
                     }
                 }
                 key.end();

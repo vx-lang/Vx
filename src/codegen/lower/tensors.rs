@@ -22,6 +22,37 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
     }
 }
 
+/// The `? mult_of N` facts of the tensors this region reads, assumed at the entry of the
+/// kernel body (#3668). Only names the region reads: an assume for a tensor the body never
+/// touches would make the kernel take an operand it did not need.
+fn assume_mult_of_params<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    this: &syntax::SpawnOnExpr,
+    body_block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(), LowerError> {
+    let mut used = std::collections::HashSet::new();
+    for s in &this.stmts {
+        super::seam_cert::collect_stmt_idents(s, &mut used);
+    }
+    if let Some(r) = &this.ret {
+        super::seam_cert::collect_expr_idents(r, &mut used);
+    }
+    // Cloned out of `gen` so the loop below can reach `gen.env` while the names are held.
+    let candidates: Vec<(crate::symbol::Symbol, crate::syntax::Type)> = gen
+        .ast_env
+        .iter()
+        .filter(|(name, ty)| used.contains(name.as_ref()) && super::states_a_mult_of_fact(ty))
+        .map(|(name, ty)| (name.clone(), ty.clone()))
+        .collect();
+    for (name, ty) in candidates {
+        let Some(&(val, mlir_ty)) = gen.env.get(&name) else {
+            continue;
+        };
+        super::assume_dims_are_multiples(gen, val, mlir_ty, &ty, body_block)?;
+    }
+    Ok(())
+}
+
 fn lower_spawn_region<'c>(
     this: &syntax::SpawnOnExpr,
     gen: &mut MeliorGenerator<'c>,
@@ -139,6 +170,12 @@ fn lower_spawn_region<'c>(
             gen.env.insert(name.clone(), (loaded, ty));
             outer_slots.push((name, (slot, slot_ty)));
         }
+    }
+    // The `? mult_of N` facts of the tensors this region reads, assumed at the entry of
+    // the kernel body (#3668). The slot loads above put plain memrefs in `gen.env`, so
+    // `memref.dim` below reads the kernel's own operand after the region is outlined.
+    if is_device {
+        assume_mult_of_params(gen, this, body_block)?;
     }
     for (i, stmt) in this.stmts.iter().enumerate() {
         // The last pass of the nest of blocks runs the code after the nest.

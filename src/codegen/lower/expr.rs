@@ -4127,7 +4127,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 // A shape with a run-time extent is not in the type, so it stays where it was
                 // written; a static one is rebuilt from the type as the one array argument.
                 Some(syntax::Type::Tensor(el, dims, _))
-                    if dims.iter().any(|d| matches!(d, syntax::Dim::Dyn)) =>
+                    if dims
+                        .iter()
+                        .any(|d| matches!(d, syntax::Dim::Dyn | syntax::Dim::DynMult(_))) =>
                 {
                     (syntax::Type::Scalar(el.clone()), args.to_vec())
                 }

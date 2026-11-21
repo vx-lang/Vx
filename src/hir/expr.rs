@@ -729,7 +729,28 @@ impl<'a> TypeChecker<'a> {
                 }
                 let empty_env = std::collections::HashMap::new();
                 for (dt, ds) in dims_target.iter().zip(dims_source.iter()) {
-                    let Some(et) = dt.as_static() else { continue };
+                    let Some(et) = dt.as_static() else {
+                        // A plain `?` accepts any extent. A `? mult_of N` target states a fact
+                        // the source must already have: a run-time extent without the fact, or
+                        // one that says a different multiple, does not widen to it (#3668). A
+                        // known extent satisfies it, checked here, so the fact cannot be
+                        // stated of a shape that breaks it.
+                        match (dt.mult_of(), ds) {
+                            (None, _) => continue,
+                            (Some(_), Dim::Dyn) => return false,
+                            (Some(m), Dim::DynMult(n)) => {
+                                if *n != m {
+                                    return false;
+                                }
+                            }
+                            (Some(m), Dim::Static(es)) => match self.eval_expr(es, &empty_env) {
+                                Some(crate::hir::env::Value::Int(i))
+                                    if i.rem_euclid(m as i64) == 0 => {}
+                                _ => return false,
+                            },
+                        }
+                        continue;
+                    };
                     let Some(es) = ds.as_static() else {
                         return false;
                     };
