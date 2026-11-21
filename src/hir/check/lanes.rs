@@ -54,6 +54,8 @@ pub enum LaneOp {
     /// `acc` gets the matmul of two `f4e2m1` tiles, each with a scale for each block of k. The
     /// lanes of a block or of a subgroup compute it together.
     MatmulScaled,
+    /// Asks for a part of a tensor to come into the L2 cache. It reads no value.
+    Prefetch,
 }
 
 impl LaneOp {
@@ -87,7 +89,8 @@ pub enum LaneArg {
     Matrix(&'static [ElementType]),
     /// An `i32`, such as the number of elements to combine, or a copy token.
     I32,
-    /// The place of a tile, `[i, j, ..]`. The op takes each number as an operand.
+    /// The place of a tile, `[i, j, ..]`, or the shape of a part of a tensor, `[rows, cols]`. The
+    /// op takes each number as an operand. All the places of a call have the same length.
     Place,
     /// A number, such as the value of a fill.
     Scalar,
@@ -293,7 +296,9 @@ impl LaneRoutine {
     /// arguments leave. `None` when there are too few.
     pub fn operand_kinds(&self, operands: usize) -> Option<Vec<LaneArg>> {
         let fixed = self.args.iter().filter(|a| **a != LaneArg::Place).count();
-        let places = operands.checked_sub(fixed)?;
+        let lists = self.args.len() - fixed;
+        let numbers = operands.checked_sub(fixed)?;
+        let places = numbers.checked_div(lists).unwrap_or(0);
         let mut kinds = Vec::new();
         for kind in self.args {
             match kind {
@@ -468,6 +473,14 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
         .with_lanes()
         .with_row_of(0)
         .writing_first(),
+        LaneRoutine::call(
+            "prefetch",
+            Prefetch,
+            "vx.lane_prefetch",
+            &[Tile, Place, Place],
+            None,
+        )
+        .with_lanes(),
         LaneRoutine::call("matmul", Matmul, "vx.lane_matmul", matmul, None)
             .with_syntax(LaneSyntax::Operator)
             .with_row_of(0)
@@ -674,6 +687,7 @@ impl crate::hir::TypeChecker<'_> {
             Some(LaneOp::MatmulScaled) => {
                 return self.check_matmul_scaled(name, args, arg_types, call_span)
             }
+            Some(LaneOp::Prefetch) => return self.check_prefetch(name, args, arg_types, call_span),
             _ => {}
         }
         let argmax = lane_routine(name).map(|r| r.op) == Some(LaneOp::ArgMax);
@@ -1255,6 +1269,78 @@ impl crate::hir::TypeChecker<'_> {
                 ),
                 span,
             );
+        }
+        void
+    }
+
+    /// The type of a call `lanes::prefetch(&x, [i, j], [rows, cols])`, which asks for the part of
+    /// `x` at `[i, j]` with that shape to come into the L2 cache. It reads no value, so it never
+    /// changes a result.
+    fn check_prefetch(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let void = Type::Struct("void".into(), None);
+        if self.speculating {
+            return void;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 3 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 3 arguments, a borrowed tensor, the place of the part such as \
+                     `[r, c]`, and the shape of the part such as `[rows, cols]`, but it got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return void;
+        }
+        // `x` and `&x` for a parameter `x : &Tensor<..>` both name the tensor.
+        let mut src = &arg_types[0];
+        while let Type::Borrow { inner, .. } = src {
+            src = inner;
+        }
+        let rank = match src {
+            Type::Tensor(_, dims, p)
+                if !matches!(arg_types[0], Type::Tensor(..)) && !self.in_shared_memory(p) =>
+            {
+                dims.len()
+            }
+            _ => {
+                self.errors.error_with_code(
+                    DiagnosticCode::E3003,
+                    format!(
+                        "the first argument of `{name}` must borrow a tensor that is not in shared \
+                         memory, such as `&w`, but it is `{}`",
+                        arg_types[0]
+                    ),
+                    span,
+                );
+                return void;
+            }
+        };
+        for (at, what) in [(1, "place"), (2, "shape")] {
+            let ok = matches!(&args[at], Expr::Array(a) if a.elements.len() == rank)
+                && matches!(
+                    &arg_types[at],
+                    Type::Tensor(ElementType::I32 | ElementType::I64, ..)
+                );
+            if !ok {
+                let ordinal = if at == 1 { "second" } else { "third" };
+                self.errors.error_with_code(
+                    DiagnosticCode::E3003,
+                    format!(
+                        "the {ordinal} argument of `{name}` is the {what} of the part, written as \
+                         a list of {rank} integers, one for each dimension of the tensor"
+                    ),
+                    span.clone(),
+                );
+            }
         }
         void
     }

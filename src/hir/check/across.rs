@@ -881,6 +881,7 @@ impl Walk<'_> {
                         | lanes::LaneOp::Copy
                         | lanes::LaneOp::Fill
                         | lanes::LaneOp::ScaleRows
+                        | lanes::LaneOp::Prefetch
                 )
             });
             if copy {
