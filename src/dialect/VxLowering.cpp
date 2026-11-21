@@ -8718,7 +8718,8 @@ struct ConvertVxToStandardPass
         // tensors are views at offsets into dynamic shared memory, and the
         // kernel says how much it needs (`vx.dynamic_shared`), which the
         // launch passes. Metal has no such limit for static `threadgroup`
-        // arrays, and the Metal printer checks the limit of the device.
+        // arrays, and the Metal printer checks the limit of the device. Nor
+        // has SPIR-V for its Workgroup storage.
         auto alignOf = [](memref::AllocaOp a) -> int64_t {
           return a.getAlignment() ? (int64_t)a.getAlignment().value() : 16;
         };
@@ -8744,7 +8745,7 @@ struct ConvertVxToStandardPass
           return;
         }
         if (total > kMaxStaticSharedBytes &&
-            pipelineOfKernel(kernel) != DevicePipeline::Metal) {
+            pipelineOfKernel(kernel) == DevicePipeline::Nvptx) {
           OpBuilder atEntry(&gpuFunc.getBody().front(),
                             gpuFunc.getBody().front().begin());
           Location loc = gpuFunc.getLoc();
