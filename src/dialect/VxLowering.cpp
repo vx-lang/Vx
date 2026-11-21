@@ -8410,6 +8410,16 @@ struct ConvertVxToStandardPass
         std::string mmaChip =
             pipeline == DevicePipeline::Nvptx ? deviceChip(gpuModule) : "";
         bool simdgroupMatrices = pipeline == DevicePipeline::Metal;
+        // A tile in `Memory::REG` that the lanes of a subgroup share: a
+        // `vx.registers` slot that a lane op uses. The matmuls below must keep
+        // it in registers, so that no use of it is left after them.
+        constexpr StringLiteral subgroupRegistersAttr = "vx.subgroup_registers";
+        gpuFunc.walk([&](vx::LaneOpInterface lane) {
+          for (Value v : lane->getOperands())
+            if (memref::AllocaOp a = laneCopyTileAlloca(v);
+                a && a->hasAttr("vx.registers"))
+              a->setAttr(subgroupRegistersAttr, UnitAttr::get(a.getContext()));
+        });
         SmallPtrSet<Operation *, 4> expanded;
         int64_t registerTiles = 0;
         for (vx::LaneMatmulOp op : matmuls) {
@@ -8434,6 +8444,30 @@ struct ConvertVxToStandardPass
           }
           OpBuilder b(op);
           expandLaneMatmul(b, op, /*device=*/true, mmaChip, simdgroupMatrices);
+        }
+        // The checker refuses such a tile when it expects it in memory, so this
+        // is where the two disagree.
+        WalkResult inMemory = gpuFunc.walk([&](memref::AllocaOp a) {
+          if (!a->hasAttr(subgroupRegistersAttr))
+            return WalkResult::advance();
+          SmallVector<Operation *> uses;
+          accessesOf(a.getResult(), uses);
+          llvm::erase_if(uses, [](Operation *u) {
+            return isa<vx::DropOp>(u) || u->hasAttr(simdgroupRegistersAttr);
+          });
+          if (uses.empty())
+            return WalkResult::advance();
+          uses.front()
+                  ->emitError("the compiler cannot keep a tile in "
+                              "`Memory::REG` in registers, "
+                              "because this use needs it in memory")
+                  .attachNote(a.getLoc())
+              << "the tile is made here";
+          return WalkResult::interrupt();
+        });
+        if (inMemory.wasInterrupted()) {
+          signalPassFailure();
+          return;
         }
         // A scaled lane matmul on tensor cores with a block-scaled
         // `mma.sync`. The others get the loops of `expandInKernel` below.

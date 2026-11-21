@@ -709,37 +709,33 @@ impl<'a> TypeChecker<'a> {
                                     return Type::Unknown;
                                 }
                             }
-                            // In a device region, tiles in two memories, such as weights in HBM
-                            // and activations in shared memory, give a product in the memory that
-                            // its target names. With no such target there is no default, which
-                            // would hide a copy.
+                            // In a device region, the product goes to the memory that its
+                            // target names, such as registers for sums in `Memory::REG`. Tiles in
+                            // two memories, such as weights in HBM and activations in shared
+                            // memory, need such a target: a default would hide a copy.
+                            let target = self
+                                .expected_type
+                                .as_ref()
+                                .and_then(Self::as_tensor_operand)
+                                .and_then(|(_, _, t)| t.clone())
+                                .filter(|_| self.device_spawn.is_some());
                             let top = match (top_l, top_r) {
+                                _ if target.is_some() => target,
                                 (Some(l), Some(r))
                                     if l.space != r.space && self.device_spawn.is_some() =>
                                 {
-                                    let target = self
-                                        .expected_type
-                                        .as_ref()
-                                        .and_then(Self::as_tensor_operand)
-                                        .and_then(|(_, _, t)| t.clone());
-                                    if target.is_none() {
-                                        self.errors.error_with_code(
-                                            crate::diagnostic::DiagnosticCode::E3004,
-                                            format!(
-                                                "the tiles of this `@` are in {} and in {}, so \
-                                                 the product needs a target that names its \
-                                                 memory; assign it to a tensor whose type names \
-                                                 one",
-                                                l.as_written(),
-                                                r.as_written()
-                                            ),
-                                            Some(crate::diagnostic::SourceSpan::from_ast_span(
-                                                span,
-                                            )),
-                                        );
-                                        return Type::Unknown;
-                                    }
-                                    target
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3004,
+                                        format!(
+                                            "the tiles of this `@` are in {} and in {}, so the \
+                                             product needs a target that names its memory; \
+                                             assign it to a tensor whose type names one",
+                                            l.as_written(),
+                                            r.as_written()
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                    return Type::Unknown;
                                 }
                                 _ => top_l.clone(),
                             };

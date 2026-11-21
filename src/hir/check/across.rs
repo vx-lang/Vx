@@ -82,6 +82,11 @@ struct Walk<'g> {
     auto_schedule: bool,
     /// The memories with `scope: cta` or `scope: sm`, whose tensors the lanes of a block share.
     shared: HashSet<String>,
+    /// The memories with `scope: thread`, the registers.
+    registers: HashSet<String>,
+    /// The tensors in `registers` that the code of a block makes, with the position of the `let`
+    /// and the type of the tensor.
+    register_tiles: Vec<(String, Span, crate::syntax::Type)>,
     /// The parameters with an `atomic` clause, for each function that has one.
     contracts: HashMap<String, Vec<usize>>,
     /// The names of the generic functions, to name an instance by its template in a message.
@@ -160,6 +165,13 @@ impl crate::hir::TypeChecker<'_> {
             })
             .map(|d| d.name.as_ref().to_string())
             .collect();
+        let registers = self
+            .env
+            .memories
+            .values()
+            .filter(|d| d.scope == Some(crate::syntax::Scope::Thread))
+            .map(|d| d.name.as_ref().to_string())
+            .collect();
         let mut walk = Walk {
             graph: self.transfer_cost_graph,
             errors: Vec::new(),
@@ -167,6 +179,8 @@ impl crate::hir::TypeChecker<'_> {
             largest_ends: HashMap::new(),
             auto_schedule: self.worker.global.auto_schedule_levels,
             shared,
+            registers,
+            register_tiles: Vec::new(),
             contracts: self.atomic_contracts(),
             templates: self
                 .env
@@ -185,6 +199,7 @@ impl crate::hir::TypeChecker<'_> {
         mark_stmts(body, &walk.found);
         check_sizes_at_launch(body, &walk.largest_ends, !walk.errors.is_empty());
         walk.lane_reductions(body);
+        self.block_register_tiles = std::mem::take(&mut walk.register_tiles);
         // The proof of an outer loop also walks the inner loops, so one place can come twice.
         let mut seen = HashSet::new();
         walk.errors
@@ -467,11 +482,22 @@ impl Walk<'_> {
             return;
         }
         let space = crate::hir::flatten::tensor_alloc_placement(fc).map(|p| p.space.name());
+        // A tile in registers with a row for each subgroup. Whether the registers can hold it is
+        // decided at the end of the function, with its uses.
+        if let (true, Some(ty)) = (
+            space.as_ref().is_some_and(|s| self.registers.contains(s)),
+            fc.type_args.as_ref().and_then(|t| t.first()),
+        ) {
+            self.register_tiles
+                .push((l.name.to_string(), l.span, ty.clone()));
+            return;
+        }
         if !space.as_ref().is_some_and(|s| self.shared.contains(s)) {
             self.error(
                 "the lanes of a block share a tensor that the code of the block makes outside its \
                  lane loops, so it goes in a memory with `scope: cta` or `scope: sm`, such as \
-                 `Memory::SMEM`. A tensor for each lane is made inside a lane loop"
+                 `Memory::SMEM`, or in registers as a tile of sums for each subgroup. A tensor \
+                 for each lane is made inside a lane loop"
                     .to_string(),
                 l.span,
             );

@@ -334,6 +334,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_matmuls_of_a_tile_in_hbm_give_the_sums.vx",
         // needs --machine
         "optimizations/pass/lane_matmuls_load_16_bytes_of_a_row_at_once.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

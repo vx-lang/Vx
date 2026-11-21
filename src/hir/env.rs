@@ -784,6 +784,13 @@ pub struct TypeChecker<'a> {
     /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
     /// call.
     pub(crate) lane_copies_out: HashMap<crate::syntax::Span, Vec<u64>>,
+    /// The tensors in a `scope: thread` space that the code of a block makes outside its lane
+    /// loops, with the position of each `let` and the type of the tensor. Each one must be a tile
+    /// of sums that stays in the registers of the subgroups (check/subgroup_registers.rs).
+    pub(crate) block_register_tiles: Vec<(String, crate::syntax::Span, crate::syntax::Type)>,
+    /// Each index into a register tensor with the variable of an `across` loop: the tensor, the
+    /// variable and the position of the index.
+    pub(crate) across_register_indices: Vec<(String, String, crate::syntax::Span)>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -866,6 +873,8 @@ impl<'a> TypeChecker<'a> {
             traffic: Default::default(),
             lane_reductions: HashMap::new(),
             lane_copies_out: HashMap::new(),
+            block_register_tiles: Vec::new(),
+            across_register_indices: Vec::new(),
         }
     }
 
