@@ -66,6 +66,9 @@ mod integration_test {
     mod shipped_programs_compile;
     mod solver_policy_test;
     mod solver_questions_of_raw_pointer_writes;
+    // It patches ELF libraries with patchelf, and pocl runs on Linux.
+    #[cfg(target_os = "linux")]
+    mod spirv_images_on_pocl;
     mod tensors_with_gaps_from_c;
     mod time_limit;
     mod traffic_test;
