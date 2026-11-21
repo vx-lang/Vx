@@ -37,7 +37,7 @@ fn describe(e : NetError) -> void {
 
 fn main() -> i32 {
   // An address must be `host:port`. This one has no port.
-  match unsafe { TcpStream::connect("localhost") } {
+  match unsafe { TcpStream::connect_c_str("localhost") } {
     Result<TcpStream, NetError>::Ok(_stream) => {
       println!("connected");
     }
@@ -46,7 +46,7 @@ fn main() -> i32 {
     }
   }
   // Port 0 asks the system for any free port.
-  match unsafe { UdpSocket::bind("127.0.0.1:0") } {
+  match unsafe { UdpSocket::bind_c_str("127.0.0.1:0") } {
     Result<UdpSocket, NetError>::Ok(_socket) => {
       println!("bound a UDP socket");
     }

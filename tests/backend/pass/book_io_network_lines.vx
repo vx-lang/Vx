@@ -1,0 +1,79 @@
+//===- book_io_network_lines.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on files, input and time (www/book/src/files-input-time.md):
+// a client task sends two lines through a `BufWriter`, and the server reads them with a
+// `BufReader`. The port is fixed, because `std::net` cannot give the port of a listener yet.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}line 1 has 11 bytes{{$}}
+// CHECK-NEXT: {{^}}line 2 has 12 bytes{{$}}
+// CHECK-NEXT: {{^}}the client closed the connection{{$}}
+
+// ANCHOR: program
+import core::result;
+import std::net;
+import std::string;
+import std::vec;
+
+// The bytes of a string literal, without the NUL at its end.
+fn bytes(text : *const i8) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  let length = unsafe { string_length(text) };
+  for i in 0..length {
+    v.push(unsafe { text[i] } as u8);
+  }
+  return v;
+}
+
+fn client(addr : &String) -> Result<u64, NetError> {
+  let stream = TcpStream::connect(addr)?;
+  let mut out = BufWriter::new(stream);
+  let _first = out.write(&bytes("first line\n"))?;
+  let _second = out.write(&bytes("second line\n"))?;
+  // Both lines go to the server in one write.
+  return out.flush();
+}
+
+fn server(listener : TcpListener) -> Result<u64, NetError> {
+  let mut l = listener;
+  let mut input = BufReader::new(l.accept()?);
+  let mut count = 0u64;
+  let mut n = 1u64;
+  while n > 0 {
+    let mut line = Vec<u8>::new();
+    // 0 bytes means that the client closed the connection.
+    n = input.read_line(&mut line)?;
+    if n > 0 {
+      count = count + 1;
+      println!("line {} has {} bytes", count, n);
+    }
+  }
+  println!("the client closed the connection");
+  return Result<u64, NetError>::Ok(count);
+}
+
+fn main() -> i32 {
+  let addr = unsafe { String::from_c_str("127.0.0.1:41765") };
+  match TcpListener::bind(&addr) {
+    Result<TcpListener, NetError>::Ok(listener) => {
+      tasks {
+        spawn {
+          let _sent = client(&addr);
+        };
+        let _read = server(listener);
+      }
+    }
+    Result<TcpListener, NetError>::Err(_e) => {
+      println!("the port is in use");
+    }
+  }
+  return 0;
+}
+// ANCHOR_END: program

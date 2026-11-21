@@ -1,0 +1,234 @@
+//===- network_reads_and_writes_without_raw_pointers.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The safe methods of `std::net` take a `String` address and a `Vec<u8>` buffer. In each part, a
+// server and a client run as two tasks, so each wait must park only its own task.
+//
+// - Lines: the client sends two lines through a `BufWriter`. The server reads them with
+//   `BufReader::read_line` and answers with `write_all`. The client gets the answer with
+//   `read_exact`, writes a last line with no newline, and closes.
+// - A short message: the client writes 2 bytes and closes. The server reads 1 byte with `read`.
+//   Then `read_exact` wants 2 more bytes, but only 1 comes, so it gives `Reset`.
+// - UDP: one task waits in `recv`, and the other sends a datagram with `send_to`.
+//
+// The port numbers are fixed, because `std::net` cannot give the port of a listener yet. The
+// second RUN line runs the tasks on the shared runtime, with one worker thread, and the third
+// one uses the AST code generator.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// The two tasks print in any order, so the first six lines are CHECK-DAG.
+// CHECK-DAG: {{^}}server: line 1 is ping, 5 bytes: true{{$}}
+// CHECK-DAG: {{^}}server: line 2 is two words, 10 bytes: true{{$}}
+// CHECK-DAG: {{^}}server: write_all sent 4 bytes{{$}}
+// CHECK-DAG: {{^}}client: flush sent 15 bytes{{$}}
+// CHECK-DAG: {{^}}client: read_exact got pong: true{{$}}
+// CHECK-DAG: {{^}}client: write sent 3 bytes{{$}}
+// CHECK: {{^}}server: line 3 is end, 3 bytes: true{{$}}
+// CHECK-NEXT: {{^}}server: read_line at the end gives 0 bytes{{$}}
+// CHECK-NEXT: {{^}}server: read got 1 byte, 7{{$}}
+// CHECK-NEXT: {{^}}server: read_exact gives Reset{{$}}
+// CHECK-NEXT: {{^}}udp: recv got 5 bytes, hello: true{{$}}
+
+import core::result;
+import std::net;
+import std::string;
+import std::vec;
+
+/// The bytes of `s`, without its NUL.
+fn bytes(s : *const i8) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  let mut i = 0i64;
+  while unsafe { s[i] } != 0i8 {
+    v.push(unsafe { s[i] } as u8);
+    i = i + 1i64;
+  }
+  return v;
+}
+
+/// Whether `v` holds the same bytes as `s`.
+fn same(v : &Vec<u8>, s : *const i8) -> bool {
+  let other = bytes(s);
+  if v.len() != other.len() {
+    return false;
+  }
+  for i in 0..v.len() {
+    if v.get(i) != other.get(i) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// A vector of `len` zero bytes.
+fn zeros(len : i32) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  for _i in 0..len {
+    v.push(0u8);
+  }
+  return v;
+}
+
+fn address(s : *const i8) -> String {
+  return unsafe { String::from_c_str(s) };
+}
+
+fn name(e : NetError) -> *const i8 {
+  match e {
+    NetError::Cancelled => {
+      return "Cancelled";
+    }
+    NetError::BadAddress => {
+      return "BadAddress";
+    }
+    NetError::Refused => {
+      return "Refused";
+    }
+    NetError::Reset => {
+      return "Reset";
+    }
+    NetError::InUse => {
+      return "InUse";
+    }
+    NetError::Os(_n) => {
+      return "Os";
+    }
+  }
+}
+
+fn report(who : *const i8, result : Result<u64, NetError>) -> void {
+  match result {
+    Result<u64, NetError>::Ok(_n) => {}
+    Result<u64, NetError>::Err(e) => {
+      println!("{}: Error {}", who, name(e));
+    }
+  }
+}
+
+fn lines_client() -> Result<u64, NetError> {
+  let stream = TcpStream::connect(&address("127.0.0.1:41761"))?;
+  let mut writer = BufWriter::new(stream);
+  let _first = writer.write(&bytes("ping\n"))?;
+  let _second = writer.write(&bytes("two words\n"))?;
+  let sent = writer.flush()?;
+  println!("client: flush sent {} bytes", sent);
+  let mut answer = zeros(4);
+  let _got = writer.get_mut().read_exact(&mut answer)?;
+  println!("client: read_exact got pong: {}", same(&answer, "pong"));
+  let last = writer.get_mut().write(&bytes("end"))?;
+  println!("client: write sent {} bytes", last);
+  return Result<u64, NetError>::Ok(0);
+}
+
+fn lines_server(listener : TcpListener) -> Result<u64, NetError> {
+  let mut l = listener;
+  let stream = l.accept()?;
+  let mut reader = BufReader::new(stream);
+  let mut line = Vec<u8>::new();
+  let n = reader.read_line(&mut line)?;
+  println!("server: line 1 is ping, {} bytes: {}", n, same(&line, "ping\n"));
+  let mut line2 = Vec<u8>::new();
+  let n2 = reader.read_line(&mut line2)?;
+  println!("server: line 2 is two words, {} bytes: {}", n2, same(&line2, "two words\n"));
+  let sent = reader.get_mut().write_all(&bytes("pong"))?;
+  println!("server: write_all sent {} bytes", sent);
+  let mut line3 = Vec<u8>::new();
+  let n3 = reader.read_line(&mut line3)?;
+  println!("server: line 3 is end, {} bytes: {}", n3, same(&line3, "end"));
+  let mut line4 = Vec<u8>::new();
+  let n4 = reader.read_line(&mut line4)?;
+  println!("server: read_line at the end gives {} bytes", n4);
+  return Result<u64, NetError>::Ok(0);
+}
+
+fn short_client() -> Result<u64, NetError> {
+  let mut stream = TcpStream::connect(&address("127.0.0.1:41762"))?;
+  let mut two = Vec<u8>::new();
+  two.push(7u8);
+  two.push(8u8);
+  return stream.write_all(&two);
+}
+
+fn short_server(listener : TcpListener) -> Result<u64, NetError> {
+  let mut l = listener;
+  let mut stream = l.accept()?;
+  let mut one = zeros(1);
+  let n = stream.read(&mut one)?;
+  println!("server: read got {} byte, {}", n, one.get(0));
+  let mut two = zeros(2);
+  match stream.read_exact(&mut two) {
+    Result<u64, NetError>::Ok(m) => {
+      println!("server: read_exact got {} bytes", m);
+    }
+    Result<u64, NetError>::Err(e) => {
+      println!("server: read_exact gives {}", name(e));
+    }
+  }
+  return Result<u64, NetError>::Ok(0);
+}
+
+fn udp_send() -> Result<u64, NetError> {
+  let mut socket = UdpSocket::bind(&address("127.0.0.1:41764"))?;
+  return socket.send_to(&bytes("hello"), &address("127.0.0.1:41763"));
+}
+
+fn udp_recv(socket : UdpSocket) -> Result<u64, NetError> {
+  let mut s = socket;
+  let mut buffer = zeros(8);
+  let n = s.recv(&mut buffer)?;
+  let mut got = Vec<u8>::new();
+  for i in 0..(n as i32) {
+    got.push(buffer.get(i));
+  }
+  println!("udp: recv got {} bytes, hello: {}", n, same(&got, "hello"));
+  return Result<u64, NetError>::Ok(n);
+}
+
+fn main() -> i32 {
+  let lines = TcpListener::bind(&address("127.0.0.1:41761"));
+  match lines {
+    Result<TcpListener, NetError>::Ok(listener) => {
+      tasks {
+        spawn {
+          report("client", lines_client());
+        };
+        report("server", lines_server(listener));
+      }
+    }
+    Result<TcpListener, NetError>::Err(e) => {
+      println!("bind: Error {}", name(e));
+    }
+  }
+  match TcpListener::bind(&address("127.0.0.1:41762")) {
+    Result<TcpListener, NetError>::Ok(listener) => {
+      tasks {
+        spawn {
+          report("client", short_client());
+        };
+        report("server", short_server(listener));
+      }
+    }
+    Result<TcpListener, NetError>::Err(e) => {
+      println!("bind: Error {}", name(e));
+    }
+  }
+  match UdpSocket::bind(&address("127.0.0.1:41763")) {
+    Result<UdpSocket, NetError>::Ok(socket) => {
+      tasks {
+        spawn {
+          report("udp", udp_recv(socket));
+        };
+        report("udp", udp_send());
+      }
+    }
+    Result<UdpSocket, NetError>::Err(e) => {
+      println!("udp bind: Error {}", name(e));
+    }
+  }
+  return 0;
+}
