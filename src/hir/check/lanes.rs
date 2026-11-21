@@ -298,7 +298,7 @@ impl LaneRoutine {
         let fixed = self.args.iter().filter(|a| **a != LaneArg::Place).count();
         let lists = self.args.len() - fixed;
         let numbers = operands.checked_sub(fixed)?;
-        let places = if lists == 0 { 0 } else { numbers / lists };
+        let places = numbers.checked_div(lists).unwrap_or(0);
         let mut kinds = Vec::new();
         for kind in self.args {
             match kind {
