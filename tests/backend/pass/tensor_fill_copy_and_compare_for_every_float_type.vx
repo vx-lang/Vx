@@ -1,0 +1,96 @@
+//===- tensor_fill_copy_and_compare_for_every_float_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `fill`, `assign`, `copy`, `compare` and `fill_static` of a 2-D tensor work for each float
+// type, not only for f32. Each type uses its own values.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}f64 fill 2.5 assign 1.25 copy 2.5 fill_static 8.5{{$}}
+// CHECK: {{^}}f64 compare false true{{$}}
+// CHECK: {{^}}f32 fill 3.5 assign 0.75 copy 3.5 fill_static 7.5{{$}}
+// CHECK: {{^}}f32 compare false true{{$}}
+// CHECK: {{^}}f16 fill 4.5 assign 0.5 copy 4.5 fill_static 6.5{{$}}
+// CHECK: {{^}}f16 compare false true{{$}}
+// CHECK: {{^}}bf16 fill 5.5 assign 0.25 copy 5.5 fill_static 9.5{{$}}
+// CHECK: {{^}}bf16 compare false true{{$}}
+
+import std::tensor;
+
+fn f64_methods() -> i32 {
+  let mut a = Tensor<f64>([ 3, 2 ]);
+  a.fill(2.5);
+  let mut b = Tensor<f64>([ 3, 2 ]);
+  b.assign(1.25);
+  let assigned = b[1][0];
+  let before_copy = a.compare(&b);
+  b.copy(&a);
+  let mut s = Tensor<f64, [ 2, 2 ]>::new();
+  s.fill_static(8.5);
+  println!("f64 fill {} assign {} copy {} fill_static {}", a[2][1], assigned, b[0][1], s[1][1]);
+  println!("f64 compare {} {}", before_copy, a.compare(&b));
+  return 0;
+}
+
+fn f32_methods() -> i32 {
+  let mut a = Tensor<f32>([ 3, 2 ]);
+  a.fill(3.5);
+  let mut b = Tensor<f32>([ 3, 2 ]);
+  b.assign(0.75);
+  let assigned = b[1][0];
+  let before_copy = a.compare(&b);
+  b.copy(&a);
+  let mut s = Tensor<f32, [ 2, 2 ]>::new();
+  s.fill_static(7.5);
+  println!("f32 fill {} assign {} copy {} fill_static {}", a[2][1], assigned, b[0][1], s[1][1]);
+  println!("f32 compare {} {}", before_copy, a.compare(&b));
+  return 0;
+}
+
+fn f16_methods() -> i32 {
+  let mut a = Tensor<f16>([ 3, 2 ]);
+  a.fill(4.5 as f16);
+  let mut b = Tensor<f16>([ 3, 2 ]);
+  b.assign(0.5 as f16);
+  let assigned = b[1][0] as f32;
+  let before_copy = a.compare(&b);
+  b.copy(&a);
+  let mut s = Tensor<f16, [ 2, 2 ]>::new();
+  s.fill_static(6.5 as f16);
+  let filled = a[2][1] as f32;
+  let copied = b[0][1] as f32;
+  let filled_static = s[1][1] as f32;
+  println!("f16 fill {} assign {} copy {} fill_static {}", filled, assigned, copied, filled_static);
+  println!("f16 compare {} {}", before_copy, a.compare(&b));
+  return 0;
+}
+
+fn bf16_methods() -> i32 {
+  let mut a = Tensor<bf16>([ 3, 2 ]);
+  a.fill(5.5 as bf16);
+  let mut b = Tensor<bf16>([ 3, 2 ]);
+  b.assign(0.25 as bf16);
+  let assigned = b[1][0] as f32;
+  let before_copy = a.compare(&b);
+  b.copy(&a);
+  let mut s = Tensor<bf16, [ 2, 2 ]>::new();
+  s.fill_static(9.5 as bf16);
+  let filled = a[2][1] as f32;
+  let copied = b[0][1] as f32;
+  let filled_static = s[1][1] as f32;
+  println!("bf16 fill {} assign {} copy {} fill_static {}", filled, assigned, copied, filled_static);
+  println!("bf16 compare {} {}", before_copy, a.compare(&b));
+  return 0;
+}
+
+fn main() -> i32 {
+  f64_methods();
+  f32_methods();
+  f16_methods();
+  bf16_methods();
+  return 0;
+}
