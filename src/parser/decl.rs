@@ -1357,6 +1357,7 @@ impl<'a> Parser<'a> {
                     length: 0,
                     expansion: self.expansion(),
                 },
+                file: None,
                 doc_comment,
             });
         }
