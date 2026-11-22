@@ -1352,12 +1352,15 @@ static unsigned dynamic_shared_bytes(const void *payload, size_t payload_size) {
 /// wait for that kernel itself: vxc gives it the wait and the payload field
 /// `waits_for_earlier_kernels=` with `VX_GPU_PDL=1`. The program asks for the
 /// early start with `VX_CUDA_PDL=1`.
+/* The driver refused to start a kernel early once in this run. */
+static std::atomic<bool> early_refused{false};
+
 static bool starts_early(const void *payload, size_t payload_size) {
   static const bool asked = [] {
     const char *on = getenv("VX_CUDA_PDL");
     return on && strcmp(on, "1") == 0;
   }();
-  if (!asked ||
+  if (!asked || early_refused.load(std::memory_order_relaxed) ||
       !vx_payload_field(payload, payload_size, "waits_for_earlier_kernels="))
     return false;
   if (driver().LaunchKernelEx)
@@ -1665,7 +1668,9 @@ bool run_device_image(const void *payload, size_t payload_size,
     cudaEventCreate(&t1);
     cudaEventRecord(t0, caller_stream);
   }
-  CUresult rc;
+  CUresult rc = CUDA_SUCCESS;
+  bool plain = true;
+  const char *early_error = nullptr;
   if (starts_early(payload, payload_size)) {
     CUlaunchAttribute early{};
     early.id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
@@ -1682,7 +1687,24 @@ bool run_device_image(const void *payload, size_t payload_size,
     config.attrs = &early;
     config.numAttrs = 1;
     rc = driver().LaunchKernelEx(&config, fn, params.params, nullptr);
-  } else {
+    plain = rc != CUDA_SUCCESS;
+    if (plain) {
+      // A plain launch is still correct: the wait in the kernel then finds
+      // the kernels before it ended.
+      early_refused.store(true, std::memory_order_relaxed);
+      driver().GetErrorName(rc, &early_error);
+      early_error = early_error ? early_error : "?";
+      static std::once_flag said;
+      std::call_once(said, [&] {
+        fprintf(stderr,
+                "[Vx CUDA] VX_CUDA_PDL=1: the driver refused to start %s "
+                "early: %s. From now on, each kernel starts after the kernel "
+                "before it ends.\n",
+                kernel_name, early_error);
+      });
+    }
+  }
+  if (plain) {
     rc = driver().LaunchKernel(fn, grid, shape[1], shape[2], block, 1, 1,
                                dynamic_shared_bytes(payload, payload_size),
                                (CUstream)caller_stream, params.params, nullptr);
@@ -1692,6 +1714,12 @@ bool run_device_image(const void *payload, size_t payload_size,
     driver().GetErrorName(rc, &name);
     fprintf(stderr, "[Vx CUDA] FATAL: launching %s failed: %s\n", kernel_name,
             name ? name : "?");
+    if (early_error) {
+      fprintf(stderr,
+              "          Before that, the driver refused to start it early "
+              "(VX_CUDA_PDL=1): %s.\n",
+              early_error);
+    }
     abort();
   }
   started_kernel(kernel_name);

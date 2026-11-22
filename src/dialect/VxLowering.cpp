@@ -10686,12 +10686,16 @@ static llvm::StringSet<> waitForEarlierKernels(ModuleOp device) {
     if (!f.isKernel() || f.getBody().empty())
       return;
     Region &body = f.getBody();
-    SmallVector<Operation *> touching;
-    f.walk([&](Operation *op) {
-      if (op != f.getOperation() && touchesGlobalMemory(op, callees))
-        touching.push_back(body.findAncestorOpInRegion(*op));
-    });
     DominanceInfo dominance(f);
+    // A block that never runs is not in the dominator tree.
+    llvm::SmallSetVector<Operation *, 8> touching;
+    f.walk([&](Operation *op) {
+      if (op == f.getOperation() || !touchesGlobalMemory(op, callees))
+        return;
+      Operation *outer = body.findAncestorOpInRegion(*op);
+      if (dominance.isReachableFromEntry(outer->getBlock()))
+        touching.insert(outer);
+    });
     OpBuilder b(f.getContext());
     Location loc = f.getLoc();
     Block *at = nullptr;
@@ -10710,7 +10714,7 @@ static llvm::StringSet<> waitForEarlierKernels(ModuleOp device) {
       }
       Operation *before = at->getTerminator();
       for (Operation &op : *at) {
-        if (llvm::is_contained(touching, &op)) {
+        if (touching.contains(&op)) {
           before = &op;
           break;
         }
@@ -10744,23 +10748,32 @@ static llvm::StringSet<> waitForEarlierKernels(ModuleOp device) {
 /// buffers, so none of them is `readonly`. LLVM may take the memory of a
 /// `noalias readonly` pointer as constant, and then move its loads above the
 /// wait. Each wait also takes the aligned pointers as operands. Without them,
-/// LLVM finds that a buffer the kernel only reads is `readonly` by itself.
-static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device,
-                              const llvm::StringSet<> &waiting) {
+/// LLVM finds that a buffer the kernel only reads is `readonly` by itself. So
+/// a kernel in `waiting` whose waits are not found is an error.
+static LogicalResult markKernelBuffers(gpu::GPUModuleOp original,
+                                       ModuleOp device,
+                                       const llvm::StringSet<> &waiting,
+                                       std::string &error) {
   MLIRContext *ctx = device.getContext();
-  original.walk([&](gpu::GPUFuncOp f) {
+  WalkResult result = original.walk([&](gpu::GPUFuncOp f) {
     auto access = f->getAttrOfType<ArrayAttr>("vx.arg_access");
     auto align = f->getAttrOfType<ArrayAttr>("vx.arg_align");
     const bool waits = waiting.contains(f.getName());
     if (!access && !align && !waits)
-      return;
+      return WalkResult::advance();
     LLVM::LLVMFuncOp lowered;
     device.walk([&](LLVM::LLVMFuncOp g) {
       if (g.getSymName() == f.getName())
         lowered = g;
     });
+    if (!lowered && waits) {
+      error =
+          "the kernel " + f.getName().str() +
+          " waits for the kernels before it, but the NVPTX pipeline lost it";
+      return WalkResult::interrupt();
+    }
     if (!lowered)
-      return;
+      return WalkResult::advance();
     unsigned at = 0;
     SmallVector<Value> pointers;
     for (auto [i, ty] : llvm::enumerate(f.getArgumentTypes())) {
@@ -10787,13 +10800,17 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device,
     assert(at == lowered.getNumArguments() &&
            "a kernel's memref parameter is 3 + 2 * rank LLVM parameters");
     if (!waits)
-      return;
+      return WalkResult::advance();
     SmallVector<LLVM::InlineAsmOp> waitOps;
     lowered.walk([&](LLVM::InlineAsmOp a) {
       if (a.getAsmString() == gridDependencyWait)
         waitOps.push_back(a);
     });
-    assert(!waitOps.empty() && "a kernel that waits has a wait");
+    if (waitOps.empty()) {
+      error = "the kernel " + f.getName().str() +
+              " waits for the kernels before it, but its waits are missing";
+      return WalkResult::interrupt();
+    }
     std::string constraints;
     for (size_t k = 0; k < pointers.size(); ++k)
       constraints += "l,";
@@ -10803,7 +10820,9 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device,
       lanePtx(b, a.getLoc(), gridDependencyWait, constraints, pointers);
       a.erase();
     }
+    return WalkResult::advance();
   });
+  return failure(result.wasInterrupted());
 }
 
 /// The dialect translations a device module needs in this process, and a copy
@@ -11177,7 +11196,8 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
     error = "the NVPTX pipeline failed";
     return {};
   }
-  markKernelBuffers(gpuModule, *device, waiting);
+  if (failed(markKernelBuffers(gpuModule, *device, waiting, error)))
+    return {};
   // The conversion gives each function a C wrapper, `_mlir_ciface_<name>`. The
   // host cannot call a device function, and a wrapper is public, so it would
   // keep its callee in the PTX after the kernels inline that callee.
