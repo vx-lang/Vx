@@ -20,7 +20,7 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3065` (64 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
@@ -189,6 +189,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4014`](/errors/E4014/) | A task that can still run when a variable that it uses ends or changes. A task in a loop that the same pass does not join runs at the same time as the next pass, so it must not write a variable from outside the loop, or read one that the loop writes. A task must not use a variable that ends before its `tasks` block, such as one of the loop body. Join the task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break` or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so it cannot drop a value from outside the inner block yet. |
 | [`E4015`](/errors/E4015/) | A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)` with a parameter that takes `t` by value, where `t` is declared before the region. The region only borrows what it uses, and the function drops `t` after the region. Borrow it (`&t`), or clone it (`t.clone()`). |
 | [`E4016`](/errors/E4016/) | A borrow clause that is not well formed, or one that the body does not keep. In `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its own. |
+| [`E4017`](/errors/E4017/) | A closure that runs only once is copied, returned, passed or written outside a `let`. A closure whose body moves a value that it captures can run only once, because a second call would move the value again. Write such a closure in a `let` with no type, and call it there. A second call of it is E4001. |
 
 ## Safety Errors
 
@@ -282,4 +283,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-191 diagnostics.
+192 diagnostics.
