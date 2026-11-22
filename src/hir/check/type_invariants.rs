@@ -136,9 +136,9 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// E8014 for an `mlir!` block that gives a value that holds a type with an invariant of
-    /// another module. The block builds the value without the functions of that module, as a
-    /// struct literal does. `unsafe` does not lift it.
+    /// E8014 for an `mlir!` block that makes a value of a type with an invariant of another
+    /// module, or a value that holds a value of that type. The block makes the value without the
+    /// functions of that module, as a struct literal does. `unsafe` does not change this.
     pub(crate) fn check_mlir_block_module(&mut self, returns: &Type, span: &Span) {
         if self.speculating {
             return;
@@ -148,14 +148,14 @@ impl<'a> TypeChecker<'a> {
             return;
         };
         let name = &decl.name;
-        let gives = match returns.to_string() == name.as_ref() {
-            true => format!("this `mlir!` block gives a value of `{name}`"),
+        let makes = match returns.to_string() == name.as_ref() {
+            true => format!("this `mlir!` block makes a value of `{name}`"),
             false => format!(
-                "this `mlir!` block gives a value of `{returns}`, which holds a value of `{name}`"
+                "this `mlir!` block makes a value of `{returns}`, which holds a value of `{name}`"
             ),
         };
         let message = format!(
-            "{gives}. `{name}` has an invariant, so only code in `{}` can build it",
+            "{makes}. `{name}` has an invariant, so only code in `{}` can make a value of `{name}`",
             Self::module_file_name(decl)
         );
         self.errors.error_with_code(

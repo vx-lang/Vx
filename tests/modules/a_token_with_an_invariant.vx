@@ -5,7 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Declares a struct with an invariant. An `mlir!` block of this file can build one.
+// Declares `Token`, a struct with an invariant. An `mlir!` block in this file can make a value of
+// `Token`.
 
 struct Token {
   number : i64,
