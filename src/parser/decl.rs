@@ -1509,9 +1509,11 @@ impl<'a> Parser<'a> {
         // if we see `Identifier` followed by `for`, it's a trait. Otherwise it's a type.
         // Note: parse_type handles `Struct(name)`, which is an identifier!
         // We can just peek ahead.
+        let mut target_token = self.peek().clone();
         let parsed_type = self.parse_type()?;
         let target_type = if self.check(&TokenType::For) {
             self.advance(); // consume 'for'
+            target_token = self.peek().clone();
             if let Type::Struct(name, _) = parsed_type {
                 trait_name = Some(name);
             } else if let Type::GenericInstance(inner, args) = parsed_type {
@@ -1528,6 +1530,22 @@ impl<'a> Parser<'a> {
         } else {
             parsed_type
         };
+        // No method call finds a method of an impl for `&T` or `*mut T`.
+        if let Type::Borrow { inner, .. } | Type::Ref(inner, _) | Type::Pointer(inner, ..) =
+            &target_type
+        {
+            let header = match &trait_name {
+                Some(t) => format!("impl {t} for {inner}"),
+                None => format!("impl {inner}"),
+            };
+            return Err(self.error_at(
+                &target_token,
+                &format!(
+                    "an impl is for a type, not for a reference or a raw pointer to it. Write \
+                     `{header}`"
+                ),
+            ));
+        }
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
         let outer_self = self.impl_self.replace(target_type.clone());
