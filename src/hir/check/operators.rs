@@ -796,7 +796,7 @@ impl<'a> TypeChecker<'a> {
                                 return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
                             }
                         }
-                        return shape_side.clone();
+                        return Self::owned_tensor_result(shape_side);
                     }
                 }
 
@@ -843,9 +843,18 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
-                lhs_ty
+                Self::owned_tensor_result(&lhs_ty)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// The type of the result of an elementwise operation whose operand has type `operand`. The
+    /// result is a new tensor, also when the operand is a borrow of one, as in `&a + &a`.
+    fn owned_tensor_result(operand: &Type) -> Type {
+        match operand {
+            Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => (**inner).clone(),
+            other => other.clone(),
         }
     }
 
