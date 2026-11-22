@@ -621,6 +621,7 @@ impl<'a> MacroExpander<'a> {
                     new_body.extend(self.expand_stmt(s)?);
                 }
                 u.stmts = new_body;
+                block_value_from_mlir(&mut u.stmts, &mut u.ret);
             }
             expr::Expr::TaskBlock(u) => {
                 if let Some(ret) = &mut u.ret {
@@ -632,6 +633,7 @@ impl<'a> MacroExpander<'a> {
                     new_body.extend(self.expand_stmt(s)?);
                 }
                 u.stmts = new_body;
+                block_value_from_mlir(&mut u.stmts, &mut u.ret);
             }
             expr::Expr::ComptimeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
@@ -643,6 +645,7 @@ impl<'a> MacroExpander<'a> {
                     new_body.extend(self.expand_stmt(s)?);
                 }
                 u.stmts = new_body;
+                block_value_from_mlir(&mut u.stmts, &mut u.ret);
             }
             expr::Expr::Closure(c) => {
                 *c.body = self.expand_expr(take_expr(&mut c.body))?;
@@ -1382,6 +1385,28 @@ impl<'a> MacroExpander<'a> {
             block_str,
             span,
         }))
+    }
+}
+
+/// The parser reads `mlir!(..) { .. }` at the start of a statement as a macro statement, so a
+/// block that ends with one has it as its last statement and no value. A last `mlir!` block with a
+/// result and no `;` is the value of the block, as any other last expression is.
+fn block_value_from_mlir(stmts: &mut Vec<stmt::Statement>, ret: &mut Option<Box<expr::Expr>>) {
+    if ret.is_some() {
+        return;
+    }
+    if let Some(stmt::Statement::ExprStmt(stmt::ExprStmtStmt {
+        expr: expr::Expr::InlineMlir(m),
+        has_semi: false,
+        ..
+    })) = stmts.last()
+    {
+        if m.returns.is_some() {
+            let Some(stmt::Statement::ExprStmt(e)) = stmts.pop() else {
+                unreachable!("matched above")
+            };
+            *ret = Some(Box::new(e.expr));
+        }
     }
 }
 

@@ -13,11 +13,11 @@
 // CHECK: LLVM Translation failed for operation: gpu.block_dim
 
 fn block_dim() -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
-    %t = gpu.block_dim x
-    %r = "arith.index_cast"(%t) : (index) -> i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+      %t = gpu.block_dim x
+      %r = "arith.index_cast"(%t) : (index) -> i32
+      macro.yield %r : i32
+    } };
 }
 
 fn main() -> i32 {

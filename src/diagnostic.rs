@@ -860,6 +860,12 @@ pub enum DiagnosticCode {
     /// a value of the type. Then
     /// the invariant holds for each value of the type outside its module.
     E8014,
+    /// An `mlir!` block outside `unsafe` that the compiler cannot verify as safe. The compiler
+    /// verifies a block whose operations are on a list of `arith` and `math` operations that give
+    /// a defined result for every input, with no `overflow` or `fastmath` flags, and that takes
+    /// and gives only numbers. Any other block goes in `unsafe { }`, because the compiler does not
+    /// verify what its operations do.
+    E8015,
 }
 
 impl std::fmt::Display for DiagnosticCode {

@@ -17,35 +17,35 @@
 pub fn reduce(fl : &mut Tensor<f32, [?], Memory::HBM>, ints : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
-      let _d = mlir!( threads : 32, inputs : (%f = fl : memref<?xf32>, %n = ints : memref<?xi32>), returns : i32, dialects : ["arith", "memref", "gpu", "scf", "vector"], ensures : [writes_only(fl[0..8]), writes_only(ints[0..4])]) {
-        %tid = gpu.thread_id x
-        %ti = arith.index_cast %tid : index to i32
-        %c2 = arith.constant 2 : i32
-        %c16 = arith.constant 16 : i32
-        %c7 = arith.constant 7 : i32
-        %c0i = arith.constant 0 : i32
-        %t2 = arith.muli %ti, %c2 : i32
-        %neg = arith.subi %c0i, %ti : i32
-        %low = arith.subi %ti, %c16 : i32
-        %x = arith.sitofp %ti : i32 to f32
-        %x2 = arith.sitofp %t2 : i32 to f32
-        %xn = arith.sitofp %neg : i32 to f32
-        %one = arith.constant 1.0 : f32
-        %v = vector.from_elements %x, %x2, %one, %xn : vector<4xf32>
-        %w = vector.from_elements %low, %ti, %c7, %neg : vector<4xi32>
-        %sum = gpu.subgroup_reduce add %v : (vector<4xf32>) -> vector<4xf32>
-        %max = gpu.subgroup_reduce maxnumf %v : (vector<4xf32>) -> vector<4xf32>
-        %umax = gpu.subgroup_reduce maxui %w : (vector<4xi32>) -> vector<4xi32>
-        %c0 = arith.constant 0 : index
-        %c4 = arith.constant 4 : index
-        %first = arith.cmpi eq, %tid, %c0 : index
-        scf.if %first {
-          vector.store %sum, %f[%c0] : memref<?xf32>, vector<4xf32>
-          vector.store %max, %f[%c4] : memref<?xf32>, vector<4xf32>
-          vector.store %umax, %n[%c0] : memref<?xi32>, vector<4xi32>
-        }
-        macro.yield %ti : i32
-      };
+      let _d = unsafe { mlir!( threads : 32, inputs : (%f = fl : memref<?xf32>, %n = ints : memref<?xi32>), returns : i32, dialects : ["arith", "memref", "gpu", "scf", "vector"], ensures : [writes_only(fl[0..8]), writes_only(ints[0..4])]) {
+          %tid = gpu.thread_id x
+          %ti = arith.index_cast %tid : index to i32
+          %c2 = arith.constant 2 : i32
+          %c16 = arith.constant 16 : i32
+          %c7 = arith.constant 7 : i32
+          %c0i = arith.constant 0 : i32
+          %t2 = arith.muli %ti, %c2 : i32
+          %neg = arith.subi %c0i, %ti : i32
+          %low = arith.subi %ti, %c16 : i32
+          %x = arith.sitofp %ti : i32 to f32
+          %x2 = arith.sitofp %t2 : i32 to f32
+          %xn = arith.sitofp %neg : i32 to f32
+          %one = arith.constant 1.0 : f32
+          %v = vector.from_elements %x, %x2, %one, %xn : vector<4xf32>
+          %w = vector.from_elements %low, %ti, %c7, %neg : vector<4xi32>
+          %sum = gpu.subgroup_reduce add %v : (vector<4xf32>) -> vector<4xf32>
+          %max = gpu.subgroup_reduce maxnumf %v : (vector<4xf32>) -> vector<4xf32>
+          %umax = gpu.subgroup_reduce maxui %w : (vector<4xi32>) -> vector<4xi32>
+          %c0 = arith.constant 0 : index
+          %c4 = arith.constant 4 : index
+          %first = arith.cmpi eq, %tid, %c0 : index
+          scf.if %first {
+            vector.store %sum, %f[%c0] : memref<?xf32>, vector<4xf32>
+            vector.store %max, %f[%c4] : memref<?xf32>, vector<4xf32>
+            vector.store %umax, %n[%c0] : memref<?xi32>, vector<4xi32>
+          }
+          macro.yield %ti : i32
+        } };
     }
   }
   return;

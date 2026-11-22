@@ -51,19 +51,19 @@ unsafe fn write<T>(p : *mut T, v : T) -> void {
 /// `wrapping_offset`, it only computes the address.
 fn offset<T, M : Memory>(p : *const T in Memory::M, count : i64) -> *const T in Memory::M {
   let bytes = count * sizeof<T>();
-  return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *const T in Memory::M, dialects : ["llvm"]) {
-    %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-    macro.yield %r : !llvm.ptr
-  };
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *const T in Memory::M, dialects : ["llvm"]) {
+      %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      macro.yield %r : !llvm.ptr
+    } };
 }
 
 /// `offset` for a mutable pointer.
 fn offset_mut<T, M : Memory>(p : *mut T in Memory::M, count : i64) -> *mut T in Memory::M {
   let bytes = count * sizeof<T>();
-  return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *mut T in Memory::M, dialects : ["llvm"]) {
-    %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-    macro.yield %r : !llvm.ptr
-  };
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *mut T in Memory::M, dialects : ["llvm"]) {
+      %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      macro.yield %r : !llvm.ptr
+    } };
 }
 
 /// The pointer `count` elements further on.
@@ -88,10 +88,10 @@ fn sub_mut<T, M : Memory>(p : *mut T in Memory::M, count : usize) -> *mut T in M
 
 /// Whether the two pointers hold the same address.
 fn eq<T>(a : *const T, b : *const T) -> bool {
-  return mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : bool, dialects : ["llvm"]) {
-    %r = llvm.icmp "eq" %a, %b : !llvm.ptr
-    macro.yield %r : i1
-  };
+  return unsafe { mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : bool, dialects : ["llvm"]) {
+      %r = llvm.icmp "eq" %a, %b : !llvm.ptr
+      macro.yield %r : i1
+    } };
 }
 
 /// Whether the pointer is null.

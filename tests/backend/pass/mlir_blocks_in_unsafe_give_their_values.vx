@@ -1,0 +1,50 @@
+//===- mlir_blocks_in_unsafe_give_their_values.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `mlir!` block that the compiler cannot verify goes in `unsafe { }`. The `unsafe` block gives
+// the value of the `mlir!` block when the `mlir!` block is the last thing in it. That value was 0
+// before. Each `unsafe` here holds such a block, so none of them gives the warning that the
+// `unsafe` is not needed.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=W1010
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=W1010
+// CHECK: {{^}}last in the block: 3{{$}}
+// CHECK: {{^}}through a let: 3{{$}}
+// CHECK: {{^}}in an unsafe fn: 3{{$}}
+
+fn half(x : i64) -> i64 {
+  return unsafe { mlir!(inputs : (%a = x : i64), returns : i64, dialects : ["arith"]) {
+      %c = arith.constant 2 : i64
+      %r = arith.divsi %a, %c : i64
+      macro.yield %r : i64
+    } };
+}
+
+fn half_through_a_let(x : i64) -> i64 {
+  let r = unsafe { mlir!(inputs : (%a = x : i64), returns : i64, dialects : ["arith"]) {
+      %c = arith.constant 2 : i64
+      %r = arith.divsi %a, %c : i64
+      macro.yield %r : i64
+    } };
+  return r;
+}
+
+// The body of an `unsafe fn` needs no `unsafe` block.
+unsafe fn half_in_an_unsafe_fn(x : i64) -> i64 {
+  return mlir!(inputs : (%a = x : i64), returns : i64, dialects : ["arith"]) {
+    %c = arith.constant 2 : i64
+    %r = arith.divsi %a, %c : i64
+    macro.yield %r : i64
+  };
+}
+
+fn main() -> i32 {
+  println!("last in the block: {}", half(6));
+  println!("through a let: {}", half_through_a_let(6));
+  println!("in an unsafe fn: {}", unsafe { half_in_an_unsafe_fn(6) });
+  return 0;
+}

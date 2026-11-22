@@ -30,7 +30,7 @@ fn pf_fa(att : &mut Tensor<f32, [?, ?], Memory::HBM>, q : &Tensor<f32, [?, ?, ?]
         let mut so = unsafe { Tensor<f32, [1024], Memory::SMEM>::uninit() };
         let mut ss = unsafe { Tensor<f32, [512], Memory::SMEM>::uninit() };
         let mut sp = unsafe { Tensor<f16, [512], Memory::SMEM>::uninit() };
-        let _d = mlir!( threads : 128, inputs : (%sq = &mut sq : memref<1024xf16, 3>, %so = &mut so : memref<1024xf32, 3>, %ss = &mut ss : memref<512xf32, 3>, %sp = &mut sp : memref<512xf16, 3>, %att = att : memref<?x?xf32>, %q = q : memref<?x?x?xf32>, %k3 = k_cache : memref<?x?x?xf16>, %v3 = v_cache : memref<?x?x?xf16>, %start = start : i32, %n = n : i32, %group = group : i32, %scale = scale : f32, %qb = qb : i32, %h = h : i32), returns : i32, dialects : ["arith", "memref", "scf", "gpu", "vector", "math"], ensures : [writes_only(sq), writes_only(so), writes_only(ss), writes_only(sp), reads_only(q), reads_only(k_cache), reads_only(v_cache), writes_only(att[qb * 8..qb * 8 + 8][h * 128..h * 128 + 128])]) {
+        let _d = unsafe { mlir!( threads : 128, inputs : (%sq = &mut sq : memref<1024xf16, 3>, %so = &mut so : memref<1024xf32, 3>, %ss = &mut ss : memref<512xf32, 3>, %sp = &mut sp : memref<512xf16, 3>, %att = att : memref<?x?xf32>, %q = q : memref<?x?x?xf32>, %k3 = k_cache : memref<?x?x?xf16>, %v3 = v_cache : memref<?x?x?xf16>, %start = start : i32, %n = n : i32, %group = group : i32, %scale = scale : f32, %qb = qb : i32, %h = h : i32), returns : i32, dialects : ["arith", "memref", "scf", "gpu", "vector", "math"], ensures : [writes_only(sq), writes_only(so), writes_only(ss), writes_only(sp), reads_only(q), reads_only(k_cache), reads_only(v_cache), writes_only(att[qb * 8..qb * 8 + 8][h * 128..h * 128 + 128])]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -276,7 +276,7 @@ fn pf_fa(att : &mut Tensor<f32, [?, ?], Memory::HBM>, q : &Tensor<f32, [?, ?, ?]
             vector.store %fw1, %att[%qt1, %ac1] : memref<?x?xf32>, vector<4xf32>
           }
           macro.yield %qb : i32
-        };
+        } };
       }
     }
   }

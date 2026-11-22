@@ -178,7 +178,10 @@ pub fn trusted_code(program: &Program) -> Vec<(TrustedCode, Trusted)> {
                 b.span,
                 "an `unsafe` block".to_string(),
             ),
-            Expr::InlineMlir(m) => add(TrustedCode::MlirBlock, m.span, "an `mlir!` block".into()),
+            // The compiler verified a block outside `unsafe`, so the audit leaves it out.
+            Expr::InlineMlir(m) if crate::hir::check::safe_mlir::unverified(m).is_some() => {
+                add(TrustedCode::MlirBlock, m.span, "an `mlir!` block".into())
+            }
             _ => {}
         });
     }
