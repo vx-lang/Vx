@@ -594,6 +594,35 @@ void assert_flags() {
         "a payload without assert_flag= does not");
 }
 
+/* An error names the Vx function and the line of the `spawn`, when the
+   payload has them. */
+void kernel_labels() {
+  char out[128];
+  const char both[] =
+      "vx_npu_kernel_3\0abi=1\0function=pdl_chain\0source=chain.vx:18\0";
+  check(strcmp(vx_kernel_label(both, sizeof both, out, sizeof out),
+               "vx_npu_kernel_3 (from pdl_chain at chain.vx:18)") == 0,
+        "a payload with function= and source= names both");
+  const char function_only[] = "vx_npu_kernel_3\0abi=1\0function=pdl_chain\0";
+  check(strcmp(vx_kernel_label(function_only, sizeof function_only, out,
+                               sizeof out),
+               "vx_npu_kernel_3 (from pdl_chain)") == 0,
+        "a payload with function= only names the function");
+  const char source_only[] = "vx_npu_kernel_3\0abi=1\0source=chain.vx:18\0";
+  check(
+      strcmp(vx_kernel_label(source_only, sizeof source_only, out, sizeof out),
+             "vx_npu_kernel_3 (at chain.vx:18)") == 0,
+      "a payload with source= only names the line");
+  const char neither[] = "vx_npu_kernel_3\0abi=1\0format=ptx\0";
+  check(strcmp(vx_kernel_label(neither, sizeof neither, out, sizeof out),
+               "vx_npu_kernel_3") == 0,
+        "a payload without them gives the name of the kernel");
+  char small[8];
+  check(strcmp(vx_kernel_label(both, sizeof both, small, sizeof small),
+               "vx_npu_") == 0,
+        "a label longer than the buffer is cut, and ends with a NUL");
+}
+
 int main() {
   widths();
   the_four_operand_signature();
@@ -607,6 +636,7 @@ int main() {
   launch_trips();
   caller_streams();
   assert_flags();
+  kernel_labels();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);
