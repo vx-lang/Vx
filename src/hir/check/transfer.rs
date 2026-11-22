@@ -2727,6 +2727,7 @@ impl<'a> TypeChecker<'a> {
                 ret,
                 span,
                 arrivals,
+                max_registers,
             }) => {
                 let spawn_span = *span;
                 let mut actual_top = top.clone();
@@ -2741,6 +2742,61 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                     actual_top = self.active_topology.clone();
+                }
+
+                if let Some(regs) = max_registers {
+                    // `operand_type` checks a copy of an operand speculatively and keeps its
+                    // errors, so these two are guarded like the warning above: a spawn inside an
+                    // expression reports each error once.
+                    if !self.speculating {
+                        // The code generators read the topology that the program wrote.
+                        // `Topology::Current` makes no new kernel, so there is nothing to give
+                        // the budget to.
+                        if *top == Topology::Current {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E6043,
+                                "`max_registers` needs a `spawn on(...)` that makes a new kernel, \
+                                 and `Topology::Current` makes none; write the topology the kernel \
+                                 runs on"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                            );
+                        } else {
+                            if *regs == 0 || *regs > 255 {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E6044,
+                                    format!(
+                                        "`max_registers` must be between 1 and 255, got {regs}"
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                                );
+                            }
+                            let declared: std::collections::HashMap<
+                                crate::symbol::Symbol,
+                                crate::arch::TopologyDescriptor,
+                            > = self
+                                .env
+                                .topologies
+                                .iter()
+                                .map(|(name, t)| (name.clone(), t.descriptor.clone()))
+                                .collect();
+                            let (arch, _, _) = crate::arch::topology_arch_and_chip(top, &declared);
+                            if arch.as_deref() != Some("nvptx64") {
+                                let target_desc = match arch {
+                                    Some(a) => format!("arch `{a}`"),
+                                    None => "no `arch:`".to_string(),
+                                };
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E6043,
+                                    format!(
+                                        "Only an NVIDIA GPU target (`arch: nvptx64`) takes \
+                                         `max_registers`, but `{top}` has {target_desc}"
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                                );
+                            }
+                        }
+                    }
                 }
                 // Code after the `across` nest runs once, in the last pass to end. That pass
                 // knows it is the last from a count in the region's own memory.

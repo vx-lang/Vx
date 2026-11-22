@@ -777,6 +777,10 @@ pub enum DiagnosticCode {
     /// CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on
     /// GPU 0, so the code has no GPU to run on yet. Run it on device 0.
     E6042,
+    /// A register budget (`max_registers`) on a target that is not an NVIDIA GPU (`arch: nvptx64`).
+    E6043,
+    /// A register budget (`max_registers`) that is 0 or greater than 255.
+    E6044,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

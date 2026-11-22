@@ -1,0 +1,21 @@
+//===- max_registers_repeated.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A repeated `max_registers` hides which value the kernel got, so the compiler
+// refuses the second one instead of taking it.
+
+// CHECK: Duplicate option 'max_registers' in 'on(...)'
+
+fn main() -> i32 {
+  spawn on(Topology::GPU[0], max_registers: 96, max_registers: 64) {
+    let mut x: i32 = 0;
+    x = x + 1;
+  }
+  return 0;
+}

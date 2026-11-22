@@ -2226,6 +2226,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                     ret: _,
                     span: _,
                     arrivals: _,
+                    max_registers: _,
                 })),
             span: _,
         }) = &func.body[0]
@@ -2608,6 +2609,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                     ret: _,
                     span: _,
                     arrivals: _,
+                    max_registers: _,
                 })),
             span: _,
         }) = &func.body[0]

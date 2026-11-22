@@ -1,0 +1,22 @@
+//===- max_registers_on_current_topology.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `Topology::Current` runs the region where the code around it already runs,
+// so it makes no new kernel to give the register budget to. The compiler
+// reports error E6043 rather than dropping the value.
+
+// CHECK: Error[E6043] at {{.*}}max_registers_on_current_topology.vx:[[@LINE+3]]:3: `max_registers` needs a `spawn on(...)` that makes a new kernel
+
+fn main() -> i32 {
+  spawn on(Topology::Current, max_registers: 96) {
+    let mut x: i32 = 0;
+    x = x + 1;
+  }
+  return 0;
+}
