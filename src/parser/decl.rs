@@ -1610,6 +1610,7 @@ impl<'a> Parser<'a> {
             assoc_bindings,
             copied_defaults: Vec::new(),
             is_unsafe: false,
+            is_extern: false,
         })
     }
 
@@ -1797,6 +1798,18 @@ impl<'a> Parser<'a> {
                 imports.push(self.parse_import_decl()?);
             } else if self.check(&TokenType::MacroRules) {
                 macros.push(self.parse_macro_def()?);
+            } else if self.check(&TokenType::Extern)
+                && matches!(self.peek_n(1).kind, TokenType::Unsafe)
+                && matches!(self.peek_n(2).kind, TokenType::Impl)
+            {
+                return Err(self.error("write `unsafe extern impl`, not `extern unsafe impl`"));
+            } else if self.check(&TokenType::Extern)
+                && matches!(self.peek_n(1).kind, TokenType::Impl)
+            {
+                self.advance();
+                let mut ib = self.parse_impl_block()?;
+                ib.is_extern = true;
+                impls.push(ib);
             } else if self.check(&TokenType::Extern) {
                 let mut at = self.peek().clone();
                 let block = self.parse_extern_block()?;
@@ -1822,6 +1835,16 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let mut ib = self.parse_impl_block()?;
                 ib.is_unsafe = true;
+                impls.push(ib);
+            } else if self.check(&TokenType::Unsafe)
+                && matches!(self.peek_n(1).kind, TokenType::Extern)
+                && matches!(self.peek_n(2).kind, TokenType::Impl)
+            {
+                self.advance();
+                self.advance();
+                let mut ib = self.parse_impl_block()?;
+                ib.is_unsafe = true;
+                ib.is_extern = true;
                 impls.push(ib);
             } else if self.check(&TokenType::Impl) {
                 // `impl Transfer<Memory::A, Memory::B> for Topology::X { ... }` is a transfer

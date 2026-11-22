@@ -60,14 +60,26 @@ macro_rules outer {
   };
 }
 
-stamp_zero!(i32);
-stamp_zero!(f32);
+struct Apple {
+  weight : i32,
+}
+
+struct Pear {
+  weight : f32,
+}
+
+stamp_zero!(Apple);
+stamp_zero!(Pear);
 stamp_const!(forty 40);
 outer!(2);
 
 fn main() -> i32 {
-  let a : i32 = 5;
-  let b : f32 = 1.5;
+  let a = Apple {
+    weight : 5
+  };
+  let b = Pear {
+    weight : 1.5
+  };
   print(a.zero() + b.zero());
   print!(" ");
   print(forty() + from_outer());
