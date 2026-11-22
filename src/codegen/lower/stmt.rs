@@ -252,6 +252,10 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         };
         if let Some(ref t) = ast_ty {
             gen.ast_env.insert(name.to_string().into(), t.clone());
+        } else if !matches!(expr, Expr::Closure(_)) {
+            // The type of an earlier local of this name is not the type of this one. A closure
+            // has its type recorded above.
+            gen.ast_env.remove(name.as_ref());
         }
         if syntax::is_tensor_construction(expr) {
             gen.owned_tensors.insert(name.to_string().into());

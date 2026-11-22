@@ -7319,6 +7319,9 @@ impl<'r> Lowerer<'r> {
                     .or(fn_value_ty)
                 {
                     self.ast_types.insert(l.name.clone(), t);
+                } else {
+                    // The type of an earlier local of this name is not the type of this one.
+                    self.ast_types.remove(&l.name);
                 }
                 // `let r = &<lvalue>` the escape analysis realized as a place (§5): bind `r` to the
                 // borrowed *place expression* itself, so `*r` re-lowers it (a bare local reads directly
