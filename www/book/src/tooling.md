@@ -128,7 +128,7 @@ operating system. `std::<name>` holds the rest. Every type and function is liste
 | **core** | `option`, `result`, `iter`, `ops`, `cmp`, `clone`, `convert`, `default`, `hash`, `marker`, `mem`, `fmt`, `num`, `cell`, `ptr`, `tuple`, `time` |
 | **Collections** | `std::vec`, `std::string`, `std::box`, `std::alloc` |
 | **Numerics** | `std::tensor`, `std::simd`, `std::rand`, `std::nn` |
-| **Tasks** | `std::sync::channel`, `std::sync::mutex`, `std::sync::arc`, `std::sync::wait`, `std::collective` |
+| **Tasks** | `std::sync::channel`, `std::sync::mutex`, `std::sync::arc`, `std::sync::semaphore`, `std::sync::wait`, `std::collective` |
 | **System** | `std::io`, `std::fs`, `std::net`, `std::mmap`, `std::time`, `std::libc` |
 | **Testing** | `std::googletest` |
 
@@ -194,7 +194,9 @@ status 1, so a build script or a CI job sees the failure.
 | `VX_NUMA_NO_AFFINITY` | When set, a dispatch does not pin its thread to the NUMA node of its data. See [NUMA](numa.md) |
 | `VX_METAL` | `0` runs the CPU copy of each kernel and not the Apple GPU. The default uses the GPU |
 | `VX_CUDA_SYNC` | When set, the program waits after each CUDA kernel launch, so an error names the kernel that failed |
+| `VX_CUDA_PDL` | `1` lets each kernel that waits for the kernels before it start while the kernel before it still runs. See [Starting a kernel early](gpu.md#starting-a-kernel-early) |
 | `VX_GPU_CHIP` | Read by the compiler: the NVIDIA chip to compile kernels for, such as `sm_90`. The default is the `chip:` of the machine file, or else `sm_80` |
+| `VX_GPU_PDL` | Read by the compiler: `1` makes each kernel for `sm_90` or later wait for the kernels before it on the stream. See [Starting a kernel early](gpu.md#starting-a-kernel-early) |
 | `VX_PRINT_DROPS` | Read by the compiler: when set, it prints the place where each function frees each tensor that it owns |
 
 An installed toolchain sets the first several of these for you through a wrapper script, so you

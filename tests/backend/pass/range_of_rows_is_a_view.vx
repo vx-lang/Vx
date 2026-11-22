@@ -1,0 +1,152 @@
+//===- range_of_rows_is_a_view.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `q[1..3]` is rows 1 and 2 of `q` (the end is not included). It is a view of `q`,
+// not a copy: writing through it changes `q`.
+//
+// Default code generator only: the legacy one refuses a range index with an error message.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 7 9 5 0 1 6 4 4 7 4 8 3 6
+fn two_dimensions() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[1..3];
+  r[0][1] = 7.0;
+  return q[1][1];
+}
+
+// The second row of the range is row 2 of `q`.
+fn second_row_of_the_range() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[1..3];
+  r[1][0] = 9.0;
+  return q[2][0];
+}
+
+// A tensor with three dimensions: the range only cuts the first one.
+fn three_dimensions() -> f32 {
+  let mut q = Tensor<f32, [4, 3, 2]>::new();
+  let mut r = q[1..3];
+  r[1][2][1] = 5.0;
+  return q[2][2][1];
+}
+
+// Rows outside the range are not changed.
+fn rows_outside_the_range() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[1..3];
+  r[0][0] = 1.0;
+  r[1][1] = 1.0;
+  return q[0][0] + q[0][1] + q[3][0] + q[3][1];
+}
+
+fn range_from_zero() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[0..2];
+  r[0][0] = 1.0;
+  return q[0][0] + q[2][0] + q[3][0];
+}
+
+// The same with the tensor made from a list of sizes.
+fn tensor_made_from_a_list_of_sizes() -> f32 {
+  let mut q = Tensor<f32>([ 4, 8 ]);
+  let mut r = q[1..3];
+  r[1][7] = 6.0;
+  return q[2][7];
+}
+
+// The type of `q[1..3]` on `[4, 3]` is `[2, 3]`, so it can be named.
+fn declared_type() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  q[2][2] = 4.0;
+  let r: Tensor<f32, [2, 3]> = q[1..3];
+  return r[1][2];
+}
+
+fn corner_sum(t : &Tensor<f32, [2, 3]>) -> f32 {
+  return t[0][0] + t[1][2];
+}
+
+// ... and a function that takes `&Tensor<f32, [2, 3]>` accepts it.
+fn passed_to_a_function() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  q[2][2] = 4.0;
+  return corner_sum(&q[1..3]);
+}
+
+// A range of a tensor with one dimension is a tensor, not a number.
+fn one_dimension() -> f32 {
+  let mut v = Tensor<f32, [6]>::new();
+  v[3] = 7.0;
+  let w = v[2..4];
+  return w[1];
+}
+
+// `q[1..3] = w` writes `w` into rows 1 and 2.
+fn assign_to_a_range() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  let w = Tensor<f32, [2, 3]>::fill(2.0);
+  q[1..3] = w;
+  return q[0][0] + q[1][0] + q[2][2] + q[3][2];
+}
+
+// A range of a row: `q[2]` is a view too.
+fn range_of_a_row() -> f32 {
+  let mut q = Tensor<f32, [4, 3, 2]>::new();
+  let mut r = q[2][1..3];
+  r[1][0] = 8.0;
+  return q[2][2][0];
+}
+
+// A range of a range: rows 1 and 2 of `q[1..4]` are rows 2 and 3 of `q`.
+fn range_of_a_range() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  let mut r = q[1..4][1..3];
+  r[1][2] = 3.0;
+  return q[3][2];
+}
+
+// The number of rows of `q` is known only when the program runs.
+fn end_of_second_row(q : &Tensor<f32, [?, 3]>) -> f32 {
+  let r = q[1..3];
+  return r[1][2];
+}
+
+fn rows_known_at_run_time() -> f32 {
+  let mut q = Tensor<f32, [4, 3]>::new();
+  q[2][2] = 6.0;
+  return end_of_second_row(&q);
+}
+
+fn main() -> i32 {
+  print(two_dimensions() as i32);
+  print!(" ");
+  print(second_row_of_the_range() as i32);
+  print!(" ");
+  print(three_dimensions() as i32);
+  print!(" ");
+  print(rows_outside_the_range() as i32);
+  print!(" ");
+  print(range_from_zero() as i32);
+  print!(" ");
+  print(tensor_made_from_a_list_of_sizes() as i32);
+  print!(" ");
+  print(declared_type() as i32);
+  print!(" ");
+  print(passed_to_a_function() as i32);
+  print!(" ");
+  print(one_dimension() as i32);
+  print!(" ");
+  print(assign_to_a_range() as i32);
+  print!(" ");
+  print(range_of_a_row() as i32);
+  print!(" ");
+  print(range_of_a_range() as i32);
+  print!(" ");
+  print(rows_known_at_run_time() as i32);
+  return 0;
+}

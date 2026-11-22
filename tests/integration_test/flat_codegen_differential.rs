@@ -41,12 +41,9 @@ fn parse(src: &str) -> Program {
     // Expand macros (`print!`/`println!` -> `Expr::Print`/`Expr::Println`, plus any user macros)
     // before name resolution, exactly as the real pipeline does — otherwise a `MacroCall` reaches
     // resolution and panics.
-    let mut global_macros = std::collections::HashMap::new();
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(std::iter::once(&program));
     let trait_defaults = vxc::resolver::collect_trait_defaults(std::iter::once(&program));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     expander
         .expand_module(&mut program)
         .expect("macro expansion failed");
@@ -1619,6 +1616,18 @@ fn result_holds_an_error_from_another_module(#[case] jobs: Option<usize>) {
     );
 }
 
+// Only the last line of the fixture is read: the `Result<Option<i32>, Error>` and `Pair` cases.
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_inside_an_enum_payload_runs(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_inside_an_enum_payload.vx",
+        &["303", "-9", "-1011", "31", "-13", "-47", "99"],
+        jobs,
+    );
+}
+
 #[rstest::rstest]
 #[case::normal(None)]
 #[case::parallel(Some(2))]
@@ -1809,9 +1818,11 @@ fn assert_generated_aggregate_runs_at_optimization(
     };
     assert!(log.contains(marker), "flat path with jobs={jobs:?}: {log}");
     // Native compilation prints progress before the program's final output line.
+    // A program that ends with `println!` leaves an empty line after it.
     let values = stdout
         .lines()
-        .last()
+        .rev()
+        .find(|line| !line.trim().is_empty())
         .expect("program prints its payload values");
     let actual: Vec<_> = values.split_whitespace().collect();
     assert_eq!(
@@ -4459,7 +4470,7 @@ fn flat_matches_ast_shape_query() {
 /// reads a position only the [4, 5] shape has, and 1.0 + 7.0 is the exit code.
 #[test]
 fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
-    let dir = std::env::temp_dir().join("vx_mono_shapes");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx_mono_shapes");
     let _ = std::fs::create_dir_all(&dir);
     let src = dir.join("mono_shapes.vx");
     std::fs::write(

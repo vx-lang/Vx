@@ -1,0 +1,50 @@
+//===- spirv_region_with_a_lane_routine_runs_on_the_host.vx ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A region for an Intel GPU (`arch: spirv64`) calls `lanes::sum`. Most lane
+// routines need subgroups of 32 lanes, which a SPIR-V kernel cannot ask for
+// yet. So the region gets no image and runs on the host. Its memory is
+// `managed: cached`, which the host can read, so the warning is enough.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK: the region placed on `Topology::Simd` in `row_sums` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it calls a routine of `lanes::`
+// EXPECT: 256
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+Topology Simd {
+  arch: spirv64,
+  levels: [blocks(max_lanes: 1024, memory: cta), lanes(memory: thread)],
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+// Each block doubles its row, then sums it.
+fn row_sums(out : &mut Tensor<f32, [4]>, x : &mut Tensor<f32, [4, 128]>) -> void {
+  spawn on(Topology::Simd) {
+    for b in 0..4 across blocks {
+      for t in 0..128 across lanes {
+        x[b][t] = x[b][t] * 2.0;
+      }
+      let total = lanes::sum(&x[b], 128);
+      out[b] = total;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut x = Tensor<f32, [4, 128]>::fill(1.0);
+  let mut o = Tensor<f32, [4]>::fill(0.0);
+  row_sums(&mut o, &mut x);
+  print(o[3] as i32);
+  return 0;
+}

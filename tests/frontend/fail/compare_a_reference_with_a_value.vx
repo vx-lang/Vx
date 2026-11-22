@@ -1,0 +1,46 @@
+//===- compare_a_reference_with_a_value.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=E3005
+//
+// A reference compares only with a reference, as in Rust: `&a == &b` compares the two values.
+// A compare of a reference with a value is error E3005 at the compare. In `block_then_and`,
+// the inner `unsafe { .. }` is a statement, so `&& a < 1.0` reads as `&&a < 1.0`. A name with
+// no `let` has its own error, and its compare gets no second one.
+//
+// CHECK: E3005{{.*}}:25:{{.*}}`<` cannot compare &f32 with f32. Write `*` before the reference
+// CHECK: E3005{{.*}}:29:{{.*}}`==` cannot compare &i32 with i32
+// CHECK: E3005{{.*}}:33:{{.*}}`<` cannot compare &&f32 with f32
+// CHECK: E3005{{.*}}:37:{{.*}}`==` cannot compare &&f32 with &f32
+// CHECK: E2001{{.*}}:41:{{.*}}'missing'
+
+fn one_reference(a : f32) -> bool {
+  let r = &a;
+  let fine = *r < 6.0 && &a == &a;
+  // `fine` compares two values, and then two references, with no error.
+  return fine && r < 6.0;
+}
+
+fn a_reference_parameter(x : &i32) -> bool {
+  return x == 5;
+}
+
+fn block_then_and(a : f32) -> bool {
+  unsafe { unsafe { a > 0.0 } && a < 1.0 }
+}
+
+fn two_and_one(a : f32) -> bool {
+  return &&a == &a;
+}
+
+fn a_name_with_no_let() -> bool {
+  return &missing == 5;
+}
+
+fn main() -> i32 {
+  return 0;
+}

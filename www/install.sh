@@ -30,6 +30,11 @@ LLVM_MAJOR="22"
 # toolkit that .github/workflows/release.yml installs for the CUDA job.
 CUDA_MAJOR="12"
 VX_HOME="${VX_HOME:-$HOME/.vx}"
+# The links in VX_HOME name their targets by this path, so a relative path would break them.
+case "$VX_HOME" in
+    /*) ;;
+    *) VX_HOME="$(pwd)/${VX_HOME}" ;;
+esac
 
 # ------------------------------------------------------------------ output --
 
@@ -274,7 +279,7 @@ resolve_version() {
         https://github.com/${REPO}/blob/main/docs/INSTALL.md
 
       Install a specific version, once one is published:
-        curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.4 sh
+        curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.5 sh
 
     Published releases are listed at https://github.com/${REPO}/releases"
 }
@@ -427,6 +432,17 @@ print_next_steps() {
             fi
             ;;
     esac
+
+    # Scripts find a toolchain outside ~/.vx, and its machine files in current/fleet, only
+    # through VX_HOME.
+    if [ "$VX_HOME" != "$HOME/.vx" ] && [ -z "${VX_NO_MODIFY_PATH:-}" ]; then
+        say ""
+        say "  Vx is not in ~/.vx, so keep VX_HOME set for the scripts that look for Vx:"
+        say ""
+        say "    ${B}export VX_HOME=\"${VX_HOME}\"${R}"
+        say ""
+        say "  ${DIM}Put that line in your shell's profile too.${R}"
+    fi
 
     if [ -n "${Z3_MISSING:-}" ]; then
         say ""

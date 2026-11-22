@@ -5,8 +5,44 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-11-13T18:00:00Z</updated>
+  <updated>2026-11-20T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Let Vx handle Lean proofs for you</title>
+    <link href="https://vxlang.org/blog/let-vx-handle-lean-proofs-for-you.html"/>
+    <id>https://vxlang.org/blog/let-vx-handle-lean-proofs-for-you.html</id>
+    <updated>2026-11-20T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>A Lean proof has two parts: the theorem, which says what you want to be true, and the proof steps, which tell Lean why it is true. A programmer cares about the theorem. In Vx you write only that part, as a contract on the function that you compile, and the compiler asks the z3 solver for the proof on every build. A loop that counts the entries above zero needs five lines of proof steps in Lean, and an ensures and an invariant in Vx. The offset into a Llama 3.1 70B KV cache passes a Lean proof over Nat and overflows in 32-bit integers. Lean finds the overflow only in a second copy in BitVec 32. Vx checks the contract on the i32 function itself and stops the build. Vx's own guarantees about data races and deadlocks are Lean proofs, written with AI agents, because they are about every program. What you give up: fewer kinds of facts, true facts that z3 cannot prove, and more code to trust.</summary>
+  </entry>
+
+  <entry>
+    <title>Handing the PTX back to the compiler</title>
+    <link href="https://vxlang.org/blog/handing-the-ptx-back-to-the-compiler.html"/>
+    <id>https://vxlang.org/blog/handing-the-ptx-back-to-the-compiler.html</id>
+    <updated>2026-11-20T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>glm-vx runs GLM models with GPU kernels written in Vx, and its kernels had 99 pieces of hand-written PTX inside mlir! blocks. To LLVM, inline PTX is a black box: it cannot remove, merge or move an instruction in it. We moved most of it to NVVM and LLVM ops. A test pins each instruction form of the old PTX with its exact count, and the registers and spills from ptxas. 14 of the 20 kernels kept every pinned instruction. In the other 6 the compiler wrote fewer instructions: a ballot that only tests for any lane drops its popc, an mbarrier wait loop branches on the predicate, and a bf16 store drops a widening convert. One kernel spills 8 bytes where it spilled 40. In four places the compiler made worse code: a split load lost its cache hint, the lane id moved out of a loop, barrier addresses stayed in registers, and one kernel got the same instructions in a slower order. One needed a fix, and three keep their asm. The wgmma ops and the fp8 mma.sync stay PTX for now. All of glm-vx's hardware tests for the converted kernels passed on an H200.</summary>
+  </entry>
+
+  <entry>
+    <title>An escape hatch the size of one fact</title>
+    <link href="https://vxlang.org/blog/an-escape-hatch-the-size-of-one-fact.html"/>
+    <id>https://vxlang.org/blog/an-escape-hatch-the-size-of-one-fact.html</id>
+    <updated>2026-11-17T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>The kernel of one expert in a mixture-of-experts layer writes its results to the rows of its tokens, y[idx[b]]. The Vx compiler refused it, because it could not prove that two blocks never write the same row. No analysis can: the rows are data at run time. Iteration domains, the base of polyhedral compilation, prove that loops with linear indices can run in parallel, and stop at an index loaded from memory. Vx's new type Distinct lets the programmer state the one missing fact, that no two elements of idx are equal. Distinct::check makes one after a sort on the CPU, and unsafe makes one with no check. It is read only, it lives in the signature, and the compiler checks every other access as before. C's restrict states that pointers do not overlap and cannot state this fact. clang refused to vectorize the same scatter-add with every pointer restrict, and with the assume_safety pragma it vectorized the loop and printed 2 where the answer was 4.</summary>
+  </entry>
+
+  <entry>
+    <title>Vx meets Postgres</title>
+    <link href="https://vxlang.org/blog/vx-meets-postgres.html"/>
+    <id>https://vxlang.org/blog/vx-meets-postgres.html</id>
+    <updated>2026-11-15T18:00:00Z</updated>
+    <author><name>Minzy Fox</name></author>
+    <summary>VxVector is a PostgreSQL extension whose core is written in Vx. One SQL call samples a table of vectors, trains k-means centroids in Vx, and hands them to VectorChord to build a vector-search index. The same Vx source trains on the CPU and on an Apple GPU, and now builds for an NVIDIA A100. On an M2 Pro, GPU training is 24 to 28 times faster than the single-threaded CPU kernel, with the same bits for L2 and inner product. Building the extension beside the compiler found six prover bugs that are now fixed upstream, more that are open, and language questions about the boundary between Vx, C and the GPU: waiting before C reads GPU memory through a function pointer, pure library functions in across loops, linking two Vx objects, and calling C functions that the linking program defines.</summary>
+  </entry>
 
   <entry>
     <title>Plain loops at the speed of CUDA</title>

@@ -140,14 +140,14 @@ has a note with the line of that `break`.
 ## Type invariants
 
 A contract can also be about data. An `invariant` on a struct states a fact about each value of the
-type. It comes after the name of the struct and before its fields:
+type. It comes inside the braces, after the last field, and it ends with a comma as a field does:
 
 ```rust
-struct Interval
-invariant self.lo <= self.hi
-{
+struct Interval {
     lo : i64,
     hi : i64,
+
+    invariant lo <= hi,
 }
 
 fn widen(r : &mut Interval) -> i32 {
@@ -162,9 +162,9 @@ fn main() -> i32 {
 }
 ```
 
-In an invariant, `self` is the value of the type. An invariant can use the fields of `self` at any
-depth, numbers, operators and the pointer clauses `valid`, `initialized` and `overlaps`. It calls no
-other function.
+An invariant names the fields of the struct directly: `lo`, not `self.lo`. It can use the fields at
+any depth, as in `pair.a`, numbers, operators, `as` and the pointer clauses `valid`, `initialized`
+and `overlaps`. It calls no other function, and it names no constant (`E8013`).
 
 Only the module (the `.vx` file) that declares the type can change its fields. Code in another
 module can read each field. It cannot do these things (`E8014`):
@@ -341,8 +341,8 @@ example above with `fail(msg : *const i8) -> void ensures false` also gives E800
 
 The compiler checks the body of a `-> !` function:
 
-- Each path must end in `panic`, `abort` or a call to another `-> !` function. A body that can
-  finish gives E3028.
+- Each path must end in `panic`, `abort`, a call to another `-> !` function, or a `loop` that no
+  `break` leaves. A body that can finish gives E3028.
 - A `return` gives E3002.
 
 A `-> !` function can have a `requires`. Each call must meet it, as with any other function.

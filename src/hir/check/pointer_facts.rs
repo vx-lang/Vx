@@ -883,6 +883,8 @@ impl<'a> TypeChecker<'a> {
             Type::Borrow { inner, .. }
             | Type::Ref(inner, _)
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => self.type_can_free(inner, depth + 1),
             Type::Struct(name, _) if name.as_ref() == "void" => false,
             Type::Struct(name, _) | Type::Enum(name, _) => {

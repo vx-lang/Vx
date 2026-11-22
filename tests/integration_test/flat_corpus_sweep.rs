@@ -14,6 +14,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
+
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
@@ -160,116 +162,205 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             corpus.push((rel, program));
         }
     }
-    for (name, program) in corpus {
-        // Programs that cannot compile as a bare `vxc file.vx` for reasons that are not the
-        // flat path's business. Each names why; shrinking this list is separate work.
-        const NOT_STANDALONE: &[&str] = &[
-            "optimizations/pass/array_literal_nested.vx", // expects failure by design (RUN: not vxc)
-            "optimizations/pass/host_flag_scope.vx",           // needs --host
-            "optimizations/pass/device_transfer_plugin.vx",    // needs --machine and a plugin
-            "optimizations/pass/numa_peer_node_is_priced.vx",  // needs --host and --machine
-            // needs --host and --machine
-            "optimizations/pass/dtcm_tiles_in_sibling_blocks_fit_a_cortex_m7.vx",
-            "optimizations/pass/gpu_kernel_in_main_on_the_ast_code_generator.vx", // needs --machine
-            "optimizations/pass/gpu_register_tensor_stays_in_registers.vx",       // needs --machine
-            "optimizations/pass/register_tensor_loops_are_unrolled.vx",           // needs --machine
-            "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",      // needs --machine
-            "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
-            "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
-            "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
-            "optimizations/pass/a_tensor_from_gpu_memory_is_passed_by_value_and_freed_once.vx", // needs --machine
-            "optimizations/pass/functions_that_run_where_they_are_called.vx",     // needs --machine
-            "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
-            "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
-            "optimizations/pass/scoped_fences_in_across_loops.vx",                // needs --machine
-            "optimizations/pass/reads_only_calls_in_across_loops.vx",             // needs --machine
-            "optimizations/pass/code_after_the_blocks_runs_in_the_last_pass.vx",  // needs --machine
-            "optimizations/pass/gpu_image_keeps_only_the_kernels.vx",             // needs --machine
-            "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
-            "optimizations/pass/across_kernels_from_llm_c.vx",                    // needs --machine
-            "optimizations/pass/across_kernels_from_polybench_and_rodinia.vx",    // needs --machine
-            "optimizations/pass/lane_reductions_on_the_cpu.vx",                   // needs --machine
-            "optimizations/pass/lane_reductions_on_the_gpu.vx",                   // needs --machine
-            "optimizations/pass/lane_values_stay_in_registers_on_the_gpu.vx",     // needs --machine
-            "optimizations/pass/across_loops_run_in_parallel_on_both_code_generators.vx", // needs --machine
-            "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
-            "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
-            "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
-            "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
-            "optimizations/pass/lane_matmuls_on_the_gpu.vx",                      // needs --machine
-            "optimizations/pass/lane_matmuls_on_tensor_cores.vx",                 // needs --machine
-            "optimizations/pass/lane_copies_on_the_cpu.vx",                       // needs --machine
-            "optimizations/pass/lane_copies_on_the_gpu.vx",                       // needs --machine
-            "optimizations/pass/lane_copies_with_tma.vx",                         // needs --machine
-            "optimizations/pass/lane_argmax_on_the_cpu.vx",                       // needs --machine
-            "optimizations/pass/if_values_that_read_a_tensor.vx",                 // needs --machine
-            "optimizations/pass/code_after_the_blocks_runs_on_the_lanes_of_one_block.vx", // needs --machine
-            "optimizations/pass/code_of_a_group_runs_in_its_last_pass.vx", // needs --machine
-            "optimizations/pass/code_of_a_group_in_a_kernel_launched_again.vx", // needs --machine
-            "optimizations/pass/a_library_tells_the_backend_its_gpus.vx",  // needs --machine
-            "optimizations/pass/splits_read_from_gpu_memory.vx",           // needs --machine
-            "optimizations/pass/a_kernel_tells_ptxas_its_block_size.vx",   // needs --machine
-            "optimizations/pass/book_gpu_exact_and_fast_tanh.vx",          // needs --machine
-            "optimizations/pass/a_lane_loop_as_wide_as_its_block_runs_once.vx", // needs --machine
-            "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
-            "optimizations/pass/a_tensor_that_atomics_change_is_not_readonly.vx", // needs --machine
-            "optimizations/pass/writes_at_slots_from_an_atomic_counter.vx", // needs --machine
-            "optimizations/pass/atomics_on_a_mut_tensor.vx",               // needs --machine
-            "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
-            "optimizations/pass/a_shared_tile_in_the_code_after_the_blocks.vx", // needs --machine
-            "optimizations/pass/a_tensor_in_gpu_memory_in_a_struct_or_enum_is_freed_by_its_plugin.vx", // split-file
-            "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
-            "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
-            "frontend/pass/packages/import_from_a_package.vx", // needs --package
-            // needs --machine
-            "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
-            // needs --machine
-            "optimizations/pass/an_across_loop_whose_index_wraps_stops_at_the_launch.vx",
-            // needs --machine
-            "optimizations/pass/two_tensors_in_a_gpu_kernel_share_local_memory.vx",
-            // needs --machine
-            "optimizations/pass/apple_gpu_kernels_in_metal_shading_language.vx",
-            // needs --machine
-            "optimizations/pass/apple_gpu_element_atomics_in_metal_shading_language.vx",
-            // needs --machine
-            "optimizations/pass/apple_gpu_counted_loops_are_for_loops_in_metal_shading_language.vx",
-            "optimizations/pass/lane_matmuls_in_metal_shading_language.vx",
-            // needs --machine
-            "optimizations/pass/a_bulk_hash_table_search_wraps_around_the_end_of_the_table.vx",
-            // needs --machine
-            "optimizations/pass/the_cpu_workers_share_the_blocks_of_an_across_loop.vx",
-            // needs --machine
-            "optimizations/pass/the_cpu_copy_of_an_apple_gpu_kernel_flushes_subnormals.vx",
-            // needs --machine
-            "optimizations/pass/a_library_for_the_apple_gpu_waits_before_it_returns.vx",
-            // needs --machine
-            "optimizations/pass/pub_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
-            "optimizations/pass/book_gpu_blocks_and_lanes.vx", // needs --machine
-            "optimizations/pass/book_gpu_histogram_with_atomics.vx", // needs --machine
-            "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
-            "optimizations/pass/std_nn_kernels_match_loops_on_the_cpu.vx", // needs --machine
-            "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
-            "optimizations/pass/std_nn_moe_kernels_match_loops_on_the_cpu.vx", // needs --machine
-            "optimizations/pass/std_nn_q4_kernels_match_loops_on_the_cpu.vx", // needs --machine
-            // needs --machine
-            "optimizations/pass/methods_that_return_a_reference_to_a_tensor_field.vx",
-            // needs --machine
-            "optimizations/pass/a_tensor_that_a_called_function_writes_is_not_const_on_the_apple_gpu.vx",
-        ];
-        if NOT_STANDALONE.contains(&name.as_str()) {
-            continue;
-        }
-        let source = std::fs::read_to_string(&program).unwrap_or_default();
-        if source.contains("// REQUIRES:") {
-            continue;
-        }
-        // `// XFAIL: *` marks a RUN line that cannot pass yet. Some of those programs still
-        // compile (the RUN line fails on what the IR says), and those are swept like any other;
-        // one written ahead of the compiler reaches neither path, and that is the state it
-        // claims, so it is skipped until the marker comes off.
-        let xfail = source.contains("// XFAIL: *");
-
-        match path_taken(&program) {
+    // Programs that cannot compile as a bare `vxc file.vx` for reasons that are not the
+    // flat path's business. Each names why; shrinking this list is separate work.
+    const NOT_STANDALONE: &[&str] = &[
+        "optimizations/pass/array_literal_nested.vx", // expects failure by design (RUN: not vxc)
+        "optimizations/pass/host_flag_scope.vx",           // needs --host
+        "optimizations/pass/device_transfer_plugin.vx",    // needs --machine and a plugin
+        "optimizations/pass/numa_peer_node_is_priced.vx",  // needs --host and --machine
+        // needs --host and --machine
+        "optimizations/pass/dtcm_tiles_in_sibling_blocks_fit_a_cortex_m7.vx",
+        "optimizations/pass/gpu_kernel_in_main_on_the_ast_code_generator.vx", // needs --machine
+        "optimizations/pass/gpu_register_tensor_stays_in_registers.vx",       // needs --machine
+        "optimizations/pass/register_tensor_loops_are_unrolled.vx",           // needs --machine
+        "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",      // needs --machine
+        "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
+        "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
+        "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
+        "optimizations/pass/whole_tensor_assignments_write_into_the_destination.vx", // needs --machine
+        "optimizations/pass/a_tensor_from_gpu_memory_is_passed_by_value_and_freed_once.vx", // needs --machine
+        "optimizations/pass/functions_that_run_where_they_are_called.vx",     // needs --machine
+        "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
+        "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
+        "optimizations/pass/scoped_fences_in_across_loops.vx",                // needs --machine
+        "optimizations/pass/reads_only_calls_in_across_loops.vx",             // needs --machine
+        "optimizations/pass/lane_own_tensors_borrowed_as_mut_in_across_loops.vx", // needs --machine
+        "optimizations/pass/code_after_the_blocks_runs_in_the_last_pass.vx",  // needs --machine
+        "optimizations/pass/gpu_image_keeps_only_the_kernels.vx",             // needs --machine
+        "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
+        "optimizations/pass/across_kernels_from_llm_c.vx",                    // needs --machine
+        "optimizations/pass/across_kernels_from_polybench_and_rodinia.vx",    // needs --machine
+        "optimizations/pass/lane_reductions_on_the_cpu.vx",                   // needs --machine
+        "optimizations/pass/lane_reductions_on_the_gpu.vx",                   // needs --machine
+        "optimizations/pass/lane_values_stay_in_registers_on_the_gpu.vx",     // needs --machine
+        "optimizations/pass/lane_values_stay_in_registers_between_lane_loops.vx", // needs --machine
+        "optimizations/pass/across_loops_run_in_parallel_on_both_code_generators.vx", // needs --machine
+        "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
+        "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
+        "optimizations/pass/lane_prefetch_into_the_l2_cache.vx",              // needs --machine
+        "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
+        "optimizations/pass/values_at_the_start_of_block_code_reach_every_lane.vx", // needs --machine
+        "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
+        "optimizations/pass/lane_matmuls_on_the_gpu.vx",                      // needs --machine
+        "optimizations/pass/matmul_tiles_in_shared_memory_avoid_bank_conflicts.vx", // needs --machine
+        "optimizations/pass/lane_matmuls_on_tensor_cores.vx",                 // needs --machine
+        "optimizations/pass/lane_matmuls_of_fp8_tiles_give_the_sums_of_a_loop.vx", // needs --machine
+        "optimizations/pass/lane_matmuls_of_fp8_tiles_on_tensor_cores.vx",  // needs --machine
+        "optimizations/pass/lane_copies_on_the_cpu.vx",                       // needs --machine
+        "optimizations/pass/lane_copies_on_the_gpu.vx",                       // needs --machine
+        "optimizations/pass/lane_copy_into_and_out_of_a_tile.vx",             // needs --machine
+        "optimizations/pass/lane_copy_on_the_gpu.vx",                         // needs --machine
+        "optimizations/pass/lane_fill_of_a_tile.vx",                          // needs --machine
+        "optimizations/pass/lane_fill_on_the_gpu.vx",                         // needs --machine
+        "optimizations/pass/lane_scale_rows_keeps_the_sums_in_registers.vx",  // needs --machine
+        "optimizations/pass/lane_matmul_scaled_on_the_cpu.vx",                // needs --machine
+        "optimizations/pass/lane_matmul_scaled_on_the_gpu.vx",                // needs --machine
+        "optimizations/pass/lane_matmul_scaled_mxfp4_on_the_cpu.vx",          // needs --machine
+        "optimizations/pass/lane_matmul_scaled_on_tensor_cores.vx",           // needs --machine
+        "optimizations/pass/lane_matmul_scaled_on_tcgen05.vx",                // needs --machine
+        "optimizations/pass/lane_matmul_scaled_in_block_code_on_the_cpu.vx",  // needs --machine
+        "optimizations/pass/lane_matmul_scaled_mxfp4_in_block_code_on_the_cpu.vx", // needs --machine
+        "optimizations/pass/a_gpu_kernel_reads_a_borrowed_host_tensor_with_no_copy.vx", // needs --machine
+        "optimizations/pass/weights_in_a_struct_reach_the_gpu_with_no_copy.vx", // needs --machine
+        "optimizations/pass/lane_copies_check_the_whole_tile_once.vx", // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_registers_take_no_shared_memory.vx", // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_simdgroup_matrices_take_no_threadgroup_memory.vx", // needs --machine
+        "optimizations/pass/a_tile_copied_into_a_row_of_a_tensor_parameter.vx", // needs --machine
+        "optimizations/pass/lane_stores_of_neighbouring_bf16_join_into_one.vx", // needs --machine
+        "optimizations/pass/lane_matmul_result_goes_from_registers_to_the_tensor.vx", // needs --machine
+        "optimizations/pass/lane_copies_with_tma.vx",                         // needs --machine
+        "optimizations/pass/lane_argmax_on_the_cpu.vx",                       // needs --machine
+        "optimizations/pass/if_values_that_read_a_tensor.vx",                 // needs --machine
+        "optimizations/pass/code_after_the_blocks_runs_on_the_lanes_of_one_block.vx", // needs --machine
+        "optimizations/pass/code_of_a_group_runs_in_its_last_pass.vx", // needs --machine
+        "optimizations/pass/code_of_a_group_in_a_kernel_launched_again.vx", // needs --machine
+        "optimizations/pass/a_library_tells_the_backend_its_gpus.vx",  // needs --machine
+        "optimizations/pass/splits_read_from_gpu_memory.vx",           // needs --machine
+        "optimizations/pass/a_kernel_tells_ptxas_its_block_size.vx",   // needs --machine
+        "optimizations/pass/book_gpu_exact_and_fast_tanh.vx",          // needs --machine
+        "optimizations/pass/a_lane_loop_as_wide_as_its_block_runs_once.vx", // needs --machine
+        "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
+        "optimizations/pass/a_tensor_that_atomics_change_is_not_readonly.vx", // needs --machine
+        "optimizations/pass/writes_at_slots_from_an_atomic_counter.vx", // needs --machine
+        "optimizations/pass/atomics_on_a_mut_tensor.vx",               // needs --machine
+        "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
+        "optimizations/pass/a_shared_tile_in_the_code_after_the_blocks.vx", // needs --machine
+        "optimizations/pass/a_tensor_in_gpu_memory_in_a_struct_or_enum_is_freed_by_its_plugin.vx", // split-file
+        // needs --machine
+        "optimizations/pass/apple_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
+        // needs --machine
+        "optimizations/pass/apple_gpu_shared_memory_offsets_go_in_the_address.vx",
+        // needs --machine and the path of a file
+        "optimizations/pass/apple_gpu_reads_a_mapped_file_with_no_copy.vx",
+        // needs --machine
+        "optimizations/pass/apple_gpu_sums_vectors_across_a_simd_group.vx",
+        // needs --machine
+        "optimizations/pass/apple_gpu_kernels_for_n_positions_match_one_position.vx",
+        // needs --machine
+        "optimizations/pass/nvidia_gpu_short_loops_of_constant_bounds_are_unrolled.vx",
+        // split-file
+        "optimizations/pass/gpu_only_code_on_the_cpu_with_the_programs_own_write.vx",
+        "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
+        "optimizations/pass/lane_copies_of_rows_by_id.vx", // needs --machine
+        "optimizations/pass/lane_copies_of_rows_on_the_gpu.vx", // needs --machine
+        // needs --machine
+        "optimizations/pass/a_gpu_kernel_converts_f32_to_bf16_with_one_instruction.vx",
+        // needs --machine
+        "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
+        "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
+        "frontend/pass/packages/import_from_a_package.vx", // needs --package
+        // needs --machine
+        "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
+        // needs --machine
+        "optimizations/pass/an_across_loop_whose_index_wraps_stops_at_the_launch.vx",
+        // needs --machine
+        "optimizations/pass/two_tensors_in_a_gpu_kernel_share_local_memory.vx",
+        // needs --machine
+        "optimizations/pass/apple_gpu_kernels_in_metal_shading_language.vx",
+        // needs --machine
+        "optimizations/pass/apple_gpu_element_atomics_in_metal_shading_language.vx",
+        // needs --machine
+        "optimizations/pass/apple_gpu_counted_loops_are_for_loops_in_metal_shading_language.vx",
+        "optimizations/pass/lane_matmuls_in_metal_shading_language.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_stay_in_simdgroup_matrices.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_simdgroup_matrices_on_the_apple_gpu.vx",
+        // needs --machine
+        "optimizations/pass/a_bulk_hash_table_search_wraps_around_the_end_of_the_table.vx",
+        // needs --machine
+        "optimizations/pass/the_cpu_workers_share_the_blocks_of_an_across_loop.vx",
+        // needs --machine
+        "optimizations/pass/the_cpu_copy_of_an_apple_gpu_kernel_flushes_subnormals.vx",
+        // needs --machine
+        "optimizations/pass/a_library_for_the_apple_gpu_waits_before_it_returns.vx",
+        // needs --machine
+        "optimizations/pass/pub_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
+        "optimizations/pass/book_gpu_blocks_and_lanes.vx", // needs --machine
+        "optimizations/pass/book_gpu_histogram_with_atomics.vx", // needs --machine
+        "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
+        "optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx", // needs --machine
+        "optimizations/pass/std_nn_kernels_match_loops_on_the_cpu.vx", // needs --machine
+        "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
+        "optimizations/pass/std_nn_moe_kernels_match_loops_on_the_cpu.vx", // needs --machine
+        "optimizations/pass/std_nn_q4_kernels_match_loops_on_the_cpu.vx", // needs --machine
+        // needs --machine
+        "optimizations/pass/methods_that_return_a_reference_to_a_tensor_field.vx",
+        // needs --machine
+        "optimizations/pass/a_tensor_that_a_called_function_writes_is_not_const_on_the_apple_gpu.vx",
+        // needs --machine
+        "optimizations/pass/blocks_write_at_rows_from_a_distinct_tensor.vx",
+        // needs --machine
+        "optimizations/pass/distinct_check_makes_rows_for_a_kernel.vx",
+        // needs --machine
+        "optimizations/pass/std_nn_moe_group_sorts_pairs_by_expert.vx",
+        // needs --machine
+        "optimizations/pass/emit_ptx_names_the_kernels_of_a_generic_function.vx",
+        // needs --machine
+        "optimizations/pass/a_lane_variable_with_the_name_of_a_parameter_for_emit_ptx.vx",
+        // needs --machine
+        "optimizations/pass/a_kernel_reads_a_parameter_that_the_host_borrows_for_emit_ptx.vx",
+        // needs --machine
+        "optimizations/pass/blocks_write_the_rows_of_disjoint_ranges.vx",
+        // needs --machine
+        "optimizations/pass/disjoint_ranges_check_makes_ranges_for_a_kernel.vx",
+        // needs --machine
+        "optimizations/pass/lanes_write_rows_from_nested_parts_of_the_lane_index.vx",
+        // needs --machine
+        "optimizations/pass/lanes_write_rows_in_two_loops_one_after_another.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmuls_of_a_tile_in_hbm_give_the_sums.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmuls_load_16_bytes_of_a_row_at_once.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_that_stay_in_shared_memory.vx",
+    ];
+    // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
+    // order of the corpus, so the messages below do not change from run to run.
+    super::parallel::init_rayon();
+    let results: Vec<_> = corpus
+        .par_iter()
+        .filter_map(|(name, program)| {
+            if NOT_STANDALONE.contains(&name.as_str()) {
+                return None;
+            }
+            let source = std::fs::read_to_string(program).unwrap_or_default();
+            if source.contains("// REQUIRES:") {
+                return None;
+            }
+            // `// XFAIL: *` marks a RUN line that cannot pass yet. Some of those programs still
+            // compile (the RUN line fails on what the IR says), and those are swept like any other;
+            // one written ahead of the compiler reaches neither path, and that is the state it
+            // claims, so it is skipped until the marker comes off.
+            let xfail = source.contains("// XFAIL: *");
+            Some((name.clone(), xfail, path_taken(program)))
+        })
+        .collect();
+    for (name, xfail, taken) in results {
+        match taken {
             Ok(CodegenPath::Flat) => flat_count += 1,
             Ok(CodegenPath::Ast(reasons)) => {
                 if reasons.is_empty() {
@@ -426,87 +517,98 @@ fn flat_path_answers_match_the_backend_expectations() {
         .collect();
     programs.sort();
 
-    for program in programs {
-        let rel = program
-            .strip_prefix(&tests)
-            .unwrap_or(&program)
-            .to_string_lossy()
-            .to_string();
-        if declines.contains(rel.as_str()) {
-            continue;
-        }
-        let source = std::fs::read_to_string(&program).unwrap_or_default();
-
-        // The same gates `run_expect_lines_on_the_ast_code_generator` applies, so the two
-        // harnesses agree on what a fixture has opted out of -- all but
-        // `// REQUIRES: flat-codegen`, which says the legacy path gets the answers wrong and is
-        // therefore a reason to run a file here, not to skip it. Every other `// REQUIRES:` is
-        // about which codegen path a program takes, which is this file's other test, not a
-        // reason to skip running one. `NO_EXEC` was the gate this loop first left out: a
-        // fixture that has never been run can carry EXPECT lines nothing has ever compared,
-        // and `matmul_bf16.vx` did.
-        if source.contains("// NO_EXEC") {
-            continue;
-        }
-        if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
-            continue;
-        }
-        if source.contains("// REQUIRES: ane") {
-            continue;
-        }
-
-        let expects: Vec<String> = source
-            .lines()
-            .filter(|l| l.trim().starts_with("// EXPECT:"))
-            .map(|l| l.split_once("EXPECT:").unwrap().1.trim().to_string())
-            .collect();
-        if expects.is_empty() {
-            continue;
-        }
-
-        let output = match super::time_limit::vxc()
-            .arg(&program)
-            .args(tests_package())
-            .env("PATH", &path_var)
-            .env("VX_FLAT_DBG", "1")
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                failures.push(format!("{rel}: could not run vxc: {e}"));
-                continue;
+    // Each program is its own run of vxc, so the programs run in parallel. Each gives `None`
+    // when it is skipped, and else whether it ran through the flat path and its failures.
+    // `collect` keeps the order of the corpus.
+    super::parallel::init_rayon();
+    let results: Vec<(bool, Vec<String>)> = programs
+        .par_iter()
+        .filter_map(|program| {
+            let rel = program
+                .strip_prefix(&tests)
+                .unwrap_or(program)
+                .to_string_lossy()
+                .to_string();
+            if declines.contains(rel.as_str()) {
+                return None;
             }
-        };
-        let log = String::from_utf8_lossy(&output.stderr);
+            let source = std::fs::read_to_string(program).unwrap_or_default();
 
-        // Refuse to pass on a program that quietly took the AST path. Without this the test
-        // decays into `test_backend` the moment the flat path declines something new -- which
-        // is precisely the failure this test exists because of, so it is checked rather than
-        // assumed. The line is printed only with VX_FLAT_DBG, which this command sets.
-        if !log.contains("emitted module via the flat path") {
-            failures.push(format!(
-                "{rel}: states EXPECT lines but did not compile through the flat path, so \
-                 this test asserted nothing about it. Either the flat path started declining \
-                 it -- add it to KNOWN_DECLINES with a reason -- or it failed to compile."
-            ));
-            continue;
-        }
+            // The same gates `run_expect_lines_on_the_ast_code_generator` applies, so the two
+            // harnesses agree on what a fixture has opted out of -- all but
+            // `// REQUIRES: flat-codegen`, which says the legacy path gets the answers wrong and is
+            // therefore a reason to run a file here, not to skip it. Every other `// REQUIRES:` is
+            // about which codegen path a program takes, which is this file's other test, not a
+            // reason to skip running one. `NO_EXEC` was the gate this loop first left out: a
+            // fixture that has never been run can carry EXPECT lines nothing has ever compared,
+            // and `matmul_bf16.vx` did.
+            if source.contains("// NO_EXEC") {
+                return None;
+            }
+            if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+                return None;
+            }
+            if source.contains("// REQUIRES: ane") {
+                return None;
+            }
 
-        // Both streams, because a fixture's expected output is not always on stdout --
-        // ffi_stdio.vx writes deliberately to stderr, and an unwind message goes there too.
-        // `run_expect_lines_on_the_ast_code_generator` sees one combined string from the
-        // in-process JIT, so checking only stdout here would fail programs the legacy path
-        // passes for no real reason.
-        let out = format!("{}{}", String::from_utf8_lossy(&output.stdout), log);
-        for expect in &expects {
-            if !crate::integration_test::compile_test::expect_matches(&out, expect) {
-                failures.push(format!(
-                    "{rel}: flat path did not produce the expected answer.\n  \
-                     expected to find: {expect}\n  actual stdout:\n{out}"
+            let expects: Vec<String> = source
+                .lines()
+                .filter(|l| l.trim().starts_with("// EXPECT:"))
+                .map(|l| l.split_once("EXPECT:").unwrap().1.trim().to_string())
+                .collect();
+            if expects.is_empty() {
+                return None;
+            }
+
+            let output = match super::time_limit::vxc()
+                .arg(program)
+                .args(tests_package())
+                .env("PATH", &path_var)
+                .env("VX_FLAT_DBG", "1")
+                .output()
+            {
+                Ok(o) => o,
+                Err(e) => return Some((false, vec![format!("{rel}: could not run vxc: {e}")])),
+            };
+            let log = String::from_utf8_lossy(&output.stderr);
+
+            // Refuse to pass on a program that quietly took the AST path. Without this the test
+            // decays into `test_backend` the moment the flat path declines something new -- which
+            // is precisely the failure this test exists because of, so it is checked rather than
+            // assumed. The line is printed only with VX_FLAT_DBG, which this command sets.
+            if !log.contains("emitted module via the flat path") {
+                return Some((
+                    false,
+                    vec![format!(
+                        "{rel}: states EXPECT lines but did not compile through the flat path, so \
+                     this test asserted nothing about it. Either the flat path started declining \
+                     it -- add it to KNOWN_DECLINES with a reason -- or it failed to compile."
+                    )],
                 ));
             }
-        }
-        checked += 1;
+
+            // Both streams, because a fixture's expected output is not always on stdout --
+            // ffi_stdio.vx writes deliberately to stderr, and an unwind message goes there too.
+            // `run_expect_lines_on_the_ast_code_generator` sees one combined string from the
+            // in-process JIT, so checking only stdout here would fail programs the legacy path
+            // passes for no real reason.
+            let out = format!("{}{}", String::from_utf8_lossy(&output.stdout), log);
+            let mut failures = Vec::new();
+            for expect in &expects {
+                if !crate::integration_test::compile_test::expect_matches(&out, expect) {
+                    failures.push(format!(
+                        "{rel}: flat path did not produce the expected answer.\n  \
+                         expected to find: {expect}\n  actual stdout:\n{out}"
+                    ));
+                }
+            }
+            Some((true, failures))
+        })
+        .collect();
+    for (ran, fails) in results {
+        checked += ran as usize;
+        failures.extend(fails);
     }
 
     // A corpus that silently emptied would make every assertion above vacuous. The count is

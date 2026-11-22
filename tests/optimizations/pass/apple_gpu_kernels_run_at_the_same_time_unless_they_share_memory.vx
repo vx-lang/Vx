@@ -1,0 +1,128 @@
+// The GPU runs the kernels of a command buffer at the same time. A kernel that reads memory that an
+// earlier kernel writes, or writes memory that an earlier kernel reads or writes, needs a barrier.
+// The runtime puts a barrier before such a kernel, and the kernel starts after the kernels before
+// the barrier end.
+//
+// `slow_sum` runs a long loop on one block of the GPU. The kernels after it start before it ends:
+//
+// - `plus_one(&mut q, &ones)` only reads what the `slow_sum` before it reads. It gets no barrier.
+// - `plus_one(&mut y, &x)` reads `x`, which `slow_sum` writes. Without the barrier, y is 1.
+// - `plus_one(&mut r, &x)` reads `x` too, but the barrier before it already waited for `slow_sum`.
+// - The `fill` of `twos` writes what `slow_sum` reads. Without the barrier, z is less.
+// - The `fill` of `v` writes what `slow_sum` writes. Without the barrier, v is 1000000.
+//
+// With VX_METAL_CONCURRENT=0, each kernel starts after the kernel before it ends, with no barriers.
+// That run and the CPU copy of the kernels (VX_METAL=0) print the same numbers.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: grep -e "Vx Metal" %t.gpu | grep -v -e "bytes of GPU memory" | FileCheck %s --check-prefix=GPU
+// RUN: env VX_METAL_CONCURRENT=0 VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.serial | FileCheck %s --check-prefix=OUT
+// RUN: FileCheck %s --check-prefix=SERIAL --input-file=%t.serial --implicit-check-not=barrier
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
+//
+// OUT: {{^}}same input 2 2{{$}}
+// OUT-NEXT: {{^}}read after a write 1000001 1000001{{$}}
+// OUT-NEXT: {{^}}read after a barrier 1000001 1000001{{$}}
+// OUT-NEXT: {{^}}write after a read 2000000 2000000{{$}}
+// OUT-NEXT: {{^}}write after a write 7 7{{$}}
+// OUT-NEXT: {{^}}inputs 1 1000000 0{{$}}
+//
+// GPU: [Vx Metal] [[SLOW:vx_npu_kernel_[0-9]+]]: grid 1 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] [[PLUS:vx_npu_kernel_[0-9]+]]: grid 1 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] [[PLUS]]: a barrier before it
+// GPU-NEXT: [Vx Metal] [[PLUS]]: grid 1 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] [[PLUS]]: grid 1 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] [[SLOW]]: grid 1 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] [[FILL:vx_npu_kernel_[0-9]+]]: a barrier before it
+// GPU-NEXT: [Vx Metal] [[FILL]]: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] [[SLOW]]: grid 1 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] [[FILL]]: a barrier before it
+// GPU-NEXT: [Vx Metal] [[FILL]]: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 8 kernels,{{.*}}
+// GPU-NOT: {{.}}
+//
+// SERIAL: [Vx Metal] waited for 8 kernels,
+
+// dst[l] = the sum of `steps` elements of `src`. One block runs the long loop, and the other cores
+// of the GPU stay free for the kernels after it. The loop goes over all 65536 elements of `src`
+// again and again, more than the cache of a GPU core holds. So it sees a write to `src` that
+// another kernel makes while it runs.
+fn slow_sum(dst : &mut Tensor<f32, [?], Memory::HBM>, src : &Tensor<f32, [?], Memory::HBM>, steps : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..1 across blocks {
+      for l in 0..256 across lanes(256) {
+        let mut v = 0.0;
+        for k in 0..steps {
+          v = v + src[(k % 256) * 256 + l];
+        }
+        dst[l] = v;
+      }
+    }
+  }
+  return;
+}
+
+// dst = src + 1, for the first 256 elements
+fn plus_one(dst : &mut Tensor<f32, [?], Memory::HBM>, src : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..1 across blocks {
+      for l in 0..256 across lanes(256) {
+        dst[l] = src[l] + 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// dst = value
+fn fill(dst : &mut Tensor<f32, [?], Memory::HBM>, n : i32, value : f32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes(256) {
+        let i = g * 256 + l;
+        if i < n {
+          dst[i] = value;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  // Each tensor fills pages of its own, so two tensors never share a buffer. `main` reads every
+  // tensor at the end. Otherwise the program frees a tensor after its last kernel, and the free
+  // waits for the kernels before it.
+  let ones = transfer(Tensor<f32, [65536]>::fill(1.0), Memory::HBM);
+  let mut twos = transfer(Tensor<f32, [65536]>::fill(2.0), Memory::HBM);
+  let mut x = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut q = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut y = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut r = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut z = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut v = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  slow_sum(&mut x, &ones, 1000000);
+  plus_one(&mut q, &ones);
+  plus_one(&mut y, &x);
+  plus_one(&mut r, &x);
+  slow_sum(&mut z, &twos, 1000000);
+  fill(&mut twos, 65536, 0.0);
+  slow_sum(&mut v, &ones, 1000000);
+  fill(&mut v, 65536, 7.0);
+  let hq = transfer(q, Memory::CPU_DRAM);
+  let hy = transfer(y, Memory::CPU_DRAM);
+  let hr = transfer(r, Memory::CPU_DRAM);
+  let hz = transfer(z, Memory::CPU_DRAM);
+  let hv = transfer(v, Memory::CPU_DRAM);
+  let hx = transfer(x, Memory::CPU_DRAM);
+  let h1 = transfer(ones, Memory::CPU_DRAM);
+  let h2 = transfer(twos, Memory::CPU_DRAM);
+  println!("same input {} {}", hq[0], hq[255]);
+  println!("read after a write {} {}", hy[0], hy[255]);
+  println!("read after a barrier {} {}", hr[0], hr[255]);
+  println!("write after a read {} {}", hz[0], hz[255]);
+  println!("write after a write {} {}", hv[0], hv[255]);
+  println!("inputs {} {} {}", h1[255], hx[255], h2[255]);
+  return 0;
+}

@@ -1,0 +1,115 @@
+// An `mlir!` block in a kernel for the Apple GPU loads, computes and stores vectors of 4
+// elements. The Metal code generator prints them as `float4` and `half4`. A load or store with an
+// `alignment` of the vector's size uses the type itself, and one without uses the packed type. The
+// inputs are whole numbers, so the GPU must give the exact values that the CPU computes.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal && FileCheck %s --check-prefix=MSL --input-file=%t.metal
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 1 x 1, block 32
+// CHECK: {{^}}first: 10 3 8 8{{$}}
+// CHECK-NEXT: {{^}}wrong: 0{{$}}
+// MSL: float4 {{.*}} = *(const device float4 *)&
+// MSL: half4 {{.*}} = half4(*(const device packed_half4 *)&
+// MSL: as_type<int4>(
+// MSL: as_type<float4>(
+// MSL: as_type<int2>(
+// MSL: as_type<half4>(
+// MSL: fma(
+// MSL: select(
+// MSL: *(device packed_float4 *)&{{.*}} = packed_float4(
+
+// For each group of 4: m = x * (1, 2, 3, 4) + h. x and h go to their bits, lose the sign bit, and
+// come back, which changes nothing for numbers that are not negative. s is the sum of m. The
+// result is m with s in place of m[0], each part above 10 made 10, and m[2] in place of m[3].
+pub fn mix(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, h : &Tensor<f16, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes(32) {
+        let _v = mlir!( inputs : (%o = out : memref<?xf32>, %x = x : memref<?xf32>, %h = h : memref<?xf16>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "vector"], ensures : [reads_only(x), reads_only(h), writes_only(out[(b * 32 + l) * 4..(b * 32 + l) * 4 + 4])]) {
+          %c32 = arith.constant 32 : i32
+          %c4 = arith.constant 4 : i32
+          %r = arith.muli %b, %c32 : i32
+          %g = arith.addi %r, %l : i32
+          %e = arith.muli %g, %c4 : i32
+          %k = arith.index_cast %e : i32 to index
+          %xv = vector.load %x[%k] {
+            alignment = 16
+          } : memref<?xf32>, vector<4xf32>
+          %hv = vector.load %h[%k] : memref<?xf16>, vector<4xf16>
+          %xbits = vector.bitcast %xv : vector<4xf32> to vector<4xi32>
+          %xmask = arith.constant dense<2147483647> : vector<4xi32>
+          %xpos = arith.andi %xbits, %xmask : vector<4xi32>
+          %xa = vector.bitcast %xpos : vector<4xi32> to vector<4xf32>
+          %hbits = vector.bitcast %hv : vector<4xf16> to vector<2xi32>
+          %hmask = arith.constant dense<2147450879> : vector<2xi32>
+          %hpos = arith.andi %hbits, %hmask : vector<2xi32>
+          %back = vector.bitcast %hpos : vector<2xi32> to vector<4xf16>
+          %hf = arith.extf %back : vector<4xf16> to vector<4xf32>
+          %w = arith.constant dense<[1.0, 2.0, 3.0, 4.0]> : vector<4xf32>
+          %m = vector.fma %xa, %w, %hf : vector<4xf32>
+          %z = arith.constant 0.0 : f32
+          %s = vector.reduction <add>, %m, %z : vector<4xf32> into f32
+          %with = vector.insert %s, %m[0] : f32 into vector<4xf32>
+          %ten = arith.constant 10.0 : f32
+          %tens = vector.broadcast %ten : f32 to vector<4xf32>
+          %big = arith.cmpf ogt, %with, %tens : vector<4xf32>
+          %lo = arith.select %big, %tens, %with : vector<4xi1>, vector<4xf32>
+          %third = vector.extract %m[2] : f32 from vector<4xf32>
+          %low = arith.truncf %third : f32 to f16
+          %lowf = arith.extf %low : f16 to f32
+          %one = vector.insert %lowf, %lo[3] : f32 into vector<4xf32>
+          vector.store %one, %o[%k] : memref<?xf32>, vector<4xf32>
+          macro.yield %e : i32
+        };
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let n = 512;
+  let mut hx = Tensor<f32>([n]);
+  let mut hh = Tensor<f16>([n]);
+  for i in 0..n {
+    hx[i] = (i % 5) as f32;
+    hh[i] = (i % 3) as f16;
+  }
+  let x = transfer(&hx, Memory::HBM);
+  let h = transfer(&hh, Memory::HBM);
+  let mut out = transfer(Tensor<f32>([n]), Memory::HBM);
+  mix(&mut out, &x, &h);
+  let got = transfer(&out, Memory::CPU_DRAM);
+  let mut wrong = 0;
+  for g in 0..n / 4 {
+    let mut m = Tensor<f32>([4]);
+    let mut s = 0.0;
+    for j in 0..4 {
+      m[j] = hx[g * 4 + j] * ((j + 1) as f32) + (hh[g * 4 + j] as f32);
+      s = s + m[j];
+    }
+    let mut want = Tensor<f32>([4]);
+    want[0] = s;
+    for j in 1..4 {
+      want[j] = m[j];
+    }
+    for j in 0..4 {
+      if want[j] > 10.0 {
+        want[j] = 10.0;
+      }
+    }
+    want[3] = m[2];
+    for j in 0..4 {
+      if got[g * 4 + j] != want[j] {
+        wrong = wrong + 1;
+      }
+    }
+  }
+  println!("first: {} {} {} {}", got[0], got[1], got[2], got[3]);
+  println!("wrong: {}", wrong);
+  return 0;
+}

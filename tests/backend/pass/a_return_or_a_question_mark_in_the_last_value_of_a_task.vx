@@ -1,0 +1,94 @@
+//===- a_return_or_a_question_mark_in_the_last_value_of_a_task.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `return` or a `?` in the last value of a `spawn` body leaves the task, not the function.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}last_if 1 3{{$}}
+// CHECK: {{^}}else_if 100 15 30 200{{$}}
+// CHECK: {{^}}question_mark ok 5, err 7, ok 0{{$}}
+
+import core::result;
+
+fn last_if(leave : bool) -> i32 {
+  return tasks {
+    let h = spawn {
+      if leave {
+        return 1;
+      } else {
+        3
+      }
+    };
+    h.join()
+  };
+}
+
+fn else_if(n : i32) -> i32 {
+  return tasks {
+    let h = spawn {
+      let base = n * 10;
+      if n == 0 {
+        return 100;
+      } else if n == 1 {
+        base + 5
+      } else {
+        if n > 5 {
+          return 200;
+        } else {
+          base
+        }
+      }
+    };
+    h.join()
+  };
+}
+
+fn half(x : i32) -> Result<i32, i32> {
+  if x % 2 == 0 {
+    return Result<i32, i32>::Ok(x / 2);
+  }
+  return Result<i32, i32>::Err(x);
+}
+
+fn question_mark(x : i32) -> Result<i32, i32> {
+  return tasks {
+    let h = spawn {
+      if x > 100 {
+        return Result<i32, i32>::Ok(0);
+      } else {
+        Result<i32, i32>::Ok(half(x)? + 1)
+      }
+    };
+    let v = h.join();
+    Result<i32, i32>::Ok(v)
+  };
+}
+
+fn show(r : Result<i32, i32>) -> void {
+  match r {
+    Result<i32, i32>::Ok(v) => {
+      print!("ok {}", v);
+    }
+    Result<i32, i32>::Err(e) => {
+      print!("err {}", e);
+    }
+  }
+}
+
+fn main() -> i32 {
+  println!("last_if {} {}", last_if(true), last_if(false));
+  println!("else_if {} {} {} {}", else_if(0), else_if(1), else_if(3), else_if(9));
+  print!("question_mark ");
+  show(question_mark(8));
+  print!(", ");
+  show(question_mark(7));
+  print!(", ");
+  show(question_mark(200));
+  println!("");
+  return 0;
+}

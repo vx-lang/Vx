@@ -9,13 +9,17 @@
 // math, so a kernel gives the same bits as its host copy.
 //
 // Metal maps every page of a buffer when it makes the buffer. So GPU memory
-// from vx_metal_alloc gets one buffer over all of its pages, once. Other memory
-// gets a buffer at each batch, because the program can free it without telling
-// this file.
+// from vx_metal_alloc and vx_metal_map_copy gets one buffer over all of its
+// pages, once, and a residency set keeps it resident. Other memory gets a
+// buffer at each batch, because the program can free it without telling this
+// file.
 //
 // The launches of each host thread make one batch until a wait. The batch
 // commits its command buffer after every few launches, so the GPU runs them
 // while the CPU makes the next. A wait commits the rest and waits for the GPU.
+// The GPU runs the launches of a command buffer at the same time, with a
+// barrier before each launch that uses memory that an earlier one writes, or
+// writes memory that an earlier one reads.
 // The Mac dispatcher waits before anything that can touch the memory of a
 // kernel, but only for the launches that use that memory. A `pub fn` waits
 // before it returns to C. A failed assert in a kernel stops the program at the
@@ -28,8 +32,16 @@
 #include "vx_dispatch_plan.h"
 #include "vx_kernel_launch.h"
 
+#include <fcntl.h>
+#include <libproc.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <mach/vm_page_size.h>
+#include <mach/vm_prot.h>
 #include <sys/mman.h>
+#include <sys/param.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cctype>
@@ -65,6 +77,22 @@ bool syncEachLaunch() {
   return on;
 }
 
+// VX_METAL_CONCURRENT=0 runs each launch after the launch before it ends, as
+// if every launch had a barrier.
+bool concurrent() {
+  static const bool on = [] {
+    const char *v = getenv("VX_METAL_CONCURRENT");
+    return !(v && strcmp(v, "0") == 0);
+  }();
+  return on;
+}
+
+id<MTLComputeCommandEncoder> newEncoder(id<MTLCommandBuffer> commands) {
+  return concurrent() ? [commands computeCommandEncoderWithDispatchType:
+                                      MTLDispatchTypeConcurrent]
+                      : [commands computeCommandEncoder];
+}
+
 [[noreturn]] void die(const char *kernel, const char *format, ...) {
   fprintf(stderr, "[Vx Metal] FATAL: kernel %s: ", kernel);
   va_list args;
@@ -94,6 +122,10 @@ bool enabled() {
 struct Gpu {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
+  // The buffers of memory from vx_metal_alloc and vx_metal_map_copy, an
+  // MTLResidencySet on macOS 15 and later. Without it, each command buffer
+  // makes each of its buffers resident again, at a CPU cost for each page.
+  id resident;
 };
 
 Gpu &gpu() {
@@ -101,9 +133,34 @@ Gpu &gpu() {
     Gpu made;
     made.device = MTLCreateSystemDefaultDevice();
     made.queue = [made.device newCommandQueue];
+    if (@available(macOS 15.0, *)) {
+      MTLResidencySetDescriptor *d = [MTLResidencySetDescriptor new];
+      id<MTLResidencySet> set = [made.device newResidencySetWithDescriptor:d
+                                                                     error:nil];
+      if (set) {
+        [made.queue addResidencySet:set];
+        made.resident = set;
+      }
+    }
     return made;
   }();
   return g;
+}
+
+// Adds `buffer` to the buffers that stay resident, or removes it.
+void setResident(id<MTLBuffer> buffer, bool resident) {
+  if (@available(macOS 15.0, *)) {
+    id<MTLResidencySet> set = gpu().resident;
+    if (!set)
+      return;
+    if (resident)
+      [set addAllocation:buffer];
+    else
+      [set removeAllocation:buffer];
+    [set commit];
+    if (resident)
+      [set requestResidency];
+  }
 }
 
 // The bytes from `first` to before `last` that a launch reads, or writes when
@@ -189,6 +246,9 @@ struct Batch {
   std::vector<std::string> kernels;
   std::vector<Region> regions;
   std::vector<Access> accesses;
+  // The accesses of the launches in `encoder` after its last barrier. The GPU
+  // can run these launches at the same time as the next one.
+  std::vector<Access> sinceBarrier;
   std::vector<Check> checks;
   // The buffer that gives the next launch with asserts its word, and the words
   // it gave.
@@ -535,46 +595,178 @@ extern "C" void vx_metal_wait_for_memory(const void *start, size_t bytes,
   finishEach([&](const Batch &b) { return b.mustPrecede(a); });
 }
 
+// Makes one buffer over the `length` bytes of mapped pages at `memory`, for
+// the whole life of the pages. Unmaps them and returns false when Metal
+// refuses. A batch can hold the buffer after vx_metal_free, so the pages go
+// when Metal releases the buffer.
+static bool keepPages(void *memory, size_t length) {
+  Region r;
+  r.start = reinterpret_cast<uintptr_t>(memory);
+  r.end = r.start + length;
+  r.buffer =
+      [gpu().device newBufferWithBytesNoCopy:memory
+                                      length:length
+                                     options:MTLResourceStorageModeShared
+                                 deallocator:^(void *pointer, NSUInteger n) {
+                                   munmap(pointer, n);
+                                 }];
+  if (!r.buffer) {
+    munmap(memory, length);
+    return false;
+  }
+  std::lock_guard<std::mutex> hold(keptLock);
+  kept()[r.start] = r;
+  setResident(r.buffer, true);
+  return true;
+}
+
+// The length in whole pages of `bytes` of GPU memory, or 0 when the GPU is
+// off or cannot have a buffer of that length.
+static size_t gpuPagesFor(size_t bytes) {
+  const size_t page = vm_page_size;
+  if (bytes == 0 || !enabledByEnvironment())
+    return 0;
+  id<MTLDevice> device = gpu().device;
+  const size_t length = (bytes + page - 1) & ~(page - 1);
+  return device && length <= device.maxBufferLength ? length : 0;
+}
+
 // Maps new pages for `bytes` of GPU memory, and makes their buffer. Returns
 // null when the GPU is off, when `bytes` is 0, or when Metal refuses. The
 // caller then uses `malloc`. A small tensor gets a whole page too: two tensors
 // from `malloc` can share a page, and a batch cannot have two buffers over one
 // page, so the second tensor would end the batch.
 extern "C" void *vx_metal_alloc(size_t bytes) {
-  const size_t page = vm_page_size;
-  if (bytes == 0 || !enabledByEnvironment())
-    return nullptr;
   @autoreleasepool {
-    id<MTLDevice> device = gpu().device;
-    const size_t length = (bytes + page - 1) & ~(page - 1);
-    if (!device || length > device.maxBufferLength)
+    const size_t length = gpuPagesFor(bytes);
+    if (length == 0)
       return nullptr;
     void *memory = mmap(nullptr, length, PROT_READ | PROT_WRITE,
                         MAP_ANON | MAP_PRIVATE, -1, 0);
-    if (memory == MAP_FAILED)
+    if (memory == MAP_FAILED || !keepPages(memory, length))
       return nullptr;
-    // A batch can hold the buffer after vx_metal_free, so the pages go when
-    // Metal releases the buffer.
-    Region r;
-    r.start = reinterpret_cast<uintptr_t>(memory);
-    r.end = r.start + length;
-    r.buffer = [device newBufferWithBytesNoCopy:memory
-                                         length:length
-                                        options:MTLResourceStorageModeShared
-                                    deallocator:^(void *pointer, NSUInteger n) {
-                                      munmap(pointer, n);
-                                    }];
-    if (!r.buffer) {
-      munmap(memory, length);
-      return nullptr;
-    }
-    {
-      std::lock_guard<std::mutex> hold(keptLock);
-      kept()[r.start] = r;
-    }
     if (verbose())
       fprintf(stderr, "[Vx Metal] made a buffer of %zu bytes of GPU memory\n",
               length);
+    return memory;
+  }
+}
+
+// A private mapping of all of a read-only mapping of a file. The time to make
+// a private mapping of a file, and to ask for the file of a mapping, grows
+// with the pages of the file in the file cache: 1,000 of each took 46 s for a
+// weight file of 17.8 GB. So each read-only mapping gets one private mapping,
+// and each tensor gets its own pages of it.
+struct FileCopy {
+  // The read-only mapping, the file offset of its start, and its file.
+  uintptr_t start = 0, end = 0;
+  uint64_t offset = 0;
+  std::string path;
+  // The private mapping of the same bytes of the file.
+  uintptr_t copy = 0;
+  // The pages of the read-only mapping that tensors have.
+  std::vector<std::pair<uintptr_t, uintptr_t>> given;
+};
+
+static std::mutex fileCopiesLock;
+
+static std::vector<FileCopy> &fileCopies() {
+  static auto *all = new std::vector<FileCopy>;
+  return *all;
+}
+
+// The private mapping of the read-only mapping from `start` to before `end`
+// at `offset` of the file at `path`, made the first time. Null when the path
+// no longer names the file of the mapping, or when the mapping fails.
+static FileCopy *fileCopyOf(uintptr_t start, uintptr_t end, uint64_t offset,
+                            const char *path) {
+  for (FileCopy &f : fileCopies())
+    if (f.start == start && f.end == end && f.offset == offset &&
+        f.path == path)
+      return &f;
+  struct proc_regionwithpathinfo info;
+  if (proc_pidinfo(getpid(), PROC_PIDREGIONPATHINFO, start, &info,
+                   sizeof info) != sizeof info)
+    return nullptr;
+  const int fd = open(path, O_RDONLY);
+  if (fd < 0)
+    return nullptr;
+  struct stat now;
+  const struct vinfo_stat &mapped = info.prp_vip.vip_vi.vi_stat;
+  void *copy = MAP_FAILED;
+  if (fstat(fd, &now) == 0 && (uint64_t)now.st_dev == mapped.vst_dev &&
+      (uint64_t)now.st_ino == mapped.vst_ino)
+    copy = mmap(nullptr, end - start, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd,
+                (off_t)offset);
+  close(fd);
+  if (copy == MAP_FAILED)
+    return nullptr;
+  FileCopy made;
+  made.start = start;
+  made.end = end;
+  made.offset = offset;
+  made.path = path;
+  made.copy = reinterpret_cast<uintptr_t>(copy);
+  fileCopies().push_back(made);
+  return &fileCopies().back();
+}
+
+// GPU memory that holds a copy of the `bytes` at `source`, made with no copy
+// when `source` starts a page of a read-only mapping of a file. Then the copy
+// is part of a private mapping of the same file: the CPU and the GPU read the
+// pages of the file cache, and a write copies only the page that it changes.
+// Returns null in every other case, and the caller copies.
+//
+// Like a copy, the result keeps the bytes that the file had when it was mapped
+// only if nothing writes the file. A program that maps its weights read-only
+// does not write them.
+extern "C" void *vx_metal_map_copy(const void *source, size_t bytes) {
+  const uintptr_t at = reinterpret_cast<uintptr_t>(source);
+  if (!source || at % vm_page_size != 0)
+    return nullptr;
+  @autoreleasepool {
+    const size_t length = gpuPagesFor(bytes);
+    if (length == 0)
+      return nullptr;
+    mach_vm_address_t start = at;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t region;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    if (mach_vm_region(mach_task_self(), &start, &size, VM_REGION_BASIC_INFO_64,
+                       reinterpret_cast<vm_region_info_t>(&region), &count,
+                       &object) != KERN_SUCCESS)
+      return nullptr;
+    if (object != MACH_PORT_NULL)
+      mach_port_deallocate(mach_task_self(), object);
+    // The mapping must hold all the bytes, and must never allow a write, so
+    // that its pages are the pages of the file. A shared mapping of a file
+    // opened read-only is such a mapping.
+    char path[MAXPATHLEN];
+    if (at < start || at + length > start + size ||
+        (region.max_protection & VM_PROT_WRITE) != 0 ||
+        proc_regionfilename(getpid(), at, path, sizeof path) <= 0)
+      return nullptr;
+    void *memory = nullptr;
+    {
+      std::lock_guard<std::mutex> hold(fileCopiesLock);
+      FileCopy *file = fileCopyOf(start, start + size, region.offset, path);
+      if (!file)
+        return nullptr;
+      // Two tensors of the same bytes need two copies.
+      for (const auto &g : file->given)
+        if (at < g.second && g.first < at + length)
+          return nullptr;
+      file->given.push_back({at, at + length});
+      memory = reinterpret_cast<void *>(file->copy + (at - start));
+    }
+    if (!keepPages(memory, length))
+      return nullptr;
+    if (verbose())
+      fprintf(stderr,
+              "[Vx Metal] made a buffer over %zu bytes of the file %s, with "
+              "no copy\n",
+              length, path);
     return memory;
   }
 }
@@ -594,7 +786,9 @@ extern "C" int vx_metal_free(void *memory) {
   vx_metal_wait_for_memory(memory, length, 1);
   {
     std::lock_guard<std::mutex> hold(keptLock);
-    kept().erase(at);
+    auto found = kept().find(at);
+    setResident(found->second.buffer, false);
+    kept().erase(found);
   }
   if (verbose())
     fprintf(stderr, "[Vx Metal] freed %zu bytes of GPU memory\n", length);
@@ -869,7 +1063,7 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       here = std::make_shared<Batch>();
       here->owner = std::this_thread::get_id();
       here->commands = [gpu().queue commandBuffer];
-      here->encoder = [here->commands computeCommandEncoder];
+      here->encoder = newEncoder(here->commands);
       batches().push_back(here);
       // Report a fault of a kernel that nothing waited for.
       static const bool waitAtExit = atexit(vx_metal_wait) == 0;
@@ -879,6 +1073,22 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     for (const Access &a : accesses)
       here->add(a);
     id<MTLComputeCommandEncoder> encoder = here->encoder;
+    if (concurrent()) {
+      const bool after =
+          std::any_of(accesses.begin(), accesses.end(), [&](const Access &a) {
+            return std::any_of(
+                here->sinceBarrier.begin(), here->sinceBarrier.end(),
+                [&](const Access &b) { return a.mustFollow(b); });
+          });
+      if (after) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        here->sinceBarrier.clear();
+        if (verbose())
+          fprintf(stderr, "[Vx Metal] %s: a barrier before it\n", kernel);
+      }
+      here->sinceBarrier.insert(here->sinceBarrier.end(), accesses.begin(),
+                                accesses.end());
+    }
     [encoder setComputePipelineState:pipeline];
     for (size_t k = 0; k < bound.size(); ++k)
       [encoder setBuffer:bound[k].buffer offset:bound[k].offset atIndex:k];
@@ -937,7 +1147,8 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       [here->commands commit];
       here->sent.push_back(here->commands);
       here->commands = [gpu().queue commandBuffer];
-      here->encoder = [here->commands computeCommandEncoder];
+      here->encoder = newEncoder(here->commands);
+      here->sinceBarrier.clear();
       here->unsent = 0;
     }
   }

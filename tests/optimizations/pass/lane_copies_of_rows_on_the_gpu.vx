@@ -1,0 +1,46 @@
+//===- lane_copies_of_rows_on_the_gpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The PTX of `lanes::copy_rows_async` on an H100. Each of 4 subgroups copies 16 rows of 128 `bf16`
+// that its own row of a tile of ids chooses. A row is 256 bytes, so the lanes copy 16 bytes at a
+// time with `cp.async`, when the addresses allow it. TMA has no gather on `sm_90`, so the copy
+// never uses it.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx
+// CHECK-LABEL: .entry gather_rows(
+// CHECK-NOT: cp.async.bulk.tensor
+// CHECK: cp.async.cg.shared.global [{{.*}}], [{{.*}}], 16, {{.*}};
+// CHECK-NOT: cp.async.bulk.tensor
+// CHECK: cp.async.commit_group;
+// CHECK: cp.async.wait_group
+// CHECK-NOT: cp.async.bulk.tensor
+// CHECK: ret;
+
+pub fn gather_rows(out : &mut Tensor<f32, [?], Memory::HBM>, cache : &Tensor<bf16, [?, ?], Memory::HBM>, picked : &Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut ids = unsafe { Tensor<i32, [4, 16], Memory::SMEM>::uninit() };
+      let mut rows = unsafe {
+        Tensor<bf16, [4, 16, 128], Memory::SMEM>::uninit()
+      };
+      for w in 0..4 across subgroups {
+        for t in 0..16 across lanes(32) {
+          ids[w][t] = picked[16 * w + t];
+        }
+        let copy = lanes::copy_rows_async(&mut rows[w], cache, &ids[w], [0, 0]);
+        copy.wait();
+        for t in 0..16 across lanes(32) {
+          out[16 * w + t] = rows[w][t][0] as f32;
+        }
+      }
+    }
+  }
+  return;
+}

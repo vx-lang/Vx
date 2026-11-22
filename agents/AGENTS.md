@@ -93,6 +93,9 @@ These keep commands clean and avoid unnecessary permission prompts:
   Ubuntu, and nothing you need -- not `llvm-config`, not `mlir-translate`, not even
   `cargo` -- is on PATH in a non-login shell until it is sourced.
 - Create a build log in the respective build directory.
+- Give each git worktree its own `target/` directory, and start it as a clone of the one in the
+  main checkout. Do not share one `CARGO_TARGET_DIR` between worktrees. `agents/Worktrees.md`
+  says why, and gives the commands.
 
 ## Virtual Environment
 
@@ -131,6 +134,11 @@ Use the virtualenv created inside venv. Stop you dont find a venv virtual enviro
   that file took to become sound, and which trap each attempt fell into.
 - A test's comment is a claim about what it asserts. If they disagree, the comment is what
   the next reader believes, so fix the checks or narrow the comment.
+
+## Benchmarks
+
+- Measure and report every speed number that leaves the repository as
+  `docs/benchmarking_policy.md` says: release notes, posts, READMEs and PR descriptions.
 
 ## Rust Toolchain Environment
 

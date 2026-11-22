@@ -1,0 +1,55 @@
+//===- a_method_on_a_struct_parameter_changes_the_parameter.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function takes a struct by value and calls a method on it that takes `&self`. The method
+// changes an atomic field through `&self`. Each call must see the change of the call before it,
+// so each call must get the address of the parameter, not of a new copy.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}method 0 1 2{{$}}
+// CHECK: {{^}}reference 3 4{{$}}
+
+import core::sync::atomic;
+
+struct Counter {
+  next : AtomicI64,
+}
+
+impl Counter {
+  fn bump(self : &Counter) -> i64 {
+    return self.next.fetch_add(1, AtomicOrdering::Relaxed);
+  }
+}
+
+fn bump_it(c : &Counter) -> i64 {
+  return c.bump();
+}
+
+fn three_bumps(c : Counter) -> void {
+  let a = c.bump();
+  let b = c.bump();
+  let d = c.bump();
+  println!("method {} {} {}", a, b, d);
+}
+
+// `&c` is passed to a function that calls the method.
+fn two_bumps_through_a_reference(c : Counter) -> void {
+  let a = bump_it(&c);
+  let b = bump_it(&c);
+  println!("reference {} {}", a, b);
+}
+
+fn main() -> i32 {
+  three_bumps(Counter {
+    next: AtomicI64::new(0)
+  });
+  two_bumps_through_a_reference(Counter {
+    next: AtomicI64::new(3)
+  });
+  return 0;
+}

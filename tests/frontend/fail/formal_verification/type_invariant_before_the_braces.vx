@@ -1,0 +1,23 @@
+//===- type_invariant_before_the_braces.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An invariant of a struct comes after its fields, inside the braces. Before the braces, it is
+// an error.
+
+struct Interval
+// CHECK: Error at {{.*}}type_invariant_before_the_braces.vx:[[@LINE+1]]:1: an invariant of a struct comes after its last field, inside the braces. Move this invariant into the braces of `Interval`.{{$}}
+invariant self.lo <= self.hi
+{
+  lo : i64,
+  hi : i64,
+}
+
+fn main() -> i32 {
+  return 0;
+}

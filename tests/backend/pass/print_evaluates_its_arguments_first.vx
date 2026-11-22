@@ -1,0 +1,33 @@
+//===- print_evaluates_its_arguments_first.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `print!` and `println!` evaluate all their arguments, left to right, and then print. So the
+// tag that `note` prints comes before the whole line, and never in the middle of it. A `String`
+// argument is printed in its place too. `VX_NO_AST_FALLBACK=1` makes the default code generator
+// fail rather than give a function to the AST code generator.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}12a=10 b=20{{$}}
+// CHECK: {{^}}3c=30 {{$}}
+// CHECK: {{^}}4s=text 40{{$}}
+
+import std::string;
+
+fn note(tag : i32, v : i32) -> i32 {
+  print(tag);
+  return v;
+}
+
+fn main() -> i32 {
+  println!("a={} b={}", note(1, 10), note(2, 20));
+  print!("c={} ", note(3, 30));
+  println!("");
+  let s = unsafe { String::from_c_str("text") };
+  println!("s={} {}", s, note(4, 40));
+  return 0;
+}

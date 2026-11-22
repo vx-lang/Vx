@@ -154,9 +154,13 @@ The hop copies no bytes, so the cost model gives it a cost of 0 and the JSON rep
 `"cost_source": "shared"`.
 
 A transfer of a `&` tensor parameter over a shared edge is still a copy for the type system. But
-when every use of the copy only reads it, the compiler skips the copy: the program waits for the
-GPU and reads the parameter in place. When a use writes the copy or keeps it, the copy stays and
-the compiler gives a warning that names the use. A transfer of an owned tensor still copies.
+when every use of the copy only reads it, the compiler skips the copy, and the use reads the
+parameter in place. A transfer to the CPU first waits for the GPU kernels that write the tensor.
+A transfer to the GPU gives the kernels the parameter itself, and the function waits for the GPU
+before it returns, so that the caller cannot change the tensor while a kernel reads it. A view of
+memory from a `*const` pointer also goes in place, with no wait, because nothing writes it. When a
+use writes the copy or keeps it, the copy stays and the compiler gives a warning that names the
+use. A transfer of an owned tensor still copies.
 
 ### Memory fields
 
@@ -176,7 +180,7 @@ These are the errors a first attempt actually hits, in the order you are likely 
 | Diagnostic | Cause |
 |-------------|--------------------------------------------------------------------------------|
 | `E6014` | A transfer touches host memory and no host was declared. Pass `--host default`. |
-| `E6016` | The name is already a built-in (`Topology GPU { .. }`), or two declared names collide on a dispatch id. |
+| `E6016` | A topology named after a built-in tries to override fields the compiler hardcodes (like `arch:` or transfer edges), or two declared names collide on a dispatch id. |
 | `E6003` | A value is read on a device whose `visible:` list does not include the space it lives in. |
 | `E6009` | A tensor does not fit the declared `capacity`. This one is the point of the exercise. |
 | `W1026` | The topology's memory has no transfer edge from the host, so nothing can reach it. |
@@ -230,8 +234,9 @@ If you are sure, every site that needs an arm:
 
 **`src/arch.rs`**
 
-6. A band in `topology_dispatch_id`. The hundreds 0–700 are taken, slices use 2000–2999, and
-   declared names start at 3000.
+6. A band in `topology_dispatch_id`. The hundreds 0–700 are taken, 800 and 900 are the network
+   spaces, 1000 is the `spirv64` device, 1100–1999 is the NUMA node band, slices use 2000–2999,
+   and declared names start at 3000.
 1. An arm in `builtin_default_space` — the space this kind holds.
 1. An arm in `first_device_of` — device zero of this kind.
 1. An entry in `builtin_descriptors` — its default space and its visibility list.

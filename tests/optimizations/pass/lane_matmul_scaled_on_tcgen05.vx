@@ -1,0 +1,136 @@
+//===- lane_matmul_scaled_on_tcgen05.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On a B200 with `VX_TCGEN05=1`, `lanes::matmul_scaled` in the code of a block of 128 lanes runs on
+// the tensor cores with `tcgen05`. The lanes copy the tiles into shared memory as the tensor core
+// reads them, and fence them for it. Warp 0 allocates 128 columns of tensor memory: 16 for the sums
+// and 32 for the scales of each 64 values of k. Each warp stores the scales into its own lanes of
+// tensor memory. Thread 0 issues two block-scaled `tcgen05.mma` for k = 128 and commits them. Warp 0
+// waits for the commit, and stops the kernel if it never comes. Each warp then reads its rows of the
+// sums, 8 columns at a time, and warp 0 frees the tensor memory. NVFP4 uses `kind::mxf4nvf4` with an
+// instruction descriptor of 0x08040480 (134481024), and MXFP4 `kind::mxf4` with 0x08840480
+// (142869632). Without `VX_TCGEN05`, the lanes of the block compute the matmul in loops. No test
+// runs this code: CI has no B200, and no `tcgen05` kernel of Vx has run on one yet.
+//
+// RUN: env VX_TCGEN05=1 vxc %s --host default --machine fleet/b200.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx
+// RUN: env VX_TCGEN05=1 vxc %s --legacy-codegen --host default --machine fleet/b200.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx
+// RUN: env -u VX_TCGEN05 vxc %s --host default --machine fleet/b200.vx --emit-ptx -o %t.off.ptx
+// RUN: FileCheck %s --check-prefix=OFF --implicit-check-not=tcgen05 < %t.off.ptx
+// CHECK-LABEL: .entry nvfp4_block(
+// CHECK: fence.proxy.async.shared::cta;
+// CHECK: tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [{{%rd[0-9]+}}], 128;
+// CHECK: mbarrier.init.shared::cta.b64 [{{%rd[0-9]+}}], 1;
+// CHECK: tcgen05.st.sync.aligned.32x32b.x4.b32
+// CHECK: tcgen05.st.sync.aligned.32x32b.x1.b32
+// CHECK: tcgen05.wait::st.sync.aligned;
+// CHECK: mov.b32 [[IDESC:%r[0-9]+]], 134481024;
+// CHECK: tcgen05.mma.cta_group::1.kind::mxf4nvf4.block_scale.scale_vec::4X [[[D:%r[0-9]+]]], {{%rd[0-9]+}}, {{%rd[0-9]+}}, [[IDESC]]
+// CHECK: tcgen05.mma.cta_group::1.kind::mxf4nvf4.block_scale.scale_vec::4X [[[D]]], {{%rd[0-9]+}}, {{%rd[0-9]+}}, [[IDESC]]
+// CHECK: tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64
+// CHECK: mbarrier.try_wait.parity.shared::cta.b64
+// CHECK: trap;
+// CHECK: tcgen05.ld.sync.aligned.32x32b.x8.b32
+// CHECK: tcgen05.wait::ld.sync.aligned;
+// CHECK: tcgen05.ld.sync.aligned.32x32b.x8.b32
+// CHECK: tcgen05.dealloc.cta_group::1.sync.aligned.b32 [[D]], 128;
+// CHECK-LABEL: .entry mxfp4_block(
+// CHECK: mov.b32 [[IDESC2:%r[0-9]+]], 142869632;
+// CHECK: tcgen05.mma.cta_group::1.kind::mxf4.block_scale.scale_vec::2X {{.*}}, [[IDESC2]]
+// OFF-LABEL: .entry nvfp4_block(
+// OFF: bar.sync
+// OFF-LABEL: .entry mxfp4_block(
+// OFF: bar.sync
+
+pub fn nvfp4_block(c : &mut Tensor<f32, [128, 16], Memory::HBM>, a : &Tensor<f4e2m1, [128, 128], Memory::HBM>, sa : &Tensor<f8e4m3, [128, 8], Memory::HBM>, b : &Tensor<f4e2m1, [128, 16], Memory::HBM>, sb : &Tensor<f8e4m3, [8, 16], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut ta = unsafe {
+        Tensor<f4e2m1, [128, 128], Memory::SMEM>::uninit()
+      };
+      let mut tsa = unsafe {
+        Tensor<f8e4m3, [128, 8], Memory::SMEM>::uninit()
+      };
+      let mut tb = unsafe {
+        Tensor<f4e2m1, [128, 16], Memory::SMEM>::uninit()
+      };
+      let mut tsb = unsafe { Tensor<f8e4m3, [8, 16], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [128, 16], Memory::SMEM>::uninit() };
+      for i in 0..128 across lanes {
+        for k in 0..128 {
+          ta[i][k] = a[i][k];
+        }
+        for q in 0..8 {
+          tsa[i][q] = sa[i][q];
+        }
+        for j in 0..16 {
+          tb[i][j] = b[i][j];
+          acc[i][j] = 0.0;
+        }
+        if i < 8 {
+          for j in 0..16 {
+            tsb[i][j] = sb[i][j];
+          }
+        }
+      }
+      lanes::matmul_scaled(&mut acc, &ta, &tsa, &tb, &tsb);
+      for i in 0..128 across lanes {
+        for j in 0..16 {
+          c[i][j] = acc[i][j];
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn mxfp4_block(c : &mut Tensor<f32, [128, 16], Memory::HBM>, a : &Tensor<f4e2m1, [128, 128], Memory::HBM>, sa : &Tensor<f8e8m0, [128, 4], Memory::HBM>, b : &Tensor<f4e2m1, [128, 16], Memory::HBM>, sb : &Tensor<f8e8m0, [4, 16], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut ta = unsafe {
+        Tensor<f4e2m1, [128, 128], Memory::SMEM>::uninit()
+      };
+      let mut tsa = unsafe {
+        Tensor<f8e8m0, [128, 4], Memory::SMEM>::uninit()
+      };
+      let mut tb = unsafe {
+        Tensor<f4e2m1, [128, 16], Memory::SMEM>::uninit()
+      };
+      let mut tsb = unsafe { Tensor<f8e8m0, [4, 16], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [128, 16], Memory::SMEM>::uninit() };
+      for i in 0..128 across lanes {
+        for k in 0..128 {
+          ta[i][k] = a[i][k];
+        }
+        for q in 0..4 {
+          tsa[i][q] = sa[i][q];
+        }
+        for j in 0..16 {
+          tb[i][j] = b[i][j];
+          acc[i][j] = 0.0;
+        }
+        if i < 4 {
+          for j in 0..16 {
+            tsb[i][j] = sb[i][j];
+          }
+        }
+      }
+      lanes::matmul_scaled(&mut acc, &ta, &tsa, &tb, &tsb);
+      for i in 0..128 across lanes {
+        for j in 0..16 {
+          c[i][j] = acc[i][j];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

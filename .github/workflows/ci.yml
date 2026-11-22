@@ -1,10 +1,18 @@
 name: CI
 
+# A pull request merges only after these tests pass, so main does not run them again after each
+# merge. A pull request can restore main's caches but not another pull request's. So main still
+# runs when the LLVM build changes, and once a week, to keep the LLVM and Rust caches current.
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ main ]
+    paths: [ 'scripts/provision/build_llvm.sh', '.github/actions/build-own-llvm/**' ]
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 # `vxc --version` names the commit it was built from. See vx-build-commit/build.rs.
 env:
@@ -13,10 +21,12 @@ env:
 jobs:
   # Vx is built and tested against its own LLVM, from scripts/provision/build_llvm.sh, kept in
   # the GitHub Actions cache. This job builds it only when the cache does not have it; the test
-  # jobs wait for it and restore it.
+  # jobs wait for it and restore it. The cache key names the Ubuntu release, so each job that
+  # builds or restores LLVM names its release too. With `ubuntu-latest`, a new release made every
+  # run build LLVM again.
   llvm:
     name: Build LLVM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     outputs:
       key: ${{ steps.llvm.outputs.key }}
@@ -62,7 +72,7 @@ jobs:
   test:
     name: Run Tests
     needs: llvm
-    runs-on: ubuntu-latest # Free Linux Tier
+    runs-on: ubuntu-26.04 # Free Linux Tier
     env:
       # Link with lld (installed below) -- much faster than the default linker
       # for the large MLIR/LLVM libraries that get linked into many binaries.
@@ -273,7 +283,7 @@ jobs:
   test-debug:
     name: Run Tests (debug profile)
     needs: llvm
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 

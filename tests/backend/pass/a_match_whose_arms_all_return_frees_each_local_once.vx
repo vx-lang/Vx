@@ -1,0 +1,52 @@
+//===- a_match_whose_arms_all_return_frees_each_local_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each function ends in a `match` whose arms all `return`, and it has a `Vec` that the match does
+// not use. Each `return` frees the `Vec` once. A second free stops the program.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}pick 5 0{{$}}
+// CHECK: {{^}}nested 5 6 0{{$}}
+
+import core::option;
+import std::vec;
+
+fn pick(failure : Option<i64>) -> i64 {
+  let mut slots = Vec<i64>::new();
+  slots.push(1);
+  match failure {
+    Option<i64>::Some(e) => {
+      return e;
+    }
+    Option<i64>::None => {
+      return 0;
+    }
+  }
+}
+
+fn nested(failure : Option<i64>, b : bool) -> i64 {
+  let mut slots = Vec<i64>::new();
+  slots.push(1);
+  match failure {
+    Option<i64>::Some(e) => {
+      if b {
+        return e;
+      }
+      return e + 1;
+    }
+    Option<i64>::None => {
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  println!("pick {} {}", pick(Option<i64>::Some(5)), pick(Option<i64>::None));
+  println!("nested {} {} {}", nested(Option<i64>::Some(5), true), nested(Option<i64>::Some(5), false), nested(Option<i64>::None, true));
+  return 0;
+}

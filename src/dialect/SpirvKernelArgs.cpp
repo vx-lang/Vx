@@ -26,8 +26,11 @@
 
 #include "SpirvKernelArgs.h"
 
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
@@ -36,8 +39,13 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Inliner.h"
+#include "mlir/Transforms/InliningUtils.h"
+#include "mlir/Transforms/Passes.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
@@ -196,7 +204,15 @@ bool carriesIndexBlockArgument(Operation *op) {
 }
 
 /// The address space of a tile in shared memory, which `Memory::SMEM` becomes.
-constexpr int64_t kSharedAddressSpace = 3;
+/// LLVM's SPIR-V backend reads it as Workgroup storage: one copy for each
+/// block.
+constexpr unsigned kSharedAddressSpace = 3;
+
+/// Whether `type` is a tile in shared memory.
+bool isShared(MemRefType type) {
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  return space && space.getInt() == kSharedAddressSpace;
+}
 
 /// The linear element offset of an access to `view` at `indices`, as an
 /// `i64`: the view's offset plus `index * stride` per dimension.
@@ -207,6 +223,16 @@ Value linearIndex(OpBuilder &builder, Location loc, const FlatView &view,
     linear = addI64(builder, loc, linear,
                     mulI64(builder, loc, asI64(builder, loc, index), stride));
   return linear;
+}
+
+/// The type an element is stored as. LLVM has no type for an 8-bit or 4-bit
+/// float, so such an element is stored as the integer of its width, as the
+/// host stores it.
+Type storageType(Type element) {
+  auto real = dyn_cast<FloatType>(element);
+  if (!real || LLVM::isCompatibleType(real))
+    return element;
+  return IntegerType::get(element.getContext(), real.getWidth());
 }
 
 /// `memref.store` as a store through a computed address.
@@ -223,10 +249,14 @@ LogicalResult lowerStore(memref::StoreOp store, const FlatView &view,
   OpBuilder builder(store);
   Location loc = store.getLoc();
   Value linear = linearIndex(builder, loc, view, store.getIndices());
-  auto gep = LLVM::GEPOp::create(
-      builder, loc, view.base.getType(), view.elementType, view.base,
-      ValueRange{linear}, LLVM::GEPNoWrapFlags::inbounds);
-  LLVM::StoreOp::create(builder, loc, store.getValueToStore(), gep);
+  Type storage = storageType(view.elementType);
+  auto gep =
+      LLVM::GEPOp::create(builder, loc, view.base.getType(), storage, view.base,
+                          ValueRange{linear}, LLVM::GEPNoWrapFlags::inbounds);
+  Value value = store.getValueToStore();
+  if (storage != view.elementType)
+    value = arith::BitcastOp::create(builder, loc, storage, value);
+  LLVM::StoreOp::create(builder, loc, value, gep);
   store.erase();
   return success();
 }
@@ -245,11 +275,14 @@ LogicalResult lowerLoad(memref::LoadOp load, const FlatView &view,
   OpBuilder builder(load);
   Location loc = load.getLoc();
   Value linear = linearIndex(builder, loc, view, load.getIndices());
-  auto gep = LLVM::GEPOp::create(
-      builder, loc, view.base.getType(), view.elementType, view.base,
-      ValueRange{linear}, LLVM::GEPNoWrapFlags::inbounds);
-  auto ld = LLVM::LoadOp::create(builder, loc, view.elementType, gep);
-  load.getResult().replaceAllUsesWith(ld);
+  Type storage = storageType(view.elementType);
+  auto gep =
+      LLVM::GEPOp::create(builder, loc, view.base.getType(), storage, view.base,
+                          ValueRange{linear}, LLVM::GEPNoWrapFlags::inbounds);
+  Value value = LLVM::LoadOp::create(builder, loc, storage, gep);
+  if (storage != view.elementType)
+    value = arith::BitcastOp::create(builder, loc, view.elementType, value);
+  load.getResult().replaceAllUsesWith(value);
   load.erase();
   return success();
 }
@@ -297,6 +330,70 @@ void lowerReinterpretCast(memref::ReinterpretCastOp cast, const FlatView &view,
                                      cast.getType().getElementType()};
 }
 
+/// The address space of the tensor whose address `v` holds, through casts and
+/// sums, or nothing when `v` does not hold one.
+std::optional<unsigned>
+addressSpaceOf(Value v, const DenseMap<Value, unsigned> &spaces) {
+  if (auto it = spaces.find(v); it != spaces.end())
+    return it->second;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+  if (isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+          arith::ExtUIOp>(def))
+    return addressSpaceOf(def->getOperand(0), spaces);
+  if (isa<arith::AddIOp, LLVM::AddOp>(def)) {
+    std::optional<unsigned> a = addressSpaceOf(def->getOperand(0), spaces);
+    std::optional<unsigned> b = addressSpaceOf(def->getOperand(1), spaces);
+    if (a && b)
+      return std::nullopt;
+    return a ? a : b;
+  }
+  return std::nullopt;
+}
+
+/// Give `pointer`, a plain `!llvm.ptr`, the address space `space`, and each
+/// pointer that a `getelementptr` makes from it too. An atomic, a load or a
+/// store through it takes any address space. Another use fails.
+LogicalResult giveAddressSpace(Value pointer, unsigned space,
+                               std::string &error) {
+  pointer.setType(LLVM::LLVMPointerType::get(pointer.getContext(), space));
+  for (OpOperand &use : pointer.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
+      if (use.getOperandNumber() != 0 ||
+          failed(giveAddressSpace(gep.getResult(), space, error)))
+        return failure();
+      continue;
+    }
+    // SPIR-V has an instruction for these atomics, and LLVM's SPIR-V backend
+    // stops the process on another one, such as `uinc_wrap`. A float atomic
+    // needs an extension of SPIR-V.
+    if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(user)) {
+      using K = LLVM::AtomicBinOp;
+      K kind = rmw.getBinOp();
+      if (!llvm::is_contained({K::xchg, K::add, K::sub, K::_and, K::_or,
+                               K::_xor, K::max, K::min, K::umax, K::umin},
+                              kind)) {
+        error = "it uses the atomic `" +
+                LLVM::stringifyAtomicBinOp(kind).str() +
+                "`, which a SPIR-V image cannot hold yet";
+        return failure();
+      }
+    }
+    bool access =
+        (isa<LLVM::AtomicRMWOp, LLVM::AtomicCmpXchgOp, LLVM::LoadOp>(user) &&
+         use.getOperandNumber() == 0) ||
+        (isa<LLVM::StoreOp>(user) && use.getOperandNumber() == 1);
+    if (!access) {
+      error = "it hands a pointer to `" + user->getName().getStringRef().str() +
+              "`, and a SPIR-V image cannot do that yet";
+      return failure();
+    }
+  }
+  return success();
+}
+
 /// Rewrite one kernel, in three steps: expand its memref arguments in place,
 /// rewrite the body's accesses into address arithmetic, then drop the memref
 /// arguments the body no longer mentions.
@@ -305,6 +402,8 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
   OpBuilder builder(ctx);
   Block &entry = func.getBody().front();
   DenseMap<Value, FlatView> views;
+  // The address space of each integer that holds the address of a tensor.
+  DenseMap<Value, unsigned> spaces;
 
   // The signature first. Each memref argument is expanded where it stands, so
   // a scalar argument keeps its position and the flat list stays in the order
@@ -384,6 +483,91 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
       }
       lowerReinterpretCast(cast, *view, views);
       deferred.push_back(cast);
+      continue;
+    }
+    // A tile in shared memory: the address of its global, which
+    // `flattenSpirvKernelArgs` made an LLVM global in Workgroup storage.
+    if (auto get = dyn_cast<memref::GetGlobalOp>(op);
+        get && isShared(get.getType())) {
+      MemRefType type = get.getType();
+      auto strides = staticStrides(type);
+      if (!type.hasStaticShape() || failed(strides)) {
+        error = "a tile in shared memory whose shape is not known";
+        return failure();
+      }
+      OpBuilder builder(get);
+      Location loc = get.getLoc();
+      Value base = LLVM::AddressOfOp::create(
+          builder, loc, LLVM::LLVMPointerType::get(ctx, kSharedAddressSpace),
+          get.getName());
+      SmallVector<Value, 4> sizes;
+      for (int64_t size : type.getShape())
+        sizes.push_back(constantI64(builder, loc, size));
+      SmallVector<Value, 4> strideValues;
+      for (int64_t stride : *strides)
+        strideValues.push_back(constantI64(builder, loc, stride));
+      views[get.getResult()] =
+          FlatView{base, constantI64(builder, loc, 0), sizes, strideValues,
+                   type.getElementType()};
+      deferred.push_back(get);
+      continue;
+    }
+    // The address of a tensor as an integer, which an atomic turns back into a
+    // pointer to an element. It is the integer of the view's pointer.
+    if (auto aligned = dyn_cast<memref::ExtractAlignedPointerAsIndexOp>(op)) {
+      const FlatView *view = found(aligned.getSource());
+      if (!view) {
+        error = "the address of a memref the flattening does not know";
+        return failure();
+      }
+      OpBuilder builder(aligned);
+      Location loc = aligned.getLoc();
+      Value address = LLVM::PtrToIntOp::create(
+          builder, loc, builder.getI64Type(), view->base);
+      Value index = asIndex(builder, loc, address);
+      spaces[index] =
+          cast<LLVM::LLVMPointerType>(view->base.getType()).getAddressSpace();
+      aligned.getResult().replaceAllUsesWith(index);
+      aligned.erase();
+      continue;
+    }
+    // An op that only an NVIDIA GPU has, which an `mlir!` block can hold: an
+    // `nvvm` op, or a call of an NVVM intrinsic. LLVM's SPIR-V backend stops
+    // the process on it.
+    std::string nvidia;
+    if (op->getDialect() && op->getDialect()->getNamespace() == "nvvm")
+      nvidia = op->getName().getStringRef().str();
+    if (auto call = dyn_cast<LLVM::CallIntrinsicOp>(op);
+        call && call.getIntrin().starts_with("llvm.nvvm."))
+      nvidia = call.getIntrin().str();
+    if (!nvidia.empty()) {
+      error = "it uses `" + nvidia + "`, which only an NVIDIA GPU has";
+      return failure();
+    }
+    // A shuffle, which a function the kernel calls can hold. It needs
+    // subgroups of 32 lanes.
+    if (isa<gpu::ShuffleOp>(op)) {
+      error =
+          "it shuffles values between the lanes of a subgroup "
+          "(`gpu.shuffle`), which needs subgroups of 32 lanes, and a SPIR-V "
+          "kernel cannot ask for them yet";
+      return failure();
+    }
+    // A cast changes only what the type says about the sizes and strides, or
+    // about the memory, as a call site does to give a function the type it
+    // takes. The values are the source's, so the result has the source's
+    // view. A tile in shared memory keeps its Workgroup pointer.
+    if (isa<memref::CastOp, memref::MemorySpaceCastOp>(op)) {
+      const FlatView *view = found(op->getOperand(0));
+      if (!view) {
+        error = "a cast of a memref the flattening does not know";
+        return failure();
+      }
+      FlatView same = *view;
+      same.elementType =
+          cast<MemRefType>(op->getResult(0).getType()).getElementType();
+      views[op->getResult(0)] = same;
+      deferred.push_back(op);
       continue;
     }
     if (auto load = dyn_cast<memref::LoadOp>(op)) {
@@ -474,6 +658,22 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
   for (Operation *op : llvm::reverse(deferred))
     op->erase();
 
+  // A pointer that `llvm.inttoptr` makes from the address of a tensor gets the
+  // address space of that tensor, and so does each pointer an access makes
+  // from it. A plain `!llvm.ptr` is private memory in SPIR-V.
+  SmallVector<LLVM::IntToPtrOp> pointers;
+  func.walk([&](LLVM::IntToPtrOp p) { pointers.push_back(p); });
+  for (LLVM::IntToPtrOp p : pointers) {
+    std::optional<unsigned> space = addressSpaceOf(p.getArg(), spaces);
+    if (!space) {
+      error = "it makes a pointer from an integer that is not the address of "
+              "a tensor";
+      return failure();
+    }
+    if (failed(giveAddressSpace(p.getResult(), *space, error)))
+      return failure();
+  }
+
   // The memref arguments are unused now. Dropping them leaves the flat list in
   // the order built above, and the function type follows the block.
   entry.eraseArguments(
@@ -485,7 +685,93 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
   return success();
 }
 
+/// An inliner that also takes a call in a `gpu.func`, which has no inliner
+/// interface of its own.
+struct KernelInliner : public InlinerInterface {
+  KernelInliner(MLIRContext *context) : InlinerInterface(context) {}
+  bool isLegalToInline(Region *dest, Region *src, bool wouldBeCloned,
+                       IRMapping &mapping) const override {
+    return isa<gpu::GPUFuncOp>(dest->getParentOp()) ||
+           InlinerInterface::isLegalToInline(dest, src, wouldBeCloned, mapping);
+  }
+};
+
 } // namespace
+
+LogicalResult inlineSpirvKernelCalls(gpu::GPUModuleOp gpuModule,
+                                     std::string &error) {
+  MLIRContext *context = gpuModule.getContext();
+  DialectRegistry registry;
+  func::registerInlinerExtension(registry);
+  context->appendDialectRegistry(registry);
+  // A function can hold an `affine.for`, which nothing after this lowers. Then
+  // a call from one function to another. The calls in a kernel come next.
+  {
+    PassManager pm(context, gpu::GPUModuleOp::getOperationName());
+    pm.addPass(createLowerAffinePass());
+    pm.addPass(createInlinerPass());
+    if (failed(pm.run(gpuModule))) {
+      error = "inlining the functions that a kernel calls failed";
+      return failure();
+    }
+  }
+  SmallVector<func::CallOp> calls;
+  for (gpu::GPUFuncOp f : gpuModule.getOps<gpu::GPUFuncOp>())
+    f.walk([&](func::CallOp call) { calls.push_back(call); });
+  SymbolTable symbols(gpuModule);
+  KernelInliner inliner(context);
+  InlinerConfig config;
+  for (func::CallOp call : calls) {
+    auto callee = symbols.lookup<func::FuncOp>(call.getCallee());
+    if (!callee || callee.isExternal())
+      continue;
+    Region &body = callee.getBody();
+    if (!body.hasOneBlock() &&
+        call->getParentOp()->mightHaveTrait<OpTrait::SingleBlock>())
+      continue;
+    if (succeeded(inlineCall(inliner, config.getCloneCallback(), call, callee,
+                             &body)))
+      call.erase();
+  }
+  for (auto f : llvm::make_early_inc_range(gpuModule.getOps<func::FuncOp>()))
+    if (!f.isExternal() && SymbolTable::symbolKnownUseEmpty(f, gpuModule))
+      f.erase();
+  return success();
+}
+
+void widenIndexBlockArguments(gpu::GPUModuleOp gpuModule) {
+  gpuModule.walk([](gpu::GPUFuncOp func) {
+    Type i64 = IntegerType::get(func.getContext(), 64);
+    for (Block &block : func.getBody()) {
+      if (block.isEntryBlock())
+        continue;
+      for (BlockArgument arg : block.getArguments()) {
+        if (!isa<IndexType>(arg.getType()))
+          continue;
+        llvm::SetVector<Block *> preds(block.pred_begin(), block.pred_end());
+        for (Block *pred : preds) {
+          auto branch = cast<BranchOpInterface>(pred->getTerminator());
+          for (unsigned s = 0; s < branch->getNumSuccessors(); ++s) {
+            if (branch->getSuccessor(s) != &block)
+              continue;
+            SuccessorOperands operands = branch.getSuccessorOperands(s);
+            OpOperand &operand =
+                operands.getMutableForwardedOperands()
+                    [arg.getArgNumber() - operands.getProducedOperandCount()];
+            OpBuilder builder(branch);
+            operand.set(arith::IndexCastOp::create(builder, branch.getLoc(),
+                                                   i64, operand.get()));
+          }
+        }
+        arg.setType(i64);
+        OpBuilder builder(&block, block.begin());
+        auto back = arith::IndexCastOp::create(builder, arg.getLoc(),
+                                               builder.getIndexType(), arg);
+        arg.replaceAllUsesExcept(back, back);
+      }
+    }
+  });
+}
 
 std::optional<std::string> spirvRefusalOf(Operation *op) {
   // A memref of memrefs, which the AST code generator writes for a kernel's
@@ -497,17 +783,19 @@ std::optional<std::string> spirvRefusalOf(Operation *op) {
   if (carriesIndexBlockArgument(op))
     return "a branch in its body carries an `index` value between blocks, "
            "which the SPIR-V conversion cannot take";
-  // A tile in shared memory. A static one becomes a `memref.global`, and a
-  // dynamic one is a stack slot that shared-typed loads then address: measured
-  // on an A100 as an illegal address. The flattening addresses the kernel's
-  // own arguments, and a global is not one of them yet.
+  // A lane routine, such as `lanes::sum`. Most of them use shuffles across a
+  // subgroup of 32 lanes, which a SPIR-V kernel cannot ask for yet.
+  if (op->getName().getStringRef().starts_with("vx.lane") ||
+      op->getName().getStringRef().starts_with("vx.subgroup"))
+    return "it calls a routine of `lanes::`, which a SPIR-V image cannot run "
+           "yet. Most of them need subgroups of 32 lanes";
+  // A tile in shared memory becomes a `memref.global`, which the flattening
+  // gives Workgroup storage. A tile with a dynamic shape gets no global, and
+  // `runsOnDevice` refuses it for every pipeline.
   if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
     auto type = dyn_cast<MemRefType>(alloca.getType());
-    auto space =
-        type ? dyn_cast_or_null<IntegerAttr>(type.getMemorySpace()) : nullptr;
-    if (space && space.getInt() == kSharedAddressSpace)
-      return "it keeps a tile in shared memory (`Memory::SMEM`), and the "
-             "argument flattening has no form for shared storage yet";
+    if (type && isShared(type))
+      return std::nullopt;
     // A slot `mem2reg` promotes is a loop counter, and the flattening never
     // sees it. A buffer the region made is a memref value nothing built, which
     // the flattening would refuse.
@@ -530,6 +818,25 @@ flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule, std::string &error,
     error = "the device module holds no kernel";
     return failure();
   }
+  // Each tile in shared memory becomes an LLVM global of the same name in
+  // Workgroup storage, with no initial value, as OpenCL's `__local` arrays are.
+  // The kernels below take its address.
+  for (auto global :
+       llvm::make_early_inc_range(gpuModule.getOps<memref::GlobalOp>())) {
+    MemRefType type = global.getType();
+    if (!isShared(type) || !type.hasStaticShape())
+      continue;
+    auto array = LLVM::LLVMArrayType::get(storageType(type.getElementType()),
+                                          type.getNumElements());
+    std::string name = global.getSymName().str();
+    uint64_t alignment = global.getAlignment().value_or(16);
+    Location loc = global.getLoc();
+    global.erase();
+    OpBuilder builder(gpuModule.getBody(), gpuModule.getBody()->begin());
+    LLVM::GlobalOp::create(builder, loc, array, /*isConstant=*/false,
+                           LLVM::Linkage::Internal, name, Attribute(),
+                           alignment, kSharedAddressSpace);
+  }
   // Each kernel is rewritten on its own, so one that fails does not stop the
   // next. Every region that fails then gets its own reason.
   for (gpu::GPUFuncOp kernel : kernels) {
@@ -548,10 +855,17 @@ flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule, std::string &error,
   // descriptor that SPIR-V rejects, and it would fail as an invalid module
   // rather than as this message.
   WalkResult left = gpuModule.walk([&](Operation *op) {
-    if (isa<memref::GlobalOp>(op)) {
-      error = "a `" + op->getName().getStringRef().str() +
-              "` in the device module, which the SPIR-V argument flattening "
-              "does not lower";
+    if (auto global = dyn_cast<memref::GlobalOp>(op)) {
+      /* A call in the kernel's body put this here, and a libm call is the one
+         that does: `f32::exp`, `tanh`, `sin` and `cos` read a lookup table from
+         the stdlib, and the table becomes a `memref.global`. The symbol names
+         the table, so the message names the function without this code knowing
+         which one it was. */
+      error = "it reads `" + global.getSymName().str() +
+              "` from the device module, and the SPIR-V argument flattening "
+              "lowers only the kernel's arguments, not a `memref.global`. A "
+              "call to a libm function such as `f32::exp`, `tanh`, `sin` or "
+              "`cos` puts its constant table there";
       return WalkResult::interrupt();
     }
     if (mentionsMemref(op)) {

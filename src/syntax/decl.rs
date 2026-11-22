@@ -502,6 +502,10 @@ pub struct Program {
     /// carried; nothing consumes them yet — the checks in docs/custom_transfer_contract.md land
     /// against this field.
     pub transfer_impls: Vec<TransferImplDecl>,
+    /// For each macro expansion in this module, by its id less 1: where to report the code that
+    /// it wrote. It is the macro call when another module declares the macro, because the
+    /// places in that code are in the other file. `None` keeps the places in the code.
+    pub macro_call_sites: Vec<Option<crate::syntax::Span>>,
 }
 
 pub type VxModule = Program;
@@ -579,6 +583,7 @@ impl Program {
                     doc_comment: t.doc_comment.clone(),
                 })
                 .collect(),
+            macro_call_sites: self.macro_call_sites.clone(),
         }
     }
 }

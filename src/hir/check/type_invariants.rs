@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Type invariants: `struct Vec<T> invariant self.len <= self.capacity { .. }`. Only the module
-// that declares such a type can change its fields, so the invariant holds in each other module.
+// Type invariants: `struct Vec<T> { .., invariant len <= capacity }`. Only the module that
+// declares such a type can change its fields, so the invariant holds in each other module.
 // docs/discussions/type_invariants.md has the design.
 //
 //===----------------------------------------------------------------------===//
@@ -194,15 +194,17 @@ impl<'a> TypeChecker<'a> {
             )),
             _ => Err((
                 e.span(),
-                "an invariant can use `self` and its fields, numbers, operators, `as` and \
-                 the pointer clauses `valid`, `initialized` and `overlaps`"
-                    .to_string(),
+                format!(
+                    "an invariant can use the fields of `{}` at any depth, numbers, operators, \
+                     `as` and the pointer clauses `valid`, `initialized` and `overlaps`",
+                    decl.name
+                ),
             )),
         }
     }
 
     /// The type of the place `e` in an invariant of `decl`: `None` for `self`, and the type of
-    /// the field for a field of `self` at any depth.
+    /// the field for a field at any depth. The parser writes each field `lo` as `self.lo`.
     fn invariant_place_type(
         &self,
         decl: &StructDecl,
@@ -213,8 +215,8 @@ impl<'a> TypeChecker<'a> {
             Expr::Identifier(id) => Err((
                 id.span,
                 format!(
-                    "it names `{}`, and an invariant can name only `self` and its fields",
-                    id.name
+                    "it names `{}`, and an invariant can name only the fields of `{}`",
+                    id.name, decl.name
                 ),
             )),
             Expr::MemberAccess(m) => {
@@ -251,7 +253,17 @@ impl<'a> TypeChecker<'a> {
                     )),
                 }
             }
-            _ => unreachable!("only a place reaches here"),
+            // The base of a field or an element is not a field, as in `make().a`.
+            _ => {
+                self.check_invariant_expr(decl, e)?;
+                Err((
+                    e.span(),
+                    format!(
+                        "it reads a part of a value that is not a field of `{}`",
+                        decl.name
+                    ),
+                ))
+            }
         }
     }
 }

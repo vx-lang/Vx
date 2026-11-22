@@ -54,7 +54,7 @@ impl FnEmit<'_> {
             // A `<N x T>` parameter: a `vector<NxT>` block argument. The spelling comes off the
             // declared type rather than a GID side table -- a vector carries no shape beyond its
             // element and lane count, both of which the declaration already states.
-            self.vec_of[idx] = mlir_vector(e, *lanes);
+            self.vec_of[idx] = VectorTy::new(e, *lanes);
         }
         Ok(())
     }
@@ -177,6 +177,14 @@ impl FnEmit<'_> {
             self.body += &format!("  memref.store {val}, {slot}[] : memref<{mt}>\n");
         } else if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {
             let agg = self.ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
+            // A constructed struct is a slot of its own: load its value first.
+            let val = if matches!(self.agg_of.get(ins.operand2.0 as usize), Some(Some(_))) {
+                let v = format!("%sv{_idx}");
+                self.body += &format!("  {v} = llvm.load {val} : !llvm.ptr -> {}\n", agg.struct_ty);
+                v
+            } else {
+                val
+            };
             self.body += &format!(
                 "  llvm.store {val}, {slot} : {}, !llvm.ptr\n",
                 agg.struct_ty

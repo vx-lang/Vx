@@ -58,7 +58,7 @@ Memory PEER_HBM {
 The space's name cannot carry this. A declared name reaches the runtime as an FNV hash, by design,
 and a hash cannot be turned back into a node number — while `mbind` needs exactly that. So a space
 declaring a node is given a banded dispatch id instead (`arch::NUMA_DISPATCH_BASE + N`, in the
-1000..1999 range), and the backend decodes it.
+1100..1999 range), and the backend decodes it.
 
 Two consequences follow, and both are visible:
 
