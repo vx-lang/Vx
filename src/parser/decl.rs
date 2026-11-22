@@ -203,12 +203,12 @@ impl<'a> Parser<'a> {
 
         let mut requires = Vec::new();
         while self.match_token(&TokenType::Requires) {
-            requires.push(self.parse_expr()?);
+            requires.push(self.parse_expr_before_block()?);
         }
 
         let mut ensures = Vec::new();
         while self.match_token(&TokenType::Ensures) {
-            ensures.push(self.parse_expr()?);
+            ensures.push(self.parse_expr_before_block()?);
         }
 
         // `where Reachable<A, B> [, Reachable<C, D>]*` -- topology transfer constraints.
@@ -1425,7 +1425,7 @@ impl<'a> Parser<'a> {
             let return_type = self.parse_return_type()?;
             let mut ensures = Vec::new();
             while self.match_token(&TokenType::Ensures) {
-                ensures.push(self.parse_expr()?);
+                ensures.push(self.parse_expr_before_block()?);
             }
             // A trait method is either a requirement, ending in `;`, or a default, whose body
             // an impl inherits unless it writes its own.

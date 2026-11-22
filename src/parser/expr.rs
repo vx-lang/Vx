@@ -698,21 +698,21 @@ impl<'a> Parser<'a> {
                 span,
             }))
         } else if self.check(&TokenType::LeftBrace) {
-            let is_struct_init = matches!(
-                (
-                    self.tokens.get(self.pos).map(|t| &t.kind),
-                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
-                ),
-                (Some(TokenType::LeftBrace), Some(TokenType::RightBrace), _)
-                    | (
-                        Some(TokenType::LeftBrace),
-                        Some(TokenType::Identifier(_)),
-                        Some(TokenType::Colon),
-                    )
+            let after = |n: usize| self.tokens.get(self.pos + n).map(|t| &t.kind);
+            let has_fields = matches!(
+                (after(1), after(2)),
+                (Some(TokenType::Identifier(_)), Some(TokenType::Colon))
             );
-
-            if is_struct_init {
+            let empty = after(1) == Some(&TokenType::RightBrace);
+            let before_block = self.block_follows_here();
+            // A block cannot start with `name :`, so this can only be a struct literal.
+            if has_fields && before_block {
+                return Err(self.error(&format!(
+                    "a struct literal cannot come directly before a block. Put it in \
+                     parentheses: `({call_name} {{ .. }})`"
+                )));
+            }
+            if (has_fields || empty) && !before_block {
                 self.advance(); // consume '{'
                 let mut fields = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -1643,7 +1643,7 @@ impl<'a> Parser<'a> {
         let if_span = self.next_span();
         self.advance();
         let is_comptime = self.match_token(&TokenType::Comptime);
-        let cond = self.parse_expr()?;
+        let cond = self.parse_expr_before_block()?;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut then_block = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
