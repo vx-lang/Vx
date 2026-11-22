@@ -967,8 +967,9 @@ fn a_spirv_region_that_ends_in_a_number_gets_an_image() {
     );
 }
 
-/// A `spirv64` kernel that keeps a scratch array or a shared tile of its own
-/// gets no image, and the compile still succeeds: the region runs on the host.
+/// A `spirv64` kernel that keeps a scratch array of its own, or copies a tensor
+/// into a shared tile, gets no image, and the compile still succeeds: the
+/// region runs on the host.
 ///
 /// Both of these used to stop the compile with "cannot compile this device
 /// kernel", which turned programs that run on the host into programs that do
@@ -983,7 +984,7 @@ fn a_kernel_the_spirv_path_cannot_image_still_compiles() {
         ),
         (
             "spirv_device_image_shared_tile.vx",
-            "it keeps a tile in shared memory",
+            "it hands a tensor to `memref.copy`",
         ),
     ] {
         let path = corpus(name);

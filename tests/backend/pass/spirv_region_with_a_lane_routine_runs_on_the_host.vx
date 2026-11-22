@@ -5,9 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A region for an Intel GPU (`arch: spirv64`) calls `lanes::sum`. A lane
-// routine needs subgroups of 32 lanes or shared memory, and a SPIR-V image has
-// neither yet. So the region gets no image and runs on the host. Its memory is
+// A region for an Intel GPU (`arch: spirv64`) calls `lanes::sum`. Most lane
+// routines need subgroups of 32 lanes, which a SPIR-V kernel cannot ask for
+// yet. So the region gets no image and runs on the host. Its memory is
 // `managed: cached`, which the host can read, so the warning is enough.
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen

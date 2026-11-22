@@ -196,7 +196,15 @@ bool carriesIndexBlockArgument(Operation *op) {
 }
 
 /// The address space of a tile in shared memory, which `Memory::SMEM` becomes.
-constexpr int64_t kSharedAddressSpace = 3;
+/// LLVM's SPIR-V backend reads it as Workgroup storage: one copy for each
+/// block.
+constexpr unsigned kSharedAddressSpace = 3;
+
+/// Whether `type` is a tile in shared memory.
+bool isShared(MemRefType type) {
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  return space && space.getInt() == kSharedAddressSpace;
+}
 
 /// The linear element offset of an access to `view` at `indices`, as an
 /// `i64`: the view's offset plus `index * stride` per dimension.
@@ -403,6 +411,33 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
       deferred.push_back(cast);
       continue;
     }
+    // A tile in shared memory: the address of its global, which
+    // `flattenSpirvKernelArgs` made an LLVM global in Workgroup storage.
+    if (auto get = dyn_cast<memref::GetGlobalOp>(op);
+        get && isShared(get.getType())) {
+      MemRefType type = get.getType();
+      auto strides = staticStrides(type);
+      if (!type.hasStaticShape() || failed(strides)) {
+        error = "a tile in shared memory whose shape is not known";
+        return failure();
+      }
+      OpBuilder builder(get);
+      Location loc = get.getLoc();
+      Value base = LLVM::AddressOfOp::create(
+          builder, loc, LLVM::LLVMPointerType::get(ctx, kSharedAddressSpace),
+          get.getName());
+      SmallVector<Value, 4> sizes;
+      for (int64_t size : type.getShape())
+        sizes.push_back(constantI64(builder, loc, size));
+      SmallVector<Value, 4> strideValues;
+      for (int64_t stride : *strides)
+        strideValues.push_back(constantI64(builder, loc, stride));
+      views[get.getResult()] =
+          FlatView{base, constantI64(builder, loc, 0), sizes, strideValues,
+                   type.getElementType()};
+      deferred.push_back(get);
+      continue;
+    }
     if (auto load = dyn_cast<memref::LoadOp>(op)) {
       const FlatView *view = found(load.getMemref());
       if (!view) {
@@ -514,24 +549,19 @@ std::optional<std::string> spirvRefusalOf(Operation *op) {
   if (carriesIndexBlockArgument(op))
     return "a branch in its body carries an `index` value between blocks, "
            "which the SPIR-V conversion cannot take";
-  // A lane routine, such as `lanes::sum`. Its device code uses shuffles across
-  // a subgroup of 32 lanes, or a tile in shared memory, and a SPIR-V image has
-  // neither yet.
+  // A lane routine, such as `lanes::sum`. Most of them use shuffles across a
+  // subgroup of 32 lanes, which a SPIR-V kernel cannot ask for yet.
   if (op->getName().getStringRef().starts_with("vx.lane") ||
       op->getName().getStringRef().starts_with("vx.subgroup"))
-    return "it calls a routine of `lanes::`, which needs subgroups of 32 "
-           "lanes or shared memory, and a SPIR-V image has neither yet";
-  // A tile in shared memory. A static one becomes a `memref.global`, and a
-  // dynamic one is a stack slot that shared-typed loads then address: measured
-  // on an A100 as an illegal address. The flattening addresses the kernel's
-  // own arguments, and a global is not one of them yet.
+    return "it calls a routine of `lanes::`, which a SPIR-V image cannot run "
+           "yet. Most of them need subgroups of 32 lanes";
+  // A tile in shared memory becomes a `memref.global`, which the flattening
+  // gives Workgroup storage. A tile with a dynamic shape gets no global, and
+  // `runsOnDevice` refuses it for every pipeline.
   if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
     auto type = dyn_cast<MemRefType>(alloca.getType());
-    auto space =
-        type ? dyn_cast_or_null<IntegerAttr>(type.getMemorySpace()) : nullptr;
-    if (space && space.getInt() == kSharedAddressSpace)
-      return "it keeps a tile in shared memory (`Memory::SMEM`), and the "
-             "argument flattening has no form for shared storage yet";
+    if (type && isShared(type))
+      return std::nullopt;
     // A slot `mem2reg` promotes is a loop counter, and the flattening never
     // sees it. A buffer the region made is a memref value nothing built, which
     // the flattening would refuse.
@@ -553,6 +583,25 @@ flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule, std::string &error,
   if (kernels.empty()) {
     error = "the device module holds no kernel";
     return failure();
+  }
+  // Each tile in shared memory becomes an LLVM global of the same name in
+  // Workgroup storage, with no initial value, as OpenCL's `__local` arrays are.
+  // The kernels below take its address.
+  for (auto global :
+       llvm::make_early_inc_range(gpuModule.getOps<memref::GlobalOp>())) {
+    MemRefType type = global.getType();
+    if (!isShared(type) || !type.hasStaticShape())
+      continue;
+    auto array = LLVM::LLVMArrayType::get(storageType(type.getElementType()),
+                                          type.getNumElements());
+    std::string name = global.getSymName().str();
+    uint64_t alignment = global.getAlignment().value_or(16);
+    Location loc = global.getLoc();
+    global.erase();
+    OpBuilder builder(gpuModule.getBody(), gpuModule.getBody()->begin());
+    LLVM::GlobalOp::create(builder, loc, array, /*isConstant=*/false,
+                           LLVM::Linkage::Internal, name, Attribute(),
+                           alignment, kSharedAddressSpace);
   }
   // Each kernel is rewritten on its own, so one that fails does not stop the
   // next. Every region that fails then gets its own reason.
