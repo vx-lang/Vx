@@ -158,6 +158,8 @@ pub struct GlobalAstEnv<'a> {
     /// Top-level `const` items of every module, by name. A use of one is replaced by its value
     /// where the checker resolves the name.
     pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
+    /// Where to report the code that a macro of another file wrote, by the file of the call.
+    pub macro_call_sites: crate::diagnostic::MacroCallSites,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -189,7 +191,17 @@ impl<'a> GlobalAstEnv<'a> {
             decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
+            macro_call_sites: Default::default(),
         };
+        let mut macro_call_sites = HashMap::new();
+        for module in modules {
+            if let Some(file) = &module.file {
+                if module.macro_call_sites.iter().any(Option::is_some) {
+                    macro_call_sites.insert(file.clone(), module.macro_call_sites.clone());
+                }
+            }
+        }
+        env.macro_call_sites = std::sync::Arc::new(macro_call_sites);
 
         // Where each trait impl was first written, to report a second one for the same type.
         let mut impl_modules: HashMap<String, (crate::symbol::Symbol, &ImplBlock)> = HashMap::new();
@@ -810,7 +822,10 @@ impl<'a> TypeChecker<'a> {
             env,
             worker,
             scopes: vec![HashMap::new()],
-            errors: crate::diagnostic::DiagnosticsVec::new(),
+            errors: crate::diagnostic::DiagnosticsVec {
+                macro_call_sites: env.macro_call_sites.clone(),
+                ..crate::diagnostic::DiagnosticsVec::new()
+            },
             in_unsafe_block: false,
             tokens: Vec::new(),
             closure_body_next: false,

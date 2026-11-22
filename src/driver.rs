@@ -914,6 +914,7 @@ impl CompilerDriver {
             // is a declaration like any other and the triple is derived the
             // same way for it as for a host file (#342).
             transfer_impls: Vec::new(),
+            macro_call_sites: Vec::new(),
             topologies: vec![crate::arch::TopologyDecl {
                 name: crate::symbol::Symbol::from("Host"),
                 descriptor: crate::arch::TopologyDescriptor {
@@ -1119,6 +1120,7 @@ impl CompilerDriver {
             topologies: Vec::new(),
             memories: Vec::new(),
             transfer_impls: Vec::new(),
+            macro_call_sites: Vec::new(),
         })
     }
 

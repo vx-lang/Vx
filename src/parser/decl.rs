@@ -1700,6 +1700,7 @@ impl<'a> Parser<'a> {
     /// an unparsed token tree -- because what it expands to is decided by the macro's rules,
     /// not by this parser.
     fn parse_item_macro_call(&mut self) -> ParseResult<'a, crate::syntax::stmt::MacroCallStmt> {
+        let span = self.next_span();
         let name = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             other => {
@@ -1718,7 +1719,7 @@ impl<'a> Parser<'a> {
             token_tree,
             block_tree,
             has_semi,
-            span: Span::default(),
+            span,
         })
     }
 
@@ -1964,6 +1965,7 @@ impl<'a> Parser<'a> {
             topologies,
             memories,
             transfer_impls,
+            macro_call_sites: Vec::new(),
         })
     }
 

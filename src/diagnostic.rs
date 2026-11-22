@@ -24,6 +24,8 @@ pub struct SourceSpan {
     pub line: usize,
     pub column: usize,
     pub length: usize,
+    /// The macro expansion that wrote the code at this place, or 0 for source code.
+    pub expansion: u32,
 }
 
 impl SourceSpan {
@@ -32,6 +34,7 @@ impl SourceSpan {
             line,
             column,
             length,
+            expansion: 0,
         }
     }
 
@@ -41,9 +44,17 @@ impl SourceSpan {
             line: span.line,
             column: span.column,
             length: span.length,
+            expansion: span.expansion,
         }
     }
 }
+
+/// For each file, the place to report the code of each macro expansion at, by the expansion id
+/// less 1. It is the macro call when another file declares the macro, because the places in such
+/// code are in that other file. `None` keeps the places in the code.
+pub type MacroCallSites = std::sync::Arc<
+    std::collections::HashMap<crate::symbol::Symbol, Vec<Option<crate::syntax::Span>>>,
+>;
 
 /// Stable warning/error codes for diagnostics.
 /// Warning codes use the W prefix, error codes use the E prefix.
@@ -1054,6 +1065,8 @@ pub struct DiagnosticsVec {
     /// Where the checker is in `file`: the statement it checks, or the function outside its
     /// statements. A diagnostic reported with no place of its own points there.
     pub at: crate::syntax::Span,
+    /// Where to point for code that a macro of another file wrote.
+    pub macro_call_sites: MacroCallSites,
 }
 
 impl DiagnosticsVec {
@@ -1062,6 +1075,7 @@ impl DiagnosticsVec {
             inner: Vec::new(),
             file: None,
             at: crate::syntax::Span::default(),
+            macro_call_sites: MacroCallSites::default(),
         }
     }
 
@@ -1095,11 +1109,21 @@ impl DiagnosticsVec {
         self.at = here.at;
     }
 
-    /// `span`, or where the checker is when `span` is `None`.
+    /// `span`, or where the checker is when `span` is `None`. In code that a macro of another
+    /// file wrote, it is the macro call.
     fn place(&self, span: Option<SourceSpan>) -> Option<SourceSpan> {
-        span.or_else(|| {
+        let span = span.or_else(|| {
             (self.at != crate::syntax::Span::default()).then(|| SourceSpan::from_ast_span(&self.at))
-        })
+        })?;
+        let sites = self
+            .file
+            .as_ref()
+            .and_then(|f| self.macro_call_sites.get(f));
+        let index = span.expansion.checked_sub(1).map(|i| i as usize);
+        match sites.zip(index).and_then(|(sites, i)| sites.get(i)) {
+            Some(Some(call)) => Some(SourceSpan::from_ast_span(call)),
+            _ => Some(span),
+        }
     }
 
     pub fn report(&mut self, level: DiagnosticLevel, message: impl Into<Cow<'static, str>>) {
