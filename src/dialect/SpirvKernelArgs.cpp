@@ -514,6 +514,13 @@ std::optional<std::string> spirvRefusalOf(Operation *op) {
   if (carriesIndexBlockArgument(op))
     return "a branch in its body carries an `index` value between blocks, "
            "which the SPIR-V conversion cannot take";
+  // A lane routine, such as `lanes::sum`. Its device code uses shuffles across
+  // a subgroup of 32 lanes, or a tile in shared memory, and a SPIR-V image has
+  // neither yet.
+  if (op->getName().getStringRef().starts_with("vx.lane") ||
+      op->getName().getStringRef().starts_with("vx.subgroup"))
+    return "it calls a routine of `lanes::`, which needs subgroups of 32 "
+           "lanes or shared memory, and a SPIR-V image has neither yet";
   // A tile in shared memory. A static one becomes a `memref.global`, and a
   // dynamic one is a stack slot that shared-typed loads then address: measured
   // on an A100 as an illegal address. The flattening addresses the kernel's

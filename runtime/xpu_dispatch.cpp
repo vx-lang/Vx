@@ -629,11 +629,9 @@ bool run_device_image(const void *payload, size_t payload_size,
      This used to keep only the first, so `grid=8,4,1` ran eight groups instead
      of thirty-two and left part of the output unwritten without a word.
 
-     No `spirv64` program writes `grid=` today: only an `across` loop does, and
-     the compiler refuses that loop on this arch
-     (tests/frontend/fail/an_across_loop_on_a_spirv64_topology_is_refused.vx).
-     A hand-written payload is the only way to reach a three-axis grid, and the
-     launch prints the axes it used, so a run that gets one says so. */
+     A kernel with block and lane loops writes `grid=` and `block=`
+     (tests/optimizations/pass/across_loops_on_a_spirv64_topology_get_a_launch_shape.vx).
+     The launch prints the axes it used. */
   unsigned grid[3] = {1, 1, 1};
   unsigned group_size = 1;
   char why[160];

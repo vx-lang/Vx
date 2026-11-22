@@ -2319,7 +2319,8 @@ static LogicalResult diagnoseHostSharedMemoryTransfers(Operation *root) {
 /// for a kernel the compiler cannot emit for the device it named cannot, on any
 /// machine. Answering it differently per build box is how the fault hid.
 static bool spawnRunsOnDevice(vx::SpawnOp spawn,
-                              bool valueInDeviceMemory = false);
+                              bool valueInDeviceMemory = false,
+                              std::string *spirvReason = nullptr);
 
 static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
   bool failed = false;
@@ -2337,7 +2338,9 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
     Region &body = spawn.getBody();
     if (body.empty())
       return;
-    if (!kernelKindOf(body).empty() || spawnRunsOnDevice(spawn))
+    std::string spirvReason;
+    if (!kernelKindOf(body).empty() ||
+        spawnRunsOnDevice(spawn, /*valueInDeviceMemory=*/false, &spirvReason))
       return;
 
     SetVector<Value> captures;
@@ -2347,6 +2350,9 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
     if (!xfer)
       return;
 
+    if (!spirvReason.empty())
+      spirvReason =
+          "\n  A `spirv64` device image cannot hold it: " + spirvReason + ".";
     spawn.emitError()
         << "this region is placed on "
         << topologyInWords(topology,
@@ -2359,7 +2365,8 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
            "there.\n"
         << "  Either the computation must be one the target can run (a "
            "matmul is routed today; general kernel emission is #251), or its "
-           "operands must stay in a space the host can read.";
+           "operands must stay in a space the host can read."
+        << spirvReason;
     failed = true;
   });
   return success(!failed);
@@ -6873,15 +6880,15 @@ static std::optional<std::string> spirvTargetRefusal();
 /// A call or a constant table is added to `callees` when it can come along.
 static bool runsOnDevice(Operation *op, ModuleOp module,
                          DevicePipeline pipeline, DeviceCallees &callees) {
+  // The SPIR-V path's own rules, from the one place that holds them. NVPTX
+  // compiles the shapes they name, so they apply to this pipeline alone.
+  if (pipeline == DevicePipeline::Spirv && spirvRefusalOf(op))
+    return false;
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
           vx::LaneOpInterface, vx::SubgroupScheduleBarrierOp>(op))
     return true;
-  // The SPIR-V path's own rules, from the one place that holds them. NVPTX
-  // compiles the shapes they name, so they apply to this pipeline alone.
-  if (pipeline == DevicePipeline::Spirv && spirvRefusalOf(op))
-    return false;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
   // faults: measured on an A100 as ILLEGAL_ADDRESS, because the stack slot
@@ -6934,7 +6941,8 @@ static bool dropsOwnBuffer(vx::SpawnOp spawn, Value buffer) {
 
 /// With `valueInDeviceMemory`, a value that the region yields counts as a
 /// store into GPU memory, as `returnSpawnNumbersThroughDeviceMemory` makes it.
-static bool spawnRunsOnDevice(vx::SpawnOp spawn, bool valueInDeviceMemory) {
+static bool spawnRunsOnDevice(vx::SpawnOp spawn, bool valueInDeviceMemory,
+                              std::string *spirvReason) {
   // No pipeline compiles the region, so it gets no device image.
   const DevicePipeline pipeline = pipelineOfKernel(spawn);
   if (pipeline == DevicePipeline::None)
@@ -6965,9 +6973,13 @@ static bool spawnRunsOnDevice(vx::SpawnOp spawn, bool valueInDeviceMemory) {
     if (auto drop = dyn_cast<vx::DropOp>(op))
       return dropsOwnBuffer(spawn, drop.getBuffer()) ? WalkResult::advance()
                                                      : WalkResult::interrupt();
-    return runsOnDevice(op, module, pipeline, callees)
-               ? WalkResult::advance()
-               : WalkResult::interrupt();
+    if (runsOnDevice(op, module, pipeline, callees))
+      return WalkResult::advance();
+    // The SPIR-V pipeline can say what keeps the region off the device.
+    if (spirvReason && pipeline == DevicePipeline::Spirv)
+      if (auto refusal = spirvRefusalOf(op))
+        *spirvReason = *refusal;
+    return WalkResult::interrupt();
   });
   return !r.wasInterrupted();
 }

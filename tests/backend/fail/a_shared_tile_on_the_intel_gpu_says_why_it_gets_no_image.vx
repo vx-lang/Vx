@@ -1,0 +1,35 @@
+//===- a_shared_tile_on_the_intel_gpu_says_why_it_gets_no_image.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A region for the Intel GPU keeps a tile in shared memory, which a SPIR-V
+// image cannot hold yet. Its tensors are in the memory of the card, which the
+// host cannot read, so the region cannot run on the host either. The error
+// says why the region gets no image.
+//
+// RUN: not vxc %s --machine fleet/arc-a770.vx --host default --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: this region is placed on `Topology::Device`, but the compiler cannot emit a device kernel for it
+// CHECK: A `spirv64` device image cannot hold it: it keeps a tile in shared memory (`Memory::SMEM`)
+
+fn main() -> i32 {
+  let m = Tensor<f32, [4, 64]>::fill(1.0);
+  let rows = transfer(m, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [4, 64]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      let mut part = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes {
+        part[t] = rows[b][t];
+      }
+      for t in 0..64 across lanes {
+        out[b][t] = part[63 - t];
+      }
+    }
+  }
+  let back = transfer(out, Memory::CPU_DRAM);
+  println!("{}", back[0][0]);
+  return 0;
+}

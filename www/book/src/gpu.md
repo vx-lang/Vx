@@ -358,5 +358,7 @@ a few `f32` instructions. [Exact and fast math](exact-and-fast-math.md) explains
 
 - An NVIDIA GPU runs each feature of this chapter. The compiler generates PTX.
 - An Apple GPU runs block and lane loops, shared memory, and atomics on `i32` and `u32`.
+- An Intel GPU (`arch: spirv64`) runs block and lane loops. It does not run subgroups, shared
+  memory or lane routines yet. A region with one of them gets no image, and the compiler says why.
 - Each kernel also has a copy for the CPU, which runs when there is no GPU. The threads of the host
   share the blocks. `VX_HOST_THREADS=n` sets their number.
