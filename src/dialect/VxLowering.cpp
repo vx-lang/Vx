@@ -11523,6 +11523,44 @@ static SmallVector<SpirvKernelRefusal> bf16Refusals(llvm::Module &module) {
   return refused;
 }
 
+/// Make each atomic load and store of `module` a read-modify-write. LLVM's
+/// SPIR-V backend writes an atomic load or store as a plain `OpLoad` or
+/// `OpStore`, which is neither atomic nor ordered, so a spin on a flag could
+/// read a value that a register holds. A load becomes an `atomicrmw or` with 0,
+/// and a store an `atomicrmw xchg` whose old value nothing reads. Both keep the
+/// ordering and the scope.
+static void atomicLoadsAndStoresAsReadModifyWrite(llvm::Module &module) {
+  SmallVector<llvm::Instruction *> atomics;
+  for (llvm::Function &f : module)
+    for (llvm::Instruction &i : llvm::instructions(f))
+      if (i.isAtomic() && isa<llvm::LoadInst, llvm::StoreInst>(i))
+        atomics.push_back(&i);
+  const llvm::DataLayout &layout = module.getDataLayout();
+  for (llvm::Instruction *i : atomics) {
+    llvm::IRBuilder<> b(i);
+    if (auto *load = dyn_cast<llvm::LoadInst>(i)) {
+      llvm::Type *type = load->getType();
+      llvm::Type *bits = b.getIntNTy(layout.getTypeSizeInBits(type));
+      llvm::Value *old =
+          b.CreateAtomicRMW(llvm::AtomicRMWInst::Or, load->getPointerOperand(),
+                            llvm::ConstantInt::get(bits, 0), load->getAlign(),
+                            load->getOrdering(), load->getSyncScopeID());
+      load->replaceAllUsesWith(
+          type == bits ? old : b.CreateBitOrPointerCast(old, type));
+    } else {
+      auto *store = cast<llvm::StoreInst>(i);
+      llvm::Value *value = store->getValueOperand();
+      llvm::Type *bits =
+          b.getIntNTy(layout.getTypeSizeInBits(value->getType()));
+      b.CreateAtomicRMW(llvm::AtomicRMWInst::Xchg, store->getPointerOperand(),
+                        b.CreateBitOrPointerCast(value, bits),
+                        store->getAlign(), store->getOrdering(),
+                        store->getSyncScopeID());
+    }
+    i->eraseFromParent();
+  }
+}
+
 /// Give each `i1` operation that LLVM's SPIR-V backend cannot write its logic
 /// form. The backend writes `mul`, division, remainder and the shifts of `i1`
 /// as integer instructions on `bool`, which SPIR-V does not allow, and it
@@ -12357,6 +12395,7 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     return {};
   }
   legalizeOneBitArithmetic(*llvmModule);
+  atomicLoadsAndStoresAsReadModifyWrite(*llvmModule);
   inlinePrintfIntoKernels(*llvmModule);
   storeBf16AsI16(*llvmModule);
   SmallVector<SpirvKernelRefusal> bf16 = bf16Refusals(*llvmModule);
@@ -12384,51 +12423,35 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
   return DeviceImage{"spirv", std::move(image), std::move(assertFlag)};
 }
 
-/// The SPIR-V image of the kernels in `gpuModule` that can become one. Each
-/// kernel that cannot is named in `refused` with its reason, and the image is
-/// built again without it. So one kernel that fails does not cost the other
-/// kernels their image.
-static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule, std::string &error,
-                                SmallVectorImpl<SpirvKernelRefusal> &refused) {
-  size_t kernels = 0;
-  gpuModule.walk([&](gpu::GPUFuncOp) { ++kernels; });
-  llvm::StringSet<> left;
-  // Each turn either ends or leaves out at least one more kernel.
-  while (left.size() < kernels) {
-    SmallVector<SpirvKernelRefusal> failed;
-    DeviceImage image = spirvImageOfKernels(gpuModule, left, error, failed);
-    // A stage of the pipeline failed with no kernel to blame. Build each
-    // kernel alone, so that only the kernels that fail lose their image. The
-    // build above already printed what the stage said, so these are quiet.
-    if (failed.empty() && image.bytes.empty() && kernels - left.size() > 1) {
-      ScopedDiagnosticHandler quiet(gpuModule.getContext(),
-                                    [](Diagnostic &) { return success(); });
-      gpuModule.walk([&](gpu::GPUFuncOp kernel) {
-        if (left.contains(kernel.getName()))
-          return;
-        llvm::StringSet<> others = left;
-        gpuModule.walk([&](gpu::GPUFuncOp other) {
-          if (other != kernel)
-            others.insert(other.getName());
-        });
-        std::string alone;
-        SmallVector<SpirvKernelRefusal> own;
-        if (!spirvImageOfKernels(gpuModule, others, alone, own).bytes.empty())
-          return;
-        if (own.empty())
-          own.push_back({kernel.getName().str(), alone});
-        failed.append(own.begin(), own.end());
-      });
+/// The SPIR-V image of each kernel in `gpuModule` that can become one, by the
+/// name of the kernel. Each kernel is a module of its own. LLVM's SPIR-V
+/// backend looks up the type of a `printf` format in the function it compiled
+/// last, so in a module with two kernels the assert of one stopped the process.
+/// An image then also lists only the shared tiles of its own kernel. Each
+/// kernel that cannot become an image is named in `refused` with its reason.
+static llvm::StringMap<DeviceImage>
+spirvImagesOf(gpu::GPUModuleOp gpuModule,
+              SmallVectorImpl<SpirvKernelRefusal> &refused) {
+  SmallVector<std::string> names;
+  gpuModule.walk([&](gpu::GPUFuncOp k) { names.push_back(k.getName().str()); });
+  llvm::StringMap<DeviceImage> images;
+  for (const std::string &name : names) {
+    llvm::StringSet<> others;
+    for (const std::string &other : names)
+      if (other != name)
+        others.insert(other);
+    std::string error;
+    SmallVector<SpirvKernelRefusal> own;
+    DeviceImage image = spirvImageOfKernels(gpuModule, others, error, own);
+    if (!image.bytes.empty()) {
+      images[name] = std::move(image);
+      continue;
     }
-    if (failed.empty())
-      return image;
-    for (SpirvKernelRefusal &r : failed) {
-      assert(!left.contains(r.kernel) && "a kernel left out failed again");
-      left.insert(r.kernel);
-      refused.push_back(std::move(r));
-    }
+    if (own.empty())
+      own.push_back({name, error});
+    refused.append(own.begin(), own.end());
   }
-  return {};
+  return images;
 }
 
 // `VX_CTRL_LOCAL_DEVICE` in include/vx_hardware_runtime.h.
@@ -13038,6 +13061,7 @@ struct ConvertVxToLLVMPass
       std::string error;
       SmallVector<SpirvKernelRefusal> refused;
       DeviceImage image;
+      llvm::StringMap<DeviceImage> spirvImages;
       switch (*pipeline) {
       case DevicePipeline::Nvptx:
         image = deviceImageOf(m, error);
@@ -13048,7 +13072,11 @@ struct ConvertVxToLLVMPass
         break;
       case DevicePipeline::Spirv:
         expandBf16Conversions(m);
-        image = spirvImageOf(m, error, refused);
+        spirvImages = spirvImagesOf(m, refused);
+        // Each kernel has an image of its own. This one says that there is an
+        // image at all.
+        if (!spirvImages.empty())
+          image = spirvImages.begin()->second;
         break;
       case DevicePipeline::None:
         llvm_unreachable("the pipeline was checked to be present above");
@@ -13125,7 +13153,7 @@ struct ConvertVxToLLVMPass
       }
       // Each kernel in the image maps to the same image, and the kernel name
       // -- already the payload blob's first field -- is what selects the
-      // entry.
+      // entry. A SPIR-V kernel has an image of its own.
       m.walk([&](gpu::GPUFuncOp f) {
         if (!inImage(f)) {
           if (vx::KernelOp kernel = kernelsByName.lookup(f.getName()))
@@ -13133,7 +13161,9 @@ struct ConvertVxToLLVMPass
                                  << ". It will run on the host instead.";
           return;
         }
-        deviceImages[f.getName()] = image;
+        deviceImages[f.getName()] = *pipeline == DevicePipeline::Spirv
+                                        ? spirvImages.lookup(f.getName())
+                                        : image;
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
           dynamicShared[f.getName()] = bytes.getInt();
       });
