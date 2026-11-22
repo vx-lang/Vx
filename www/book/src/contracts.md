@@ -173,7 +173,7 @@ module can read each field. It cannot do these things (`E8014`):
 - take a `&mut` to a field
 - call a method that takes `&mut self` on a field
 - move a field out of the value
-- build the type with a struct literal
+- build the type with a struct literal, or give a value of it from an `mlir!` block
 
 It calls a function of the module instead. For example, `Vec` has an invariant, so `v.len = 5` is an
 error outside `std::vec`. Code in another module can still assign a whole value, as in

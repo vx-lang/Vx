@@ -93,6 +93,78 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Each struct with an invariant that a value of `ty` holds: the type itself, a type argument,
+    /// a field or a payload at any depth, or a value behind a reference. Not a value behind a raw
+    /// pointer, because a read through one is `unsafe`.
+    pub(crate) fn invariant_types_held_by(&self, ty: &Type) -> Vec<&'a StructDecl> {
+        let mut found = Vec::new();
+        self.collect_invariant_types(ty, &mut std::collections::HashSet::new(), &mut found);
+        found
+    }
+
+    fn collect_invariant_types(
+        &self,
+        ty: &Type,
+        seen: &mut std::collections::HashSet<crate::symbol::Symbol>,
+        found: &mut Vec<&'a StructDecl>,
+    ) {
+        match ty {
+            Type::Borrow { inner, .. } | Type::Ref(inner, _) => {
+                self.collect_invariant_types(inner, seen, found)
+            }
+            Type::GenericInstance(base, args) => {
+                self.collect_invariant_types(base, seen, found);
+                for a in args {
+                    self.collect_invariant_types(a, seen, found);
+                }
+            }
+            Type::Struct(name, _) | Type::Enum(name, _) if seen.insert(name.clone()) => {
+                if let Some(decl) = self.env.structs.get(name).copied() {
+                    if !decl.invariants.is_empty() {
+                        found.push(decl);
+                    }
+                    for (_, t) in &decl.fields {
+                        self.collect_invariant_types(t, seen, found);
+                    }
+                } else if let Some(decl) = self.env.enums.get(name).copied() {
+                    for t in decl.variants.iter().flat_map(|(_, p)| p.iter().flatten()) {
+                        self.collect_invariant_types(t, seen, found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// E8014 for an `mlir!` block that gives a value that holds a type with an invariant of
+    /// another module. The block builds the value without the functions of that module, as a
+    /// struct literal does. `unsafe` does not lift it.
+    pub(crate) fn check_mlir_block_module(&mut self, returns: &Type, span: &Span) {
+        if self.speculating {
+            return;
+        }
+        let held = self.invariant_types_held_by(returns);
+        let Some(decl) = held.into_iter().find(|d| d.place.file != self.errors.file) else {
+            return;
+        };
+        let name = &decl.name;
+        let gives = match returns.to_string() == name.as_ref() {
+            true => format!("this `mlir!` block gives a value of `{name}`"),
+            false => format!(
+                "this `mlir!` block gives a value of `{returns}`, which holds a value of `{name}`"
+            ),
+        };
+        let message = format!(
+            "{gives}. `{name}` has an invariant, so only code in `{}` can build it",
+            Self::module_file_name(decl)
+        );
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E8014,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// E8014 for a struct literal of a type with an invariant that another module declares.
     pub(crate) fn check_struct_literal_module(&mut self, name: &str, span: &Span) {
         let Some(decl) = self.env.structs.get(name).copied() else {

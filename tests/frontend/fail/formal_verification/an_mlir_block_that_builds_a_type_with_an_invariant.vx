@@ -1,0 +1,66 @@
+//===- an_mlir_block_that_builds_a_type_with_an_invariant.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An `mlir!` block outside the file of a type with an invariant cannot give a value of the type,
+// as a struct literal cannot. A value that holds one, such as an `Option<Token>`, is an error too,
+// and `unsafe` does not lift it. A raw pointer to a `Token` is not an error, because a read
+// through it needs `unsafe`. The file of `Token` builds one in its own `mlir!` block.
+import core::option;
+import tests::modules::a_token_with_an_invariant;
+
+struct Wrapper {
+  token : Token,
+}
+
+fn forged() -> Token {
+  return mlir!(inputs : (), returns : Token, dialects : ["llvm"]) {
+    %u = llvm.mlir.undef : !llvm.struct<(i64)>
+    macro.yield %u : !llvm.struct<(i64)>
+  };
+}
+
+fn forged_in_unsafe() -> Token {
+  unsafe {
+    return mlir!(inputs : (), returns : Token, dialects : ["llvm"]) {
+      %u = llvm.mlir.undef : !llvm.struct<(i64)>
+      macro.yield %u : !llvm.struct<(i64)>
+    };
+  }
+}
+
+fn forged_option() -> Option<Token> {
+  return mlir!(inputs : (), returns : Option<Token>, dialects : ["llvm"]) {
+    %u = llvm.mlir.undef : !llvm.struct<(i64)>
+    macro.yield %u : !llvm.struct<(i64)>
+  };
+}
+
+fn forged_wrapper() -> Wrapper {
+  return mlir!(inputs : (), returns : Wrapper, dialects : ["llvm"]) {
+    %u = llvm.mlir.undef : !llvm.struct<(i64)>
+    macro.yield %u : !llvm.struct<(i64)>
+  };
+}
+
+fn a_pointer() -> *mut Token {
+  return mlir!(inputs : (), returns : *mut Token, dialects : ["llvm"]) {
+    %p = llvm.mlir.zero : !llvm.ptr
+    macro.yield %p : !llvm.ptr
+  };
+}
+
+fn main() -> i32 {
+  let _t = token_from_mlir();
+  return 0;
+}
+
+// CHECK: Error[E8014] at {{.*}}an_mlir_block_that_builds_a_type_with_an_invariant.vx:22:16: this `mlir!` block gives a value of `Token`. `Token` has an invariant, so only code in `a_token_with_an_invariant.vx` can build it
+// CHECK: Error[E8014] at {{.*}}an_mlir_block_that_builds_a_type_with_an_invariant.vx:30:18: this `mlir!` block gives a value of `Token`.
+// CHECK: Error[E8014] at {{.*}}an_mlir_block_that_builds_a_type_with_an_invariant.vx:38:16: this `mlir!` block gives a value of `Option<Token>`, which holds a value of `Token`.
+// CHECK: Error[E8014] at {{.*}}an_mlir_block_that_builds_a_type_with_an_invariant.vx:45:16: this `mlir!` block gives a value of `Wrapper`, which holds a value of `Token`.

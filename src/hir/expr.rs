@@ -508,6 +508,9 @@ impl<'a> TypeChecker<'a> {
                     self.check_expr_type_flag(clobber, consume);
                 }
 
+                if let Some(returns) = &e.returns {
+                    self.check_mlir_block_module(returns, &e.span);
+                }
                 // Return the specified type or Unknown if void
                 e.returns.clone().unwrap_or(Type::Unknown)
             }
