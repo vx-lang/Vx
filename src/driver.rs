@@ -857,14 +857,9 @@ impl CompilerDriver {
             program_arr.push(Self::native_host_program());
         }
 
-        let mut global_macros = std::collections::HashMap::new();
-        for m in &program_arr {
-            for mac in &m.macros {
-                global_macros.insert(mac.name.clone(), mac.rules.clone());
-            }
-        }
+        let macros = crate::parser::MacroTable::new(&program_arr);
         let trait_defaults = crate::resolver::collect_trait_defaults(program_arr.iter());
-        let expander = MacroExpander::new(&global_macros, &trait_defaults);
+        let expander = MacroExpander::new(&macros, &trait_defaults);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));

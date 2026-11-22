@@ -277,6 +277,9 @@ sizes 4 8
 the type that the call gives. The standard library uses this kind of macro to write the same `impl`
 for many types: `core::clone` writes `Clone` for each number type with `stamp_clone!`.
 
+A file can call the macros that it declares and the macros of the files that it imports. When a
+call can mean two macros with the same name, it is an error. Give each macro its own name.
+
 The patterns have limits today:
 
 - An `expr` or a `ty` takes each token up to the next token that the pattern names after it, even

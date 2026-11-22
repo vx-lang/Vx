@@ -2191,13 +2191,9 @@ impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         let mut program = parser.parse().unwrap();
-        // Mirror the driver: collect rules into the name-keyed map the expander takes.
-        let mut rules = std::collections::HashMap::new();
-        for mac in &program.macros {
-            rules.insert(mac.name.clone(), mac.rules.clone());
-        }
+        let macros = crate::parser::MacroTable::new(std::iter::once(&program));
         let defaults = crate::resolver::collect_trait_defaults(std::iter::once(&program));
-        let expander = crate::parser::MacroExpander::new(&rules, &defaults);
+        let expander = crate::parser::MacroExpander::new(&macros, &defaults);
         expander.expand_module(&mut program).unwrap();
         let body = format!("{:?}", program.transfer_impls[0].methods[0].body);
         assert!(
