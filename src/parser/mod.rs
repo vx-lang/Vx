@@ -4,7 +4,7 @@ pub mod macro_expand;
 pub mod stmt;
 mod tuple_match;
 pub mod types;
-pub use macro_expand::MacroExpander;
+pub use macro_expand::{MacroExpander, MacroTable};
 
 //===- parser.rs - Vx Compiler ---------------------------------*- Rust -*-===//
 //

@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::lexer::OwnedTokenType;
+use crate::symbol::Symbol;
 use crate::syntax::*;
 use crate::syntax::{Delimiter, Span};
 use std::collections::HashMap;
@@ -21,8 +22,126 @@ use std::collections::HashMap;
 /// The macros that `expand_macro_call` expands itself, with no `macro_rules!`.
 pub const BUILT_IN_MACROS: [&str; 6] = ["mlir", "vec", "print", "eprint", "println", "eprintln"];
 
+/// The `macro_rules` of a program. A module can call the macros that it defines and the macros
+/// of the modules that it imports. So the expansion of a module depends only on its imports.
+#[derive(Debug, Default)]
+pub struct MacroTable {
+    /// The rules of each macro, by module path and then by macro name. A name defined twice in
+    /// one module has two entries.
+    defined: HashMap<Symbol, HashMap<Symbol, Vec<Vec<MacroRule>>>>,
+    /// The modules that each module imports, by module path.
+    imports: HashMap<Symbol, Vec<Symbol>>,
+    /// The file name of each module, for a message.
+    files: HashMap<Symbol, String>,
+}
+
+impl MacroTable {
+    pub fn new<'p>(modules: impl IntoIterator<Item = &'p VxModule>) -> Self {
+        let mut table = Self::default();
+        for m in modules {
+            let defined = table.defined.entry(m.module_path.clone()).or_default();
+            for mac in &m.macros {
+                defined
+                    .entry(mac.name.clone())
+                    .or_default()
+                    .push(mac.rules.clone());
+            }
+            let mut imports: Vec<Symbol> = Vec::new();
+            for import in &m.imports {
+                let path: Vec<&str> = import.path.iter().map(|s| s.as_ref()).collect();
+                let name = Symbol::from(path.join("::").as_str());
+                if name != m.module_path && !imports.contains(&name) {
+                    imports.push(name);
+                }
+            }
+            table.imports.insert(m.module_path.clone(), imports);
+            let file = m.file.as_deref().unwrap_or(m.module_path.as_ref());
+            let file = std::path::Path::new(file)
+                .file_name()
+                .map_or(file.to_string(), |n| n.to_string_lossy().into_owned());
+            table.files.insert(m.module_path.clone(), file);
+        }
+        table
+    }
+
+    fn file<'s>(&'s self, module: &'s Symbol) -> &'s str {
+        self.files
+            .get(module)
+            .map_or(module.as_ref(), |f| f.as_str())
+    }
+
+    /// The rules of the macro `name` that `module` can call: one in the module itself or in a
+    /// module that it imports. More than one is an error, as is none.
+    fn rules(&self, module: &Symbol, name: &str) -> Result<&[MacroRule], String> {
+        let visible = std::iter::once(module).chain(self.imports.get(module).into_iter().flatten());
+        let mut found: Vec<(&Symbol, &[MacroRule])> = Vec::new();
+        for m in visible {
+            for rules in self
+                .defined
+                .get(m)
+                .and_then(|d| d.get(name))
+                .into_iter()
+                .flatten()
+            {
+                found.push((m, rules.as_slice()));
+            }
+        }
+        match found.as_slice() {
+            [(_, rules)] => Ok(*rules),
+            [] => {
+                let mut elsewhere: Vec<&Symbol> = self
+                    .defined
+                    .iter()
+                    .filter(|(m, d)| *m != module && d.contains_key(name))
+                    .map(|(m, _)| m)
+                    .collect();
+                elsewhere.sort();
+                let Some(m) = elsewhere.first() else {
+                    return Err(format!("Macro {name} not found"));
+                };
+                // A root file has its path as its module path, and no import can name it.
+                let import = match m.contains('/') || m.ends_with(".vx") {
+                    true => String::new(),
+                    false => format!(" Add `import {m};`."),
+                };
+                Err(format!(
+                    "Macro {name} not found. `{}` defines it, and `{}` does not import \
+                     `{}`.{import}",
+                    self.file(m),
+                    self.file(module),
+                    self.file(m),
+                ))
+            }
+            _ => {
+                let mut files: Vec<&str> = found.iter().map(|(m, _)| self.file(m)).collect();
+                files.sort();
+                files.dedup();
+                let places = match files.as_slice() {
+                    [one] => format!("`{one}` defines it {} times", found.len()),
+                    [rest @ .., last] => format!(
+                        "it is in {} and `{last}`",
+                        rest.iter()
+                            .map(|f| format!("`{f}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    [] => unreachable!("a macro that is found is in a file"),
+                };
+                Err(format!(
+                    "`{}` can call more than one macro `{name}`: {places}. Give each macro its \
+                     own name.",
+                    self.file(module)
+                ))
+            }
+        }
+    }
+}
+
 pub struct MacroExpander<'a> {
-    pub macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
+    pub macros: &'a MacroTable,
+    /// The module that this expander expands. Its macros and those of its imports are the
+    /// macros that it can call.
+    module: Symbol,
     /// The trait methods that carry a default body, across every module. Held here because
     /// filling them in is the last thing expansion does, and it has to be the last thing:
     /// an impl a macro produced is entitled to the defaults, and nothing before expansion
@@ -138,12 +257,10 @@ fn interleave_format_args(
 }
 
 impl<'a> MacroExpander<'a> {
-    pub fn new(
-        macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
-        trait_defaults: &'a crate::resolver::TraitDefaults,
-    ) -> Self {
+    pub fn new(macros: &'a MacroTable, trait_defaults: &'a crate::resolver::TraitDefaults) -> Self {
         Self {
             macros,
+            module: Symbol::from(""),
             trait_defaults,
             expansions: std::cell::Cell::new(0),
         }
@@ -214,10 +331,7 @@ impl<'a> MacroExpander<'a> {
         &self,
         call: &stmt::MacroCallStmt,
     ) -> Result<crate::syntax::Program, String> {
-        let rules = self
-            .macros
-            .get(call.name.as_ref())
-            .ok_or_else(|| format!("Macro {} not found", call.name))?;
+        let rules = self.macros.rules(&self.module, call.name.as_ref())?;
         for rule in rules {
             self.validate_matcher(call.name.as_ref(), &rule.matcher)?;
         }
@@ -252,7 +366,9 @@ impl<'a> MacroExpander<'a> {
     }
 
     pub fn expand_module(&self, module: &mut VxModule) -> Result<(), String> {
-        Self::new(self.macros, self.trait_defaults).expand_module_from_zero(module)
+        let mut expander = Self::new(self.macros, self.trait_defaults);
+        expander.module = module.module_path.clone();
+        expander.expand_module_from_zero(module)
     }
 
     fn expand_module_from_zero(&self, module: &mut VxModule) -> Result<(), String> {
@@ -617,10 +733,7 @@ impl<'a> MacroExpander<'a> {
             return self.expand_println_macro(tt, name == "eprintln");
         }
 
-        let rules = self
-            .macros
-            .get(name)
-            .ok_or_else(|| format!("Macro {} not found", name))?;
+        let rules = self.macros.rules(&self.module, name)?;
         for rule in rules {
             self.validate_matcher(name, &rule.matcher)?;
         }

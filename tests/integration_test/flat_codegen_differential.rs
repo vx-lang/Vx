@@ -41,12 +41,9 @@ fn parse(src: &str) -> Program {
     // Expand macros (`print!`/`println!` -> `Expr::Print`/`Expr::Println`, plus any user macros)
     // before name resolution, exactly as the real pipeline does — otherwise a `MacroCall` reaches
     // resolution and panics.
-    let mut global_macros = std::collections::HashMap::new();
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(std::iter::once(&program));
     let trait_defaults = vxc::resolver::collect_trait_defaults(std::iter::once(&program));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     expander
         .expand_module(&mut program)
         .expect("macro expansion failed");

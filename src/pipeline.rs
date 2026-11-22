@@ -535,21 +535,16 @@ fn macro_expansion_phase(
     sched: Schedule,
 ) -> Result<(), PipelineError> {
     // Collecting the macro table stays serial: it is one pass over macro *declarations*, which are
-    // few, and it must complete before any expansion since a macro defined in one module is visible
-    // to all.
-    let mut global_macros = std::collections::HashMap::new();
-    for m in parsed_modules.iter() {
-        for mac in &m.macros {
-            global_macros.insert(mac.name.clone(), mac.rules.clone());
-        }
-    }
+    // few, and it must complete before any expansion since a module can call the macros of the
+    // modules it imports.
+    let macros = crate::parser::MacroTable::new(parsed_modules.iter());
     // Expansion is per-module and shares nothing. Each module gets its own expander, because
     // an expander counts the expansions it makes.
     // Collected here for the same reason the macro table is: both have to be complete before
     // any module is expanded, because a trait and an impl of it need not share a module.
     let trait_defaults = crate::resolver::collect_trait_defaults(parsed_modules.iter());
     let expand = |m: &mut VxModule| {
-        MacroExpander::new(&global_macros, &trait_defaults)
+        MacroExpander::new(&macros, &trait_defaults)
             .expand_module(m)
             .map_err(PipelineError::Parse)
     };
