@@ -198,7 +198,7 @@ Raised where an operation needs an `unsafe` context and does not have one.
 | Code | Meaning |
 | --- | --- |
 | [`E5001`](/errors/E5001/) | Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements hold whatever the memory held, so the program says with `unsafe` that it writes each one before reading it. |
-| [`E5002`](/errors/E5002/) | Unsafe memory operation outside unsafe block |
+| [`E5002`](/errors/E5002/) | An operation that only an `unsafe` block allows, outside one. An access through a raw pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot know that the value is still at the address. So is `assume`. |
 
 ## Topology/Hardware Errors
 
