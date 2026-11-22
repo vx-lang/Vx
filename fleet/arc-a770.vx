@@ -56,10 +56,9 @@ Topology Device {
   // Intel XPU. A Vulkan backend would emit the same format.
   arch: spirv64,
   // At most 1024 lanes in a block, as the code generator of `spirv64` allows.
-  // Not measured on the card. There is no `subgroups` level: the driver chooses
-  // 8, 16 or 32 lanes for each kernel, and a SPIR-V kernel cannot ask for 32
-  // yet.
-  levels: [blocks(max_lanes: 1024, memory: cta), lanes(memory: thread)],
+  // Not measured on the card. The card has subgroups of 8, 16 or 32 lanes, and
+  // each kernel asks for 32.
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
   memory: Memory::HBM,
   // Host memory is deliberately absent, as in fleet/h100-sxm.vx: the host
   // cannot address this device's memory and a kernel here cannot address host
