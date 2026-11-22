@@ -1,0 +1,21 @@
+//===- type_invariant_that_names_self.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An invariant can name the fields of its struct, and not `self` alone.
+
+struct Holder {
+  data : *mut i64,
+
+  // CHECK: Error at {{.*}}type_invariant_that_names_self.vx:[[@LINE+1]]:19: an invariant cannot name `self`. It can name only the fields of `Holder`.{{$}}
+  invariant valid(self, 1i64),
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1122,24 +1122,52 @@ impl<'a> Parser<'a> {
 
         let generics = self.parse_generic_params()?;
 
-        let mut invariants = Vec::new();
-        while self.match_token(&TokenType::Invariant) {
-            invariants.push(self.parse_expr()?);
+        if self.check(&TokenType::Invariant) {
+            return Err(self.error(&format!(
+                "an invariant of a struct comes after its last field, inside the braces. Move \
+                 this invariant into the braces of `{name}`."
+            )));
         }
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut fields: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
+        let mut invariants = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            let f_name = self.expect_identifier("Expected field name")?;
-            self.consume(&TokenType::Colon, "Expected ':'")?;
-            let f_type = self.parse_type()?;
-            fields.push((f_name.into(), f_type));
+            if self.match_token(&TokenType::Invariant) {
+                let start = self.pos;
+                invariants.push(self.parse_expr()?);
+                self.refuse_self_in_invariant(start, &name)?;
+            } else {
+                if !invariants.is_empty() {
+                    return Err(self.error(&format!(
+                        "a field cannot come after an invariant. Put each field of `{name}` \
+                         before its first invariant."
+                    )));
+                }
+                let f_name = self.expect_identifier("Expected field name")?;
+                self.consume(&TokenType::Colon, "Expected ':'")?;
+                let f_type = self.parse_type()?;
+                fields.push((f_name.into(), f_type));
+            }
 
             if !self.match_token(&TokenType::Comma) {
                 break;
             }
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        // The checker reads a field of an invariant as `self.<field>`.
+        for invariant in &mut invariants {
+            crate::syntax::visit_expr_mut(invariant, &mut |e| {
+                if let Expr::Identifier(id) = e {
+                    if fields.iter().any(|(field, _)| *field == id.name) {
+                        let this = Expr::Identifier(IdentifierExpr::new("self".into(), id.span));
+                        let member =
+                            MemberAccessExpr::new(Box::new(this), id.name.clone(), id.span);
+                        *e = Expr::MemberAccess(member);
+                    }
+                }
+            });
+        }
 
         // Remove generic params from scope
         for _ in 0..generics.len() {
@@ -1157,6 +1185,36 @@ impl<'a> Parser<'a> {
             invariants,
             doc_comment: None,
         })
+    }
+
+    /// An invariant names the fields of its struct, so a written `self` is an error. `start` is
+    /// the position of the first token of the invariant.
+    fn refuse_self_in_invariant(&self, start: usize, struct_name: &str) -> ParseResult<'a, ()> {
+        let tokens = &self.tokens[start..self.pos];
+        for (i, token) in tokens.iter().enumerate() {
+            if token.kind != TokenType::Identifier("self") {
+                continue;
+            }
+            let field = match (tokens.get(i + 1), tokens.get(i + 2)) {
+                (Some(dot), Some(next)) if dot.kind == TokenType::Dot => match &next.kind {
+                    TokenType::Identifier(field) => Some(*field),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let message = match field {
+                Some(field) => format!(
+                    "an invariant names a field without `self`. Write `{field}`, not \
+                     `self.{field}`."
+                ),
+                None => format!(
+                    "an invariant cannot name `self`. It can name only the fields of \
+                     `{struct_name}`."
+                ),
+            };
+            return Err(self.error_at(token, &message));
+        }
+        Ok(())
     }
 
     pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<'a, EnumDecl> {
