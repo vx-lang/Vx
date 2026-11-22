@@ -132,6 +132,8 @@ struct DriverApi {
   decltype(&cuOccupancyMaxActiveBlocksPerMultiprocessor)
       OccupancyMaxActiveBlocksPerMultiprocessor;
   decltype(&cuLaunchKernel) LaunchKernel;
+  /// Null on a driver older than CUDA 12. Only `VX_CUDA_PDL=1` needs it.
+  decltype(&cuLaunchKernelEx) LaunchKernelEx;
   decltype(&cuFuncSetAttribute) FuncSetAttribute;
   decltype(&cuCtxGetCurrent) CtxGetCurrent;
   decltype(&cuCtxGetDevice) CtxGetDevice;
@@ -175,6 +177,8 @@ const DriverApi *load_driver_api() {
     d.TensorMapEncodeTiled =
         reinterpret_cast<decltype(&cuTensorMapEncodeTiled)>(
             dlsym(lib, "cuTensorMapEncodeTiled"));
+    d.LaunchKernelEx = reinterpret_cast<decltype(&cuLaunchKernelEx)>(
+        dlsym(lib, "cuLaunchKernelEx"));
     return ok ? &d : nullptr;
   }();
   return api;
@@ -1343,6 +1347,29 @@ static unsigned dynamic_shared_bytes(const void *payload, size_t payload_size) {
   return field ? (unsigned)strtoul(field, nullptr, 10) : 0;
 }
 
+/// Whether a launch of the payload's kernel may start while the kernel before
+/// it on the stream still runs (programmatic dependent launch). The kernel must
+/// wait for that kernel itself: vxc gives it the wait and the payload field
+/// `waits_for_earlier_kernels=` with `VX_GPU_PDL=1`. The program asks for the
+/// early start with `VX_CUDA_PDL=1`.
+static bool starts_early(const void *payload, size_t payload_size) {
+  static const bool asked = [] {
+    const char *on = getenv("VX_CUDA_PDL");
+    return on && strcmp(on, "1") == 0;
+  }();
+  if (!asked ||
+      !vx_payload_field(payload, payload_size, "waits_for_earlier_kernels="))
+    return false;
+  if (driver().LaunchKernelEx)
+    return true;
+  static std::once_flag said;
+  std::call_once(said, [] {
+    fprintf(stderr, "[Vx CUDA] VX_CUDA_PDL=1 needs a CUDA 12 driver or later. "
+                    "Each kernel starts after the kernel before it ends.\n");
+  });
+  return false;
+}
+
 /// Whether the payload's image is PTX. A payload from before `format=` has
 /// only PTX.
 static bool is_ptx(const void *payload, size_t payload_size) {
@@ -1638,10 +1665,28 @@ bool run_device_image(const void *payload, size_t payload_size,
     cudaEventCreate(&t1);
     cudaEventRecord(t0, caller_stream);
   }
-  CUresult rc =
-      driver().LaunchKernel(fn, grid, shape[1], shape[2], block, 1, 1,
-                            dynamic_shared_bytes(payload, payload_size),
-                            (CUstream)caller_stream, params.params, nullptr);
+  CUresult rc;
+  if (starts_early(payload, payload_size)) {
+    CUlaunchAttribute early{};
+    early.id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
+    early.value.programmaticStreamSerializationAllowed = 1;
+    CUlaunchConfig config{};
+    config.gridDimX = grid;
+    config.gridDimY = shape[1];
+    config.gridDimZ = shape[2];
+    config.blockDimX = block;
+    config.blockDimY = 1;
+    config.blockDimZ = 1;
+    config.sharedMemBytes = dynamic_shared_bytes(payload, payload_size);
+    config.hStream = (CUstream)caller_stream;
+    config.attrs = &early;
+    config.numAttrs = 1;
+    rc = driver().LaunchKernelEx(&config, fn, params.params, nullptr);
+  } else {
+    rc = driver().LaunchKernel(fn, grid, shape[1], shape[2], block, 1, 1,
+                               dynamic_shared_bytes(payload, payload_size),
+                               (CUstream)caller_stream, params.params, nullptr);
+  }
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
     driver().GetErrorName(rc, &name);
