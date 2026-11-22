@@ -1,8 +1,8 @@
 // A `return match` that makes a struct, with no arm for the value it gets: the program stops
 // with a message instead of returning a struct that was never filled in.
 //
-// REQUIRES: flat-codegen
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // CHECK: {{^}}first: 8{{$}}
 // CHECK-NEXT: {{^}}second: no arm of the match returned a value{{$}}
 // CHECK: Program was killed by signal 6 (SIGABRT

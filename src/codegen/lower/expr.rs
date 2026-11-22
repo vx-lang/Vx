@@ -5558,18 +5558,63 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         //
         // The other is a match whose arms each `return`. The parser turns a trailing match into
         // `return match ...`, so the caller is waiting for a value of the function's return
-        // type -- and the merge block it would come from is unreachable, because every arm has
-        // already left. An `i32` placeholder handed back there was coerced to whatever the
-        // caller wanted, which for an aggregate meant an unrealized conversion cast that no
-        // backend can translate. An undef of the awaited type says the same thing and says it
-        // in a type the caller can return: this edge is not taken.
+        // type. Control reaches the merge block only when no arm matches the value, as for a
+        // number with no `_` arm. Then, as with the default code generator, a number gives 0, a
+        // pointer gives null, and any other type stops the program.
         // A `void` function's return type lowers to MLIR's `none`, which is not a value any
         // operation can produce -- and a void caller has nothing to receive anyway, so the
         // placeholder below is the right answer there.
         if let Some(ty) = outer_expected.filter(|t| t.to_string() != "none") {
-            let op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
-                .add_results(&[ty])
-                .build()?;
+            let text = ty.to_string();
+            let is_integer = text
+                .strip_prefix('i')
+                .is_some_and(|bits| bits.parse::<u32>().is_ok());
+            let op = if is_integer {
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(ty, 0).into(),
+                    )])
+                    .build()?
+            } else if crate::codegen::generator::is_float_text(&text) {
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        FloatAttribute::new(gen.context, ty, 0.0).into(),
+                    )])
+                    .build()?
+            } else if text == "!llvm.ptr" {
+                OperationBuilder::new("llvm.mlir.zero", gen.loc())
+                    .add_results(&[ty])
+                    .build()?
+            } else {
+                let never = OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[gen.i1_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(gen.i1_ty, 0).into(),
+                    )])
+                    .build()?;
+                let never = block.append_operation(never).result(0)?.into();
+                block.append_operation(
+                    OperationBuilder::new("cf.assert", gen.loc())
+                        .add_operands(&[never])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "msg"),
+                            StringAttribute::new(
+                                gen.context,
+                                "no arm of the match returned a value",
+                            )
+                            .into(),
+                        )])
+                        .build()?,
+                );
+                OperationBuilder::new("llvm.mlir.undef", gen.loc())
+                    .add_results(&[ty])
+                    .build()?
+            };
             let op_ref = block.append_operation(op);
             return Ok((op_ref.result(0)?.into(), ty, block));
         }
