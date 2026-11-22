@@ -509,6 +509,9 @@ pub struct Program {
     /// it wrote. It is the macro call when another module declares the macro, because the
     /// places in that code are in the other file. `None` keeps the places in the code.
     pub macro_call_sites: Vec<Option<crate::syntax::Span>>,
+    /// The package of this module, when `vxc --no-trusted-code` names it. Trusted code in the
+    /// module is then an error.
+    pub no_trusted_code: Option<Symbol>,
 }
 
 pub type VxModule = Program;
@@ -587,6 +590,7 @@ impl Program {
                 })
                 .collect(),
             macro_call_sites: self.macro_call_sites.clone(),
+            no_trusted_code: self.no_trusted_code.clone(),
         }
     }
 }

@@ -575,6 +575,11 @@ pub enum DiagnosticCode {
     E5001,
     /// Unsafe memory operation outside unsafe block
     E5002,
+    /// Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or
+    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`.
+    /// The program that uses the package gives the flag, so a new version of the package cannot
+    /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
+    E5003,
 
     // --- Topology/Hardware Errors (E6xxx) ---
     /// Topology mismatch in function call
