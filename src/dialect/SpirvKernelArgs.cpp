@@ -26,8 +26,11 @@
 
 #include "SpirvKernelArgs.h"
 
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
@@ -36,8 +39,13 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Inliner.h"
+#include "mlir/Transforms/InliningUtils.h"
+#include "mlir/Transforms/Passes.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
@@ -438,6 +446,29 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
       deferred.push_back(get);
       continue;
     }
+    // A shuffle, which a function the kernel calls can hold. It needs
+    // subgroups of 32 lanes.
+    if (isa<gpu::ShuffleOp>(op)) {
+      error =
+          "it shuffles values between the lanes of a subgroup "
+          "(`gpu.shuffle`), which needs subgroups of 32 lanes, and a SPIR-V "
+          "kernel cannot ask for them yet";
+      return failure();
+    }
+    // A cast changes only what the type says about the sizes and strides, as
+    // a call site does to give a function the type it takes. The values are the
+    // source's, so the result has the source's view.
+    if (auto cast = dyn_cast<memref::CastOp>(op)) {
+      const FlatView *view = found(cast.getSource());
+      if (!view) {
+        error = "a cast of a memref the flattening does not know";
+        return failure();
+      }
+      FlatView same = *view;
+      views[cast.getResult()] = same;
+      deferred.push_back(cast);
+      continue;
+    }
     if (auto load = dyn_cast<memref::LoadOp>(op)) {
       const FlatView *view = found(load.getMemref());
       if (!view) {
@@ -537,7 +568,93 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
   return success();
 }
 
+/// An inliner that also takes a call in a `gpu.func`, which has no inliner
+/// interface of its own.
+struct KernelInliner : public InlinerInterface {
+  KernelInliner(MLIRContext *context) : InlinerInterface(context) {}
+  bool isLegalToInline(Region *dest, Region *src, bool wouldBeCloned,
+                       IRMapping &mapping) const override {
+    return isa<gpu::GPUFuncOp>(dest->getParentOp()) ||
+           InlinerInterface::isLegalToInline(dest, src, wouldBeCloned, mapping);
+  }
+};
+
 } // namespace
+
+LogicalResult inlineSpirvKernelCalls(gpu::GPUModuleOp gpuModule,
+                                     std::string &error) {
+  MLIRContext *context = gpuModule.getContext();
+  DialectRegistry registry;
+  func::registerInlinerExtension(registry);
+  context->appendDialectRegistry(registry);
+  // A function can hold an `affine.for`, which nothing after this lowers. Then
+  // a call from one function to another. The calls in a kernel come next.
+  {
+    PassManager pm(context, gpu::GPUModuleOp::getOperationName());
+    pm.addPass(createLowerAffinePass());
+    pm.addPass(createInlinerPass());
+    if (failed(pm.run(gpuModule))) {
+      error = "inlining the functions that a kernel calls failed";
+      return failure();
+    }
+  }
+  SmallVector<func::CallOp> calls;
+  for (gpu::GPUFuncOp f : gpuModule.getOps<gpu::GPUFuncOp>())
+    f.walk([&](func::CallOp call) { calls.push_back(call); });
+  SymbolTable symbols(gpuModule);
+  KernelInliner inliner(context);
+  InlinerConfig config;
+  for (func::CallOp call : calls) {
+    auto callee = symbols.lookup<func::FuncOp>(call.getCallee());
+    if (!callee || callee.isExternal())
+      continue;
+    Region &body = callee.getBody();
+    if (!body.hasOneBlock() &&
+        call->getParentOp()->mightHaveTrait<OpTrait::SingleBlock>())
+      continue;
+    if (succeeded(inlineCall(inliner, config.getCloneCallback(), call, callee,
+                             &body)))
+      call.erase();
+  }
+  for (auto f : llvm::make_early_inc_range(gpuModule.getOps<func::FuncOp>()))
+    if (!f.isExternal() && SymbolTable::symbolKnownUseEmpty(f, gpuModule))
+      f.erase();
+  return success();
+}
+
+void widenIndexBlockArguments(gpu::GPUModuleOp gpuModule) {
+  gpuModule.walk([](gpu::GPUFuncOp func) {
+    Type i64 = IntegerType::get(func.getContext(), 64);
+    for (Block &block : func.getBody()) {
+      if (block.isEntryBlock())
+        continue;
+      for (BlockArgument arg : block.getArguments()) {
+        if (!isa<IndexType>(arg.getType()))
+          continue;
+        llvm::SetVector<Block *> preds(block.pred_begin(), block.pred_end());
+        for (Block *pred : preds) {
+          auto branch = cast<BranchOpInterface>(pred->getTerminator());
+          for (unsigned s = 0; s < branch->getNumSuccessors(); ++s) {
+            if (branch->getSuccessor(s) != &block)
+              continue;
+            SuccessorOperands operands = branch.getSuccessorOperands(s);
+            OpOperand &operand =
+                operands.getMutableForwardedOperands()
+                    [arg.getArgNumber() - operands.getProducedOperandCount()];
+            OpBuilder builder(branch);
+            operand.set(arith::IndexCastOp::create(builder, branch.getLoc(),
+                                                   i64, operand.get()));
+          }
+        }
+        arg.setType(i64);
+        OpBuilder builder(&block, block.begin());
+        auto back = arith::IndexCastOp::create(builder, arg.getLoc(),
+                                               builder.getIndexType(), arg);
+        arg.replaceAllUsesExcept(back, back);
+      }
+    }
+  });
+}
 
 std::optional<std::string> spirvRefusalOf(Operation *op) {
   // A memref of memrefs, which the AST code generator writes for a kernel's

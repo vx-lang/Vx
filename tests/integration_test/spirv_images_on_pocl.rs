@@ -248,11 +248,18 @@ fn spirv_images_on_pocl_print_what_the_host_prints() {
         let ir = vxc(&root, program, &["--emit-llvm"], &[]);
         let has_image = ir.stdout.contains("format=spirv");
         let host = vxc(&root, program, &[], &[]);
+        // The default way of pocl to run the lanes of a block crashed on a
+        // correct image: a loop, then a barrier, then a loop over a Workgroup
+        // tile. `loops` ran it right.
         let pocl = vxc(
             &root,
             program,
             &[],
-            &[("VX_DISPATCH_LIB", &lib), ("LD_LIBRARY_PATH", &copies)],
+            &[
+                ("VX_DISPATCH_LIB", &lib),
+                ("LD_LIBRARY_PATH", &copies),
+                ("POCL_WORK_GROUP_METHOD", Path::new("loops")),
+            ],
         );
         let (ran, on_host) = kernel_counts(&pocl.stderr);
         let (h, p) = (printed(&host.stdout), printed(&pocl.stdout));
