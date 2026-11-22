@@ -244,6 +244,12 @@ result can be read. A clause that does not hold is undefined behavior, as a wron
 - each `ensures` of an `extern` function
 - each pointer `requires` of a `pub fn`, because a call from C proves nothing
 
+It also lists each use of trusted code, which the compiler does not check: each `unsafe` block and
+`unsafe fn` that the program writes, each `mlir!` block, each `extern` function, and each
+`extern impl` and `unsafe impl`. Code with none of these cannot forge a value that only one module
+can build. For `core` and `std`, a last line gives only the counts. `vxc --audit-library` lists
+their uses too.
+
 Each line starts with the file, the line and the column, and the lines are in that order. So a
 review can compare the audit of two versions of a program.
 
