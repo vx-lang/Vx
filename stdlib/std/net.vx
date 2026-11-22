@@ -8,8 +8,9 @@
 // TCP and UDP sockets. Each call that can fail gives a `Result` with a `NetError`.
 //
 // The safe methods take a `String` address and a `Vec<u8>` buffer. The length of the vector is the
-// size of the buffer. The `unsafe` methods that end in `_raw` or `_c_str` take raw pointers.
-// `BufReader` reads lines, and `BufWriter` collects small writes into one.
+// size of the buffer, and a call always uses the whole vector, because Vx has no slices yet. The
+// `unsafe` methods that end in `_raw` or `_c_str` take raw pointers. `TcpBufReader` reads lines,
+// and `TcpBufWriter` collects small writes into one.
 //
 // The Rust core gives a status for each call: 0 when it worked, a number below 0 for each error
 // that `NetError` names, and else the error number of the system. A call that worked writes its
@@ -53,12 +54,14 @@ extern {
 enum NetError {
   // The `tasks` block of this task was cancelled while the call waited.
   Cancelled,
-  // The address is not `host:port`, or the host has no address.
+  // The address is not `host:port`, holds a NUL byte, or names a host that has no address.
   BadAddress,
   // Nothing listens at the address.
   Refused,
-  // The peer closed or reset the connection.
+  // The peer reset the connection, or closed it while a write waited.
   Reset,
+  // The peer closed the connection before all the bytes that `read_exact` wants arrived.
+  Closed,
   // Another socket uses the address already.
   InUse,
   // Another failure, with the error number of the system, or 0 when it gave none.
@@ -98,23 +101,30 @@ fn count_or_error(status : i32, count : u64) -> Result<u64, NetError> {
   return Result<u64, NetError>::Err(net_error(status));
 }
 
-/// A NUL-terminated copy of `addr`, for the Rust core. Give it to `free_c_copy` after the call.
-fn c_copy(addr : &String) -> *const i8 {
-  return unsafe { vx_string_as_c_str(addr.ptr) };
+/// A NUL-terminated copy of an address, for the Rust core. A drop releases it.
+struct CAddress {
+  ptr : *const i8,
 }
 
-/// Release a copy that `c_copy` made.
-fn free_c_copy(c_addr : *const i8) -> void {
-  let _freed = unsafe { vx_string_free_c_str(c_addr) };
-}
-
-/// A vector of `len` zero bytes, for a buffer.
-fn zero_bytes(len : i32) -> Vec<u8> {
-  let mut bytes = Vec<u8>::with_capacity(len);
-  for _i in 0..len {
-    bytes.push(0u8);
+impl CAddress {
+  /// A copy of `addr`, or `BadAddress` when `addr` holds a NUL byte, because a C string ends at
+  /// its first NUL.
+  fn of(addr : &String) -> Result<CAddress, NetError> {
+    let ptr = unsafe { vx_string_try_as_c_str(addr.ptr) };
+    if is_null(ptr) {
+      return Result<CAddress, NetError>::Err(NetError::BadAddress);
+    }
+    return Result<CAddress, NetError>::Ok(CAddress {
+      ptr : ptr
+    });
   }
-  return bytes;
+}
+
+impl Drop for CAddress {
+  /// Release the copy.
+  fn drop(self : &mut CAddress) -> void {
+    let _freed = unsafe { vx_string_free_c_str(self.ptr) };
+  }
 }
 
 /// A connected TCP socket, held by the Rust core behind an opaque pointer.
@@ -171,7 +181,28 @@ impl TcpStream {
     return count_or_error(status, count);
   }
 
-  /// Write all `len` bytes from `buffer`, in as many writes as it takes, and give `len`.
+  /// Fill all `len` bytes of `buffer`, in as many reads as it takes, and give `len`. When the
+  /// peer closes the connection first, it gives `Closed`.
+  ///
+  /// Unsafe because `buffer` must have room for `len` bytes.
+  unsafe fn read_exact_raw(self : *mut TcpStream, buffer : *mut u8, len : u64)
+  -> Result<u64, NetError> {
+    let mut done : u64 = 0;
+    while done < len {
+      let part = unsafe {
+        self.read_raw(add_mut(buffer, done as usize), len - done)
+      };
+      let n = part?;
+      if n == 0 {
+        return Result<u64, NetError>::Err(NetError::Closed);
+      }
+      done = done + n;
+    }
+    return Result<u64, NetError>::Ok(done);
+  }
+
+  /// Write all `len` bytes from `buffer`, in as many writes as it takes, and give `len`. A write
+  /// that takes 0 bytes gives `Reset`, because TCP does that only when the connection is gone.
   ///
   /// Unsafe because `buffer` must have `len` bytes to read.
   unsafe fn write_all_raw(self : *mut TcpStream, buffer : *const u8, len : u64)
@@ -193,10 +224,8 @@ impl TcpStream {
   /// Connect to `addr`, written as `host:port`. A task of the shared runtime parks while it
   /// waits.
   fn connect(addr : &String) -> Result<TcpStream, NetError> {
-    let c_addr = c_copy(addr);
-    let stream = unsafe { TcpStream::connect_c_str(c_addr) };
-    free_c_copy(c_addr);
-    return stream;
+    let c_addr = CAddress::of(addr)?;
+    return unsafe { TcpStream::connect_c_str(c_addr.ptr) };
   }
 
   /// Read up to `buffer.len()` bytes into `buffer` and give how many arrived. 0 means that the
@@ -214,22 +243,10 @@ impl TcpStream {
   }
 
   /// Fill all of `buffer`, in as many reads as it takes, and give its length. When the peer
-  /// closes the connection first, it gives `Reset`.
+  /// closes the connection first, it gives `Closed`.
   fn read_exact(self : &mut TcpStream, buffer : &mut Vec<u8>) -> Result<u64, NetError> {
     let len = buffer.len() as u64;
-    let data = buffer.as_mut_ptr();
-    let mut done : u64 = 0;
-    while done < len {
-      let part = unsafe {
-        self.read_raw(add_mut(data, done as usize), len - done)
-      };
-      let n = part?;
-      if n == 0 {
-        return Result<u64, NetError>::Err(NetError::Reset);
-      }
-      done = done + n;
-    }
-    return Result<u64, NetError>::Ok(done);
+    return unsafe { self.read_exact_raw(buffer.as_mut_ptr(), len) };
   }
 
   /// Write all of `buffer`, in as many writes as it takes, and give its length.
@@ -301,10 +318,8 @@ impl UdpSocket {
 
   /// Bind to `addr`, written as `host:port`.
   fn bind(addr : &String) -> Result<UdpSocket, NetError> {
-    let c_addr = c_copy(addr);
-    let socket = unsafe { UdpSocket::bind_c_str(c_addr) };
-    free_c_copy(c_addr);
-    return socket;
+    let c_addr = CAddress::of(addr)?;
+    return unsafe { UdpSocket::bind_c_str(c_addr.ptr) };
   }
 
   /// Receive one datagram into `buffer` and give its length. A datagram longer than
@@ -318,12 +333,10 @@ impl UdpSocket {
   fn send_to(self : &mut UdpSocket, buffer : &Vec<u8>, addr : &String)
   -> Result<u64, NetError> {
     let len = buffer.len() as u64;
-    let c_addr = c_copy(addr);
-    let sent = unsafe {
-      self.send_to_raw(buffer.as_mut_ptr() as *const u8, len, c_addr)
+    let c_addr = CAddress::of(addr)?;
+    return unsafe {
+      self.send_to_raw(buffer.as_mut_ptr() as *const u8, len, c_addr.ptr)
     };
-    free_c_copy(c_addr);
-    return sent;
   }
 }
 
@@ -362,15 +375,13 @@ impl TcpListener {
 
   /// Listen on `addr`, written as `host:port`.
   fn bind(addr : &String) -> Result<TcpListener, NetError> {
-    let c_addr = c_copy(addr);
-    let listener = unsafe { TcpListener::bind_c_str(c_addr) };
-    free_c_copy(c_addr);
-    return listener;
+    let c_addr = CAddress::of(addr)?;
+    return unsafe { TcpListener::bind_c_str(c_addr.ptr) };
   }
 
   /// Wait for a connection and give it. A task of the shared runtime parks while it waits, so
   /// its OS thread can run other tasks.
-  fn accept(self : *mut TcpListener) -> Result<TcpStream, NetError> {
+  fn accept(self : &mut TcpListener) -> Result<TcpStream, NetError> {
     let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
     let status = unsafe {
       vx_tcp_listener_accept(self.ptr, (&mut ptr) as *mut *mut i8)
@@ -391,12 +402,12 @@ impl Drop for TcpListener {
   }
 }
 
-/// The size of the buffer of a `BufReader` or a `BufWriter`, in bytes.
+/// The size of the buffer of a `TcpBufReader` or a `TcpBufWriter`, in bytes.
 const NET_BUFFER_SIZE : i32 = 4096;
 
 /// A `TcpStream` with a buffer for reads, so that `read_line` reads many bytes per call of the
 /// system, not one.
-struct BufReader {
+struct TcpBufReader {
   stream : TcpStream,
   buffer : Vec<u8>,
   // The next byte of `buffer` to give.
@@ -405,26 +416,68 @@ struct BufReader {
   end : i32,
 }
 
-impl BufReader {
+impl TcpBufReader {
   /// A reader of `stream`.
-  fn new(stream : TcpStream) -> BufReader {
-    return BufReader {
-      stream : stream, buffer : zero_bytes(NET_BUFFER_SIZE), start : 0, end : 0
+  fn new(stream : TcpStream) -> TcpBufReader {
+    return TcpBufReader {
+      stream : stream, buffer : unsafe { Vec<u8>::zeroed(NET_BUFFER_SIZE) }, start : 0, end : 0
     };
   }
 
-  /// The stream, for example to write a reply. Do not read from it: the reader can hold the next
-  /// bytes in its buffer.
-  fn get_mut(self : &mut BufReader) -> &mut TcpStream {
+  /// The stream, for example to write a reply. Read through the reader, not through the stream,
+  /// because the reader can hold the next bytes in its buffer.
+  fn get_mut(self : &mut TcpBufReader) -> &mut TcpStream {
     return &mut self.stream;
+  }
+
+  /// Copy up to `len` bytes that the reader holds to `to`, and give how many it copied.
+  ///
+  /// Unsafe because `to` must have room for `len` bytes.
+  unsafe fn take_buffered_raw(self : &mut TcpBufReader, to : *mut u8, len : u64) -> u64 {
+    let mut n = (self.end - self.start) as u64;
+    if n > len {
+      n = len;
+    }
+    let from = add(self.buffer.as_mut_ptr() as *const u8, self.start as usize);
+    unsafe { copy_nonoverlapping(from, to, n as usize); }
+    self.start = self.start + (n as i32);
+    return n;
+  }
+
+  /// Read up to `buffer.len()` bytes into `buffer` and give how many came. The bytes that the
+  /// reader holds come first. 0 means that the peer closed the connection.
+  fn read(self : &mut TcpBufReader, buffer : &mut Vec<u8>) -> Result<u64, NetError> {
+    if self.start == self.end {
+      return self.stream.read(buffer);
+    }
+    let len = buffer.len() as u64;
+    return Result<u64, NetError>::Ok(unsafe {
+      self.take_buffered_raw(buffer.as_mut_ptr(), len)
+    });
+  }
+
+  /// Fill all of `buffer` and give its length. The bytes that the reader holds come first, and
+  /// then reads of the stream. When the peer closes the connection first, it gives `Closed`.
+  fn read_exact(self : &mut TcpBufReader, buffer : &mut Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    let data = buffer.as_mut_ptr();
+    let done = unsafe { self.take_buffered_raw(data, len) };
+    let rest = unsafe {
+      self.stream.read_exact_raw(add_mut(data, done as usize), len - done)
+    };
+    let _n = rest?;
+    return Result<u64, NetError>::Ok(len);
   }
 
   /// Add the bytes of the next line, with its `\n`, to the end of `line`, and give how many it
   /// added. The last line can have no `\n`. 0 means that the peer closed the connection.
-  fn read_line(self : &mut BufReader, line : &mut Vec<u8>) -> Result<u64, NetError> {
+  ///
+  /// A line has no length limit. A peer that never sends `\n` makes `line` grow until the memory
+  /// runs out.
+  fn read_line(self : &mut TcpBufReader, line : &mut Vec<u8>) -> Result<u64, NetError> {
     let mut count : u64 = 0;
-    let mut at_end = false;
-    while !at_end {
+    let mut found = false;
+    while !found {
       if self.start == self.end {
         let n = self.stream.read(&mut self.buffer)?;
         if n == 0 {
@@ -433,11 +486,17 @@ impl BufReader {
         self.start = 0;
         self.end = n as i32;
       }
-      let byte = self.buffer.get(self.start);
-      self.start = self.start + 1;
-      line.push(byte);
-      count = count + 1;
-      at_end = byte == 10u8;
+      let data = self.buffer.as_mut_ptr() as *const u8;
+      let mut stop = self.start;
+      while stop < self.end && !found {
+        found = unsafe { data[stop] } == 10u8;
+        stop = stop + 1;
+      }
+      unsafe {
+        line.extend_from_raw(add(data, self.start as usize), stop - self.start);
+      }
+      count = count + ((stop - self.start) as u64);
+      self.start = stop;
     }
     return Result<u64, NetError>::Ok(count);
   }
@@ -445,29 +504,29 @@ impl BufReader {
 
 /// A `TcpStream` with a buffer for writes. Small writes go into the buffer, and `flush` sends them
 /// in one write. A drop flushes too, but it cannot report an error, so call `flush` first.
-struct BufWriter {
+struct TcpBufWriter {
   stream : TcpStream,
   buffer : Vec<u8>,
   // The number of bytes in `buffer` that are not sent yet.
   used : i32,
 }
 
-impl BufWriter {
+impl TcpBufWriter {
   /// A writer to `stream`.
-  fn new(stream : TcpStream) -> BufWriter {
-    return BufWriter {
-      stream : stream, buffer : zero_bytes(NET_BUFFER_SIZE), used : 0
+  fn new(stream : TcpStream) -> TcpBufWriter {
+    return TcpBufWriter {
+      stream : stream, buffer : unsafe { Vec<u8>::zeroed(NET_BUFFER_SIZE) }, used : 0
     };
   }
 
   /// The stream, for example to read a reply. Call `flush` first, so that the peer gets all bytes.
-  fn get_mut(self : &mut BufWriter) -> &mut TcpStream {
+  fn get_mut(self : &mut TcpBufWriter) -> &mut TcpStream {
     return &mut self.stream;
   }
 
   /// Add all of `bytes` to the buffer, and give their count. When they do not fit, it flushes the
   /// buffer first. When they are more than the buffer holds, it writes them at once.
-  fn write(self : &mut BufWriter, bytes : &Vec<u8>) -> Result<u64, NetError> {
+  fn write(self : &mut TcpBufWriter, bytes : &Vec<u8>) -> Result<u64, NetError> {
     let n = bytes.len();
     if self.used + n > self.buffer.len() {
       let _sent = self.flush()?;
@@ -475,15 +534,17 @@ impl BufWriter {
     if n > self.buffer.len() {
       return self.stream.write_all(bytes);
     }
-    for i in 0..n {
-      self.buffer.set(self.used + i, bytes.get(i));
+    let to = add_mut(self.buffer.as_mut_ptr(), self.used as usize);
+    unsafe {
+      copy_nonoverlapping(bytes.as_mut_ptr() as *const u8, to, n as usize);
     }
     self.used = self.used + n;
     return Result<u64, NetError>::Ok(n as u64);
   }
 
-  /// Send all bytes in the buffer, and give their count.
-  fn flush(self : &mut BufWriter) -> Result<u64, NetError> {
+  /// Send all bytes in the buffer, and give their count. The buffer is empty afterwards, also when
+  /// a write fails. Then the program cannot know how many of the bytes the peer got.
+  fn flush(self : &mut TcpBufWriter) -> Result<u64, NetError> {
     let len = self.used as u64;
     self.used = 0;
     return unsafe {
@@ -492,9 +553,10 @@ impl BufWriter {
   }
 }
 
-impl Drop for BufWriter {
-  /// Send the bytes in the buffer. An error is lost, because a drop gives no value.
-  fn drop(self : &mut BufWriter) -> void {
+impl Drop for TcpBufWriter {
+  /// Send the bytes in the buffer. An error is lost, because a drop gives no value. In a
+  /// cancelled `tasks` block the send gives `Cancelled`, so the bytes are lost.
+  fn drop(self : &mut TcpBufWriter) -> void {
     let _sent = self.flush();
   }
 }

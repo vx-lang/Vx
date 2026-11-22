@@ -169,21 +169,27 @@ is a text of the form `host:port`, for example `"127.0.0.1:7878"`.
 
 The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
 The length of the vector is the size of the buffer. Each type also has methods that take raw
-pointers. Their names end in `_c_str` or `_raw`, for example `TcpStream::connect_c_str("..")` for a
-string literal.
+pointers. Their names end in `_c_str` or `_raw`.
+
+A string literal is a raw pointer to its bytes. `String::from_c_str("..")` makes a `String` from
+it. That call is `unsafe`, because nothing checks that the pointer ends in a NUL byte. A literal
+always does, but Vx has no safe way yet to make a `String` or a `Vec<u8>` from a literal. So the
+examples below use `unsafe` only for that.
 
 Each call that can fail gives a `Result`. Its `Err` holds a `NetError`, which says why the call
 failed:
 
-- `BadAddress`: the address is not `host:port`, or the host has no address.
+- `BadAddress`: the address is not `host:port`, holds a NUL byte, or names a host that has no
+  address.
 - `Refused`: nothing listens at the address.
-- `Reset`: the other end closed the connection.
+- `Reset`: the other end reset the connection, or closed it while a write waited.
+- `Closed`: the other end closed the connection before `read_exact` got all its bytes.
 - `InUse`: another socket uses the address.
 - `Cancelled`: the program cancelled the `tasks` block of the task while the call waited.
 - `Os(code)`: another failure, with the error number of the system.
 
-This program uses the raw methods. The address of the first call has no port. Port 0 in the second asks the
-system for any free port (`book_io_network_errors.vx`):
+The address of the first call in this program has no port. Port 0 in the second asks the system
+for any free port (`book_io_network_errors.vx`):
 
 ```rust
 {{#include ../../../tests/backend/pass/book_io_network_errors.vx:program}}
@@ -217,14 +223,19 @@ fn echo_one_byte(listener : TcpListener) -> Result<u64, NetError> {
 TCP is a stream of bytes. A message can arrive in parts, so a `read` can give fewer bytes than the
 other end wrote, and a `write` can take fewer bytes than you gave. `read_exact` reads until the
 buffer is full, and `write_all` writes all bytes of the buffer. When the connection closes before
-the buffer is full, `read_exact` gives `Reset`.
+the buffer is full, `read_exact` gives `Closed`.
 
-`BufReader` and `BufWriter` hold a `TcpStream` and a buffer of 4096 bytes. `read_line(&mut line)`
-on a `BufReader` adds the next line, with its newline, to the end of `line`, and gives the count of
-bytes. 0 means that the connection closed. `write` on a `BufWriter` adds bytes to the buffer, and
-`flush()` sends them in one write. A `BufWriter` flushes at the end of its scope too, but then it
-cannot report an error. `get_mut()` on either one gives the `TcpStream`, for example to write a
-reply.
+`TcpBufReader` and `TcpBufWriter` hold a `TcpStream` and a buffer of 4096 bytes. `read_line(&mut
+line)` on a `TcpBufReader` adds the next line, with its newline, to the end of `line`, and gives the
+count of bytes. 0 means that the connection closed. A line has no length limit, so a client that
+never sends a newline makes `line` grow until the memory runs out. After `read_line`, the reader can
+hold the start of the next data, for example the body after a header. So read it with `read` or
+`read_exact` on the reader, not on its `TcpStream`.
+
+`write` on a `TcpBufWriter` adds bytes to the buffer, and `flush()` sends them in one write. A
+`TcpBufWriter` flushes at the end of its scope too, but then it cannot report an error. In a
+cancelled `tasks` block, that flush gives `Cancelled`, and the bytes are lost. `get_mut()` on either
+type gives the `TcpStream`, for example to write a reply.
 
 In this program, a client task sends two lines, and the server reads them
 (`book_io_network_lines.vx`):

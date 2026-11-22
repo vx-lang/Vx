@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // A program of the book chapter on files, input and time (www/book/src/files-input-time.md):
-// a client task sends two lines through a `BufWriter`, and the server reads them with a
-// `BufReader`. The port is fixed, because `std::net` cannot give the port of a listener yet.
+// a client task sends two lines through a `TcpBufWriter`, and the server reads them with a
+// `TcpBufReader`. The port is fixed, because `std::net` cannot give the port of a listener yet.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -34,7 +34,7 @@ fn bytes(text : *const i8) -> Vec<u8> {
 
 fn client(addr : &String) -> Result<u64, NetError> {
   let stream = TcpStream::connect(addr)?;
-  let mut out = BufWriter::new(stream);
+  let mut out = TcpBufWriter::new(stream);
   let _first = out.write(&bytes("first line\n"))?;
   let _second = out.write(&bytes("second line\n"))?;
   // Both lines go to the server in one write.
@@ -43,7 +43,7 @@ fn client(addr : &String) -> Result<u64, NetError> {
 
 fn server(listener : TcpListener) -> Result<u64, NetError> {
   let mut l = listener;
-  let mut input = BufReader::new(l.accept()?);
+  let mut input = TcpBufReader::new(l.accept()?);
   let mut count = 0u64;
   let mut n = 1u64;
   while n > 0 {

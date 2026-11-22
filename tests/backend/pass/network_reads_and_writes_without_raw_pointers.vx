@@ -8,11 +8,11 @@
 // The safe methods of `std::net` take a `String` address and a `Vec<u8>` buffer. In each part, a
 // server and a client run as two tasks, so each wait must park only its own task.
 //
-// - Lines: the client sends two lines through a `BufWriter`. The server reads them with
-//   `BufReader::read_line` and answers with `write_all`. The client gets the answer with
+// - Lines: the client sends two lines through a `TcpBufWriter`. The server reads them with
+//   `TcpBufReader::read_line` and answers with `write_all`. The client gets the answer with
 //   `read_exact`, writes a last line with no newline, and closes.
 // - A short message: the client writes 2 bytes and closes. The server reads 1 byte with `read`.
-//   Then `read_exact` wants 2 more bytes, but only 1 comes, so it gives `Reset`.
+//   Then `read_exact` wants 2 more bytes, but only 1 comes, so it gives `Closed`.
 // - UDP: one task waits in `recv`, and the other sends a datagram with `send_to`.
 //
 // The port numbers are fixed, because `std::net` cannot give the port of a listener yet. The
@@ -32,7 +32,7 @@
 // CHECK: {{^}}server: line 3 is end, 3 bytes: true{{$}}
 // CHECK-NEXT: {{^}}server: read_line at the end gives 0 bytes{{$}}
 // CHECK-NEXT: {{^}}server: read got 1 byte, 7{{$}}
-// CHECK-NEXT: {{^}}server: read_exact gives Reset{{$}}
+// CHECK-NEXT: {{^}}server: read_exact gives Closed{{$}}
 // CHECK-NEXT: {{^}}udp: recv got 5 bytes, hello: true{{$}}
 
 import core::result;
@@ -92,6 +92,9 @@ fn name(e : NetError) -> *const i8 {
     NetError::Reset => {
       return "Reset";
     }
+    NetError::Closed => {
+      return "Closed";
+    }
     NetError::InUse => {
       return "InUse";
     }
@@ -112,7 +115,7 @@ fn report(who : *const i8, result : Result<u64, NetError>) -> void {
 
 fn lines_client() -> Result<u64, NetError> {
   let stream = TcpStream::connect(&address("127.0.0.1:41761"))?;
-  let mut writer = BufWriter::new(stream);
+  let mut writer = TcpBufWriter::new(stream);
   let _first = writer.write(&bytes("ping\n"))?;
   let _second = writer.write(&bytes("two words\n"))?;
   let sent = writer.flush()?;
@@ -128,7 +131,7 @@ fn lines_client() -> Result<u64, NetError> {
 fn lines_server(listener : TcpListener) -> Result<u64, NetError> {
   let mut l = listener;
   let stream = l.accept()?;
-  let mut reader = BufReader::new(stream);
+  let mut reader = TcpBufReader::new(stream);
   let mut line = Vec<u8>::new();
   let n = reader.read_line(&mut line)?;
   println!("server: line 1 is ping, {} bytes: {}", n, same(&line, "ping\n"));

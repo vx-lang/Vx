@@ -46,6 +46,9 @@ fn name(e : NetError) -> *const i8 {
     NetError::Reset => {
       return "Reset";
     }
+    NetError::Closed => {
+      return "Closed";
+    }
     NetError::InUse => {
       return "InUse";
     }
