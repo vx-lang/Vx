@@ -1,0 +1,83 @@
+//===- a_method_that_takes_self_by_value_moves_out_of_a_reference.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A method that takes `self` by value moves the value. Through a reference, the call cannot
+// take a value that is not `Copy`, because the reference does not own it. Through a raw
+// pointer, the call reads the value, so it needs an `unsafe` block.
+
+import core::convert;
+import std::vec;
+
+struct Token {
+  x : i64,
+}
+
+struct Point {
+  x : i64,
+}
+
+impl Copy for Point {}
+
+struct Bag {
+  items : Vec<i64>,
+}
+
+trait Spend {
+  fn spend(self : Self) -> i64;
+}
+
+impl Spend for Token {
+  fn spend(self : Self) -> i64 {
+    return self.x;
+  }
+}
+
+impl Spend for Point {
+  fn spend(self : Self) -> i64 {
+    return self.x;
+  }
+}
+
+impl Spend for Bag {
+  fn spend(self : Self) -> i64 {
+    return i64::from(self.items.len());
+  }
+}
+
+fn main() -> i32 {
+  let t = Token {
+    x : 1i64
+  };
+  let _shared = (&t).spend();
+  let r = &t;
+  let _again = r.spend();
+  let mut u = Token {
+    x : 2i64
+  };
+  let m = &mut u;
+  let _changed = m.spend();
+  let p = Point {
+    x : 3i64
+  };
+  let raw = &p as *const Point;
+  let _read = raw.spend();
+  let b = Bag {
+    items : Vec<i64>::new()
+  };
+  let bag = &b as *const Bag;
+  let _moved = unsafe { bag.spend() };
+  return 0;
+}
+
+// CHECK: Error[E4008] at {{.*}}.vx:57:22: `spend` takes `self` by value, so this call moves a value of type `Token` out from behind a reference, which does not own it. Call `spend` on the value itself, or on a clone of it
+// CHECK: Error[E4008] at {{.*}}.vx:59:18: `spend` takes `self` by value, so this call moves a value of type `Token` out from behind a reference
+// CHECK: Error[E4008] at {{.*}}.vx:64:20: `spend` takes `self` by value, so this call moves a value of type `Token` out from behind a reference
+// CHECK: Error[E5002] at {{.*}}.vx:69:19: Calling `spend`, which takes `self` by value, through a raw pointer requires an unsafe block
+// CHECK: Error[E4008] at {{.*}}.vx:74:29: this moves a value of type `Bag` out from behind a raw pointer, and its owner still drops it
+// CHECK: 5 error(s) emitted

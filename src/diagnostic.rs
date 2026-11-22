@@ -516,7 +516,8 @@ pub enum DiagnosticCode {
     E4007,
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
-    /// away. Copy or clone it instead. A `match` on a reference names parts of the value behind
+    /// away. Copy or clone it instead. A method that takes `self` by value, called as `r.f()`,
+    /// takes `*r` the same way. A `match` on a reference names parts of the value behind
     /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
     /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
     /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take
