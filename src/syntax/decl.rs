@@ -186,6 +186,8 @@ pub struct ExternDecl {
     pub ensures: Vec<crate::syntax::Expr>,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.
     pub span: Span,
+    /// The file of the declaration, set as for the other items.
+    pub file: Option<Symbol>,
     /// The `///` lines above the declaration. Six library modules are nothing but an extern
     /// block, so without this they had no way to say what their functions do.
     pub doc_comment: Option<String>,
@@ -538,6 +540,9 @@ impl Program {
         let places = places.chain(self.transfer_impls.iter_mut().map(|t| &mut t.place));
         for place in places {
             place.file = file.clone();
+        }
+        for ext in &mut self.externs {
+            ext.file = file.clone();
         }
     }
 

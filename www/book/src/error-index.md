@@ -24,7 +24,7 @@ the test suite has one, a program that triggers it.
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8015` (15 codes)
 
 ## Warnings
 
@@ -279,7 +279,8 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8012`](/errors/E8012/) | A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body changes a parameter that such a clause names. Or the function says `ensures !frees(p)`, and its body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a call without `!frees` for that parameter, a store or an `mlir!` block. |
 | [`E8013`](/errors/E8013/) | A type invariant that is not well formed. An `invariant` comes after the last field of a struct, inside its braces. It can use the fields of the struct at any depth, numbers, operators, `as` and the pointer clauses `valid`, `initialized` and `overlaps`. It calls no other function, and it names no constant. |
 | [`E8014`](/errors/E8014/) | Code outside the module of a type with an invariant changes a field of the type. Only the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a field, call a method that takes `&mut self` on a field, move a field out of the value, or build the type with a struct literal or an `mlir!` block. Other code calls a function of the module to change a value of the type. Then the invariant holds for each value of the type outside its module. |
+| [`E8015`](/errors/E8015/) | A `safe` extern function that returns a value of a type with an invariant, or takes a `&mut` or a `*mut` to one. C code does not keep the invariant, and a call of a `safe` function needs no `unsafe`. So C code could give out or change such a value with no mark in the program. Remove `safe`, so that each call is in an `unsafe` block. |
 
 ______________________________________________________________________
 
-191 diagnostics.
+192 diagnostics.

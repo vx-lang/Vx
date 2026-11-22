@@ -19,6 +19,7 @@ mod conflicts;
 mod copy_impls;
 mod memory;
 mod placement;
+mod safe_externs;
 mod thread_safety_impls;
 mod topology;
 
@@ -75,6 +76,8 @@ impl TypeChecker<'_> {
         self.check_placements_name_a_place();
         // An `extern` signature has to be spellable in C, and a tensor is not.
         self.check_extern_signatures();
+        // A `safe` extern function that gives out or changes a type with an invariant.
+        self.check_safe_externs_keep_invariants();
         // A `const` whose value does not fit its type, or has no value while compiling, is
         // reported once here. Uses only substitute the value.
         self.check_const_declarations();

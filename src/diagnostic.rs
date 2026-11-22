@@ -854,6 +854,11 @@ pub enum DiagnosticCode {
     /// the module to change a value of the type. Then the invariant holds for each value of the
     /// type outside its module.
     E8014,
+    /// A `safe` extern function that returns a value of a type with an invariant, or takes a
+    /// `&mut` or a `*mut` to one. C code does not keep the invariant, and a call of a `safe`
+    /// function needs no `unsafe`. So C code could give out or change such a value with no mark
+    /// in the program. Remove `safe`, so that each call is in an `unsafe` block.
+    E8015,
 }
 
 impl std::fmt::Display for DiagnosticCode {

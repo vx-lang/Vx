@@ -1,0 +1,33 @@
+//===- a_safe_extern_function_with_a_type_with_an_invariant.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A `safe` extern function cannot return a value that holds a type with an invariant, or take a
+// `&mut` or a `*mut` to one, because C code does not keep the invariant. Without `safe`, each
+// call needs `unsafe`. A `&` parameter and a raw pointer result are not errors.
+import core::option;
+import tests::modules::a_token_with_an_invariant;
+
+extern "C" {
+  safe fn mint() -> Token;
+  safe fn mint_option() -> Option<Token>;
+  safe fn bump(t : &mut Token) -> void;
+  safe fn bump_through_a_pointer(t : *mut Token) -> void;
+  safe fn number(t : &Token) -> i64;
+  safe fn place() -> *mut Token;
+  fn mint_unchecked() -> Token;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E8015] at {{.*}}a_safe_extern_function_with_a_type_with_an_invariant.vx:17:3: the `safe` extern function `mint` returns a value of `Token`, and `Token` has an invariant. C code does not keep the invariant. Remove `safe`, so that each call is in an `unsafe` block
+// CHECK: Error[E8015] at {{.*}}a_safe_extern_function_with_a_type_with_an_invariant.vx:18:3: the `safe` extern function `mint_option` returns a value of `Option<Token>`, and `Token` has an invariant.
+// CHECK: Error[E8015] at {{.*}}a_safe_extern_function_with_a_type_with_an_invariant.vx:19:3: the `safe` extern function `bump` takes `t : &mut Token`, so C code can change a value of `Token`, which has an invariant.
+// CHECK: Error[E8015] at {{.*}}a_safe_extern_function_with_a_type_with_an_invariant.vx:20:3: the `safe` extern function `bump_through_a_pointer` takes `t : *mut Token`, so C code can change a value of `Token`, which has an invariant.
