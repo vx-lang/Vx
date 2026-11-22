@@ -705,13 +705,7 @@ impl<'a> Parser<'a> {
                     )));
                 }
             }
-            if l.kind == crate::arch::LevelKind::Subgroups && size.is_none() {
-                return Err(self.error(&format!(
-                    "`{}`: the code generator of `{arch}` cannot launch subgroups yet",
-                    l.name
-                )));
-            }
-            if let (Some(n), Some(size)) = (l.lanes, size) {
+            if let Some(n) = l.lanes {
                 if n != size {
                     return Err(self.error(&format!(
                         "`lanes: {n}`: a subgroup of `{arch}` has {size} lanes"

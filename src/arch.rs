@@ -734,17 +734,16 @@ impl DeviceTarget {
     }
 
     /// The most lanes in a block and the lanes in a subgroup, on a target whose code generator
-    /// can launch the levels of `across` loops. The subgroup is `None` on a target whose code
-    /// generator cannot launch subgroups.
-    pub fn launch_limits(self) -> Option<(u64, Option<u64>)> {
+    /// can launch the levels of `across` loops.
+    pub fn launch_limits(self) -> Option<(u64, u64)> {
         match self {
-            DeviceTarget::Nvptx64 => Some((1024, Some(32))),
+            DeviceTarget::Nvptx64 => Some((1024, 32)),
             // spec: Metal Feature Set Tables: at most 1024 threads in a threadgroup, and a
             // SIMD-group of 32 threads on Apple GPUs.
-            DeviceTarget::AppleGpu => Some((1024, Some(32))),
-            // A subgroup of Vx has 32 lanes, and the driver of an Intel GPU chooses 8, 16 or 32
-            // for each kernel. A SPIR-V kernel does not yet ask for 32, so it gets no subgroups.
-            DeviceTarget::Spirv64 => Some((1024, None)),
+            DeviceTarget::AppleGpu => Some((1024, 32)),
+            // An Intel GPU has subgroups of 8, 16 or 32 lanes, and each SPIR-V kernel asks for
+            // 32 (`SubgroupSize 32`).
+            DeviceTarget::Spirv64 => Some((1024, 32)),
             DeviceTarget::X86_64 | DeviceTarget::Aarch64 | DeviceTarget::AmdGcn => None,
             DeviceTarget::AppleAne => None,
         }

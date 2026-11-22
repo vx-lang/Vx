@@ -8300,6 +8300,29 @@ static LogicalResult lowerTasksBlock(vx::SpawnOp block, ModuleOp module) {
   return success();
 }
 
+/// Makes the lanes of one subgroup wait for each other, as
+/// `nvvm.bar.warp.sync` does on NVIDIA. LLVM's SPIR-V backend writes the call
+/// as `OpControlBarrier` with Subgroup scope, and orders the memory of the
+/// work-group and of the device. It does not know OpenCL's `sub_group_barrier`.
+static void subgroupBarrierForSpirv(OpBuilder &b, Location loc,
+                                    gpu::GPUModuleOp gpuModule) {
+  constexpr StringLiteral name = "_Z22__spirv_ControlBarrieriii";
+  constexpr int64_t subgroupScope = 3;
+  constexpr int64_t acquireReleaseOfAllMemory = 0x8 | 0x100 | 0x200;
+  Type i32 = b.getI32Type();
+  auto barrier = gpuModule.lookupSymbol<func::FuncOp>(name);
+  if (!barrier) {
+    OpBuilder top = OpBuilder::atBlockBegin(gpuModule.getBody());
+    barrier = func::FuncOp::create(
+        top, loc, name, FunctionType::get(b.getContext(), {i32, i32, i32}, {}));
+    barrier.setPrivate();
+  }
+  Value scope = arith::ConstantIntOp::create(b, loc, i32, subgroupScope);
+  Value semantics =
+      arith::ConstantIntOp::create(b, loc, i32, acquireReleaseOfAllMemory);
+  func::CallOp::create(b, loc, barrier, ValueRange{scope, scope, semantics});
+}
+
 /// Lowers each `tasks` block, the outermost first, so that a block inside a
 /// task is lowered in the function of that task.
 static LogicalResult lowerTasks(ModuleOp module) {
@@ -9132,7 +9155,10 @@ struct ConvertVxToStandardPass
           OpBuilder b(bar);
           // The end of a lane loop in a subgroup loop: the lanes of one warp
           // wait for each other, and the other warps go on.
-          if (bar->hasAttr("subgroup")) {
+          if (bar->hasAttr("subgroup") &&
+              pipelineOfKernel(kernel) == DevicePipeline::Spirv) {
+            subgroupBarrierForSpirv(b, bar.getLoc(), gpuModule);
+          } else if (bar->hasAttr("subgroup")) {
             Value all = b.create<arith::ConstantIntOp>(bar.getLoc(),
                                                        b.getI32Type(), -1);
             b.create<NVVM::SyncWarpOp>(bar.getLoc(), all);
@@ -11347,9 +11373,13 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
     return failure();
   }
 
+  // No optimization: loop strength reduction wrote `x % 8` as a zero
+  // extension of an `i3`, and the backend masks that with 255 (see
+  // `narrowIntegerRefusals`). The driver optimizes the SPIR-V itself.
   llvm::TargetOptions options;
   std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
-      triple, /*CPU=*/"", /*Features=*/"", options, std::nullopt));
+      triple, /*CPU=*/"", /*Features=*/"", options, std::nullopt, std::nullopt,
+      llvm::CodeGenOptLevel::None));
   if (!machine) {
     error = "the SPIR-V target machine could not be created";
     return failure();
@@ -11380,6 +11410,41 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
   }
   image.assign(buffer.begin(), buffer.end());
   return success();
+}
+
+/// Rewrites each `down` and `up` shuffle as a shuffle that names its lane. A
+/// lane past the end of the subgroup gets its own value, as on NVIDIA. pocl
+/// has no `sub_group_shuffle_down`, so the pocl test can then run the kernel.
+static void shuffleDownAndUpByIndex(gpu::GPUModuleOp gpuModule) {
+  SmallVector<gpu::ShuffleOp> shuffles;
+  gpuModule.walk([&](gpu::ShuffleOp s) {
+    if (s.getMode() == gpu::ShuffleMode::DOWN ||
+        s.getMode() == gpu::ShuffleMode::UP)
+      shuffles.push_back(s);
+  });
+  for (gpu::ShuffleOp s : shuffles) {
+    OpBuilder b(s);
+    Location loc = s.getLoc();
+    Type i32 = b.getI32Type();
+    Value lane = arith::IndexCastOp::create(
+        b, loc, i32, gpu::LaneIdOp::create(b, loc, /*upperBound=*/nullptr));
+    Value other, valid;
+    if (s.getMode() == gpu::ShuffleMode::DOWN) {
+      other = arith::AddIOp::create(b, loc, lane, s.getOffset());
+      valid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult, other,
+                                    s.getWidth());
+    } else {
+      other = arith::SubIOp::create(b, loc, lane, s.getOffset());
+      valid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::uge, lane,
+                                    s.getOffset());
+    }
+    Value from = arith::SelectOp::create(b, loc, valid, other, lane);
+    auto byIndex = gpu::ShuffleOp::create(b, loc, s.getValue(), from,
+                                          s.getWidth(), gpu::ShuffleMode::IDX);
+    s.getShuffleResult().replaceAllUsesWith(byIndex.getShuffleResult());
+    s.getValid().replaceAllUsesWith(valid);
+    s.erase();
+  }
 }
 
 /// Arithmetic on bf16 in f32, rounded to bf16 after each operation, as the CPU
@@ -12372,6 +12437,16 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     return {};
   }
   widenIndexBlockArguments(*device->getOps<gpu::GPUModuleOp>().begin());
+  shuffleDownAndUpByIndex(*device->getOps<gpu::GPUModuleOp>().begin());
+
+  // The lane routines take a subgroup to have 32 lanes. `SubgroupSize 32`
+  // asks the driver for that, and `convert-gpu-to-llvm-spv` lowers a shuffle
+  // only when its width is the size that its function asks for.
+  for (auto f :
+       (*device->getOps<gpu::GPUModuleOp>().begin()).getOps<gpu::GPUFuncOp>())
+    f->setAttr(LLVM::LLVMFuncOp::getIntelReqdSubGroupSizeAttrName(OperationName(
+                   LLVM::LLVMFuncOp::getOperationName(), context)),
+               IntegerAttr::get(IntegerType::get(context, 32), 32));
 
   PassManager toSpv(context, ModuleOp::getOperationName());
   ConvertGpuOpsToLLVMSPVOpsOptions spvOptions;
