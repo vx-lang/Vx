@@ -23,8 +23,12 @@
 //! The test needs pocl (`clinfo -l` names it) and `patchelf`. Without them it
 //! passes and says that it ran nothing. With `VX_REQUIRE_POCL=1`, it fails then.
 
+use std::fs::File;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::integration_test::runtime_test_build;
 
@@ -141,22 +145,54 @@ fn spirv_programs(root: &Path) -> Vec<PathBuf> {
 
 struct Run {
     code: Option<i32>,
+    timed_out: bool,
     stdout: String,
     stderr: String,
 }
 
+/// How long one run of vxc may take. A kernel whose wait never ends then fails
+/// the test, and does not stop it.
+const RUN_LIMIT: Duration = Duration::from_secs(300);
+
 fn vxc(root: &Path, program: &Path, args: &[&str], env: &[(&str, &Path)]) -> Run {
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    let n = RUNS.fetch_add(1, Ordering::Relaxed);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("spirv_images_on_pocl");
+    let (out, err) = (
+        dir.join(format!("run{n}.out")),
+        dir.join(format!("run{n}.err")),
+    );
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_vxc"));
     cmd.current_dir(root).arg(program).args(args);
     cmd.env_remove("VX_DISPATCH_LIB");
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("run vxc");
+    // Files, not pipes: a pipe that nobody reads stops a child that writes a lot.
+    // A group of its own, so that a kill also stops the program that vxc runs.
+    cmd.stdout(File::create(&out).unwrap())
+        .stderr(File::create(&err).unwrap())
+        .process_group(0);
+    let mut child = cmd.spawn().expect("run vxc");
+    let start = Instant::now();
+    let (code, timed_out) = loop {
+        if let Some(status) = child.try_wait().expect("wait for vxc") {
+            break (status.code(), false);
+        }
+        if start.elapsed() > RUN_LIMIT {
+            let _ = Command::new("kill")
+                .args(["-KILL", "--", &format!("-{}", child.id())])
+                .status();
+            let _ = child.wait();
+            break (None, true);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     Run {
-        code: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code,
+        timed_out,
+        stdout: String::from_utf8_lossy(&std::fs::read(&out).unwrap()).into_owned(),
+        stderr: String::from_utf8_lossy(&std::fs::read(&err).unwrap()).into_owned(),
     }
 }
 
@@ -261,6 +297,14 @@ fn spirv_images_on_pocl_print_what_the_host_prints() {
                 ("POCL_WORK_GROUP_METHOD", Path::new("loops")),
             ],
         );
+        for (run, what) in [(&host, "on the host"), (&pocl, "on pocl")] {
+            if run.timed_out {
+                return Err(format!(
+                    "{name}: the run {what} did not end in {} s",
+                    RUN_LIMIT.as_secs()
+                ));
+            }
+        }
         let (ran, on_host) = kernel_counts(&pocl.stderr);
         let (h, p) = (printed(&host.stdout), printed(&pocl.stdout));
         let same = h.len() == p.len() && h.iter().zip(&p).all(|(a, b)| same_word(a, b));

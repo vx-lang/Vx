@@ -9,7 +9,8 @@
 // `memref<4xf32>` to `memref<?xf32>`. Once the call is inlined, the kernel
 // reads through that cast. A cast changes only what the type says, so the SPIR-V
 // argument flattening reads through the pointer and the offset of the tensor
-// that the kernel was given.
+// that the kernel was given. A cast of a shared tile to plain memory keeps the
+// Workgroup pointer of the tile in `@shared`.
 //
 // RUN: vx-opt %s --pass-pipeline="builtin.module(gpu.module(vx-flatten-spirv-kernel-args))" | FileCheck %s --implicit-check-not=memref.
 // CHECK-LABEL: gpu.func @c(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: index
@@ -17,6 +18,10 @@
 // CHECK-NEXT: %[[AT:[0-9]+]] = llvm.add %arg2, %[[I]] : i64
 // CHECK-NEXT: %[[P:[0-9]+]] = llvm.getelementptr inbounds %arg1[%[[AT]]] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f32
 // CHECK-NEXT: llvm.load %[[P]] : !llvm.ptr<1> -> f32
+// CHECK-LABEL: gpu.func @shared(%arg0: index
+// CHECK: %[[TILE:[0-9]+]] = llvm.mlir.addressof @tile : !llvm.ptr<3>
+// CHECK: %[[Q:[0-9]+]] = llvm.getelementptr inbounds %[[TILE]][%{{[0-9]+}}] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, f32
+// CHECK-NEXT: llvm.load %[[Q]] : !llvm.ptr<3> -> f32
 
 module {
   gpu.module @kernels {
@@ -24,6 +29,14 @@ module {
       %view = memref.cast %src : memref<4xf32> to memref<?xf32>
       %value = memref.load %view[%i] : memref<?xf32>
       memref.store %value, %src[%i] : memref<4xf32>
+      gpu.return
+    }
+    memref.global "private" @tile : memref<4xf32, 3> {alignment = 16 : i64}
+    gpu.func @shared(%i: index) kernel {
+      %tile = memref.get_global @tile : memref<4xf32, 3>
+      %plain = memref.memory_space_cast %tile : memref<4xf32, 3> to memref<4xf32>
+      %value = memref.load %plain[%i] : memref<4xf32>
+      memref.store %value, %tile[%i] : memref<4xf32, 3>
       gpu.return
     }
   }

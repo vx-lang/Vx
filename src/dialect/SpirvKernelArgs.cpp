@@ -330,6 +330,70 @@ void lowerReinterpretCast(memref::ReinterpretCastOp cast, const FlatView &view,
                                      cast.getType().getElementType()};
 }
 
+/// The address space of the tensor whose address `v` holds, through casts and
+/// sums, or nothing when `v` does not hold one.
+std::optional<unsigned>
+addressSpaceOf(Value v, const DenseMap<Value, unsigned> &spaces) {
+  if (auto it = spaces.find(v); it != spaces.end())
+    return it->second;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+  if (isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+          arith::ExtUIOp>(def))
+    return addressSpaceOf(def->getOperand(0), spaces);
+  if (isa<arith::AddIOp, LLVM::AddOp>(def)) {
+    std::optional<unsigned> a = addressSpaceOf(def->getOperand(0), spaces);
+    std::optional<unsigned> b = addressSpaceOf(def->getOperand(1), spaces);
+    if (a && b)
+      return std::nullopt;
+    return a ? a : b;
+  }
+  return std::nullopt;
+}
+
+/// Give `pointer`, a plain `!llvm.ptr`, the address space `space`, and each
+/// pointer that a `getelementptr` makes from it too. An atomic, a load or a
+/// store through it takes any address space. Another use fails.
+LogicalResult giveAddressSpace(Value pointer, unsigned space,
+                               std::string &error) {
+  pointer.setType(LLVM::LLVMPointerType::get(pointer.getContext(), space));
+  for (OpOperand &use : pointer.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
+      if (use.getOperandNumber() != 0 ||
+          failed(giveAddressSpace(gep.getResult(), space, error)))
+        return failure();
+      continue;
+    }
+    // SPIR-V has an instruction for these atomics, and LLVM's SPIR-V backend
+    // stops the process on another one, such as `uinc_wrap`. A float atomic
+    // needs an extension of SPIR-V.
+    if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(user)) {
+      using K = LLVM::AtomicBinOp;
+      K kind = rmw.getBinOp();
+      if (!llvm::is_contained({K::xchg, K::add, K::sub, K::_and, K::_or,
+                               K::_xor, K::max, K::min, K::umax, K::umin},
+                              kind)) {
+        error = "it uses the atomic `" +
+                LLVM::stringifyAtomicBinOp(kind).str() +
+                "`, which a SPIR-V image cannot hold yet";
+        return failure();
+      }
+    }
+    bool access =
+        (isa<LLVM::AtomicRMWOp, LLVM::AtomicCmpXchgOp, LLVM::LoadOp>(user) &&
+         use.getOperandNumber() == 0) ||
+        (isa<LLVM::StoreOp>(user) && use.getOperandNumber() == 1);
+    if (!access) {
+      error = "it hands a pointer to `" + user->getName().getStringRef().str() +
+              "`, and a SPIR-V image cannot do that yet";
+      return failure();
+    }
+  }
+  return success();
+}
+
 /// Rewrite one kernel, in three steps: expand its memref arguments in place,
 /// rewrite the body's accesses into address arithmetic, then drop the memref
 /// arguments the body no longer mentions.
@@ -338,6 +402,8 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
   OpBuilder builder(ctx);
   Block &entry = func.getBody().front();
   DenseMap<Value, FlatView> views;
+  // The address space of each integer that holds the address of a tensor.
+  DenseMap<Value, unsigned> spaces;
 
   // The signature first. Each memref argument is expanded where it stands, so
   // a scalar argument keeps its position and the flat list stays in the order
@@ -446,6 +512,38 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
       deferred.push_back(get);
       continue;
     }
+    // The address of a tensor as an integer, which an atomic turns back into a
+    // pointer to an element. It is the integer of the view's pointer.
+    if (auto aligned = dyn_cast<memref::ExtractAlignedPointerAsIndexOp>(op)) {
+      const FlatView *view = found(aligned.getSource());
+      if (!view) {
+        error = "the address of a memref the flattening does not know";
+        return failure();
+      }
+      OpBuilder builder(aligned);
+      Location loc = aligned.getLoc();
+      Value address = LLVM::PtrToIntOp::create(
+          builder, loc, builder.getI64Type(), view->base);
+      Value index = asIndex(builder, loc, address);
+      spaces[index] =
+          cast<LLVM::LLVMPointerType>(view->base.getType()).getAddressSpace();
+      aligned.getResult().replaceAllUsesWith(index);
+      aligned.erase();
+      continue;
+    }
+    // An op that only an NVIDIA GPU has, which an `mlir!` block can hold: an
+    // `nvvm` op, or a call of an NVVM intrinsic. LLVM's SPIR-V backend stops
+    // the process on it.
+    std::string nvidia;
+    if (op->getDialect() && op->getDialect()->getNamespace() == "nvvm")
+      nvidia = op->getName().getStringRef().str();
+    if (auto call = dyn_cast<LLVM::CallIntrinsicOp>(op);
+        call && call.getIntrin().starts_with("llvm.nvvm."))
+      nvidia = call.getIntrin().str();
+    if (!nvidia.empty()) {
+      error = "it uses `" + nvidia + "`, which only an NVIDIA GPU has";
+      return failure();
+    }
     // A shuffle, which a function the kernel calls can hold. It needs
     // subgroups of 32 lanes.
     if (isa<gpu::ShuffleOp>(op)) {
@@ -455,18 +553,21 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
           "kernel cannot ask for them yet";
       return failure();
     }
-    // A cast changes only what the type says about the sizes and strides, as
-    // a call site does to give a function the type it takes. The values are the
-    // source's, so the result has the source's view.
-    if (auto cast = dyn_cast<memref::CastOp>(op)) {
-      const FlatView *view = found(cast.getSource());
+    // A cast changes only what the type says about the sizes and strides, or
+    // about the memory, as a call site does to give a function the type it
+    // takes. The values are the source's, so the result has the source's
+    // view. A tile in shared memory keeps its Workgroup pointer.
+    if (isa<memref::CastOp, memref::MemorySpaceCastOp>(op)) {
+      const FlatView *view = found(op->getOperand(0));
       if (!view) {
         error = "a cast of a memref the flattening does not know";
         return failure();
       }
       FlatView same = *view;
-      views[cast.getResult()] = same;
-      deferred.push_back(cast);
+      same.elementType =
+          cast<MemRefType>(op->getResult(0).getType()).getElementType();
+      views[op->getResult(0)] = same;
+      deferred.push_back(op);
       continue;
     }
     if (auto load = dyn_cast<memref::LoadOp>(op)) {
@@ -556,6 +657,22 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
   // Consumers before producers, so nothing is left holding a freed result.
   for (Operation *op : llvm::reverse(deferred))
     op->erase();
+
+  // A pointer that `llvm.inttoptr` makes from the address of a tensor gets the
+  // address space of that tensor, and so does each pointer an access makes
+  // from it. A plain `!llvm.ptr` is private memory in SPIR-V.
+  SmallVector<LLVM::IntToPtrOp> pointers;
+  func.walk([&](LLVM::IntToPtrOp p) { pointers.push_back(p); });
+  for (LLVM::IntToPtrOp p : pointers) {
+    std::optional<unsigned> space = addressSpaceOf(p.getArg(), spaces);
+    if (!space) {
+      error = "it makes a pointer from an integer that is not the address of "
+              "a tensor";
+      return failure();
+    }
+    if (failed(giveAddressSpace(p.getResult(), *space, error)))
+      return failure();
+  }
 
   // The memref arguments are unused now. Dropping them leaves the flat list in
   // the order built above, and the function type follows the block.
