@@ -97,9 +97,9 @@ Two tools keep the trusted code small and easy to find:
 - A package setting that refuses `unsafe`, `extern impl`, `mlir!` and `extern` in the package, as
   `#![forbid(unsafe_code)]` does in Rust. A dependency then cannot add trusted code without a
   change to its manifest.
-- `vxc --audit` lists each use of `unsafe`, `extern impl`, `mlir!` and `extern`, with its file and
-  line. Today it lists the facts that the compiler trusts, such as each `assume`, but not each
-  use.
+- `vxc --audit` lists each use of `unsafe`, `extern impl`, `mlir!` and `extern` in the program,
+  with its file and line. For `core` and `std`, it gives only the counts, and
+  `vxc --audit-library` lists them too.
 
 ## 5. No ambient authority
 

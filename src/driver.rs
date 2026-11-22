@@ -115,6 +115,10 @@ pub struct DriverOptions {
     #[arg(long = "audit", overrides_with = "action")]
     pub audit: bool,
 
+    /// With the audit, also list each use of trusted code in `core` and `std`
+    #[arg(long = "audit-library")]
+    pub audit_library: bool,
+
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
     /// flat-HIR bodies link in the flat codegen — all without parsing the library's source (#265 step
@@ -373,7 +377,7 @@ impl CompilerDriver {
             options.action = Action::EmitPtx;
         } else if options.emit_msl {
             options.action = Action::EmitMsl;
-        } else if options.audit {
+        } else if options.audit || options.audit_library {
             options.action = Action::Audit;
         } else if options.compile {
             options.action = Action::EmitObj;
@@ -1402,11 +1406,23 @@ impl CompilerDriver {
         }
 
         if let Some(mut trusted) = checker.trusted.take() {
+            use crate::hir::check::audit;
+            let mut library = std::collections::BTreeMap::new();
             for p in std::iter::once(&*ast).chain(other_asts.values()) {
-                trusted.extend(crate::hir::check::audit::trusted_declarations(p));
+                trusted.extend(audit::trusted_declarations(p));
+                for (kind, item) in audit::trusted_code(p) {
+                    if audit::is_library(p) && !self.options.audit_library {
+                        *library.entry(kind).or_insert(0) += 1;
+                    } else {
+                        trusted.insert(item);
+                    }
+                }
             }
             for item in &trusted {
                 println!("{item}");
+            }
+            if let Some(line) = audit::library_count_line(&library) {
+                println!("{line}");
             }
         }
 

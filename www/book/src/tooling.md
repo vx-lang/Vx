@@ -13,7 +13,8 @@
 | `--print-ast` | Parse and typecheck, then print the AST |
 | `--parse-only` | Lex and parse only |
 | `--emit-interface` | Serialize this module's import interface to a `.vxlib` |
-| `--audit` | Parse and typecheck, then print each fact that the compiler trusts without a proof |
+| `--audit` | Parse and typecheck, then print each fact that the compiler trusts without a proof, and each use of trusted code such as `unsafe` and `mlir!` |
+| `--audit-library` | `--audit`, and also each use of trusted code in `core` and `std` |
 | `--emit-ptx` | Write the GPU kernels of the program as one PTX file. A `.json` file beside it gives the parameters of each kernel |
 | `--emit-msl` | Write the Apple GPU kernels of the program as one Metal Shading Language file, and a `.json` file beside it |
 
