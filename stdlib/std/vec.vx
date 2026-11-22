@@ -85,14 +85,14 @@ unsafe fn vec_take<T>(data : *mut T, index : i32) -> T {
 ///
 /// Only the functions of this file can change the fields, so the invariant holds in each other
 /// file.
-struct Vec<T>
-invariant 0i32 <= self.len && self.len <= self.capacity
-invariant valid(self.data, self.capacity as i64)
-invariant initialized(self.data, self.len as i64)
-{
+struct Vec<T> {
   data : *mut T,
   len : i32,
   capacity : i32,
+
+  invariant 0i32 <= len && len <= capacity,
+  invariant valid(data, capacity as i64),
+  invariant initialized(data, len as i64),
 }
 
 // A `Vec<T>` owns its `T`s, so it crosses tasks as a `T` does.

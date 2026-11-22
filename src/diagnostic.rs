@@ -831,9 +831,10 @@ pub enum DiagnosticCode {
     /// and its body gives `p`, or a value that it gets from `p`, to code that can free memory,
     /// such as a call without `!frees` for that parameter, a store or an `mlir!` block.
     E8012,
-    /// A type invariant that is not well formed. An `invariant` of a struct can use `self`, the
-    /// fields of `self` at any depth, numbers, operators and the pointer clauses `valid`,
-    /// `initialized` and `overlaps`. It calls no other function.
+    /// A type invariant that is not well formed. An `invariant` comes after the last field of a
+    /// struct, inside its braces. It can use the fields of the struct at any depth, numbers,
+    /// operators, `as` and the pointer clauses `valid`, `initialized` and `overlaps`. It calls
+    /// no other function, and it names no constant.
     E8013,
     /// Code outside the module of a type with an invariant changes a field of the type. Only
     /// the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a

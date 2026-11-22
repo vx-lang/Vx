@@ -26,7 +26,9 @@ A capability type keeps three rules:
 Vx has the three rules for a type with an invariant:
 
 ```vx
-struct AdminCap invariant(true) {}
+struct AdminCap {
+  invariant true,
+}
 
 fn login(password : i32) -> AdminCap {
   assert(password == 1234, "wrong password");
@@ -44,8 +46,7 @@ fn delete_everything(cap : AdminCap) -> i32 {
 | No copying | A struct moves, also inside an `Option` and into a task | E4001 |
 | No keeping a lent value | A result cannot point into the frame of the function | E4005 |
 
-`invariant(true)` states no fact. It makes `AdminCap` a type that only `auth.vx` can build.
-`invariant true` without parentheses does not parse yet (#3749).
+`invariant true` states no fact. It makes `AdminCap` a type that only `auth.vx` can build.
 
 ## 2. The test
 
@@ -170,7 +171,6 @@ no global fact depend on a function body. Each new check reads one declaration:
 
 1. #3751, because it is a memory bug too.
 1. #3754, which also closes #3746. Then #3747 and #3748.
-1. #3749.
 1. `vxc --audit` lists each use of `unsafe`, `mlir!` and `extern`.
 1. The package setting.
 1. Capability types in `std`: files first, then sockets, processes and native code.
