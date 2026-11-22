@@ -12284,6 +12284,12 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     }
   }
 
+  {
+    gpu::GPUModuleOp copy = *device->getOps<gpu::GPUModuleOp>().begin();
+    if (failed(inlineSpirvKernelCalls(copy, error)))
+      return {};
+  }
+
   PassManager promote(context, ModuleOp::getOperationName());
   promote.addPass(createMem2Reg());
   if (failed(promote.run(*device))) {
@@ -12301,8 +12307,15 @@ spirvImageOfKernels(gpu::GPUModuleOp gpuModule, const llvm::StringSet<> &left,
     return {};
   llvm::StringSet<> assertFlag = reportAssertsThroughAFlag(*kernels.begin());
 
+  PassManager toCfg(context, ModuleOp::getOperationName());
+  toCfg.nest<gpu::GPUModuleOp>().addPass(createSCFToControlFlowPass());
+  if (failed(toCfg.run(*device))) {
+    error = "the scf-to-cf pass failed";
+    return {};
+  }
+  widenIndexBlockArguments(*device->getOps<gpu::GPUModuleOp>().begin());
+
   PassManager toSpv(context, ModuleOp::getOperationName());
-  toSpv.nest<gpu::GPUModuleOp>().addPass(createSCFToControlFlowPass());
   ConvertGpuOpsToLLVMSPVOpsOptions spvOptions;
   spvOptions.use64bitIndex = true;
   toSpv.nest<gpu::GPUModuleOp>().addPass(

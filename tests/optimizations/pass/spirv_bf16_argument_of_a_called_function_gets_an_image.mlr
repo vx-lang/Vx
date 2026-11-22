@@ -1,20 +1,18 @@
-//===- spirv_bf16_argument_keeps_the_host_path.mlr --------------*- MLIR -*-===//
+//===- spirv_bf16_argument_of_a_called_function_gets_an_image.mlr -*- MLIR -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A SPIR-V image holds a bf16 value as an i16, except a bf16 that a function
-// takes or returns. A kernel that calls such a function keeps the host path,
-// and the compile says why. LLVM's SPIR-V backend used to stop the process on
-// the bf16 type instead.
+// A SPIR-V image holds a bf16 value as an i16. A kernel calls `twice`, which
+// takes and returns a bf16. The image inlines `twice` into the kernel, so the
+// bf16 values are the kernel's own, and the kernel gets an image. LLVM's SPIR-V
+// backend used to stop the process on the bf16 type of the function.
 //
-// RUN: vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
+// RUN: vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s --implicit-check-not='cannot become'
 // CHECK-NOT: LLVM ERROR
-// CHECK: (kernel `k`) cannot become a `spirv64` device image: it uses a `bf16` value in a way that a SPIR-V image cannot hold yet
-// CHECK-SAME: It will run on the host instead.
-// CHECK: @k_str("k\00abi=1\00topo=501\00toponame=Dev\00")
+// CHECK: @k_str("k\00abi=1\00topo=501\00toponame=Dev\00format=spirv\00
 
 module {
   func.func @main(%x: memref<4xbf16>) -> i32 {

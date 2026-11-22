@@ -1,4 +1,4 @@
-//===- placed_kernel_calls_a_helper_on_explicit_memory.vx ----------*- Vx -*-===//
+//===- placed_kernel_copies_into_a_shared_tile_on_explicit_memory.vx -*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,16 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // Two placed regions use tensors in `managed: explicit` memory. The second
-// region calls a helper that takes a tensor. A SPIR-V image cannot pass a
-// tensor into a call, and the host cannot read that memory either, so the
-// program does not compile. The error names only the second region. The first
-// region makes no call, so it gets its image.
+// region copies a tensor into a shared tile with a `transfer`. A SPIR-V image
+// cannot hold that copy yet, and the host cannot read that memory either, so
+// the program does not compile. There is one error, for the second region. The
+// first region makes no copy, so it gets no error.
 //
 // RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
-// CHECK-NOT: in `main` (kernel `{{[a-z0-9_]+}}`) cannot become
-// CHECK: the region placed on `Topology::Dev` in `main` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it passes a tensor to `first`
-// CHECK: This region's operands are in 'DEV_HBM', declared `managed: explicit`
-// CHECK: Change the region so that the target can compile it, or keep its operands in a space the host can read.
+// CHECK-NOT: cannot become
+// CHECK: this region is placed on `Topology::Dev`, but the compiler cannot emit a device kernel for it and its operands are in 'DEV_HBM', declared `managed: explicit`
+// CHECK-NOT: this region is placed on
 // CHECK-NOT: cannot become
 // CHECK-NOT: will run on the host instead
 
@@ -23,17 +22,16 @@ Memory CPU_DRAM {}
 Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit, scope: device
 }
+Memory SMEM {
+  within: Memory::DEV_HBM, capacity: 64 KiB, managed: explicit, scope: sm
+}
 Topology Dev {
   arch: spirv64,
   memory: Memory::DEV_HBM,
-  visible: [Memory::DEV_HBM],
+  visible: [Memory::DEV_HBM, Memory::SMEM],
   transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
-  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
-}
-
-// `on Topology::Dev` is what lets the kernel call it at all.
-fn first(a: &Tensor<f32, [4], Memory::DEV_HBM>) on Topology::Dev -> f32 {
-  return a[0];
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::SMEM
 }
 
 fn main() -> i32 {
@@ -53,8 +51,9 @@ fn main() -> i32 {
   }
 
   spawn on(Topology::Dev) {
+    let tile = transfer(d, Memory::SMEM);
     for i in 0..4 {
-      o[i] = first(&d) + 1.0;
+      o[i] = tile[0] + 1.0;
     }
   }
 

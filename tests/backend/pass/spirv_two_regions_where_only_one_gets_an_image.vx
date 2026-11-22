@@ -1,4 +1,4 @@
-//===- spirv_two_regions_where_only_one_calls_a_helper.vx --------*- Vx -*-===//
+//===- spirv_two_regions_where_only_one_gets_an_image.vx --------*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,13 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 // Two placed regions, one in `add_one` and one in `main`, are in one device
-// module. Only the region in `main` passes a tensor to a helper, which a SPIR-V
-// image cannot do yet. So the image holds only the region in `add_one`, and
-// only the region in `main` runs on the host.
+// module. Only the region in `main` copies a tensor into shared memory with a
+// `transfer`, which a SPIR-V image cannot do yet. So the image holds only the
+// region in `add_one`, and only the region in `main` runs on the host.
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
 // CHECK-NOT: in `add_one` (kernel
-// CHECK: the region placed on `Topology::Dev` in `main` (kernel `[[FAILED:vx_npu_kernel_[0-9]+]]`) cannot become a `spirv64` device image: it passes a tensor to `second_element`
+// CHECK: the region placed on `Topology::Dev` in `main` (kernel `[[FAILED:vx_npu_kernel_[0-9]+]]`) cannot become a `spirv64` device image: it hands a tensor to `memref.copy`
 // CHECK-SAME: It will run on the host instead.
 // CHECK-NOT: in `add_one` (kernel
 // CHECK-DAG: @[[FAILED]]_str("[[FAILED]]\00abi=1\00topo={{[0-9]+}}\00toponame=Dev\00offload=0\00arch=spirv64\00")
@@ -23,16 +23,16 @@ Memory CPU_DRAM {}
 Memory DEV_HBM {
   within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
 }
+Memory SMEM {
+  within: Memory::DEV_HBM, capacity: 64 KiB, managed: explicit, scope: sm
+}
 Topology Dev {
   arch: spirv64,
   memory: Memory::DEV_HBM,
-  visible: [Memory::DEV_HBM],
+  visible: [Memory::DEV_HBM, Memory::SMEM],
   transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
-  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
-}
-
-fn second_element(a: &Tensor<f32, [4], Memory::DEV_HBM>) on Topology::Dev -> f32 {
-  return a[1];
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::SMEM
 }
 
 fn add_one(d: &Tensor<f32, [4], Memory::DEV_HBM>, o: &mut Tensor<f32, [4], Memory::DEV_HBM>) -> i32 {
@@ -56,8 +56,9 @@ fn main() -> i32 {
 
   let r = add_one(&d, &mut o);
   spawn on(Topology::Dev) {
+    let tile = transfer(d, Memory::SMEM);
     for i in 0..4 {
-      o[i] = o[i] + second_element(&d);
+      o[i] = o[i] + tile[1];
     }
   }
 
