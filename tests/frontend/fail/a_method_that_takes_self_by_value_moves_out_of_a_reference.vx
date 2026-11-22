@@ -78,6 +78,6 @@ fn main() -> i32 {
 // CHECK: Error[E4008] at {{.*}}.vx:57:22: `spend` takes `self` by value, so this call moves a value of type `Token` out from behind a reference, which does not own it. Call `spend` on the value itself, or on a clone of it
 // CHECK: Error[E4008] at {{.*}}.vx:59:18: `spend` takes `self` by value, so this call moves a value of type `Token` out from behind a reference
 // CHECK: Error[E4008] at {{.*}}.vx:64:20: `spend` takes `self` by value, so this call moves a value of type `Token` out from behind a reference
-// CHECK: Error[E5002] at {{.*}}.vx:69:19: Calling `spend`, which takes `self` by value, through a raw pointer requires an unsafe block
+// CHECK: Error[E5002] at {{.*}}.vx:69:19: Calling `spend` through a raw pointer requires an unsafe block
 // CHECK: Error[E4008] at {{.*}}.vx:74:29: this moves a value of type `Bag` out from behind a raw pointer, and its owner still drops it
 // CHECK: 5 error(s) emitted
