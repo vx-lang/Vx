@@ -10,10 +10,6 @@
 // positions `t[i]` accepts. It used to pass the checker and crash both
 // backends. Run, not just emitted: the values are asserted on the flat path
 // and on the AST oracle.
-//
-// The RUN lines name each path themselves, so the runner must not pin the
-// oracle on both of them.
-// REQUIRES: flat-codegen
 // RUN: vxc %s --action run-jit
 // RUN: vxc %s --action run-jit --legacy-codegen
 import std::googletest;
