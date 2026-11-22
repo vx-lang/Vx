@@ -17,7 +17,7 @@
 // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:71:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
 // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:84:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
 // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:100:{{.*}}the call to `scale` may write through an argument
-// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:110:{{.*}}printing in an `across` loop
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:111:{{.*}}printing in an `across` loop
 // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:122:{{.*}}a `&mut` borrow in an `across` loop may write any element
 // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:134:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
 // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:146:{{.*}}`barrier()` may not be in an `across` loop

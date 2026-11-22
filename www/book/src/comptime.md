@@ -278,7 +278,8 @@ the type that the call gives. The standard library uses this kind of macro to wr
 for many types: `core::clone` writes `Clone` for each number type with `stamp_clone!`.
 
 A file can call the macros that it declares and the macros of the files that it imports. When a
-call can mean two macros with the same name, it is an error. Give each macro its own name.
+call can mean two macros with the same name, it is an error. Give each macro its own name. An error
+in the code that a macro of another file writes points at the macro call.
 
 The patterns have limits today:
 

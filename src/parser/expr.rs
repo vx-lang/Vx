@@ -1337,7 +1337,12 @@ impl<'a> Parser<'a> {
                                 name: s.to_string().into(),
                                 token_tree,
                                 block_tree,
-                                span: Span::default(),
+                                span: crate::syntax::Span {
+                                    line: token.line,
+                                    column: token.column,
+                                    length: token.length,
+                                    expansion: self.expansion(),
+                                },
                             })
                         } else {
                             let span = crate::syntax::Span {

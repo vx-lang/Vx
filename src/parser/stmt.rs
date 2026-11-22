@@ -407,7 +407,7 @@ impl<'a> Parser<'a> {
                         token_tree,
                         block_tree,
                         has_semi,
-                        span: Span::default(),
+                        span: token_span,
                     }));
                 }
                 // fallback to expression parsing

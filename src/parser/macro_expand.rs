@@ -72,7 +72,11 @@ impl MacroTable {
 
     /// The rules of the macro `name` that `module` can call: one in the module itself or in a
     /// module that it imports. More than one is an error, as is none.
-    fn rules(&self, module: &Symbol, name: &str) -> Result<&[MacroRule], String> {
+    fn rules<'s>(
+        &'s self,
+        module: &'s Symbol,
+        name: &str,
+    ) -> Result<(&'s Symbol, &'s [MacroRule]), String> {
         let visible = std::iter::once(module).chain(self.imports.get(module).into_iter().flatten());
         let mut found: Vec<(&Symbol, &[MacroRule])> = Vec::new();
         for m in visible {
@@ -87,7 +91,7 @@ impl MacroTable {
             }
         }
         match found.as_slice() {
-            [(_, rules)] => Ok(*rules),
+            [(home, rules)] => Ok((*home, *rules)),
             [] => {
                 let mut elsewhere: Vec<&Symbol> = self
                     .defined
@@ -142,6 +146,9 @@ pub struct MacroExpander<'a> {
     /// The module that this expander expands. Its macros and those of its imports are the
     /// macros that it can call.
     module: Symbol,
+    /// For each expansion, by its id less 1: where to report the code that it wrote. See
+    /// `Program::macro_call_sites`.
+    call_sites: std::cell::RefCell<Vec<Option<Span>>>,
     /// The trait methods that carry a default body, across every module. Held here because
     /// filling them in is the last thing expansion does, and it has to be the last thing:
     /// an impl a macro produced is entitled to the defaults, and nothing before expansion
@@ -261,6 +268,7 @@ impl<'a> MacroExpander<'a> {
         Self {
             macros,
             module: Symbol::from(""),
+            call_sites: std::cell::RefCell::new(Vec::new()),
             trait_defaults,
             expansions: std::cell::Cell::new(0),
         }
@@ -331,7 +339,8 @@ impl<'a> MacroExpander<'a> {
         &self,
         call: &stmt::MacroCallStmt,
     ) -> Result<crate::syntax::Program, String> {
-        let rules = self.macros.rules(&self.module, call.name.as_ref())?;
+        let (home, rules) = self.macros.rules(&self.module, call.name.as_ref())?;
+        let call_site = self.call_site(home, call.span);
         for rule in rules {
             self.validate_matcher(call.name.as_ref(), &rule.matcher)?;
         }
@@ -347,7 +356,7 @@ impl<'a> MacroExpander<'a> {
         };
         for rule in rules {
             if let Ok(captures) = self.match_rule(&rule.matcher, &input_tokens) {
-                let mut transcribed = self.transcribe(&rule.transcriber, &captures)?;
+                let mut transcribed = self.transcribe(&rule.transcriber, &captures, call_site)?;
                 transcribed.push(crate::lexer::OwnedToken {
                     kind: OwnedTokenType::Eof,
                     line: 0,
@@ -368,7 +377,9 @@ impl<'a> MacroExpander<'a> {
     pub fn expand_module(&self, module: &mut VxModule) -> Result<(), String> {
         let mut expander = Self::new(self.macros, self.trait_defaults);
         expander.module = module.module_path.clone();
-        expander.expand_module_from_zero(module)
+        expander.expand_module_from_zero(module)?;
+        module.macro_call_sites = expander.call_sites.take();
+        Ok(())
     }
 
     fn expand_module_from_zero(&self, module: &mut VxModule) -> Result<(), String> {
@@ -447,7 +458,7 @@ impl<'a> MacroExpander<'a> {
     fn expand_stmt(&self, mut stmt: stmt::Statement) -> Result<Vec<stmt::Statement>, String> {
         if let stmt::Statement::MacroCall(call) = stmt {
             let expanded_expr =
-                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
+                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree, call.span)?;
             let recursively_expanded = self.expand_expr(expanded_expr)?;
             return Ok(vec![stmt::Statement::ExprStmt(stmt::ExprStmtStmt {
                 expr: recursively_expanded,
@@ -509,7 +520,7 @@ impl<'a> MacroExpander<'a> {
     fn expand_expr(&self, mut expr: expr::Expr) -> Result<expr::Expr, String> {
         if let expr::Expr::MacroCall(call) = expr {
             let expanded =
-                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
+                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree, call.span)?;
             return self.expand_expr(expanded);
         }
         // Traverse and expand
@@ -718,6 +729,7 @@ impl<'a> MacroExpander<'a> {
         name: &str,
         tt: &TokenTree,
         block_tree: &Option<TokenTree>,
+        span: Span,
     ) -> Result<expr::Expr, String> {
         if name == "mlir" {
             return self.expand_mlir_macro(tt, block_tree);
@@ -733,7 +745,8 @@ impl<'a> MacroExpander<'a> {
             return self.expand_println_macro(tt, name == "eprintln");
         }
 
-        let rules = self.macros.rules(&self.module, name)?;
+        let (home, rules) = self.macros.rules(&self.module, name)?;
+        let call_site = self.call_site(home, span);
         for rule in rules {
             self.validate_matcher(name, &rule.matcher)?;
         }
@@ -751,7 +764,7 @@ impl<'a> MacroExpander<'a> {
 
         for rule in rules {
             if let Ok(captures) = self.match_rule(&rule.matcher, &input_tokens) {
-                let mut transcribed = self.transcribe(&rule.transcriber, &captures)?;
+                let mut transcribed = self.transcribe(&rule.transcriber, &captures, call_site)?;
                 // IMPORTANT: The parser expects an EOF token at the end!
                 transcribed.push(crate::lexer::OwnedToken {
                     kind: OwnedTokenType::Eof,
@@ -911,10 +924,26 @@ impl<'a> MacroExpander<'a> {
         Ok(captures)
     }
 
+    /// Where to report the code that a call at `span` of a macro of `home` writes: the call,
+    /// when another module declares the macro. A call in code that an expansion wrote is reported
+    /// where that code is reported.
+    fn call_site(&self, home: &Symbol, span: Span) -> Option<Span> {
+        if *home == self.module {
+            return None;
+        }
+        let outer = span
+            .expansion
+            .checked_sub(1)
+            .and_then(|i| self.call_sites.borrow().get(i as usize).copied().flatten());
+        Some(outer.unwrap_or(span))
+    }
+
+    /// The tokens of one expansion. `call_site` is where to report the code that they make.
     fn transcribe(
         &self,
         transcriber: &[TokenTree],
         captures: &HashMap<crate::symbol::Symbol, Vec<crate::lexer::OwnedToken>>,
+        call_site: Option<Span>,
     ) -> Result<Vec<crate::lexer::OwnedToken>, String> {
         let mut tokens = Vec::new();
         let mut transcriber_tokens = Vec::new();
@@ -989,6 +1018,13 @@ impl<'a> MacroExpander<'a> {
         // what keeps their nodes apart.
         let id = self.expansions.get() + 1;
         self.expansions.set(id);
+        let mut call_sites = self.call_sites.borrow_mut();
+        call_sites.push(call_site);
+        assert_eq!(
+            call_sites.len(),
+            id as usize,
+            "one call site for each expansion"
+        );
         for tok in &mut tokens {
             tok.expansion = id;
         }
