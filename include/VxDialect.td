@@ -405,6 +405,18 @@ def Vx_LaneScaleRowsOp : Vx_Op<"lane_scale_rows", [MemoryEffects<[MemRead, MemWr
                      UnitAttr:$subgroup_row);
 }
 
+// `lanes::prefetch`: the lanes of a block, or of the subgroup with `subgroup`,
+// ask for a part of `source` to come into the L2 cache. `bounds` is the place of
+// the part and then its shape, each with one number for each dimension of
+// `source`. It reads no value. The write effect keeps the folder from erasing it.
+def Vx_LanePrefetchOp : Vx_Op<"lane_prefetch", [MemoryEffects<[MemRead, MemWrite]>,
+        DeclareOpInterfaceMethods<Vx_LaneOpInterface>]> {
+    let summary = "Ask for a part of a tensor to come into the L2 cache.";
+    let arguments = (ins AnyMemRef:$source,
+                     Variadic<AnySignlessInteger>:$bounds, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
+}
+
 // Waits until the copy of `token` ends, and then for every lane of the block,
 // or of the subgroup with `subgroup`.
 def Vx_LaneCopyWaitOp : Vx_Op<"lane_copy_wait", [MemoryEffects<[MemRead, MemWrite]>,

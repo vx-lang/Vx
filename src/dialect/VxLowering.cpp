@@ -3909,6 +3909,159 @@ static void expandLaneFillOnHost(OpBuilder &b, vx::LaneFillOp op) {
                      });
 }
 
+static void needPtx(Operation *op, int64_t version);
+
+/// A `vx.lane_prefetch` on an NVIDIA GPU of number `chip`. The part runs from
+/// the place to the place plus the shape, cut at the ends of the source. A row
+/// of the part, along the last dimension, is one range of bytes. On sm_90 and
+/// later, the lanes share the rows, with one `cp.async.bulk.prefetch.L2` for
+/// each. On an older chip, they share the 128-byte lines of the rows, with one
+/// `prefetch.L2` for each. Both round the range out to their alignment.
+/// A page of GPU memory is a multiple of 128 bytes, so the rounding never
+/// reaches memory that is not mapped.
+static void expandLanePrefetchOnDevice(OpBuilder &b, vx::LanePrefetchOp op,
+                                       unsigned chip) {
+  Location loc = op.getLoc();
+  Value source = op.getSource();
+  auto type = cast<MemRefType>(source.getType());
+  int64_t rank = type.getRank();
+  assert(static_cast<int64_t>(op.getBounds().size()) == 2 * rank &&
+         "a prefetch has a place and a shape, each with a number for each "
+         "dimension");
+  int64_t bits = type.getElementTypeBitWidth();
+  auto index = [&](int64_t n) -> Value {
+    return b.create<arith::ConstantIndexOp>(loc, n);
+  };
+  auto asIndex = [&](Value v) -> Value {
+    return b.create<arith::IndexCastOp>(loc, b.getIndexType(), v);
+  };
+  Value zero = index(0);
+  auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, source);
+  // The element offset of the first element of the part, and its size in each
+  // dimension.
+  Value first = meta.getOffset();
+  SmallVector<Value> sizes;
+  for (int64_t d = 0; d < rank; ++d) {
+    Value start = asIndex(op.getBounds()[d]);
+    Value end =
+        b.create<arith::AddIOp>(loc, start, asIndex(op.getBounds()[rank + d]));
+    Value lo = b.create<arith::MaxSIOp>(loc, start, zero);
+    Value hi = b.create<arith::MinSIOp>(loc, end, meta.getSizes()[d]);
+    sizes.push_back(b.create<arith::MaxSIOp>(
+        loc, b.create<arith::SubIOp>(loc, hi, lo), zero));
+    first = b.create<arith::AddIOp>(
+        loc, first, b.create<arith::MulIOp>(loc, lo, meta.getStrides()[d]));
+  }
+  Value cols = sizes.back();
+  Value rows = b.create<arith::SelectOp>(
+      loc, b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, cols, zero),
+      zero, index(1));
+  for (int64_t d = 0; d + 1 < rank; ++d)
+    rows = b.create<arith::MulIOp>(loc, rows, sizes[d]);
+  // The elements from the first of a row to its last, with a stride.
+  Value span = b.create<arith::AddIOp>(
+      loc,
+      b.create<arith::MulIOp>(loc, b.create<arith::SubIOp>(loc, cols, index(1)),
+                              meta.getStrides()[rank - 1]),
+      index(1));
+  Value base = b.create<memref::ExtractAlignedPointerAsIndexOp>(loc, source);
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  int64_t lanes = static_cast<int64_t>(op.getLanes());
+  Value lane =
+      op.getSubgroup() ? b.create<arith::RemUIOp>(loc, tid, index(lanes)) : tid;
+  // The first and the end byte of row `r` of the part.
+  auto rowBytes = [&](OpBuilder &nb, Location l,
+                      Value r) -> std::pair<Value, Value> {
+    Value at = first;
+    Value rest = r;
+    for (int64_t d = rank - 2; d >= 0; --d) {
+      // `r` is below the number of rows, so the first index needs no `rem`.
+      Value i = d == 0 ? rest : nb.create<arith::RemUIOp>(l, rest, sizes[d]);
+      if (d > 0)
+        rest = nb.create<arith::DivUIOp>(l, rest, sizes[d]);
+      at = nb.create<arith::AddIOp>(
+          l, at, nb.create<arith::MulIOp>(l, i, meta.getStrides()[d]));
+    }
+    auto byteOf = [&](Value element, int64_t roundUp) -> Value {
+      Value bit = nb.create<arith::MulIOp>(
+          l, element, nb.create<arith::ConstantIndexOp>(l, bits));
+      bit = nb.create<arith::AddIOp>(
+          l, bit, nb.create<arith::ConstantIndexOp>(l, roundUp));
+      return nb.create<arith::AddIOp>(
+          l, base,
+          nb.create<arith::DivUIOp>(l, bit,
+                                    nb.create<arith::ConstantIndexOp>(l, 8)));
+    };
+    return {byteOf(at, 0), byteOf(nb.create<arith::AddIOp>(l, at, span), 7)};
+  };
+  auto globalPointer = [&](OpBuilder &nb, Location l, Value byte) -> Value {
+    MLIRContext *ctx = nb.getContext();
+    Value address = nb.create<arith::IndexCastOp>(l, nb.getI64Type(), byte);
+    Value generic = nb.create<LLVM::IntToPtrOp>(
+        l, LLVM::LLVMPointerType::get(ctx), address);
+    return nb.create<LLVM::AddrSpaceCastOp>(
+        l, LLVM::LLVMPointerType::get(ctx, 1), generic);
+  };
+  auto roundDown = [](OpBuilder &nb, Location l, Value v, int64_t to) {
+    return nb.create<arith::AndIOp>(
+        l, v, nb.create<arith::ConstantIndexOp>(l, ~(to - 1)));
+  };
+  if (chip >= 90) {
+    needPtx(op, 80);
+    b.create<scf::ForOp>(
+        loc, lane, rows, index(lanes), ValueRange{},
+        [&](OpBuilder &nb, Location l, Value r, ValueRange) {
+          auto [from, end] = rowBytes(nb, l, r);
+          from = roundDown(nb, l, from, 16);
+          Value size = roundDown(nb, l,
+                                 nb.create<arith::AddIOp>(
+                                     l, nb.create<arith::SubIOp>(l, end, from),
+                                     nb.create<arith::ConstantIndexOp>(l, 15)),
+                                 16);
+          nb.create<NVVM::CpAsyncBulkPrefetchOp>(
+              l, globalPointer(nb, l, from),
+              nb.create<arith::IndexCastOp>(l, nb.getI32Type(), size), Value());
+          nb.create<scf::YieldOp>(l);
+        });
+    return;
+  }
+  // A row whose first byte is not at the start of a line covers one more line.
+  Value bytesOfSpan = b.create<arith::DivUIOp>(
+      loc,
+      b.create<arith::AddIOp>(
+          loc, b.create<arith::MulIOp>(loc, span, index(bits)), index(7)),
+      index(8));
+  Value lines = b.create<arith::AddIOp>(
+      loc,
+      b.create<arith::DivUIOp>(
+          loc, b.create<arith::AddIOp>(loc, bytesOfSpan, index(127)),
+          index(128)),
+      index(1));
+  b.create<scf::ForOp>(
+      loc, lane, b.create<arith::MulIOp>(loc, rows, lines), index(lanes),
+      ValueRange{}, [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+        Value r = nb.create<arith::DivUIOp>(l, e, lines);
+        Value k = nb.create<arith::RemUIOp>(l, e, lines);
+        auto [from, end] = rowBytes(nb, l, r);
+        Value line = nb.create<arith::AddIOp>(
+            l, roundDown(nb, l, from, 128),
+            nb.create<arith::MulIOp>(
+                l, k, nb.create<arith::ConstantIndexOp>(l, 128)));
+        auto inside = nb.create<scf::IfOp>(
+            l,
+            nb.create<arith::CmpIOp>(l, arith::CmpIPredicate::ult, line, end),
+            /*withElseRegion=*/false);
+        OpBuilder::InsertionGuard guard(nb);
+        nb.setInsertionPoint(inside.getThenRegion().front().getTerminator());
+        // LLVM selects `llvm.nvvm.prefetch` only on sm_90 and later.
+        lanePtx(nb, l, "prefetch.L2 [$0];", "l",
+                {nb.create<arith::IndexCastOp>(l, nb.getI64Type(), line)});
+        nb.setInsertionPointAfter(inside);
+        nb.create<scf::YieldOp>(l);
+      });
+}
+
 /// A `vx.lane_fill` on the GPU: each lane sets the elements `lane`,
 /// `lane + lanes`, and so on, of the tile, and then every lane of the block or
 /// the subgroup waits.
@@ -8557,6 +8710,17 @@ struct ConvertVxToStandardPass
           expandLaneMatmulScaledWithMma(b, op, *mma);
           op.erase();
         }
+        // A prefetch into L2 on an NVIDIA GPU. On the other targets, and on
+        // one lane, it does nothing.
+        SmallVector<vx::LanePrefetchOp> prefetches;
+        gpuFunc.walk([&](vx::LanePrefetchOp op) { prefetches.push_back(op); });
+        for (vx::LanePrefetchOp op : prefetches) {
+          if (pipeline == DevicePipeline::Nvptx && !op.getSerial()) {
+            OpBuilder b(op);
+            expandLanePrefetchOnDevice(b, op, chipNumber(mmaChip));
+          }
+          op.erase();
+        }
         // Each lane op whose expansion looks at no other op. After the
         // matmuls, which can keep a tile in registers when its fills and
         // copies are still ops. The Metal printer prints a fill or copy of a
@@ -10197,6 +10361,9 @@ Value vx::LaneCopyAsyncMapOp::expandOnHost(OpBuilder &b) {
 /// The copy ended at its start, so there is nothing to wait for.
 Value vx::LaneCopyWaitOp::expandOnHost(OpBuilder &) { return Value(); }
 
+/// The CPU has no prefetch into L2, so a prefetch does nothing.
+Value vx::LanePrefetchOp::expandOnHost(OpBuilder &) { return Value(); }
+
 Value vx::LaneCopyOp::expandOnHost(OpBuilder &b) {
   expandLaneCopyNowOnHost(b, *this);
   return Value();
@@ -10448,11 +10615,13 @@ static bool mayBeGlobal(Value v) {
 
 /// Whether `op` may read or write global memory. An op with regions answers
 /// only for itself, because the ops in its regions answer for themselves. A
-/// call answers for its callee. An op whose effects are unknown counts.
+/// call answers for its callee. An op whose effects are unknown counts. A
+/// prefetch into L2 does not count: it reads no value, so it can come before
+/// the wait.
 static bool touchesGlobalMemory(Operation *op,
                                 DenseMap<Operation *, bool> &callees) {
-  if (isa<gpu::BarrierOp, NVVM::Barrier0Op, NVVM::BarrierOp, NVVM::SyncWarpOp>(
-          op) ||
+  if (isa<gpu::BarrierOp, NVVM::Barrier0Op, NVVM::BarrierOp, NVVM::SyncWarpOp,
+          NVVM::CpAsyncBulkPrefetchOp>(op) ||
       op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
     return false;
   if (auto call = dyn_cast<CallOpInterface>(op)) {
