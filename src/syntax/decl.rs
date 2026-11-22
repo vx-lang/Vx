@@ -241,6 +241,8 @@ pub struct ImplBlock {
     /// `unsafe impl`: the programmer states a fact that the compiler cannot check. Only
     /// `Send` and `Sync` take it.
     pub is_unsafe: bool,
+    /// `extern impl`: an impl in a file that does not declare its type.
+    pub is_extern: bool,
     /// At the `impl` keyword.
     pub place: DeclPlace,
 }
@@ -255,6 +257,7 @@ impl ImplBlock {
             assoc_bindings: self.assoc_bindings.clone(),
             copied_defaults: self.copied_defaults.clone(),
             is_unsafe: self.is_unsafe,
+            is_extern: self.is_extern,
             place: self.place.clone(),
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env

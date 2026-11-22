@@ -34,19 +34,19 @@ trait Signs {
   fn sign(self : Self) -> i32;
 }
 
-impl Doubles for i32 {
+extern impl Doubles for i32 {
   fn twice(self : i32) -> i32 {
     return self * 2;
   }
 }
 
-impl Tags for i32 {
+extern impl Tags for i32 {
   fn tag(self : i32) -> i32 {
     return 100;
   }
 }
 
-impl Signs for i32 {
+extern impl Signs for i32 {
   fn sign(self : i32) -> i32 {
     return 7;
   }

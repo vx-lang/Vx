@@ -480,6 +480,12 @@ pub enum DiagnosticCode {
     /// (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so
     /// it must be known while compiling. A range past the last row is E8003.
     E3065,
+    /// An `impl` in the wrong file, or with the wrong `extern`. Only the file that declares a
+    /// struct or an enum writes a plain `impl` of it. `core` and `std` declare the built-in types,
+    /// such as `i32` and `Tensor`. An impl in another file, for example to break an import cycle,
+    /// is `extern impl`, so that a review finds each one. An `extern impl` in the file of the
+    /// type is an error too. A macro cannot write `extern impl`: write it in the file.
+    E3066,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

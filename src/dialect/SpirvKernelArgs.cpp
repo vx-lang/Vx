@@ -544,15 +544,6 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
       error = "it uses `" + nvidia + "`, which only an NVIDIA GPU has";
       return failure();
     }
-    // A shuffle, which a function the kernel calls can hold. It needs
-    // subgroups of 32 lanes.
-    if (isa<gpu::ShuffleOp>(op)) {
-      error =
-          "it shuffles values between the lanes of a subgroup "
-          "(`gpu.shuffle`), which needs subgroups of 32 lanes, and a SPIR-V "
-          "kernel cannot ask for them yet";
-      return failure();
-    }
     // A cast changes only what the type says about the sizes and strides, or
     // about the memory, as a call site does to give a function the type it
     // takes. The values are the source's, so the result has the source's
@@ -783,12 +774,6 @@ std::optional<std::string> spirvRefusalOf(Operation *op) {
   if (carriesIndexBlockArgument(op))
     return "a branch in its body carries an `index` value between blocks, "
            "which the SPIR-V conversion cannot take";
-  // A lane routine, such as `lanes::sum`. Most of them use shuffles across a
-  // subgroup of 32 lanes, which a SPIR-V kernel cannot ask for yet.
-  if (op->getName().getStringRef().starts_with("vx.lane") ||
-      op->getName().getStringRef().starts_with("vx.subgroup"))
-    return "it calls a routine of `lanes::`, which a SPIR-V image cannot run "
-           "yet. Most of them need subgroups of 32 lanes";
   // A tile in shared memory becomes a `memref.global`, which the flattening
   // gives Workgroup storage. A tile with a dynamic shape gets no global, and
   // `runsOnDevice` refuses it for every pipeline.
@@ -826,8 +811,13 @@ flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule, std::string &error,
     MemRefType type = global.getType();
     if (!isShared(type) || !type.hasStaticShape())
       continue;
-    auto array = LLVM::LLVMArrayType::get(storageType(type.getElementType()),
-                                          type.getNumElements());
+    // A tile of bf16 holds i16, the same two bytes. SPIR-V has a bf16 type
+    // only with an extension, and the loads and stores of the tile name the
+    // element type themselves.
+    Type element = storageType(type.getElementType());
+    if (element.isBF16())
+      element = IntegerType::get(global.getContext(), 16);
+    auto array = LLVM::LLVMArrayType::get(element, type.getNumElements());
     std::string name = global.getSymName().str();
     uint64_t alignment = global.getAlignment().value_or(16);
     Location loc = global.getLoc();

@@ -1,17 +1,17 @@
-//===- spirv_region_with_a_lane_routine_runs_on_the_host.vx ------*- Vx -*-===//
+//===- spirv_region_with_a_lane_routine_gets_an_image.vx ---------*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A region for an Intel GPU (`arch: spirv64`) calls `lanes::sum`. Most lane
-// routines need subgroups of 32 lanes, which a SPIR-V kernel cannot ask for
-// yet. So the region gets no image and runs on the host. Its memory is
-// `managed: cached`, which the host can read, so the warning is enough.
+// A region for an Intel GPU (`arch: spirv64`) calls `lanes::sum` in the code
+// of a block, with no subgroups level. The region gets a SPIR-V image.
+// tests/integration_test/spirv_images_on_pocl.rs runs the image on the CPU with
+// pocl and compares the output with this one.
 //
-// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
-// CHECK: the region placed on `Topology::Simd` in `row_sums` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it calls a routine of `lanes::`
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --implicit-check-not='cannot become' # flat-codegen
+// CHECK: format=spirv
 // EXPECT: 256
 
 Memory CPU_DRAM {}

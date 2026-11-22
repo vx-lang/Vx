@@ -160,6 +160,8 @@ pub struct GlobalAstEnv<'a> {
     pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
     /// Where to report the code that a macro of another file wrote, by the file of the call.
     pub macro_call_sites: crate::diagnostic::MacroCallSites,
+    /// The files of the modules of `core` and `std`, which declare the built-in types.
+    pub library_files: std::collections::HashSet<crate::symbol::Symbol>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -192,10 +194,18 @@ impl<'a> GlobalAstEnv<'a> {
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
             macro_call_sites: Default::default(),
+            library_files: Default::default(),
         };
         let mut macro_call_sites = HashMap::new();
         for module in modules {
             if let Some(file) = &module.file {
+                let path = module.module_path.as_ref();
+                let library = ["core", "std"]
+                    .iter()
+                    .any(|l| path == *l || path.starts_with(&format!("{l}::")));
+                if library {
+                    env.library_files.insert(file.clone());
+                }
                 if module.macro_call_sites.iter().any(Option::is_some) {
                     macro_call_sites.insert(file.clone(), module.macro_call_sites.clone());
                 }
