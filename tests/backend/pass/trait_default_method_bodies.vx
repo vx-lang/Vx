@@ -37,13 +37,13 @@ trait Counts {
   }
 }
 
-impl Counts for i32 {
+extern impl Counts for i32 {
   fn value(self : i32) -> i32 {
     return self;
   }
 }
 
-impl Counts for f32 {
+extern impl Counts for f32 {
   fn value(self : f32) -> i32 {
     return 100;
   }
