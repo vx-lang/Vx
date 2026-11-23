@@ -23,6 +23,7 @@ import core::sync::atomic;
 import core::time;
 import std::alloc;
 import std::sync::channel;
+import std::sync::select;
 import std::sync::wait;
 import std::time;
 
@@ -96,6 +97,7 @@ fn watch_release<T>(words : *mut AtomicI64, data : *mut T) -> void {
   if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
     return;
   }
+  assert_no_watcher(words);
   let value : T = unsafe { take_slot(data, 0) };
   drop(value);
   let w : *mut i8 = words;
@@ -159,6 +161,19 @@ WatchReceiver<T> {
     return version != word(self.seen, 0).load(AtomicOrdering::Relaxed);
   }
 
+  /// The value, if it is new to this receiver. It does not wait. When the `WatchSender` was
+  /// dropped and this receiver saw the last value, give `Closed`.
+  fn try_recv(self : &WatchReceiver<T>) -> Result<T, TryRecvError> {
+    let closed = word(self.words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+    if self.has_changed() {
+      return Result<T, TryRecvError>::Ok(self.get());
+    }
+    if closed {
+      return Result<T, TryRecvError>::Err(TryRecvError::Closed);
+    }
+    return Result<T, TryRecvError>::Err(TryRecvError::Empty);
+  }
+
   /// The value, when it is new to this receiver. Wait until a `send` changes it. Several sends
   /// during the wait give only the last value. When the `WatchSender` was dropped and this receiver
   /// saw the last value, give `Closed`. When the `tasks` block of this task was cancelled, give
@@ -198,6 +213,25 @@ WatchReceiver<T> {
       wait_for_event(words, seen, deadline, WAIT_IN_RECV, at, self.made);
     }
     return Result<T, RecvError>::Err(why);
+  }
+}
+
+// A `select` can wait until a `send` changes the value, or the `WatchSender` is dropped.
+impl<T> WaitSource for WatchReceiver<T> {
+  fn is_ready(self : &WatchReceiver<T>) -> bool {
+    let words = self.words;
+    let _events = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+    let version = word(words, WATCH_VERSION).load(AtomicOrdering::SeqCst);
+    return closed || version != word(self.seen, 0).load(AtomicOrdering::Relaxed);
+  }
+
+  fn watch(self : &WatchReceiver<T>, w : &Waiter) -> void {
+    watch_channel(self.words, w);
+  }
+
+  fn unwatch(self : &WatchReceiver<T>, w : &Waiter) -> void {
+    unwatch_channel(self.words, w);
   }
 }
 

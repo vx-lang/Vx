@@ -1,7 +1,8 @@
 # One `select` for channels, sockets, timers and tokens
 
 Issue #3414, part of #3413. The review took the recommended answer of each question in section 10.
-Stage 1 of section 9 is in `stdlib/std/sync/select.vx`, and stage 2 in `stdlib/std/net.vx`.
+Stages 1 to 3 of section 9 are done: the core in `stdlib/std/sync/select.vx`, the sockets in
+`stdlib/std/net.vx`, and the sources of #3415 to #3418 next to their types.
 
 ## 1. The problem
 

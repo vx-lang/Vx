@@ -231,8 +231,10 @@ and the others about tasks, and says how we check each one.
 ### Sources of different types
 
 `select2` to `select6` from `std::sync::select` wait on sources of different types: a `Receiver`
-of any element type, a `Deadline`, and a `TcpListener`, `TcpStream` or `UdpSocket` from
-`std::net`. A socket is ready when its `accept`, `read` or `recv` does not wait. Each `select` gives the index of the first source that is ready, and
+of any element type, a `Deadline`, and a `TcpListener`, `TcpStream`, `UdpSocket` or `TcpBufReader`
+from `std::net`. A socket is ready when its `accept`, `read` or `recv` does not wait. The receivers
+of the channels in the next section, a `Semaphore` and an `Interval` from `std::time` are sources
+too. Each `select` gives the index of the first source that is ready, and
 starts its search after the last choice of the task. The caller then takes the value, for example
 with `try_recv`. A `select` takes no value itself, so a source that loses keeps its value.
 
@@ -279,7 +281,8 @@ that `channel` uses, so each one works as `channel` does in these ways:
   When the room is full, `send` waits for the slowest receiver. So no receiver misses a value.
 - **watch** (`std::sync::watch`): the channel holds one value. `send(v)` replaces it and never
   waits. `recv()` waits for a value that this receiver did not see, and gives only the latest one.
-  `get()` gives the value now, and `has_changed()` says if it is new. `T` must be `Clone`.
+  `get()` gives the value now, and `has_changed()` says if it is new. `try_recv()` gives the value
+  only when it is new, and does not wait. `T` must be `Clone`.
 
 In this program, three workers take jobs from a work queue. Each job carries a oneshot channel for
 its answer (`book_workers_reply_on_oneshot_channels.vx`):

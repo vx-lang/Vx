@@ -61,6 +61,20 @@ impl Waiter {
     unsafe { vx_unwatch(key.as_ptr(), self.word.as_ptr()); }
   }
 
+  /// Add 1 to `count`, and then `watch_key(key)`. A source with many waits counts its watchers,
+  /// and calls `wake_watchers(key)` only when `count` is not 0. Its `is_ready` reads its state
+  /// with `SeqCst` after this, so that it sees each change whose wake missed the watch.
+  fn watch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64) -> void {
+    count.fetch_add(1, AtomicOrdering::SeqCst);
+    self.watch_key(key);
+  }
+
+  /// Undo `watch_counted`.
+  fn unwatch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64) -> void {
+    self.unwatch_key(key);
+    count.fetch_sub(1, AtomicOrdering::SeqCst);
+  }
+
   /// Until `unwatch_fd`, the I/O poller wakes this waiter when a read of the file descriptor
   /// `fd` does not wait. A socket calls it in `watch`.
   fn watch_fd(self : &Waiter, fd : i32) -> void {
@@ -539,6 +553,23 @@ impl Deadline {
     return Deadline {
       at : t
     };
+  }
+}
+
+// An `Interval` is ready when its next tick is due. Then `tick` does not wait. The impl is here,
+// because this file imports `std::time`, so `time.vx` cannot import this file.
+extern impl WaitSource for Interval {
+  fn is_ready(self : &Interval) -> bool {
+    return past_deadline(self.due(self.last + 1));
+  }
+
+  // The `select` waits until the earliest deadline, so an `Interval` needs no watch.
+  fn watch(self : &Interval, _w : &Waiter) -> void {}
+
+  fn unwatch(self : &Interval, _w : &Waiter) -> void {}
+
+  fn deadline(self : &Interval) -> Instant {
+    return self.due(self.last + 1);
   }
 }
 
