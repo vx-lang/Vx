@@ -2973,11 +2973,12 @@ pub fn emit_function_mlir(
         Some(t) => format!(" -> {t}"),
         None => String::new(),
     };
-    // A function declared `-> !` is `noreturn` to LLVM. A `pub fn` stays exported:
-    // `vx-hide-program-symbols` skips a function with `vx.pub`.
+    // A function declared `-> !` is `noreturn` to LLVM. It runs only on a failure path, so it is
+    // also `cold` and `noinline`: a small function that calls it stays small enough to inline.
+    // A `pub fn` stays exported: `vx-hide-program-symbols` skips a function with `vx.pub`.
     let mut attrs = Vec::new();
     if crate::syntax::is_never_ty(&func.return_type) {
-        attrs.push("passthrough = [\"noreturn\"]".to_string());
+        attrs.push("passthrough = [\"noreturn\", \"cold\", \"noinline\"]".to_string());
     }
     if func.is_pub {
         attrs.push("vx.pub".to_string());

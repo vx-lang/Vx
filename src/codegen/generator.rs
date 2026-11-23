@@ -1791,10 +1791,15 @@ impl<'c> MeliorGenerator<'c> {
         // ordinary symbol.
         let _ = is_main;
 
-        // A function declared `-> !` is `noreturn` to LLVM.
+        // A function declared `-> !` is `noreturn` to LLVM. It runs only on a failure path, so it
+        // is also `cold` and `noinline`: a small function that calls it stays small enough to
+        // inline.
         if syntax::is_never_ty(&func.return_type) {
-            let attr = melior::ir::Attribute::parse(self.context, "[\"noreturn\"]")
-                .ok_or_else(|| LowerError::from("bad noreturn attribute".to_string()))?;
+            let attr = melior::ir::Attribute::parse(
+                self.context,
+                "[\"noreturn\", \"cold\", \"noinline\"]",
+            )
+            .ok_or_else(|| LowerError::from("bad noreturn attribute".to_string()))?;
             func_attributes.push((
                 melior::ir::Identifier::new(self.context, "passthrough"),
                 attr,
