@@ -18,7 +18,7 @@ use std::sync::Mutex;
 
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
-use super::time_limit::{has_timeout, SECONDS as RUN_LINE_SECONDS};
+use super::time_limit::{self, has_timeout, SECONDS as RUN_LINE_SECONDS};
 
 /// Whether clang can link a program with ThreadSanitizer. Linux packages ship its runtime
 /// apart from clang, in `libclang-rt-<version>-dev`.
@@ -824,16 +824,13 @@ fn run_the_run_lines(path: &Path) -> Result<(), String> {
         let cmd = cmd.replacen("vxc ", &format!("{} ", vxc), 1);
         let cmd = if has_timeout() {
             format!(
-                "timeout -k 5 {RUN_LINE_SECONDS} bash -c {}",
+                "exec timeout -k 5 {RUN_LINE_SECONDS} bash -c {}",
                 shell_quote(&cmd)
             )
         } else {
             cmd
         };
-        let out = std::process::Command::new("bash")
-            .arg("-c")
-            .arg(&cmd)
-            .output()
+        let out = time_limit::output(std::process::Command::new("bash").arg("-c").arg(&cmd))
             .map_err(|e| format!("{:?}: could not run `{}`: {}", path, run, e))?;
         // A hang is an error even in a file marked XFAIL-RUN.
         if out.status.code() == Some(124) && has_timeout() {
@@ -970,6 +967,26 @@ fn legacy_codegen_goes_after_each_vxc_command() {
 
 fn run_lit_test(path: &Path) -> Result<(), String> {
     run_lit_test_with_env(path, &[])
+}
+
+/// A process that a RUN line starts in the background keeps the output pipe of the line open.
+/// The test runner stops it when the line ends, and does not wait for it.
+#[test]
+fn a_run_line_does_not_wait_for_its_background_processes() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("background_sleep.vx");
+    fs::write(&file, "// RUN: (sleep 30 &) ; echo started ; false\n").unwrap();
+    let start = std::time::Instant::now();
+    let error = run_lit_test(&file).expect_err("the RUN line ends with `false`, so it fails");
+    let waited = start.elapsed();
+    assert!(
+        error.contains("Stdout:\nstarted\n"),
+        "the error does not show what the RUN line printed:\n{error}"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(20),
+        "the test runner waited {waited:?} for the `sleep 30` in the background"
+    );
 }
 
 /// As `run_lit_test`, with the variables `env` set for each RUN line. With variables, the RUN
@@ -1121,7 +1138,10 @@ fn run_lit_test_with_env(path: &Path, env: &[(&str, String)]) -> Result<(), Stri
         // stops too. A machine with no `timeout` (macOS) runs the line with no limit.
         let line = format!("set -o pipefail; {}", cmd);
         let line = if has_timeout() {
-            format!("timeout {RUN_LINE_SECONDS} bash -c {}", shell_quote(&line))
+            format!(
+                "exec timeout {RUN_LINE_SECONDS} bash -c {}",
+                shell_quote(&line)
+            )
         } else {
             line
         };
@@ -1141,7 +1161,7 @@ fn run_lit_test_with_env(path: &Path, env: &[(&str, String)]) -> Result<(), Stri
             }
         }
         command.envs(env.iter().map(|(k, v)| (k, v)));
-        let output = command.output().expect("Failed to execute RUN line");
+        let output = time_limit::output(&mut command).expect("Failed to execute RUN line");
 
         if xfail {
             if !output.status.success() {

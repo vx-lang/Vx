@@ -1,8 +1,9 @@
 //! Time limits for the programs that the tests run. Without a limit, one program that hangs
 //! stops the whole test run with no message.
 
-use std::io::Write;
-use std::process::Command;
+use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -32,6 +33,41 @@ pub fn vxc() -> Command {
     } else {
         Command::new(vxc)
     }
+}
+
+/// Runs `cmd` and returns its output, as `Command::output` does. The command runs in a process
+/// group of its own, and this stops every process left in that group when the command exits. A
+/// process that a shell started in the background can hold the output pipe open, and otherwise
+/// the test waits for the end of the output forever. `timeout` makes a new process group, so a
+/// shell that starts it must `exec` it.
+pub fn output(cmd: &mut Command) -> std::io::Result<Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()?;
+    let stdout = read_in_a_thread(child.stdout.take().unwrap());
+    let stderr = read_in_a_thread(child.stderr.take().unwrap());
+    let status = child.wait()?;
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stderr(Stdio::null())
+        .status();
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap()?,
+        stderr: stderr.join().unwrap()?,
+    })
+}
+
+fn read_in_a_thread(
+    mut pipe: impl Read + Send + 'static,
+) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).map(|_| bytes)
+    })
 }
 
 /// Stops the test process if it is not dropped within `SECONDS`. Use it for work that runs
