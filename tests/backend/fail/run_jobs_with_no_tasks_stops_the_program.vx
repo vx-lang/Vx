@@ -16,15 +16,14 @@ import core::result;
 import std::sync::jobs;
 import std::vec;
 
-fn double(_c : &i64, job : &i64) -> i64 {
+fn double(job : &i64) -> i64 {
   return *job * 2;
 }
 
 fn main() -> i32 {
   let mut numbers = Vec<i64>::new();
   numbers.push(1);
-  let c : i64 = 0;
-  let r = run_jobs(&numbers, 0, &c, double);
+  let r : Result<Vec<i64>, RunJobsError> = run_jobs(&numbers, 0, double);
   println!("after run_jobs: {}", r.is_ok());
   return 0;
 }

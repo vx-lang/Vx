@@ -349,8 +349,8 @@ tokio's `Semaphore` gives the permits in the order of the `acquire` calls, and t
 
 ## Run jobs with at most `n` tasks
 
-`run_jobs(jobs, n, context, work)` from `std::sync::jobs` calls `work(context, job)` for each
-job in the vector `jobs`. It starts at most `n` tasks, and gives the results in the order of the
+`run_jobs(jobs, n, work)` from `std::sync::jobs` calls `work(job)` for each job in the vector
+`jobs`. `work` can be a closure or a function. It starts at most `n` tasks, and gives the results in the order of the
 jobs (`book_run_jobs_gives_results_in_job_order.vx`):
 
 ```rust
@@ -360,12 +360,12 @@ jobs (`book_run_jobs_gives_results_in_job_order.vx`):
 It prints `scaled 10 20 30 40 50 60 70 80`.
 
 `run_jobs` starts its tasks in a `tasks` block, so the call returns only after each task ends.
-The tasks borrow `jobs` and `context`, so their types must be `Sync`. Each task takes the next
-job from a counter, so a slow job does not hold up the other tasks.
+Each task takes the next job from a counter, so a slow job does not hold up the other tasks.
 
-`work` is a function, not a closure. A closure type does not say what the closure captures, so
-the compiler cannot check that two tasks can call it at the same time. Put the data that the
-jobs share in `context`.
+The tasks borrow `jobs` and call `work` at the same time, so both must be `Sync`. A closure is
+`Sync` when each value that it captures is. So a closure that captures a `Receiver` is an error
+at the call. Give the result a type, as the program above does. The compiler does not find the
+type of the results from the closure.
 
 When the `tasks` block around the call is cancelled, the jobs that did not start do not run, and
 `run_jobs` gives `Cancelled`. `try_run_jobs` takes a `work` that gives a `Result`. The first `Err`

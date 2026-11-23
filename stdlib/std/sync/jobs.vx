@@ -12,8 +12,8 @@
 // each result in its place. So the results come in the order of the jobs, and the call returns
 // only after each worker ends.
 //
-// The function is a `fn`, not a closure, and gets the data that it needs as `context`. A closure
-// type does not say what the closure captures, so tasks cannot call a closure parameter (E3055).
+// `work` is a type parameter `F : Sync`, so it can be a closure or a `fn`. Each worker loop is
+// written inside its `spawn` block: the tasks then call `work` where it is, and do not move it.
 //===----------------------------------------------------------------------===//
 import core::marker;
 import core::option;
@@ -42,41 +42,6 @@ enum TryRunJobsError<E> {
 struct JobResult<R> {
   job : i32,
   value : R,
-}
-
-/// One worker of `run_jobs`. It stops when no job is left, or when its block is cancelled.
-fn run_jobs_worker<J, C, R : Send + Owned>(jobs : &Vec<J>, context : &C, next : &AtomicI64, work : fn(&C, &J) -> R, tx : Sender<JobResult<R>>) -> void {
-  while !cancelled() {
-    let i = next.fetch_add(1, AtomicOrdering::Relaxed);
-    if i >= i64::from(jobs.len()) {
-      return;
-    }
-    let job = i as i32;
-    let value = work(context, jobs.get_ref(job));
-    if tx.send(JobResult<R> {
-      job : job, value : value
-    }).is_err() {
-      return;
-    }
-  }
-}
-
-/// One worker of `try_run_jobs`. A job that fails sends its error, and the code of the block then
-/// cancels the block.
-fn try_run_jobs_worker<J, C, R : Send + Owned, E : Send + Owned>(jobs : &Vec<J>, context : &C, next : &AtomicI64, work : fn(&C, &J) -> Result<R, E>, tx : Sender<JobResult<Result<R, E>>>) -> void {
-  while !cancelled() {
-    let i = next.fetch_add(1, AtomicOrdering::Relaxed);
-    if i >= i64::from(jobs.len()) {
-      return;
-    }
-    let job = i as i32;
-    let value = work(context, jobs.get_ref(job));
-    if tx.send(JobResult<Result<R, E>> {
-      job : job, value : value
-    }).is_err() {
-      return;
-    }
-  }
 }
 
 /// The number of workers for `jobs` jobs and at most `n` tasks.
@@ -115,16 +80,16 @@ fn empty_slots<R>(n : i32) -> Vec<Option<R>> {
   return slots;
 }
 
-/// Run `work(context, job)` on each job of `jobs`, with at most `n` tasks at the same time, and
-/// give the results in the order of the jobs. `n` must be at least 1.
+/// Run `work(job)` on each job of `jobs`, with at most `n` tasks at the same time, and give the
+/// results in the order of the jobs. `n` must be at least 1.
 ///
-/// The call returns after each task ends. The tasks borrow `jobs` and `context`, so their types
-/// must be `Sync`. When the `tasks` block around the call is cancelled, the jobs that did not
+/// The call returns after each task ends. The tasks borrow `jobs` and call `work` at the same
+/// time, so both must be `Sync`. A closure is `Sync` when each value that it captures is. When the `tasks` block around the call is cancelled, the jobs that did not
 /// start do not run, and the call gives `Cancelled`.
 ///
 /// A panic in `work` stops the program, as a panic in any task does. The message names the line
 /// of the panic, and the call does not return.
-fn run_jobs<J : Sync, C : Sync, R : Send + Owned>(jobs : &Vec<J>, n : i64, context : &C, work : fn(&C, &J) -> R) -> Result<Vec<R>, RunJobsError> {
+fn run_jobs<J : Sync, R : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F) -> Result<Vec<R>, RunJobsError> {
   let workers = worker_count(jobs.len(), n);
   let next = AtomicI64::new(0);
   let (tx, rx) = channel<JobResult<R>>(jobs_channel_room(workers));
@@ -134,7 +99,19 @@ fn run_jobs<J : Sync, C : Sync, R : Send + Owned>(jobs : &Vec<J>, n : i64, conte
     for _w in 0..workers {
       let mine = tx.clone();
       spawn {
-        run_jobs_worker(jobs, context, &next, work, mine);
+        while !cancelled() {
+          let i = next.fetch_add(1, AtomicOrdering::Relaxed);
+          if i >= i64::from(jobs.len()) {
+            return;
+          }
+          let job = i as i32;
+          let value : R = work(jobs.get_ref(job));
+          if mine.send(JobResult<R> {
+            job : job, value : value
+          }).is_err() {
+            return;
+          }
+        }
       };
     }
     drop(tx);
@@ -160,7 +137,7 @@ fn run_jobs<J : Sync, C : Sync, R : Send + Owned>(jobs : &Vec<J>, n : i64, conte
 /// The `tasks` block of `try_run_jobs`. It puts each result in `slots`, and gives true when each
 /// job gave one. It gives false on the first error, which it puts in `failure`, and on a cancel.
 /// Its `return` leaves the block, so the block cancels the workers.
-fn run_until_a_failure<J : Sync, C : Sync, R : Send + Owned, E : Send + Owned>(jobs : &Vec<J>, n : i64, context : &C, work : fn(&C, &J) -> Result<R, E>, slots : &mut Vec<Option<R>>, failure : &mut Option<E>) -> bool {
+fn run_until_a_failure<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F, slots : &mut Vec<Option<R>>, failure : &mut Option<E>) -> bool {
   let workers = worker_count(jobs.len(), n);
   let next = AtomicI64::new(0);
   let (tx, rx) = channel<JobResult<Result<R, E>>>(jobs_channel_room(workers));
@@ -169,7 +146,19 @@ fn run_until_a_failure<J : Sync, C : Sync, R : Send + Owned, E : Send + Owned>(j
     for _w in 0..workers {
       let mine = tx.clone();
       spawn {
-        try_run_jobs_worker(jobs, context, &next, work, mine);
+        while !cancelled() {
+          let i = next.fetch_add(1, AtomicOrdering::Relaxed);
+          if i >= i64::from(jobs.len()) {
+            return;
+          }
+          let job = i as i32;
+          let value : Result<R, E> = work(jobs.get_ref(job));
+          if mine.send(JobResult<Result<R, E>> {
+            job : job, value : value
+          }).is_err() {
+            return;
+          }
+        }
       };
     }
     drop(tx);
@@ -201,10 +190,10 @@ fn run_until_a_failure<J : Sync, C : Sync, R : Send + Owned, E : Send + Owned>(j
 /// drops the results that arrived before that error.
 ///
 /// A panic in `work` stops the program, as in `run_jobs`.
-fn try_run_jobs<J : Sync, C : Sync, R : Send + Owned, E : Send + Owned>(jobs : &Vec<J>, n : i64, context : &C, work : fn(&C, &J) -> Result<R, E>) -> Result<Vec<R>, TryRunJobsError<E>> {
+fn try_run_jobs<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F) -> Result<Vec<R>, TryRunJobsError<E>> {
   let mut slots = empty_slots<R>(jobs.len());
   let mut failure = Option<E>::None;
-  if run_until_a_failure(jobs, n, context, work, &mut slots, &mut failure) {
+  if run_until_a_failure<J, R, E, F>(jobs, n, work, &mut slots, &mut failure) {
     return Result<Vec<R>, TryRunJobsError<E>>::Ok(results_in_order(slots));
   }
   if failure.is_some() {

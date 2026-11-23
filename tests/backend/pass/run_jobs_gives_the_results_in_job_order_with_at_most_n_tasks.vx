@@ -5,14 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `run_jobs` runs `square` on 12 jobs with at most 3 tasks. The jobs sleep for different times,
+// `run_jobs` runs a closure that calls `square` on 12 jobs with at most 3 tasks. The jobs sleep for different times,
 // so they end in an order that is not the job order. The results must still come in job order.
 //
 // `square` counts the jobs that run at the same time in `inside`, and keeps the highest count in
 // `most`. It must be 3: never more, and the sleeps let 3 jobs run at the same time. `ran` counts
 // the jobs, so each job ran once.
 //
-// `try_run_jobs` with a `work` that never fails gives its results in job order too.
+// `try_run_jobs` with a `fn` that never fails gives its results in job order too.
 //
 // Then three edge cases. No jobs give no results. With at most 1 task, the jobs run one at a time,
 // in job order. A limit larger than the number of jobs, in an `i64` variable, still gives the
@@ -63,7 +63,7 @@ fn square(counts : &Counts, job : &Job) -> i64 {
   return job.number * job.number;
 }
 
-fn double(_counts : &Counts, job : &Job) -> Result<i64, i32> {
+fn double(job : &Job) -> Result<i64, i32> {
   sleep(Duration::from_millis(job.sleep_ms));
   return Result<i64, i32>::Ok(2 * job.number);
 }
@@ -93,7 +93,10 @@ fn main() -> i32 {
   let counts = Counts {
     inside : AtomicI64::new(0), most : AtomicI64::new(0), ran : AtomicI64::new(0)
   };
-  let squares = run_jobs(&jobs, 3, &counts, square).unwrap();
+  let squares_result : Result<Vec<i64>, RunJobsError> = run_jobs(&jobs, 3, | job : &Job | -> i64 {
+    square(&counts, job)
+  });
+  let squares = squares_result.unwrap();
   print!("squares");
   for i in 0..squares.len() {
     print!(" {}", squares.get(i));
@@ -101,17 +104,29 @@ fn main() -> i32 {
   println!("");
   println!("most jobs at once: {}", counts.most.load(AtomicOrdering::SeqCst));
   println!("jobs that ran: {}", counts.ran.load(AtomicOrdering::SeqCst));
-  let doubles = try_run_jobs(&jobs, 3, &counts, double).unwrap();
+  let doubles_result : Result<Vec<i64>, TryRunJobsError<i32>> = try_run_jobs(&jobs, 3, double);
+  let doubles = doubles_result.unwrap();
   print_all("doubles", &doubles);
 
   let no_jobs = Vec<Job>::new();
-  println!("results for no jobs: {}", run_jobs(&no_jobs, 3, &counts, square).unwrap().len());
+  let empty_result : Result<Vec<i64>, RunJobsError> = run_jobs(&no_jobs, 3, | job : &Job | -> i64 {
+    square(&counts, job)
+  });
+  println!("results for no jobs: {}", empty_result.unwrap().len());
 
   let one_task = new_counts();
-  print_all("squares", &run_jobs(&jobs, 1, &one_task, square).unwrap());
+  let one_task_result : Result<Vec<i64>, RunJobsError> = run_jobs(&jobs, 1, | job : &Job | -> i64 {
+    square(&one_task, job)
+  });
+  let one_task_squares = one_task_result.unwrap();
+  print_all("squares", &one_task_squares);
   println!("most jobs at once with 1 task: {}", one_task.most.load(AtomicOrdering::SeqCst));
 
   let limit : i64 = 100;
-  print_all("squares", &run_jobs(&jobs, limit, &counts, square).unwrap());
+  let limit_result : Result<Vec<i64>, RunJobsError> = run_jobs(&jobs, limit, | job : &Job | -> i64 {
+    square(&counts, job)
+  });
+  let limit_squares = limit_result.unwrap();
+  print_all("squares", &limit_squares);
   return 0;
 }

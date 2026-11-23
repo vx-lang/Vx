@@ -18,19 +18,17 @@ import core::option;
 import std::sync::jobs;
 import std::vec;
 
-// The work for one job. `factor` is the data that each job shares.
-fn scale(factor : &i64, job : &i64) -> i64 {
-  return *job * *factor;
-}
-
 fn main() -> i32 {
   let mut numbers = Vec<i64>::new();
   for i in 1..9 {
     numbers.push(i64::from(i));
   }
   let factor : i64 = 10;
-  // At most 3 tasks. The call returns after each task ends.
-  match run_jobs(&numbers, 3, &factor, scale) {
+  // At most 3 tasks. The call returns after each task ends. Each job reads `factor`.
+  let result : Result<Vec<i64>, RunJobsError> = run_jobs(&numbers, 3, | job : &i64 | -> i64 {
+    *job * factor
+  });
+  match result {
     Result<Vec<i64>, RunJobsError>::Ok(scaled) => {
       print!("scaled");
       for i in 0..scaled.len() {

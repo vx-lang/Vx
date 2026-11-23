@@ -77,7 +77,7 @@ impl Drop for Tracked {
   }
 }
 
-/// The context of the jobs: where `work` counts the values that it makes.
+/// The data that the jobs share: where they count the values that they make.
 struct Ctx {
   counts : *mut Counts,
 }
@@ -126,7 +126,9 @@ fn make_slowly(ctx : &Ctx, job : &i64) -> Tracked {
 fn run_and_leave(ctx : &Ctx, jobs : &Vec<i64>) -> i32 {
   tasks {
     spawn {
-      let results = run_jobs(jobs, 2, ctx, make_slowly);
+      let results : Result<Vec<Tracked>, RunJobsError> = run_jobs(jobs, 2, | job : &i64 | -> Tracked {
+        make_slowly(ctx, job)
+      });
       println!("run_jobs gave Cancelled: {}", results.is_err());
     };
     sleep(Duration::from_millis(30));
@@ -147,7 +149,10 @@ fn main() -> i32 {
   let ctx = Ctx {
     counts : (&mut counts) as *mut Counts
   };
-  let results = run_jobs(&jobs, 3, &ctx, make_one).unwrap();
+  let made : Result<Vec<Tracked>, RunJobsError> = run_jobs(&jobs, 3, | job : &i64 | -> Tracked {
+    make_one(&ctx, job)
+  });
+  let results = made.unwrap();
   print!("first values in job order:");
   let mut complete = true;
   for i in 0..results.len() {
@@ -168,7 +173,10 @@ fn main() -> i32 {
   let ctx_two = Ctx {
     counts : (&mut counts_two) as *mut Counts
   };
-  match try_run_jobs(&jobs, 2, &ctx_two, make_or_fail) {
+  let made_two : Result<Vec<Tracked>, TryRunJobsError<Tracked>> = try_run_jobs(&jobs, 2, | job : &i64 | -> Result<Tracked, Tracked> {
+    make_or_fail(&ctx_two, job)
+  });
+  match made_two {
     Result<Vec<Tracked>, TryRunJobsError<Tracked>>::Ok(_r) => {
       println!("try_run_jobs gave each result");
     }

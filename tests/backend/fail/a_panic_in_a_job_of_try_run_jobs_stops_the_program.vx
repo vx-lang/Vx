@@ -20,7 +20,7 @@ import core::result;
 import std::sync::jobs;
 import std::vec;
 
-fn fails_on_three(_c : &i64, job : &i64) -> Result<i64, i64> {
+fn fails_on_three(job : &i64) -> Result<i64, i64> {
   if *job == 3 {
     // CHECK-NEXT: {{^}}  at {{.*}}a_panic_in_a_job_of_try_run_jobs_stops_the_program.vx:[[@LINE+1]]{{$}}
     panic("job 3 cannot be done");
@@ -36,8 +36,8 @@ fn main() -> i32 {
   for i in 1..9 {
     numbers.push(i64::from(i));
   }
-  let c : i64 = 0;
-  match try_run_jobs(&numbers, 3, &c, fails_on_three) {
+  let result : Result<Vec<i64>, TryRunJobsError<i64>> = try_run_jobs(&numbers, 3, fails_on_three);
+  match result {
     Result<Vec<i64>, TryRunJobsError<i64>>::Ok(r) => {
       println!("after try_run_jobs: {} results", r.len());
     }
