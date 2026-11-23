@@ -5,15 +5,33 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+// Files and the right to open them. A program gets the right, a `Files`, in its `Root`
+// (`std::root`), and passes `&root.files` to `File::open`, or to a function that calls it.
+//===----------------------------------------------------------------------===//
 import core::ops;
+import core::ptr;
+import core::result;
+import std::string;
+import std::vec;
 
 extern {
-  /// The Rust core behind `File::open`. Null when the open fails.
+  /// The Rust core behind `File::open_c_str`. Null when the open fails.
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
-  /// The Rust core behind `File::read`.
+  /// The Rust core behind `File::open`: 0 and the file in `*file`, or the category of the error
+  /// and the error number of the system.
+  fn vx_file_try_open(c_path : *const i8, mode : i32, file : *mut *mut i8,
+  native_code : *mut i32) -> i32;
+  /// The Rust core behind `File::read_raw`.
   fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
-  /// The Rust core behind `File::write`.
+  /// The Rust core behind `File::write_raw`.
   fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : u64) -> u64;
+  /// The Rust core behind `File::read`: 0 and the count in `*count`, or the category of the
+  /// error and the error number of the system.
+  fn vx_file_try_read(ptr : *mut i8, buffer : *mut u8, len : u64, count : *mut u64,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  /// The Rust core behind `File::write`, with the outputs of `vx_file_try_read`.
+  fn vx_file_try_write(ptr : *mut i8, buffer : *const u8, len : u64, count : *mut u64,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
   /// The Rust core behind `File::seek`.
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   /// The Rust core behind dropping a `File`.
@@ -38,6 +56,70 @@ extern {
   fn munmap(addr: *mut i8, len: i64) -> i32;
 }
 
+/// The right to open files. Only this file can make a `Files`, and a program gets one in its
+/// `Root` (`std::root`). A function that gets a `&Files` uses it during the call and cannot keep
+/// it.
+struct Files {
+  invariant true,
+}
+
+/// The file right of the program, for `std::root`. Unsafe because a second `Files` gives the
+/// right to code that did not get it.
+unsafe fn files_of_the_program() -> Files {
+  return Files {};
+}
+
+/// Why a file call did not work.
+enum FileError {
+  // The path holds a NUL byte, so the system cannot read it.
+  BadPath,
+  // No file has the path, or a folder of the path is missing.
+  NotFound,
+  // The system does not let the program open the file in the mode, or change it.
+  PermissionDenied,
+  // Another failure, with the error number of the system, or 0 when it gave none.
+  Os(i32),
+}
+
+impl Copy for FileError {}
+
+/// The `FileError` of a status that is not 0. The status is a category of the Rust core.
+fn file_error(status : i32, native_code : i32) -> FileError {
+  if status == 1 {
+    return FileError::NotFound;
+  }
+  if status == 2 {
+    return FileError::PermissionDenied;
+  }
+  return FileError::Os(native_code);
+}
+
+/// A NUL-terminated copy of a path, for the Rust core. A drop releases it.
+struct CPath {
+  ptr : *const i8,
+}
+
+impl CPath {
+  /// A copy of `path`, or `BadPath` when `path` holds a NUL byte, because a C string ends at its
+  /// first NUL.
+  fn of(path : &String) -> Result<CPath, FileError> {
+    let ptr = unsafe { vx_string_try_as_c_str(path.ptr) };
+    if is_null(ptr) {
+      return Result<CPath, FileError>::Err(FileError::BadPath);
+    }
+    return Result<CPath, FileError>::Ok(CPath {
+      ptr : ptr
+    });
+  }
+}
+
+impl Drop for CPath {
+  /// Release the copy.
+  fn drop(self : &mut CPath) -> void {
+    let _freed = unsafe { vx_string_free_c_str(self.ptr) };
+  }
+}
+
 /// The three file-opening behaviors supported by the current host bridge.
 enum OpenMode {
   Read,
@@ -58,11 +140,80 @@ struct File {
 // `*mut File`, so a shared `&File` has no use yet.
 unsafe impl Send for File {}
 
+/// The code of a mode for the Rust core.
+fn open_mode_code(mode : OpenMode) -> i32 {
+  // Read uses code 0; the other modes replace it below.
+  let mut mode_code : i32 = 0;
+  match mode {
+    OpenMode::Read() => {},
+    OpenMode::Write() => {
+      mode_code = 1;
+    }
+    OpenMode::ReadWriteCreate() => {
+      mode_code = 2;
+    }
+  }
+  return mode_code;
+}
+
 impl File {
-  /// Open `path` with a named mode.
+  /// Open `path` with a named mode. The caller needs the file right, a `&Files`.
   ///
   /// Writing creates the file and truncates it; read-and-write creates it and does not
   /// truncate. Reading does not create it.
+  fn open(_files : &Files, path : &String, mode : OpenMode) -> Result<File, FileError> {
+    let c_path = CPath::of(path)?;
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let mut native_code : i32 = 0;
+    let status = unsafe {
+      vx_file_try_open(c_path.ptr, open_mode_code(mode), (&mut ptr) as *mut *mut i8,
+      (&mut native_code) as *mut i32)
+    };
+    if status != 0 {
+      return Result<File, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<File, FileError>::Ok(File {
+      ptr : ptr
+    });
+  }
+
+  /// Read up to `buffer.len()` bytes into `buffer` and give how many arrived. 0 means the end of
+  /// the file. A short read is normal and is not an error.
+  fn read(self : &mut File, buffer : &mut Vec<u8>) -> Result<u64, FileError> {
+    let len = buffer.len() as u64;
+    let mut count : u64 = 0;
+    let mut native_code : i32 = 0;
+    let mut has_native_code = false;
+    let status = unsafe {
+      vx_file_try_read(self.ptr, buffer.as_mut_ptr(), len, (&mut count) as *mut u64,
+      (&mut native_code) as *mut i32, (&mut has_native_code) as *mut bool)
+    };
+    if status != 0 {
+      return Result<u64, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<u64, FileError>::Ok(count);
+  }
+
+  /// Write up to `buffer.len()` bytes and give how many were taken. A short write is not an
+  /// error, and the rest is not tried again here.
+  fn write(self : &mut File, buffer : &Vec<u8>) -> Result<u64, FileError> {
+    let len = buffer.len() as u64;
+    let mut count : u64 = 0;
+    let mut native_code : i32 = 0;
+    let mut has_native_code = false;
+    let status = unsafe {
+      vx_file_try_write(self.ptr, buffer.as_mut_ptr() as *const u8, len,
+      (&mut count) as *mut u64, (&mut native_code) as *mut i32,
+      (&mut has_native_code) as *mut bool)
+    };
+    if status != 0 {
+      return Result<u64, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<u64, FileError>::Ok(count);
+  }
+
+  /// Open `path` with a named mode, with no file right. Trusted code uses it, for example code
+  /// that gets its path from C.
   ///
   /// **A failed open cannot be detected.** The returned `File` holds a null pointer, and Vx
   /// cannot compare a raw pointer against null or cast one to an integer (Vx#714) -- so a
@@ -70,19 +221,8 @@ impl File {
   /// on it answers 0 or -1 rather than doing anything.
   ///
   /// Unsafe because nothing checks that `path` points at a NUL-terminated string.
-  unsafe fn open(path : *const i8, mode : OpenMode) -> File {
-    // Read uses code 0; the other modes replace it below.
-    let mut mode_code : i32 = 0;
-    match mode {
-      OpenMode::Read() => {},
-      OpenMode::Write() => {
-        mode_code = 1;
-      }
-      OpenMode::ReadWriteCreate() => {
-        mode_code = 2;
-      }
-    }
-    let ptr = unsafe { vx_file_open(path, mode_code) };
+  unsafe fn open_c_str(path : *const i8, mode : OpenMode) -> File {
+    let ptr = unsafe { vx_file_open(path, open_mode_code(mode)) };
     File {
       ptr: ptr
     }
@@ -94,15 +234,15 @@ impl File {
   /// apart. A short read is normal and is not an error.
   ///
   /// Unsafe because `buffer` must have room for `len` bytes; nothing here checks.
-  unsafe fn read(self : *mut File, buffer : *mut u8, len : u64) -> u64 {
+  unsafe fn read_raw(self : *mut File, buffer : *mut u8, len : u64) -> u64 {
     unsafe { vx_file_read(self.ptr, buffer, len) }
   }
 
   /// Write up to `len` bytes from `buffer` and answer how many were taken.
   ///
   /// Zero means a null file or buffer, or a write error, with the same lack of distinction
-  /// `read` has. A short write is not an error and the remainder is not retried here.
-  unsafe fn write(self : *mut File, buffer : *const u8, len : u64) -> u64 {
+  /// `read_raw` has. A short write is not an error and the remainder is not retried here.
+  unsafe fn write_raw(self : *mut File, buffer : *const u8, len : u64) -> u64 {
     unsafe { vx_file_write(self.ptr, buffer, len) }
   }
 

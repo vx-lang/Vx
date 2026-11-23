@@ -610,3 +610,46 @@ fn fallible_file_write_preserves_the_os_error() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn fallible_file_open_reports_the_file_or_the_error() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|error| format!("create test directory: {error}"))?;
+    let present = dir.path().join("present");
+    std::fs::write(&present, b"P").map_err(|error| format!("create test file: {error}"))?;
+    let c_path = |path: &std::path::Path| {
+        std::ffi::CString::new(path.to_string_lossy().as_bytes())
+            .map_err(|error| format!("path contains a NUL byte: {error}"))
+    };
+    // A non-null start value shows that a failed open stores null.
+    let mut marker = 0u8;
+    let marker: *mut std::ffi::c_void = (&mut marker as *mut u8).cast();
+    let open = |path: *const std::ffi::c_char| {
+        let mut file = marker;
+        let mut code = 99;
+        let status = unsafe { vx_file_try_open(path, 0, &mut file, &mut code) };
+        (status, file, code)
+    };
+
+    let (status, file, code) = open(c_path(&present)?.as_ptr());
+    if status != 0 || file.is_null() || code != 0 {
+        return Err(format!("open of a file gave status {status}, code {code}"));
+    }
+    vx_file_drop(file);
+
+    let missing = dir.path().join("missing");
+    let expected = std::fs::File::open(&missing).expect_err("the file must be missing");
+    let (status, file, code) = open(c_path(&missing)?.as_ptr());
+    if status != 1 || !file.is_null() || Some(code) != expected.raw_os_error() {
+        return Err(format!(
+            "open of a missing file gave status {status}, code {code}"
+        ));
+    }
+
+    let (status, file, code) = open(std::ptr::null());
+    if status != 4 || !file.is_null() || code != 0 {
+        return Err(format!(
+            "open of a null path gave status {status}, code {code}"
+        ));
+    }
+    Ok(())
+}

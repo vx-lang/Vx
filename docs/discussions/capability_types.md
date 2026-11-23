@@ -106,8 +106,9 @@ Two tools keep the trusted code small and easy to find:
 
 The rules above stop forged capabilities. They do not stop code that needs no capability. Before
 the `Network` capability, any module could `import std::net` and open any socket with no
-`unsafe`. A file needs `unsafe` to open, which is trusted code (section 4). A capability protects
-something only when each way to the operating system needs one:
+`unsafe`. A file needed `unsafe` to open, which is trusted code (section 4). Now a safe
+`File::open` takes a `&Files`. A capability protects something only when each way to the
+operating system needs one:
 
 - `std::fs`, `std::net`, `std::mmap`, the start of a process and the loading of native code each
   take a capability parameter.
@@ -181,5 +182,6 @@ no global fact depend on a function body. Each new check reads one declaration:
 1. Capability types in `std`. Safe code could open sockets with no `unsafe`, but not files:
    `File::open` was an `unsafe fn` already. So the network came first: `TcpStream::connect`,
    `TcpListener::bind` and `UdpSocket::bind` take a `&Network`, which a program gets as
-   `root.network`. Then a safe `File::open` that takes a capability, then processes and native
-   code.
+   `root.network`. Then `File::open` became safe, and takes a `&Files`, which a program gets as
+   `root.files`. The raw open, `File::open_c_str`, stays `unsafe`. Next come `Folder`, processes
+   and native code.
