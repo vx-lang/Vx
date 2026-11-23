@@ -92,9 +92,8 @@ fn main() -> i32 {
 }
 ```
 
-The parentheses around the condition are **required** here, unlike `requires` and `ensures` on a
-function, which take theirs optionally. That inconsistency is not deliberate — it is
-[Vx#501](https://github.com/vx-lang/Vx/issues/501).
+The parentheses around the condition are optional, as on `requires` and `ensures`:
+`loop invariant limit > 0 { .. }` works too.
 
 ## while
 

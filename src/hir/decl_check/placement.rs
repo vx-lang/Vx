@@ -36,40 +36,225 @@ impl TypeChecker<'_> {
     /// of them.
     pub fn check_placements_name_a_place(&mut self) {
         // Sorted, because both tables are HashMaps and this reports per declaration: an unsorted
-        // walk would emit the same diagnostics in a different order on every run.
-        let mut sites: Vec<(String, Vec<crate::syntax::Type>)> = Vec::new();
+        // walk would emit the same diagnostics in a different order on every run. Each site
+        // keeps the file and the place that its diagnostics name.
+        struct Site {
+            order: (String, usize),
+            context: String,
+            ty: crate::syntax::Type,
+            place: crate::syntax::DeclPlace,
+        }
+        let mut sites: Vec<Site> = Vec::new();
         for (name, f) in &self.env.syntax_functions {
-            let tys: Vec<crate::syntax::Type> = f
-                .params
-                .iter()
-                .map(|(_, t)| t)
-                .chain(std::iter::once(&f.return_type))
-                .filter(|t| t.states_a_location())
-                .cloned()
-                .collect();
-            if !tys.is_empty() {
-                sites.push((format!("function '{name}'"), tys));
+            // One site for each parameter and one for the return type, so that each bad
+            // placement has a message of its own.
+            let params = f.params.iter().map(|(p, t)| (Some(p), t));
+            let ret = std::iter::once((None, &f.return_type));
+            for (i, (param, ty)) in params.chain(ret).enumerate() {
+                if ty.states_a_location() {
+                    let context = match param {
+                        Some(p) => format!("parameter '{p}' of function '{name}'"),
+                        None => format!("the return type of function '{name}'"),
+                    };
+                    sites.push(Site {
+                        order: (format!("function '{name}'"), i),
+                        context,
+                        ty: ty.clone(),
+                        place: crate::syntax::DeclPlace {
+                            file: f.file.clone(),
+                            span: f.span,
+                        },
+                    });
+                }
             }
         }
         for (name, s) in &self.env.structs {
             for (field, ty) in &s.fields {
                 if ty.states_a_location() {
-                    sites.push((
-                        format!("field '{field}' of struct '{name}'"),
-                        vec![ty.clone()],
-                    ));
+                    let context = format!("field '{field}' of struct '{name}'");
+                    sites.push(Site {
+                        order: (context.clone(), 0),
+                        context,
+                        ty: ty.clone(),
+                        place: s.place.clone(),
+                    });
                 }
             }
         }
-        sites.sort_by(|a, b| a.0.cmp(&b.0));
+        sites.sort_by(|a, b| a.order.cmp(&b.order));
 
-        for (context, tys) in sites {
-            for ty in &tys {
-                // A declared position states where a tensor lives without allocating one here,
-                // so it takes the per-tile verdict and stays out of any function's working set.
-                self.check_declared_type_placement(ty, &context, &crate::syntax::Span::default());
+        let outside = self.errors.here();
+        for site in sites {
+            self.errors.point_at(&site.place, &outside);
+            // A declared position states where a tensor lives without allocating one here,
+            // so it takes the per-tile verdict and stays out of any function's working set.
+            self.check_declared_type_placement(&site.ty, &site.context, &site.place.span);
+        }
+        // The device in `on Topology::X[i]` names one device of a declared topology too, and one
+        // that can run code.
+        use crate::diagnostic::DiagnosticCode::{E6025, E6042};
+        let mut on_clauses: Vec<_> = self
+            .env
+            .syntax_functions
+            .iter()
+            .filter_map(|(name, f)| {
+                let on = format!("`on {}` of function '{name}'", f.topology);
+                let (code, message) = match self.declared_device_problem(&f.topology) {
+                    Some(why) => (E6025, format!("{on} names no device: {why}")),
+                    None => (
+                        E6042,
+                        format!("{on}: {}", self.device_with_no_gpu(&f.topology)?),
+                    ),
+                };
+                let place = crate::syntax::DeclPlace {
+                    file: f.file.clone(),
+                    span: f.span,
+                };
+                Some((name.to_string(), code, message, place))
+            })
+            .collect();
+        on_clauses.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, code, message, place) in on_clauses {
+            self.errors.point_at(&place, &outside);
+            self.errors.error_with_code(code, message, None);
+        }
+        self.errors.point_back(outside);
+    }
+
+    /// Why code cannot run on `top` yet, when it is device 1 or a later device of a declared GPU.
+    /// The CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is
+    /// on GPU 0.
+    pub(crate) fn device_with_no_gpu(&self, top: &crate::syntax::Topology) -> Option<String> {
+        let crate::syntax::Topology::Custom(name, Some(index)) = top else {
+            return None;
+        };
+        let i = crate::arch::const_topology_index(index).filter(|i| *i >= 1)?;
+        let decl = self.env.topologies.get(name)?;
+        if decl.descriptor.arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
+            return None;
+        }
+        Some(format!(
+            "device {i} of '{name}' has no GPU to run on yet, because the CUDA runtime gets only \
+             device 0 of a declared GPU. Run the code on `Topology::{name}[0]`"
+        ))
+    }
+
+    /// Why `top` names no device of a declared topology, or `None` when it names one. A topology
+    /// with `count: N` has the devices 0 to N - 1, and a use must pick one when N is more than 1.
+    /// The built-in topologies have their own index rules, so this says nothing about them.
+    pub(crate) fn declared_device_problem(&self, top: &crate::syntax::Topology) -> Option<String> {
+        use crate::syntax::Topology;
+        let (name, first, end) = match top {
+            Topology::Custom(name, index) => (name, index.as_deref(), None),
+            Topology::Slice(base, start, end) => match &**base {
+                Topology::Custom(name, _) => (name, Some(&**start), Some(&**end)),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let Some(decl) = self.env.topologies.get(name) else {
+            return first.map(|_| {
+                format!("no topology named '{name}' is declared, so it has no devices to index")
+            });
+        };
+        let count = decl.descriptor.count.unwrap_or(1);
+        let devices = if count == 1 {
+            "1 device".to_string()
+        } else {
+            format!("{count} devices")
+        };
+        let constant = |e: &crate::syntax::Expr| crate::arch::const_topology_index(e);
+        let Some(first) = first else {
+            return (count > 1).then(|| {
+                format!(
+                    "'{name}' has {devices}, so name one of them: `Topology::{name}[0]` to \
+                     `Topology::{name}[{}]`",
+                    count - 1
+                )
+            });
+        };
+        if let Some(i) = constant(first) {
+            if i < 0 || i as u64 >= count {
+                return Some(format!(
+                    "'{name}' has {devices}, so device {i} does not exist"
+                ));
             }
         }
+        let end = end.and_then(constant)?;
+        if end < 0 || end as u64 > count {
+            return Some(format!(
+                "'{name}' has {devices}, so a slice of it ends at {count} or before, not at {end}"
+            ));
+        }
+        match constant(first) {
+            Some(start) if start >= end => Some(format!("the slice {start}..{end} has no devices")),
+            _ => None,
+        }
+    }
+
+    /// The topology with more than one device that holds `space` as its memory, and its count.
+    fn several_devices_holding(
+        &self,
+        space: &crate::syntax::MemorySpace,
+    ) -> Option<(crate::symbol::Symbol, u64)> {
+        let crate::syntax::Topology::Custom(name, _) =
+            self.transfer_cost_graph.owning_topology(space).ok()?
+        else {
+            return None;
+        };
+        let count = self.env.topologies.get(&name)?.descriptor.count?;
+        (count > 1).then_some((name, count))
+    }
+
+    /// Why `Memory::<space>` names no location: each device of a topology with more than one
+    /// device has its own copy of its memory, so the memory alone does not say which copy.
+    pub(crate) fn memory_of_several_devices(
+        &self,
+        space: &crate::syntax::MemorySpace,
+    ) -> Option<String> {
+        let (name, count) = self.several_devices_holding(space)?;
+        Some(format!(
+            "it is the memory of each of the {count} devices of '{name}', so it does not say \
+             which device. Name the device instead: `Topology::{name}[0]` to \
+             `Topology::{name}[{}]`",
+            count - 1
+        ))
+    }
+
+    /// The device whose copy of its memory a placement on `top` is in, as `Card[1]`, when `top`
+    /// is a topology with more than one device. A non-constant index is device 0, as it is for a
+    /// `spawn` (W1030).
+    pub(crate) fn device_copy(&self, top: &crate::syntax::Topology) -> Option<String> {
+        let crate::syntax::Topology::Custom(name, index) = top else {
+            return None;
+        };
+        let count = self.env.topologies.get(name)?.descriptor.count?;
+        if count < 2 {
+            return None;
+        }
+        let i = index
+            .as_deref()
+            .and_then(crate::arch::const_topology_index)
+            .unwrap_or(0);
+        Some(format!("{name}[{i}]"))
+    }
+
+    /// Why a tensor cannot be placed on `top`: a tensor is in the memory of one device, so it
+    /// cannot be on a slice of a topology whose devices each have a copy of that memory.
+    fn slice_of_several_devices(&self, top: &crate::syntax::Topology) -> Option<String> {
+        let crate::syntax::Topology::Slice(base, ..) = top else {
+            return None;
+        };
+        let crate::syntax::Topology::Custom(name, _) = &**base else {
+            return None;
+        };
+        let count = self.env.topologies.get(name)?.descriptor.count?;
+        (count > 1).then(|| {
+            format!(
+                "a tensor is in the memory of one device, so place it on one device of '{name}', \
+                 such as `Topology::{name}[0]`"
+            )
+        })
     }
 
     /// Report every placement inside `ty` that names no place.
@@ -95,6 +280,11 @@ impl TypeChecker<'_> {
                         p.as_written(),
                         "no topology of that name is declared".to_string(),
                     ));
+                } else if let Some(why) = self
+                    .declared_device_problem(&p.topology)
+                    .or_else(|| self.slice_of_several_devices(&p.topology))
+                {
+                    bad.push((p.as_written(), why));
                 }
             }
             Written::Space => {
@@ -107,6 +297,8 @@ impl TypeChecker<'_> {
                             p.space.name()
                         ),
                     ));
+                } else if let Some(why) = self.memory_of_several_devices(&p.space) {
+                    bad.push((p.as_written(), why));
                 }
             }
         });

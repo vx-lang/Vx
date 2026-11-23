@@ -8,20 +8,24 @@
 // Declares a function `double`, and a macro that writes an `impl` with a method `double`.
 
 trait Double {
-  fn double(self : Self) -> Self;
+  fn double(self : Self) -> i64;
+}
+
+struct Amount {
+  value : i64,
 }
 
 macro_rules stamp_double {
   ($t : ident) => {
     impl Double for $t {
-      fn double(self : $t) -> $t {
-        return self + self;
+      fn double(self : $t) -> i64 {
+        return self.value + self.value;
       }
     }
   };
 }
 
-stamp_double!(i64);
+stamp_double!(Amount);
 
 fn double(x : i64) -> i64 {
   return x * 2;

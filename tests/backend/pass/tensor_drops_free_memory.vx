@@ -11,7 +11,6 @@
 // EXPECT: 2 2 2 8 2 1
 // The lines below without `--legacy-codegen` are about the default code generator; the
 // legacy code generator has RUN lines of its own further down.
-// REQUIRES: flat-codegen
 // RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
 // OUT: 2 2 2 8 2 1
 //

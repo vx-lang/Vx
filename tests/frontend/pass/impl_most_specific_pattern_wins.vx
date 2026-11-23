@@ -18,17 +18,17 @@
 
 // `Float` as `std::tensor` declares it.
 trait Float {}
-impl Float for f32 {}
+extern impl Float for f32 {}
 
 // The static pattern is declared first so that the dynamic receiver resolving to the
 // `[?, ?]` impl is a choice by specificity and not by declaration order.
-impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
+extern impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   fn which(self : &Tensor<T, [N, M]>) -> i32 {
     return 2;
   }
 }
 
-impl<T : Float> Tensor<T, [?, ?]> {
+extern impl<T : Float> Tensor<T, [?, ?]> {
   fn which(self : &Tensor<T, [?, ?]>) -> i32 {
     return 1;
   }

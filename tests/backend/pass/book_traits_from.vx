@@ -1,0 +1,53 @@
+//===- book_traits_from.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on operators and standard traits
+// (www/book/src/operators-and-traits.md): one struct with two `From` impls, and `i32::from` and
+// `f64::from` of the library.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}100 20 300{{$}}
+
+// ANCHOR: program
+import core::convert;
+
+struct Fahrenheit {
+  degrees : f64,
+}
+
+struct Celsius {
+  degrees : f64,
+}
+
+impl From<Fahrenheit> for Celsius {
+  fn from(f : Fahrenheit) -> Celsius {
+    return Celsius {
+      degrees: (f.degrees - 32.0) * 5.0 / 9.0
+    };
+  }
+}
+
+impl From<i32> for Celsius {
+  fn from(d : i32) -> Celsius {
+    return Celsius {
+      degrees: f64::from(d)
+    };
+  }
+}
+
+fn main() -> i32 {
+  let hot = Celsius::from(Fahrenheit {
+    degrees: 212.0
+  });
+  let room = Celsius::from(20);
+  let small : u8 = 200;
+  let wide = i32::from(small) + 100;
+  println!("{} {} {}", hot.degrees, room.degrees, wide);
+  return 0;
+}
+// ANCHOR_END: program

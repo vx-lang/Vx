@@ -41,12 +41,9 @@ fn parse(src: &str) -> Program {
     // Expand macros (`print!`/`println!` -> `Expr::Print`/`Expr::Println`, plus any user macros)
     // before name resolution, exactly as the real pipeline does — otherwise a `MacroCall` reaches
     // resolution and panics.
-    let mut global_macros = std::collections::HashMap::new();
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(std::iter::once(&program));
     let trait_defaults = vxc::resolver::collect_trait_defaults(std::iter::once(&program));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     expander
         .expand_module(&mut program)
         .expect("macro expansion failed");
@@ -1198,7 +1195,7 @@ fn flat_matches_ast_inline_mlir() {
     // tensors are linear and passed by value, so each call gets fresh ones.
     assert_parity(
         "fn same(a : Tensor<f32, [2, 2]>, b : Tensor<f32, [2, 2]>) -> i32 { \
-           let r = mlir!(inputs : (%lhs = a : memref<2x2xf32>, %rhs = b : memref<2x2xf32>), \
+           let r = unsafe { mlir!(inputs : (%lhs = a : memref<2x2xf32>, %rhs = b : memref<2x2xf32>), \
            clobbers : [], returns : bool, dialects : [\"linalg\", \"arith\", \"memref\"]) { \
            %t = arith.constant 1 : i1 \n %acc = memref.alloca() : memref<i1> \n \
            memref.store %t, %acc[] : memref<i1> \n \
@@ -1208,7 +1205,7 @@ fn flat_matches_ast_inline_mlir() {
            ins(%lhs, %rhs : memref<2x2xf32>, memref<2x2xf32>) outs(%acc : memref<i1>) { \
              ^bb0(%p : f32, %q : f32, %o : i1): \n %c = arith.cmpf oeq, %p, %q : f32 \n \
              %n = arith.andi %o, %c : i1 \n linalg.yield %n : i1 } \n \
-           %v = memref.load %acc[] : memref<i1> \n func.return %v : i1 }; \
+           %v = memref.load %acc[] : memref<i1> \n func.return %v : i1 } }; \
            if r { return 1; } return 0; }\n\
          fn main() -> i32 { let a = Tensor<f32, [2, 2]>::fill(1.0); \
            let b = Tensor<f32, [2, 2]>::fill(1.0); let s = same(a, b); \
@@ -1219,9 +1216,9 @@ fn flat_matches_ast_inline_mlir() {
     // A void block with a `clobbers` list: the stdlib's `fill` shape.
     assert_parity(
         "fn fill(t : &mut Tensor<f32, [?, ?]>, v : f32) -> void { \
-           mlir!(inputs : (%m = t : memref<?x?xf32>, %x = v : f32), clobbers : [t], \
+           unsafe { mlir!(inputs : (%m = t : memref<?x?xf32>, %x = v : f32), clobbers : [t], \
            dialects : [\"linalg\"]) { linalg.fill ins(%x : f32) outs(%m : memref<?x?xf32>) \n \
-           macro.yield }; }\n\
+           macro.yield } }; }\n\
          fn main() -> i32 { let mut t = Tensor<f32, [2, 3]>::fill(0.0); fill(&mut t, 7.0); \
            return (t[1][2] as i32) * 6; }",
         42,
@@ -1567,6 +1564,73 @@ fn non_generic_struct_with_an_option_field_runs(#[case] jobs: Option<usize>) {
 #[rstest::rstest]
 #[case::normal(None)]
 #[case::parallel(Some(2))]
+fn result_holds_an_error_with_an_optional_code(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_with_an_optional_code.vx",
+        &["4294967301", "22", "33", "-7", "11", "44", "99"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_structs_with_different_enum_fields(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_structs_with_different_enum_fields.vx",
+        &["-9000000000", "77", "3", "-7", "42", "99", "-5"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn struct_with_an_option_field_in_different_enums(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "struct_with_an_option_field_in_different_enums.vx",
+        &[
+            "55",
+            "-7",
+            "4294967301",
+            "99",
+            "41",
+            "7",
+            "2",
+            "-9000000000",
+            "1",
+            "-3",
+        ],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn result_holds_an_error_from_another_module(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "result_holds_an_error_from_another_module.vx",
+        &["4294967301", "2", "-9000000000"],
+        jobs,
+    );
+}
+
+// Only the last line of the fixture is read: the `Result<Option<i32>, Error>` and `Pair` cases.
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_inside_an_enum_payload_runs(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_inside_an_enum_payload.vx",
+        &["303", "-9", "-1011", "31", "-13", "-47", "99"],
+        jobs,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
 fn enum_payload_with_empty_fields_runs(
     #[case] jobs: Option<usize>,
     #[values(0, 2)] optimization: u8,
@@ -1728,9 +1792,12 @@ fn assert_generated_aggregate_runs_at_optimization(
     )
     .expect("read fixture");
     std::fs::write(&path, source).expect("write fixture");
+    // A fixture may import a helper module, such as `tests::modules::pass_a_result_through`.
+    let tests_package = format!("tests={}", concat!(env!("CARGO_MANIFEST_DIR"), "/tests"));
     let mut command = super::time_limit::vxc();
     command
         .arg(&path)
+        .args(["--package", &tests_package])
         .arg("--run")
         .arg(format!("-O{optimization}"))
         .env("VX_FLAT_DBG", "1");
@@ -1751,9 +1818,11 @@ fn assert_generated_aggregate_runs_at_optimization(
     };
     assert!(log.contains(marker), "flat path with jobs={jobs:?}: {log}");
     // Native compilation prints progress before the program's final output line.
+    // A program that ends with `println!` leaves an empty line after it.
     let values = stdout
         .lines()
-        .last()
+        .rev()
+        .find(|line| !line.trim().is_empty())
         .expect("program prints its payload values");
     let actual: Vec<_> = values.split_whitespace().collect();
     assert_eq!(
@@ -3814,8 +3883,8 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
     // yet; they are row-major, as the oracle's.)
     assert_parity(
         "extern \"C\" { fn vx_alloc_f32(n : i32) -> *mut f32; fn vx_free_f32(p : *mut f32, n : i32) -> void; }\n\
-         fn view(p : *mut f32, r : i32, c : i32) -> Tensor<f32, [?, ?]> { \
-           let v = unsafe { tensor_view_2d(p, r, c) }; return v; }\n\
+         fn view(p : *mut f32, r : i32, c : i32) -> &Tensor<f32, [?, ?]> { \
+           let v = unsafe { tensor_view_2d(p, r, c) }; return &v; }\n\
          fn main() -> i32 { let p : *mut f32 = unsafe { vx_alloc_f32(6) }; \
            unsafe { for i in 0..6 { p[i] = (i + 1) as f32; } } \
            let a = view(p, 2, 3); let x = a[1][2]; let w = a.extent(1); \
@@ -4401,7 +4470,7 @@ fn flat_matches_ast_shape_query() {
 /// reads a position only the [4, 5] shape has, and 1.0 + 7.0 is the exit code.
 #[test]
 fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
-    let dir = std::env::temp_dir().join("vx_mono_shapes");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx_mono_shapes");
     let _ = std::fs::create_dir_all(&dir);
     let src = dir.join("mono_shapes.vx");
     std::fs::write(

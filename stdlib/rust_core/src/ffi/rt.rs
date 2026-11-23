@@ -15,29 +15,10 @@
 
 use std::ffi::{c_char, CStr};
 use std::ptr;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // ============================================================================
 // Math & Core Functions
 // ============================================================================
-
-#[no_mangle]
-pub extern "C" fn vx_sigsegv_handler(sig: libc::c_int) {
-    // A wild memory access can surface as either SIGSEGV (unmapped page) or
-    // SIGBUS (e.g. a far out-of-range address on arm64); catch both so the crash
-    // is always reported with a backtrace rather than a silent signal death.
-    if sig == libc::SIGBUS {
-        println!("Caught SIGBUS: Bus Error!");
-    } else {
-        println!("Caught SIGSEGV: Segmentation Fault!");
-    }
-    println!(
-        "Backtrace:
-{:#?}",
-        std::backtrace::Backtrace::force_capture()
-    );
-    std::process::abort();
-}
 
 /// A failed check prints its message with `puts` and then calls `abort`. Standard output is
 /// buffered when it is a pipe, and `abort` does not flush it, so the message was lost. Flush,
@@ -55,18 +36,15 @@ extern "C" fn vx_sigabrt_handler(_sig: libc::c_int) {
 pub extern "C" fn vx_init_signals() {
     // A bad value stops the program now, and not at its first `drop`.
     crate::ffi::tasks::drop_wait_cap_ns();
+    crate::ffi::crash_report::prepare();
     unsafe {
+        // The first `backtrace` call of glibc loads libgcc_s, which allocates. Make it here, so
+        // that the call in the SIGSEGV handler does not.
+        let mut frame = [ptr::null_mut(); 1];
+        libc::backtrace(frame.as_mut_ptr(), 1);
         libc::signal(
             libc::SIGABRT,
             vx_sigabrt_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGSEGV,
-            vx_sigsegv_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGBUS,
-            vx_sigsegv_handler as *const () as libc::sighandler_t,
         );
     }
 }
@@ -120,11 +98,26 @@ pub extern "C" fn vx_bench_report(name: *const c_char, unit: *const c_char, valu
     0
 }
 
-/// Sleeps for `ns` nanoseconds, or not at all when `ns` is not positive.
+/// Sleeps until the clock of `vx_clock_ns` reaches `deadline_ns`. The sleep is a wait, so other
+/// tasks can run on the thread of a task that sleeps. A cancel of the `tasks` block, or the limit
+/// of `within` or of a `drop`, ends it early. Gives 1 when the clock reached the deadline, and 0
+/// when the sleep ended early or the task was cancelled before it.
 #[no_mangle]
-pub extern "C" fn vx_sleep(ns: i64) -> i32 {
-    thread::sleep(Duration::from_nanos(ns.max(0) as u64));
-    0
+pub extern "C" fn vx_sleep_until(deadline_ns: i64) -> i32 {
+    use crate::ffi::tasks::vx_cancelled;
+    use crate::ffi::wait::{vx_clock_ns, vx_wait_while_until};
+    // Nothing sets this word.
+    let word = std::sync::atomic::AtomicI64::new(0);
+    // The cancel comes first, so that a loop of late sleeps in a cancelled task ends.
+    loop {
+        if vx_cancelled() != 0 {
+            return 0;
+        }
+        if vx_clock_ns() >= deadline_ns {
+            return 1;
+        }
+        unsafe { vx_wait_while_until(word.as_ptr(), 0, deadline_ns, 1) };
+    }
 }
 
 #[no_mangle]

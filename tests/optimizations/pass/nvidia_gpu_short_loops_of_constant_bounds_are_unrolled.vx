@@ -1,0 +1,81 @@
+// LLVM unrolls a short loop by itself only when its body is small. So the NVIDIA code generator asks
+// LLVM to unroll each loop with at most 16 passes that holds no other loop. In each copy of the
+// loop of 16 passes, `j` is a constant, so its tests `j == 5` and `j == 9` fold away. Three loops
+// stay loops: the loop of 17 passes, the loop to `n`, and the loop of 16 passes that holds a loop.
+// LLVM may still unroll them by two, so their tests `j == 11`, `j == 14` and `r == 7` can show as
+// tests with 10, 13 and 6.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=FOLDED --input-file=%t.ptx
+// RUN: FileCheck %s --check-prefix=LOOPS --input-file=%t.ptx
+//
+// FOLDED-LABEL: .entry picks(
+// FOLDED-NOT: setp.{{[a-z]+}}.{{[bsu]}}32 {{%p[0-9]+}}, {{%r[0-9]+}}, {{(5|9)}};
+// FOLDED: ret;
+//
+// LOOPS-LABEL: .entry picks(
+// LOOPS-DAG: setp.eq.{{[bsu]}}32 {{%p[0-9]+}}, {{%r[0-9]+}}, {{(10|11)}};
+// LOOPS-DAG: setp.eq.{{[bsu]}}32 {{%p[0-9]+}}, {{%r[0-9]+}}, {{(13|14)}};
+// LOOPS-DAG: setp.eq.{{[bsu]}}32 {{%p[0-9]+}}, {{%r[0-9]+}}, {{(6|7)}};
+// LOOPS: ret;
+
+pub fn picks(out : &mut Tensor<i32, [?], Memory::HBM>, x : &Tensor<i32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes(32) {
+        let i = b * 32 + l;
+        let c0 = x[i * 3];
+        let c1 = x[i * 3 + 1];
+        let c2 = x[i * 3 + 2];
+        let mut sixteen : i32 = 0;
+        for j in 0..16 {
+          let mut v = c0;
+          if j == 5 {
+            v = c1;
+          }
+          if j == 9 {
+            v = c2;
+          }
+          let a = (sixteen ^ (v >> j)) * 31 + (v & j) * 7;
+          let c = (a ^ (a >> 5)) * 17 + (a >> 11);
+          sixteen = (c ^ (c << 3)) + (sixteen >> 3);
+        }
+        let mut seventeen : i32 = 0;
+        for j in 0..17 {
+          let mut v = c0;
+          if j == 11 {
+            v = c1;
+          }
+          let a = (seventeen ^ (v >> j)) * 31 + (v & j) * 7;
+          let c = (a ^ (a >> 5)) * 17 + (a >> 11);
+          seventeen = (c ^ (c << 3)) + (seventeen >> 3);
+        }
+        let mut some : i32 = 0;
+        for j in 0..n {
+          let mut v = c0;
+          if j == 14 {
+            v = c2;
+          }
+          let a = (some ^ (v >> j)) * 31 + (v & j) * 7;
+          let c = (a ^ (a >> 5)) * 17 + (a >> 11);
+          some = (c ^ (c << 3)) + (some >> 3);
+        }
+        let mut outer : i32 = 0;
+        for r in 0..16 {
+          let mut v = c1;
+          if r == 7 {
+            v = c2;
+          }
+          let a = (outer ^ (v >> r)) * 31 + (v & r) * 7;
+          let c = (a ^ (a >> 5)) * 17 + (a >> 11);
+          outer = (c ^ (c << 3)) + (outer >> 3);
+          for j in 0..n {
+            outer = outer + (x[j] >> r);
+          }
+        }
+        out[i] = sixteen + seventeen + some + outer;
+      }
+    }
+  }
+  return;
+}

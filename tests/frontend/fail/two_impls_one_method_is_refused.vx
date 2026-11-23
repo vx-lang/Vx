@@ -36,13 +36,13 @@ trait Quiet {
   fn describe(self : &i64) -> i32;
 }
 
-impl Loud for i64 {
+extern impl Loud for i64 {
   fn describe(self : &i64) -> i32 {
     return 1;
   }
 }
 
-impl Quiet for i64 {
+extern impl Quiet for i64 {
   fn describe(self : &i64) -> i32 {
     return 2;
   }

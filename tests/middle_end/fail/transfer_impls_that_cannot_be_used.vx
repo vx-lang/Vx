@@ -1,0 +1,25 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=PLACE --implicit-check-not=Error
+// A lowering with no functions cannot move anything, and a generic function in a lowering is
+// never type-checked. Each error points at its own `impl`.
+// CHECK: `impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev` declares no functions
+// CHECK: `impl Transfer<Memory::CPU_DRAM, Memory::SMEM> for Topology::Dev`: fn 'move_any' is generic
+// PLACE: Error[E6015] at {{.*}}.vx:16:1: `impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev` declares no functions
+// PLACE: Error[E6015] at {{.*}}.vx:18:1: `impl Transfer<Memory::CPU_DRAM, Memory::SMEM> for Topology::Dev`: fn 'move_any' is generic
+Topology Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::L2 : 10 GB/s,
+  transfer Memory::L2 -> Memory::SMEM,
+  transfer Memory::CPU_DRAM -> Memory::SMEM
+}
+impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
+}
+impl Transfer<Memory::CPU_DRAM, Memory::SMEM> for Topology::Dev {
+  fn move_any<T>(n: T) -> T {
+    return n;
+  }
+}
+fn main() -> i32 {
+  return 0;
+}

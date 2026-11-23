@@ -24,11 +24,12 @@ vxc --run hello.vx
 [JIT] Linking native executable...
 [JIT] Executing native binary...
 [JIT] Program exited with code: 42
+Program exited with non-zero code: 42
 ```
 
-`--run` compiles the program and executes it immediately, then propagates the program's own exit
-code. **A non-zero exit status from `vxc --run` is your program's return value, not a compiler
-failure** — this program genuinely exits 42.
+`--run` compiles the program and executes it immediately. When the program returns a value other
+than 0, `vxc` prints the value and exits with status 1. **Here that is your program's return value,
+not a compiler failure** — this program genuinely returns 42.
 
 ## Printing
 
@@ -45,11 +46,14 @@ fn main() -> i32 {
 
 ## Compiling ahead of time
 
-The JIT is convenient for iterating. For anything you intend to keep, compile to a native
-executable:
+The JIT is convenient for iterating. For anything you intend to keep, compile to an object file
+and link it with the C compiler. The program needs the Vx runtime library, which an installed
+toolchain keeps in `~/.vx/current/lib`:
 
 ```bash
 vxc -c hello.vx -o hello.o
+cc hello.o -L ~/.vx/current/lib -lvx_std_core -Wl,-rpath,$HOME/.vx/current/lib -o hello
+./hello
 ```
 
 `vxc --help` lists the other actions — `--emit-mlir` and `--emit-llvm` are the two you will reach

@@ -1,0 +1,67 @@
+//===- a_closure_that_moves_a_captured_struct_drops_it_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure whose body passes a captured struct by value takes the struct. The function that
+// gets the struct drops it, and the code around the closure does not drop it again. Each case
+// prints "drop" once, before "end of main". Such a closure runs only once, so each case keeps it
+// in a `let` and calls it there.
+//
+// - `in_a_let`: the body moves the struct.
+// - `in_a_task`: a task in the closure moves the struct, as with a channel end.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=drop
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=drop
+// CHECK: {{^}}take 2{{$}}
+// CHECK-NEXT: {{^}}drop 2{{$}}
+// CHECK-NEXT: {{^}}take 3{{$}}
+// CHECK-NEXT: {{^}}drop 3{{$}}
+// CHECK-NEXT: {{^}}end of main{{$}}
+
+struct Noisy {
+  n : i64,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("drop {}", self.n);
+  }
+}
+
+fn take(x : Noisy) -> void {
+  println!("take {}", x.n);
+}
+
+fn in_a_let() -> void {
+  let b = Noisy {
+    n : 2
+  };
+  let f = || -> void {
+    take(b);
+  };
+  f();
+}
+
+fn in_a_task() -> void {
+  let c = Noisy {
+    n : 3
+  };
+  let f = || -> void {
+    tasks {
+      spawn {
+        take(c);
+      };
+    };
+  };
+  f();
+}
+
+fn main() -> i32 {
+  in_a_let();
+  in_a_task();
+  println!("end of main");
+  return 0;
+}

@@ -43,6 +43,52 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/let-vx-handle-lean-proofs-for-you.html">Let Vx handle Lean proofs for you</a>
+      <time datetime="2026-11-20">20 November 2026</time>
+      <p>A Lean proof has a theorem, which says what you want, and proof steps, which tell Lean why
+      it holds. In Vx you write only the first part, next to the code, and the compiler proves it
+      in the numbers that the program uses. The same two facts, in Lean and in Vx.</p>
+    </li>
+    <li>
+      <a href="/blog/handing-the-ptx-back-to-the-compiler.html">Handing the PTX back to the compiler</a>
+      <time datetime="2026-11-20">20 November 2026</time>
+      <p>glm-vx's GPU kernels had 99 pieces of hand-written PTX. We moved most of them to MLIR ops,
+      with a test that pins every instruction the old PTX had. 14 of 20 kernels got the same PTX.
+      In 6, the compiler saw the code around the old asm and wrote fewer PTX instructions, and
+      the top-k kernels got fewer popc instructions in their machine code. Four
+      places got worse: one needed a fix, and three keep their asm.</p>
+    </li>
+    <li>
+      <a href="/blog/an-escape-hatch-the-size-of-one-fact.html">An escape hatch the size of one fact</a>
+      <time datetime="2026-11-17">17 November 2026</time>
+      <p>No analysis can prove that a GPU kernel writing at rows from an index tensor is free of
+      races. Vx's <code>Distinct</code> type adds the one missing fact, that no two indices are
+      equal, and keeps every other check. What iteration domains can prove, and what C's
+      <code>restrict</code> cannot say.</p>
+    </li>
+    <li>
+      <a href="/blog/vx-meets-postgres.html">Vx meets Postgres</a>
+      <time datetime="2026-11-15">15 November 2026</time>
+      <p>VxVector is a PostgreSQL extension whose core is Vx. One SQL call trains the centroids
+      of a vector index on the CPU or an Apple GPU. The GPU is 24 to 28 times faster than the
+      single-threaded CPU kernel. What it does
+      today, and the prover bugs and language questions that building it beside the compiler found.</p>
+    </li>
+    <li>
+      <a href="/blog/plain-loops-at-the-speed-of-cuda.html">Plain loops at the speed of CUDA</a>
+      <time datetime="2026-11-13">13 November 2026</time>
+      <p>On an A100, a Vx <code>across</code> loop ran 12% faster than the same loop in CUDA, and
+      three of llm.c's kernels came within 5% of llm.c's own. What it took, and how we
+      measured.</p>
+    </li>
+    <li>
+      <a href="/blog/what-compiling-against-z3-taught-us-about-trusting-provers.html">What compiling against z3 taught us about trusting provers</a>
+      <time datetime="2026-11-13">13 November 2026</time>
+      <p>Vx asks the z3 solver to prove contracts while it compiles. A missing z3 that passed every
+      proof, a type error that z3 skipped in most queries, facts that proved false contracts, and
+      one function that asked z3 16,128 questions.</p>
+    </li>
+    <li>
       <a href="/blog/the-promise-of-vx.html">The promise of Vx</a>
       <time datetime="2026-11-09">9 November 2026</time>
       <p>Your desktop has many cores, memory in banks and a GPU, and the apps you download use

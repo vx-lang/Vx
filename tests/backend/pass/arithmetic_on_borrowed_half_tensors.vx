@@ -1,0 +1,27 @@
+//===- arithmetic_on_borrowed_half_tensors.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `&a + &b` reads two f16 tensors and gives an f16 tensor, so f16 rounds 2048 + 1 to 2048.
+// `&a + one` adds an f32 value, so it gives an f32 tensor, and 2048 + 1 stays 2049.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}2048 2049{{$}}
+
+fn main() -> i32 {
+  let mut a = Tensor<f16, [2]>::new();
+  let mut b = Tensor<f16, [2]>::new();
+  a[0] = 2048.0;
+  b[0] = 1.0;
+  let half_sum = &a + &b;
+  let h : f16 = half_sum[0];
+  let one : f32 = 1.0;
+  let wide_sum = &a + one;
+  let w : f32 = wide_sum[0];
+  println!("{} {}", h, w);
+  return 0;
+}

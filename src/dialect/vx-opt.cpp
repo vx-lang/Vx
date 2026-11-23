@@ -1,5 +1,6 @@
 #include "VxDialect.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
@@ -23,6 +24,9 @@ int run_vx_opt(int argc, char **argv) {
   // Register all upstream MLIR dialects
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
+  // The compiler registers these through the MLIR C API. Without them,
+  // `convert-to-llvm` leaves the ops of a dialect such as `arith` unconverted.
+  mlir::registerAllExtensions(registry);
 
   // Register our custom Vx dialect
   registry.insert<mlir::vx::VxDialect>();

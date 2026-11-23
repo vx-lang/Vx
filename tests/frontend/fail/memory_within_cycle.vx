@@ -20,4 +20,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: E6006
+// CHECK: E6006] at {{.*}}memory_within_cycle.vx:{{(12|15)}}:8:

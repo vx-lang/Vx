@@ -1,0 +1,43 @@
+//===- raw_pointers_through_a_shared_reference.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `ptr_of` reads a `*mut f32` out of a struct behind a `&`. The result keeps a borrow of `w`,
+// but only a shared one, because nothing mutable comes through a `&`. So `views` can call
+// `ptr_of(w)` twice in one struct literal.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}6{{$}}
+
+struct Weights {
+  dev : *mut f32
+}
+
+struct Views {
+  a : *mut f32,
+  b : *mut f32
+}
+
+fn ptr_of(w : &Weights) -> *mut f32 {
+  return w.dev;
+}
+
+fn views(w : &Weights) -> Views {
+  return Views {
+    a: ptr_of(w), b: ptr_of(w)
+  };
+}
+
+fn main() -> i32 {
+  let mut t = Tensor<f32, [2]>::fill(3.0);
+  let w = Weights {
+    dev: t.as_mut_ptr()
+  };
+  let v = views(&w);
+  println!("{}", unsafe { *v.a + *v.b });
+  return 0;
+}

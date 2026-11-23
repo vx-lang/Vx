@@ -1,0 +1,67 @@
+//===- book_traits_copy_clone_default.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on operators and standard traits
+// (www/book/src/operators-and-traits.md): a `Copy` struct, a `Default` value, and a `clone` that
+// copies the items of a vector.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}80 24 0{{$}}
+// CHECK: {{^}}first 1, second 2{{$}}
+
+// ANCHOR: program
+import core::clone;
+import core::default;
+import core::marker;
+import std::vec;
+
+struct Size {
+  width : i32,
+  height : i32,
+}
+
+impl Copy for Size {}
+
+impl Default for Size {
+  fn default() -> Size {
+    return Size {
+      width: 80, height: 24
+    };
+  }
+}
+
+struct Basket {
+  items : Vec<i64>,
+}
+
+impl Clone for Basket {
+  fn clone(self : &Basket) -> Basket {
+    let mut items = Vec<i64>::new();
+    for i in 0..self.items.len() {
+      items.push(*self.items.get_ref(i));
+    }
+    return Basket {
+      items: items
+    };
+  }
+}
+
+fn main() -> i32 {
+  let a = Size::default();
+  let b = a;
+  println!("{} {} {}", a.width, b.height, i64::default());
+  let mut first = Basket {
+    items: Vec<i64>::new()
+  };
+  first.items.push(5);
+  let mut second = first.clone();
+  second.items.push(7);
+  println!("first {}, second {}", first.items.len(), second.items.len());
+  return 0;
+}
+// ANCHOR_END: program

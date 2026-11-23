@@ -1,0 +1,81 @@
+//===- book_errors_question_mark.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on errors (www/book/src/errors.md): `?` passes an `Err` up to
+// the caller, and `map_err` changes the error type so that `?` can pass it up.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum 42{{$}}
+// CHECK-NEXT: {{^}}error: the character 120 is not a digit{{$}}
+// CHECK-NEXT: {{^}}error: the sum 108 is too large{{$}}
+
+// ANCHOR: program
+import core::result;
+
+enum AddError {
+  NotADigit(i64),
+  TooLarge(i64),
+}
+
+// The character code of a digit, such as 50 for '2', gives its value.
+fn digit(c : i64) -> Result<i64, i64> {
+  if c >= 48 && c <= 57 {
+    return Result<i64, i64>::Ok(c - 48);
+  }
+  return Result<i64, i64>::Err(c);
+}
+
+// A number with two digits, from the codes of its characters.
+fn two_digits(tens : i64, ones : i64) -> Result<i64, AddError> {
+  let t = digit(tens).map_err(| c : i64 | -> AddError {
+    AddError::NotADigit(c)
+  })?;
+  let o = digit(ones).map_err(| c : i64 | -> AddError {
+    AddError::NotADigit(c)
+  })?;
+  return Result<i64, AddError>::Ok(t * 10 + o);
+}
+
+fn add(a : Result<i64, AddError>, b : Result<i64, AddError>) -> Result<i64, AddError> {
+  let sum = a? + b?;
+  if sum > 99 {
+    return Result<i64, AddError>::Err(AddError::TooLarge(sum));
+  }
+  return Result<i64, AddError>::Ok(sum);
+}
+
+fn report_error(e : AddError) -> void {
+  match e {
+    AddError::NotADigit(c) => {
+      println!("error: the character {} is not a digit", c);
+    }
+    AddError::TooLarge(n) => {
+      println!("error: the sum {} is too large", n);
+    }
+  }
+}
+
+fn report(r : Result<i64, AddError>) -> void {
+  match r {
+    Result<i64, AddError>::Ok(sum) => {
+      println!("sum {}", sum);
+    }
+    Result<i64, AddError>::Err(e) => {
+      report_error(e);
+    }
+  }
+}
+
+fn main() -> i32 {
+  // The codes 49 and 50 are '1' and '2'. The code 120 is 'x'.
+  report(add(two_digits(49, 50), two_digits(51, 48)));
+  report(add(two_digits(49, 120), two_digits(51, 48)));
+  report(add(two_digits(53, 52), two_digits(53, 52)));
+  return 0;
+}
+// ANCHOR_END: program

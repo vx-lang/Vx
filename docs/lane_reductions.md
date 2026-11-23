@@ -45,7 +45,7 @@ for row in 0..rows across blocks {
 A call is the whole value of a `let` in the code of a level: the code of a body of
 `across blocks` or `across subgroups`, outside its lane loops. That is where a lane loop can be,
 and every lane must get to the call, as to a lane loop (L5, L8, L10). E6032 refuses a call in
-any other place.
+any other place. As in a lane loop, the arguments may not read a value that only lane 0 has.
 
 - In the code of a block, `N` is at most 1024. To launch, the lanes of the block are a multiple
   of 32, and at least `N`.
@@ -92,6 +92,15 @@ kernel expands it, and the argmax shuffles a value and an index at each step:
   and `part` takes no memory. A subgroup can also have several rows, `part[w][c][t]` for a number
   `c`, and each row gets its own register. A row whose `c` is not a number keeps `part`. The larger value in the code of a block also needs a count that is
   a multiple of 32, because its pad is the element of lane 0.
+- **A tile whose elements belong to lanes:** every access to `t` is `t[w][..][l]` in the code of
+  subgroup `w`, or `t[..][l]` in the code of a block or of a subgroup loop with one subgroup.
+  `l` is the index of a lane loop from 0 over all the lanes of its level, and the subgroup loop
+  gives each subgroup one pass at most. Then each element belongs to one lane, and the GPU kernel
+  keeps the lane's elements in registers through all its lane loops. A lane reduction of a row
+  `t[w][c]` in the code of the subgroup reads the registers. The last dimension of `t` is the
+  lanes of the loop, and a lane keeps at most 128 elements. The `for` loops whose variables index
+  such an element are unrolled, so each index is a number. Flash decoding keeps its query, its
+  output sums and the running maximum and sum of its scores this way.
 - **CPU:** loops that compute the same tree. The CPU copy of a kernel and
   `-fauto-schedule-levels` use them. So does the AST code generator (`--legacy-codegen`) for a
   kernel with code after its nest of blocks, which it still runs on one lane.
@@ -149,8 +158,96 @@ Each 16 x 8 piece of the result is then a chain of `mma.sync.m16n8k16`, one for 
 core adds the products in an order of its own, so a result can differ from the CPU copy in its
 last bits. With small integer inputs, each sum is exact and the two results are equal.
 
+The accumulator can stay in the registers of the lanes, with no tile in shared memory. This
+happens when each other use of the tile is a `lanes::fill` of `acc[w]`, a `lanes::scale_rows` of
+it, or a `lanes::copy` out of it, and `w` is the index of a subgroup loop that gives each subgroup
+one pass at most. Then each lane holds the same elements of `acc[w]` in each of them. A fill gives
+the value that the registers start at. A scale multiplies each register by the scale of its row,
+which flash attention needs between two matmuls. A copy stores the registers straight to its
+tensor:
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+
+```vx
+for w in 0..4 across subgroups {
+  lanes::fill(&mut acc[w], 0.0);
+}
+for kt in 0..k / 32 {
+  // copies of the tiles of A and B
+  for w in 0..4 across subgroups {
+    acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+  }
+}
+for w in 0..4 across subgroups {
+  lanes::copy(c, &acc[w], [bm * 128 + w * 32, bn * 128]);
+}
+```
+
+On the Apple GPU, a matmul uses the simdgroup matrices of Metal when all of these are true:
+
+- The result is `f32`, and each tile is `f32` or `f16`.
+- Each size is a multiple of 8.
+- Each tile is in shared memory, and the elements of each row are next to each other.
+
+Each 8 x 8 piece of the result is then a `simdgroup_float8x8`. With `+`, it starts from the old
+value, and otherwise from 0. Each 8 values of `k` add one `simdgroup_multiply_accumulate` to it.
+The GPU adds the products in an order of its own, so a result can differ from the CPU copy in its
+last bits, as on the tensor cores.
+
+The accumulator can stay in the simdgroup matrices of the subgroups, with no tile in shared memory,
+as on an NVIDIA GPU. This happens when each other use of the tile is a `lanes::fill` of `acc[w]`,
+a `lanes::copy` out of it to an `f32` tensor of 2 dimensions, or another matmul that adds to it, and
+`w` is the index of a subgroup loop that gives each subgroup one pass at most. The matmul then
+neither loads nor stores the matrices. The copy stores each 8 x 8 piece that is inside the tensor
+with one `simdgroup_store`. For a piece that goes past the end of the tensor, each lane stores its
+elements that are inside.
+
 Each other matmul uses the lanes of the subgroup: they share the elements of the result, and each
 lane computes its elements in the order above.
+
+### Matmuls of tiles with block scales
+
+```rust
+lanes::matmul_scaled(&mut acc[w], &a[w], &sa[w], &b[w], &sb[w]);
+```
+
+This is a matmul of block-scaled `f4e2m1` tiles. In NVFP4, each 16 values along `k` share one
+`f8e4m3` scale in `sa` or `sb`. In MXFP4, each 32 values share one `f8e8m0` scale, a power of two.
+`sa` and `sb` have the same type.
+
+- With `acc` of [M, N] and `a` of [M, K], `b` is [K, N], `sa` is [M, K / B] and `sb` is
+  [K / B, N]. The block size B divides K. The five tensors are in shared memory, and their sizes
+  are numbers.
+- Each element of `acc` gets the sum over `k` of `a[i][k] * sa[i][k / B] * b[k][j] * sb[k / B][j]`,
+  from 0 and in the order of `k`. Then the matmul adds the old value of the element. Each term is
+  exact in `f32`.
+- An `f8e4m3` scale counts without its sign bit, because the tensor core reads an NVFP4 scale as
+  unsigned.
+- NVFP4 also has one `f32` scale for each tensor. The program multiplies `acc` by it after the
+  matmul.
+- The call must be in the code of a block or of a subgroup, outside its lane loops. The lanes of
+  the block or the subgroup share the elements of `acc`, and then they wait for each other.
+
+On `sm_120a`, `sm_121a` and their families, the matmul goes to the tensor cores when all of these
+are true:
+
+- The result has a multiple of 16 rows and a multiple of 8 columns, and `k` is a multiple of 64.
+- The scales are `f8e4m3` for 16 values (NVFP4), or `f8e8m0` for 16 or 32 values (MXFP4).
+
+Each 16 x 8 piece of the result is then a chain of block-scaled `mma.sync.m16n8k64`, one for each
+64 values of `k`. The tensor core adds the products in an order of its own, so the last bits of a
+sum can differ from the loops on the CPU. Other chips use the lanes of the subgroup.
+
+On `sm_100a` (the B200), `sm_103a` and `sm_110a`, a matmul in the code of a block of 128 lanes can
+use `tcgen05.mma` when all of these are true:
+
+- `acc` has 128 rows, and a multiple of 8 columns up to 256. `k` is a multiple of 64.
+- The scales are `f8e4m3` for 16 values, or `f8e8m0` for 16 or 32 values.
+- The environment variable `VX_TCGEN05` is `1` when the program compiles.
+
+This path is off by default until a B200 runs it
+([#3645](https://github.com/vx-lang/Vx/issues/3645)). The lanes copy the tiles into shared memory
+in the layout that the tensor core reads, and the sums go through tensor memory.
 
 ## Copies
 
@@ -174,7 +271,7 @@ for k in 0..steps / 2 {
 ```
 
 - `tile` is a tensor in shared memory with a size that is a number, such as a row of a rank-3
-  tensor. Its elements have 4 or 8 bytes. `x` has the same element type and the same number of
+  tensor. Its elements have 2, 4 or 8 bytes. `x` has the same element type and the same number of
   dimensions. The place is a list of integers, one for each dimension.
 
 - An element of the tile past the end of `x`, or before its start, is zero.
@@ -228,6 +325,40 @@ A kernel with a copy in the code of a subgroup, and a kernel that `--emit-ptx` w
 lets the groups that started after the token go on (`cp.async.wait_group`), and then every lane
 of the block or the subgroup waits. The CPU copies the tile at the call, and the wait does
 nothing.
+
+`lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` is a `copy_async` whose rows a list of
+ids chooses: row `r` of `tile` gets row `ids[first + r]` of `x`, from column `col`. `tile` and `x`
+have 2 dimensions, and `ids` is a tensor of `i32` with 1 dimension, in any memory. A row whose id is
+below 0 or not below the number of rows of `x`, or whose place `first + r` is past the end of
+`ids`, is zeros, and so is a column past the end of `x`. Its token, its wait and the rules of both
+are those of `copy_async`. On the GPU, each lane reads the id of each of its slots of the tile, and
+starts a `cp.async` from that row, 16 bytes at a time when the addresses allow it. It never uses
+TMA, because TMA on `sm_90` has no gather. The CPU copies the rows at the call.
+
+`lanes::copy(&mut dst, &src, [i, j])` ends before it returns, and gives no token. When `dst` is
+a tile in shared memory, the copy goes into it, as `copy_async` and `.wait()` do. Otherwise `src`
+is the tile, and the copy goes into the part of `dst` at `[i, j]`. An element past the end of
+`dst` is not written. Each lane copies the elements `lane`, `lane + lanes`, and so on, with plain
+loads and stores, and then every lane of the block or the subgroup waits. The proof that the passes of an `across` loop write apart sees the copy as a
+write of each element of that part.
+
+`lanes::fill(&mut tile, v)` sets each element of a tile in shared memory to `v`, which has the
+element type of the tile. Each lane sets the elements `lane`, `lane + lanes`, and so on, and then
+every lane of the block or the subgroup waits.
+
+`lanes::scale_rows(&mut tile, &scale)` multiplies each element of row `i` of `tile` by `scale[i]`.
+`tile` is an `f32` matrix in shared memory, and `scale` an `f32` tile in shared memory with one
+element for each row. Each lane scales the elements `lane`, `lane + lanes`, and so on, and then
+every lane of the block or the subgroup waits. On the Apple GPU, a scale keeps the tile of a matmul
+in shared memory.
+
+`lanes::prefetch(&x, [i, j], [rows, cols])` asks for a part of `x` to come into the L2 cache, and
+reads no value. The part stops at the ends of `x`, and each row of it, along the last dimension,
+is one range of bytes. On `sm_90` and later, lane `l` starts one `cp.async.bulk.prefetch.L2` for
+each of the rows `l`, `l + lanes`, and so on, with the range rounded out to 16 bytes. On an older
+NVIDIA chip, the lanes share the 128-byte lines of the rows, with one `prefetch.L2` for each. Other
+targets, and a kernel on one lane, drop it. A kernel that waits for the kernel before it
+(`VX_GPU_PDL=1`) keeps a prefetch above the wait.
 
 ## Not yet
 

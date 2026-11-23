@@ -1,0 +1,26 @@
+//===- book_topology_reachable_where.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on topologies (www/book/src/heterogeneous.md): a function with
+// `where Reachable<S, D>` brings a tensor from the GPU to the host that calls it.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum 14{{$}}
+
+// ANCHOR: program
+fn fetch_sum<S : Topology, D : Topology>(x : Pinned<Tensor<i32, [2]>, Topology::S>) on Topology::D -> i32 where Reachable<S, D> {
+  let here = transfer(x, Memory::CPU_DRAM);
+  return here[0] + here[1];
+}
+
+fn main() -> i32 {
+  let g : Pinned<Tensor<i32, [2]>, Topology::GPU> = transfer(Tensor<i32, [2]>::fill(7), Memory::GPU_HBM);
+  println!("sum {}", fetch_sum(g));
+  return 0;
+}
+// ANCHOR_END: program

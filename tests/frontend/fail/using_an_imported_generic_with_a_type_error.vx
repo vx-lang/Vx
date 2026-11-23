@@ -13,5 +13,5 @@ fn main() -> i32 {
 }
 
 // SEQ: Warning[W1009] at {{.*}}library_with_a_generic_function_with_a_type_error.vx:16:4: Unused function parameter 'v'
-// CHECK: Error in {{.*}}library_with_a_generic_function_with_a_type_error.vx: Struct 'Point' has no field 'y'
+// CHECK: Error at {{.*}}library_with_a_generic_function_with_a_type_error.vx:20:3: Struct 'Point' has no field 'y'
 // CHECK: 1 error(s) emitted

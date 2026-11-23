@@ -21,12 +21,12 @@ Topology TmemDev {
   visible: [Memory::TMEM]
 }
 
-// CHECK: Error[E6037] {{.*}}`Topology::TmemDev` in function 'by_device' has no address space on the target: `Memory::TMEM` has no `scope:`
+// CHECK: Error[E6037] at {{.*}}memory_space_unmappable.vx:[[@LINE+1]]:4: `Topology::TmemDev` in parameter 'p' of function 'by_device' has no address space on the target: `Memory::TMEM` has no `scope:`
 fn by_device(p : Tensor<f32, [4, 4], Topology::TmemDev>) -> i32 {
   return 0;
 }
 
-// CHECK: Error[E6037] {{.*}}`Memory::TMEM` in function 'by_memory' has no address space on the target: `Memory::TMEM` has no `scope:`
+// CHECK: Error[E6037] at {{.*}}memory_space_unmappable.vx:[[@LINE+1]]:4: `Memory::TMEM` in parameter 'p' of function 'by_memory' has no address space on the target: `Memory::TMEM` has no `scope:`
 fn by_memory(p : Tensor<f32, [4, 4], Memory::TMEM>) -> i32 {
   return 0;
 }

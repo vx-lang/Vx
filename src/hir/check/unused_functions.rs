@@ -136,9 +136,10 @@ fn names_in_expr(e: &Expr, out: &mut Vec<String>) {
 /// A device index such as `GPU[pick()]` is an expression too.
 fn names_in_topology(top: &Topology, out: &mut Vec<String>) {
     match top {
-        Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => {
-            visit_expr(e, &mut |e| names_in_expr(e, out))
-        }
+        Topology::NPU(e)
+        | Topology::AccCore(e)
+        | Topology::GPU(e)
+        | Topology::Custom(_, Some(e)) => visit_expr(e, &mut |e| names_in_expr(e, out)),
         Topology::Slice(base, start, end) => {
             names_in_topology(base, out);
             visit_expr(start, &mut |e| names_in_expr(e, out));

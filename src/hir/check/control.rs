@@ -72,9 +72,10 @@ impl<'a> TypeChecker<'a> {
         return_is_value: bool,
     ) -> ComptimeFold {
         let interpretation = self.observe_comptime_block(stmts, ret, before);
-        // At the block's last expression; at the `comptime` keyword when there is none, or when
-        // it has no position of its own, as a number literal does.
+        // At the block's last expression; at the `comptime` keyword when there is none, when it
+        // has no place, or when it is a number, which cannot be what went wrong.
         let span = ret
+            .filter(|r| !matches!(r, Expr::Number(_)))
             .map(|r| r.span())
             .filter(|span| *span != Span::default())
             .unwrap_or(block_span);
@@ -913,7 +914,12 @@ impl<'a> TypeChecker<'a> {
     /// Such an arm can never be selected. Codegen parses the literal with a zero fallback, which
     /// silently turns it into a comparison against 0 -- so the arm fires for scrutinee 0 instead
     /// of never. Reported here, where the scrutinee's type is known.
-    pub(crate) fn check_literal_pattern_range(&mut self, pattern: &Pattern, expr_ty: &Type) {
+    pub(crate) fn check_literal_pattern_range(
+        &mut self,
+        pattern: &Pattern,
+        expr_ty: &Type,
+        span: &Span,
+    ) {
         if self.speculating {
             return;
         }
@@ -935,7 +941,7 @@ impl<'a> TypeChecker<'a> {
                      so the arm can never be selected",
                     n.value, elem
                 ),
-                Some(crate::diagnostic::SourceSpan::from_ast_span(&n.span)),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
         }
     }
@@ -1092,6 +1098,43 @@ impl<'a> TypeChecker<'a> {
                 at,
             );
         }
+    }
+
+    /// Refuse `true` or `false` in a `match` on a value that is not a `bool`, a number in a
+    /// `match` on a `bool`, and a float in a `match` on an integer. The arm would compare values
+    /// of two types.
+    fn check_literal_pattern_kind(&mut self, pattern: &Pattern, expr_ty: &Type, span: &Span) {
+        let Pattern::Literal(lit) = pattern else {
+            return;
+        };
+        if self.speculating || matches!(expr_ty, Type::Unknown | Type::Generic(..)) {
+            return;
+        }
+        let is_bool = *expr_ty == Type::Scalar(ElementType::Bool);
+        let is_integer = !is_bool && matches!(expr_ty, Type::Scalar(e) if e.int_bits().is_some());
+        let message = match (bool_literal(lit), &**lit) {
+            (Some(b), _) if !is_bool => {
+                format!("`{b}` is a `bool`, but the value matched has the type `{expr_ty}`")
+            }
+            (None, Expr::Number(n)) if is_bool => format!(
+                "`{}` is a number, but the value matched is a `bool`; write `true` or `false`",
+                n.value
+            ),
+            (None, Expr::Number(n))
+                if is_integer && crate::syntax::types::is_float_literal_spelling(&n.value) =>
+            {
+                format!(
+                    "`{}` is a float, but the value matched has the type `{expr_ty}`",
+                    n.value
+                )
+            }
+            _ => return,
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3051,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
     }
 
     pub(crate) fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
@@ -1366,12 +1409,14 @@ impl<'a> TypeChecker<'a> {
                     match &arm.pattern {
                         Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
                         Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
-                        _ => {}
+                        Pattern::Literal(lit) => covered.extend(bool_literal(lit)),
                     }
-                    // `_ => {}` and an empty enum variant arm are there to make the match cover
-                    // every case, so they stay quiet. Every arm the compiler writes is one of them.
+                    // `_ => {}` and an empty arm for an enum variant or a `bool` are there to make
+                    // the match cover every case, so they stay quiet. Every arm the compiler
+                    // writes is one of them.
                     if arm.body.is_empty()
                         && !matches!(arm.pattern, Pattern::Wildcard | Pattern::EnumVariant(..))
+                        && !matches!(&arm.pattern, Pattern::Literal(l) if bool_literal(l).is_some())
                         && !self.speculating
                     {
                         self.errors.warn(
@@ -1382,10 +1427,11 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.refuse_payload_subpattern(&arm.pattern, &arm.span);
                     self.check_variant_pattern(&arm.pattern, &expr_ty, &arm.span);
+                    self.check_literal_pattern_kind(&arm.pattern, &expr_ty, &arm.span);
                     self.pointer_branches
                         .push(Self::pointer_arm_name(&arm.pattern));
                     self.push_scope();
-                    self.check_literal_pattern_range(&arm.pattern, &expr_ty);
+                    self.check_literal_pattern_range(&arm.pattern, &expr_ty, &arm.span);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
                     let mut takes_value = !place;
                     if behind_ref {
@@ -1459,14 +1505,9 @@ impl<'a> TypeChecker<'a> {
                     // end in `return`/`break`/`continue`, or in a statement like `assert`,
                     // diverge or yield unit and do not constrain the match value — this is
                     // what lets `Option::unwrap` (Some arm `return v`, None arm asserts)
-                    // type-check as `-> T`.
-                    let yields_value = matches!(
-                        arm.body.last(),
-                        Some(Statement::ExprStmt(ExprStmtStmt {
-                            has_semi: false,
-                            ..
-                        }))
-                    );
+                    // type-check as `-> T`. A last `match` whose arms all `return` is no value
+                    // either.
+                    let yields_value = crate::syntax::expr::block_gives_a_value(&arm.body);
                     if literal_arm {
                         literal_arms.push(i);
                         literal_ty.get_or_insert(arm_ty);
@@ -1510,7 +1551,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.consteval.constraints = facts_after_branches(prefix_before, ends_after);
 
-                // Coverage. An enum scrutinee can be enumerated, so a missing variant is a fact
+                // Coverage. An enum or a `bool` can be enumerated, so a missing case is a fact
                 // about the match wherever it sits: the uncovered value falls through, and if
                 // every written arm returns, the function falls off its end carrying whatever
                 // was in the return slot. A scrutinee that cannot be enumerated has no such
@@ -1518,7 +1559,12 @@ impl<'a> TypeChecker<'a> {
                 // fall-through edge would otherwise have no value to carry.
                 if !has_wildcard && !self.speculating {
                     let at = Some(crate::diagnostic::SourceSpan::from_ast_span(match_span));
-                    match self.enum_variants_of(&expr_ty) {
+                    let cases = if expr_ty == Type::Scalar(ElementType::Bool) {
+                        Some(vec!["true".into(), "false".into()])
+                    } else {
+                        self.enum_variants_of(&expr_ty)
+                    };
+                    match cases {
                         Some(all) => {
                             let missing: Vec<String> = all
                                 .iter()
@@ -1624,6 +1670,8 @@ impl<'a> TypeChecker<'a> {
                 self.next_id += 1;
 
                 let cloned_params = e.params.clone();
+                // A `let` with a type makes the closure a value of that type, which copies.
+                let typed = self.expected_type.is_some();
                 // The `let` whose value this closure is. A `let` in the body changes the field.
                 let in_let = self
                     .let_closure
@@ -1734,6 +1782,31 @@ impl<'a> TypeChecker<'a> {
                     captured_vars_map.into_iter().collect();
                 captured_vars.sort_by(|a, b| a.0.cmp(&b.0)); // Stable layout
 
+                // A body that moves a capture can run only once.
+                let moved_capture = captured_vars
+                    .iter()
+                    .find(|(name, ty)| {
+                        !matches!(ty, Type::Tensor(..)) && self.is_moved(name.as_ref())
+                    })
+                    .map(|(name, _)| name.clone());
+                if let Some(moved) = &moved_capture {
+                    self.mono
+                        .closures_that_run_once
+                        .insert(struct_name.clone().into(), moved.clone());
+                    // `std::sync::within` calls its body once.
+                    if !self.speculating && (in_let.is_none() || typed) && !in_within {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4017,
+                            format!(
+                                "this closure moves `{moved}`, a value that it captures, so it \
+                                 can run only once. Write it in a `let` with no type, and call \
+                                 it there"
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                        );
+                    }
+                }
+
                 // How the closure takes each capture: by value, or through `&` or `&mut` (C1 in
                 // docs/discussions/closures_that_change_captured_locals.md).
                 let borrows: HashMap<crate::symbol::Symbol, bool> = captured_vars
@@ -1752,6 +1825,13 @@ impl<'a> TypeChecker<'a> {
                     .collect();
 
                 if !self.speculating {
+                    // A closure whose body moves a capture takes it, so the code around the
+                    // closure must not drop it too. The move in the body stopped at the body.
+                    for (name, ty) in &captured_vars {
+                        if !matches!(ty, Type::Tensor(..)) && self.is_moved(name.as_ref()) {
+                            self.drops_note_move(name.as_ref(), false);
+                        }
+                    }
                     // A tensor is moved into the closure, as before.
                     for (name, ty) in &captured_vars {
                         if matches!(ty, Type::Tensor(_, _, _))
@@ -1828,7 +1908,7 @@ impl<'a> TypeChecker<'a> {
                     generics: vec![],
                     fields: env_fields.clone(),
                     invariants: Vec::new(),
-                    file: None,
+                    place: Default::default(),
                     doc_comment: None,
                 };
                 self.mono.generated_structs.push(struct_decl);
@@ -2071,6 +2151,16 @@ fn is_a_condition(e: &Expr) -> bool {
         Expr::LogicalOp(l) => is_a_condition(&l.lhs) && is_a_condition(&l.rhs),
         Expr::UnaryOp(u) if matches!(u.op, UnaryOp::Not) => is_a_condition(&u.expr),
         _ => false,
+    }
+}
+
+/// `true` or `false`, when the literal of a pattern is one of them.
+fn bool_literal(lit: &Expr) -> Option<crate::symbol::Symbol> {
+    match lit {
+        Expr::Identifier(id) if matches!(id.name.as_ref(), "true" | "false") => {
+            Some(id.name.clone())
+        }
+        _ => None,
     }
 }
 

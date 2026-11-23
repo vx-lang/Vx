@@ -1,0 +1,50 @@
+//===- book_tensor_ops_matrices.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tensor operations (www/book/src/tensor-ops.md): the
+// reductions of a 2-D tensor, over all of it and along an axis, and `matmul`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum 21 max 6{{$}}
+// CHECK: {{^}}sum_axis(0) 5 7 9{{$}}
+// CHECK: {{^}}sum_axis(1) 6 15{{$}}
+// CHECK: {{^}}mean_axis(1) 2 5{{$}}
+// CHECK: {{^}}matmul is 2 by 2{{$}}
+// CHECK: {{^}}4 5{{$}}
+// CHECK: {{^}}10 11{{$}}
+
+// ANCHOR: program
+import std::tensor;
+
+fn show(t : &Tensor<f64, [?]>) -> i32 {
+  for i in 0..t.len() {
+    print!(" {}", t[i]);
+  }
+  println!("");
+  return 0;
+}
+
+fn main() -> i32 {
+  let m : Tensor<f64, [2, 3]> = [ [ 1.0, 2.0, 3.0 ], [ 4.0, 5.0, 6.0 ] ];
+  println!("sum {} max {}", m.sum(), m.max());
+  print!("sum_axis(0)");
+  show(&m.sum_axis(0));
+  print!("sum_axis(1)");
+  show(&m.sum_axis(1));
+  print!("mean_axis(1)");
+  show(&m.mean_axis(1));
+
+  let k : Tensor<f64, [3, 2]> = [ [ 1.0, 0.0 ], [ 0.0, 1.0 ], [ 1.0, 1.0 ] ];
+  let p = m.matmul(&k);
+  println!("matmul is {} by {}", p.extent(0), p.extent(1));
+  for i in 0..2 {
+    println!("{} {}", p[i][0], p[i][1]);
+  }
+  return 0;
+}
+// ANCHOR_END: program

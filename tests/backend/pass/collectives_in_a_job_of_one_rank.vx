@@ -10,7 +10,14 @@
 // job and after `leave_job`. Then it gives the host tensors, and last a gather of tensors in
 // GPU memory, which host code passes by reference.
 //
-// EXPECT: -1 0, 0 1, -1 0, 1.5 2.5, 3 3, 1 2 3, 4 4
+// This is the job of one rank of a process with no GPU, where host tensors work. With a GPU, a
+// collective needs tensors in GPU memory. So the runs hide the GPUs, and `NO_EXEC` stops the test
+// runner from running the file once more, with the GPUs in view.
+//
+// NO_EXEC
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: -1 0, 0 1, -1 0, 1.5 2.5, 3 3, 1 2 3, 4 4
 //===----------------------------------------------------------------------===//
 
 import std::collective;

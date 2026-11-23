@@ -1,0 +1,37 @@
+//===- a_task_that_sleeps_lets_the_other_tasks_run.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task calls `sleep` in a loop until the other task sets a flag. `sleep` is a wait, so the
+// other task runs on the same thread. Seeds 2 and 4 run the sleeping task first. A shared
+// runtime with one thread has no other thread for the second task.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=4 vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 VX_TASK_MAX_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the task saw the flag{{$}}
+
+import core::sync::atomic;
+import core::time;
+import std::time;
+
+fn main() -> i32 {
+  let flag = AtomicI64::new(0);
+  tasks {
+    spawn {
+      while flag.load(AtomicOrdering::Acquire) == 0 {
+        sleep(Duration::from_millis(1));
+      }
+    };
+    spawn {
+      flag.store(1, AtomicOrdering::Release);
+    };
+  };
+  println!("the task saw the flag");
+  return 0;
+}

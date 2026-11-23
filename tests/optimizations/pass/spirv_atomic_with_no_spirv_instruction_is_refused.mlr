@@ -1,0 +1,25 @@
+//===- spirv_atomic_with_no_spirv_instruction_is_refused.mlr ----*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// SPIR-V has no instruction for `atomicrmw uinc_wrap`, an add that wraps at a
+// bound, and LLVM's SPIR-V backend stops the process on it. So the SPIR-V
+// argument flattening refuses the kernel and says why.
+//
+// RUN: not vx-opt %s --pass-pipeline="builtin.module(gpu.module(vx-flatten-spirv-kernel-args))" 2>&1 | FileCheck %s
+// CHECK: error: it uses the atomic `uinc_wrap`, which a SPIR-V image cannot hold yet
+
+module {
+  gpu.module @kernels {
+    gpu.func @count(%counts: memref<4xi32>, %bound: i32) kernel {
+      %intptr = memref.extract_aligned_pointer_as_index %counts : memref<4xi32> -> index
+      %0 = arith.index_cast %intptr : index to i64
+      %1 = llvm.inttoptr %0 : i64 to !llvm.ptr
+      %2 = llvm.atomicrmw uinc_wrap %1, %bound monotonic : !llvm.ptr, i32
+      gpu.return
+    }
+  }
+}

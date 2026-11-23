@@ -62,7 +62,7 @@ When several impls could apply, the most specific one wins.
 Constrain a parameter with `:`, and write several with `+`:
 
 ```rust
-impl<T : Float> Tensor<T, [?, ?]> {
+extern impl<T : Float> Tensor<T, [?, ?]> {
     // ...
 }
 ```
@@ -111,13 +111,36 @@ serves every implementor. An impl that writes `doubled` itself keeps its own.
 Traits describe shared behaviour, and are implemented with `impl ... for`:
 
 ```rust
-impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
-    // ...
+impl<T> Iterator for VecIter<T> {
+    type Item = &T;
+    // fn next(self : &mut VecIter<T>) -> Option<&T> { ... }
 }
 ```
 
 That is how `Vec` participates in `for` loops and in the iterator adaptors — `map` and friends are
 ordinary generic functions over the `Iterator` trait rather than compiler magic.
+
+## Where an impl goes
+
+Only the file that declares a struct or an enum writes a plain `impl` of it. `core` and `std`
+declare the built-in types, such as `i32` and `Tensor`. Another file writes `extern impl`:
+
+<!-- vx-doctest: skip -- a fragment, not a program -->
+
+```rust
+extern impl Show for i64 {
+    fn show(self : &i64) -> i64 {
+        return *self;
+    }
+}
+```
+
+So a file cannot change what a type of another file can do without a mark that a review finds.
+An impl of `Send`, `Sync` or `Owned` in another file is `unsafe extern impl`. An `extern impl` in
+the file of the type is an error (E3066).
+
+An `impl` that a macro writes belongs to the file of the macro call. A macro cannot write
+`extern impl`.
 
 ## Const generics
 

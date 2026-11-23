@@ -40,7 +40,7 @@ trait Greet {
   }
 }
 
-impl Greet for i32 {
+extern impl Greet for i32 {
   fn hello(self : &i32) -> i32 {
     return *self;
   }

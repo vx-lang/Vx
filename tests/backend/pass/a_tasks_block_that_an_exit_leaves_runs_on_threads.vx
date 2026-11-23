@@ -10,6 +10,7 @@
 // tasks must run at the same time, or the program hangs. In `total`, a `return` leaves two
 // nested blocks at once. Each exit must still do what it says after its blocks end.
 //
+// NO-SEED-SWEEP: a task loops with no wait until another task acts, and one thread cannot run the other task.
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}find 0 16{{$}}

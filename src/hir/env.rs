@@ -67,6 +67,8 @@ pub struct DuplicateImpl {
     /// The module of the impl indexed first, and of the one that repeats it.
     pub first: crate::symbol::Symbol,
     pub second: crate::symbol::Symbol,
+    /// Where the second impl is written.
+    pub place: crate::syntax::DeclPlace,
 }
 
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see
@@ -78,6 +80,8 @@ pub struct DuplicateDecl {
     pub name: crate::symbol::Symbol,
     /// The module whose declaration collided with one already indexed.
     pub module: crate::symbol::Symbol,
+    /// Where that declaration is written.
+    pub place: crate::syntax::DeclPlace,
 }
 
 pub struct GlobalAstEnv<'a> {
@@ -154,6 +158,10 @@ pub struct GlobalAstEnv<'a> {
     /// Top-level `const` items of every module, by name. A use of one is replaced by its value
     /// where the checker resolves the name.
     pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
+    /// Where to report the code that a macro of another file wrote, by the file of the call.
+    pub macro_call_sites: crate::diagnostic::MacroCallSites,
+    /// The files of the modules of `core` and `std`, which declare the built-in types.
+    pub library_files: std::collections::HashSet<crate::symbol::Symbol>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -185,7 +193,25 @@ impl<'a> GlobalAstEnv<'a> {
             decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
+            macro_call_sites: Default::default(),
+            library_files: Default::default(),
         };
+        let mut macro_call_sites = HashMap::new();
+        for module in modules {
+            if let Some(file) = &module.file {
+                let path = module.module_path.as_ref();
+                let library = ["core", "std"]
+                    .iter()
+                    .any(|l| path == *l || path.starts_with(&format!("{l}::")));
+                if library {
+                    env.library_files.insert(file.clone());
+                }
+                if module.macro_call_sites.iter().any(Option::is_some) {
+                    macro_call_sites.insert(file.clone(), module.macro_call_sites.clone());
+                }
+            }
+        }
+        env.macro_call_sites = std::sync::Arc::new(macro_call_sites);
 
         // Where each trait impl was first written, to report a second one for the same type.
         let mut impl_modules: HashMap<String, (crate::symbol::Symbol, &ImplBlock)> = HashMap::new();
@@ -203,6 +229,7 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "memory space",
                             name: m.name.clone(),
                             module: module.module_path.clone(),
+                            place: m.place.clone(),
                         });
                     }
                 }
@@ -217,6 +244,7 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "topology",
                             name: t.name.clone(),
                             module: module.module_path.clone(),
+                            place: t.place.clone(),
                         });
                     }
                 }
@@ -231,6 +259,10 @@ impl<'a> GlobalAstEnv<'a> {
                             kind: "const",
                             name: c.name.clone(),
                             module: module.module_path.clone(),
+                            place: crate::syntax::DeclPlace {
+                                file: module.file.clone(),
+                                span: c.span,
+                            },
                         });
                     }
                 }
@@ -258,6 +290,7 @@ impl<'a> GlobalAstEnv<'a> {
                                 what: what.clone(),
                                 first: first.clone(),
                                 second: module.module_path.clone(),
+                                place: i.place.clone(),
                             })
                         }
                         Some(_) => {}
@@ -598,6 +631,8 @@ pub(crate) struct UnrollCandidate {
     /// Whether a register tensor is indexed with the variable, which makes the code generator
     /// unroll the loop.
     pub(crate) used: bool,
+    /// The loop is an `across` loop, which the code generator never unrolls.
+    pub(crate) across: bool,
 }
 
 pub struct TypeChecker<'a> {
@@ -629,18 +664,15 @@ pub struct TypeChecker<'a> {
     /// Something that needs `unsafe` was checked since the innermost written `unsafe` block
     /// began. If it stays false, that block warns (W1010).
     pub(crate) unsafe_op_seen: bool,
+    /// The device the code being checked runs on. Change it with `set_active_topology`.
     pub(crate) active_topology: Topology,
-    pub(crate) active_memory: MemorySpace,
-    /// Whether the device that owns `active_memory` declares `dtypes:`. Set whenever the
-    /// space changes, so the per-expression check costs a bool read outside a region.
-    pub(crate) active_space_declares_dtypes: bool,
+    /// Whether `active_topology` declares `dtypes:`, so that the check of each expression
+    /// costs one bool read outside a region.
+    pub(crate) active_device_declares_dtypes: bool,
     /// Statements already reported for an element type inside a device region, as
     /// `(line, column, element type)`.
     pub(crate) region_element_reports:
         std::collections::HashSet<(usize, usize, crate::syntax::ElementType)>,
-    /// The statement being checked. Most expression nodes carry no span of their own, so a
-    /// diagnostic about one has to point at the statement that contains it.
-    pub(crate) current_statement_span: crate::syntax::Span,
     pub transfer_cost_graph: &'a crate::arch::TransferCostGraph,
     /// Borrow-checking state (active records + NLL liveness), encapsulated so a conflict-check read
     /// cannot bypass the dead-borrow sweep. Replaces the former `active_borrows` /
@@ -720,6 +752,9 @@ pub struct TypeChecker<'a> {
     /// their scope. Such a variable gets the literal's default type, and a type error on it
     /// says to write the type.
     pub(crate) literal_typed_lets: std::collections::HashMap<String, usize>,
+    /// The `let`s with no `mut` whose value is a string literal, by name, with the depth of
+    /// their scope and the length of the text. `==` on such a name compares the text.
+    pub(crate) string_literal_lets: std::collections::HashMap<String, (usize, usize)>,
     /// The variables the current function changes: assigns, borrows `&mut`, or calls a
     /// `&mut self` method on.
     pub(crate) changed_vars: std::collections::HashSet<String>,
@@ -733,6 +768,9 @@ pub struct TypeChecker<'a> {
     /// The integer type of each value of the variable of a `for` loop where the loop ends, as
     /// `$exit_N`. Each loop gets its own name, so the facts of two loops over `i` do not meet.
     pub(crate) exit_values: Vec<ElementType>,
+    /// The integer type of the end of each `for` loop over a range, as `$end_N`. A loop reads its
+    /// end once, so the name holds that value also after the body changes the variables of `b`.
+    pub(crate) end_values: Vec<ElementType>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -765,6 +803,16 @@ pub struct TypeChecker<'a> {
     pub traffic: crate::hir::check_state::TrafficState,
     /// The size of the tensor of each lane reduction, by the position of its call.
     pub(crate) lane_reductions: HashMap<crate::syntax::Span, u64>,
+    /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
+    /// call.
+    pub(crate) lane_copies_out: HashMap<crate::syntax::Span, Vec<u64>>,
+    /// The tensors in a `scope: thread` space that the code of a block makes outside its lane
+    /// loops, with the position of each `let` and the type of the tensor. Each one must be a tile
+    /// of sums that stays in the registers of the subgroups (check/subgroup_registers.rs).
+    pub(crate) block_register_tiles: Vec<(String, crate::syntax::Span, crate::syntax::Type)>,
+    /// Each index into a register tensor with the variable of an `across` loop: the tensor, the
+    /// variable and the position of the index.
+    pub(crate) across_register_indices: Vec<(String, String, crate::syntax::Span)>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -777,18 +825,17 @@ impl<'a> TypeChecker<'a> {
         // descriptors and transfer edges. No global registry -- the graph is the per-compilation,
         // lock-free carrier the parallel pipeline shares by `&`.
         let transfer_cost_graph = &env.transfer_cost_graph;
-        let active_memory = transfer_cost_graph.default_memory_for(&Topology::CPU);
-        let active_space_declares_dtypes = transfer_cost_graph
-            .owning_topology(&active_memory)
-            .ok()
-            .and_then(|top| transfer_cost_graph.descriptor(&top.kind()))
-            .and_then(|desc| desc.dtypes.as_ref())
-            .is_some();
+        let active_device_declares_dtypes = transfer_cost_graph
+            .descriptor(&Topology::CPU.kind())
+            .is_some_and(|desc| desc.dtypes.is_some());
         Self {
             env,
             worker,
             scopes: vec![HashMap::new()],
-            errors: crate::diagnostic::DiagnosticsVec::new(),
+            errors: crate::diagnostic::DiagnosticsVec {
+                macro_call_sites: env.macro_call_sites.clone(),
+                ..crate::diagnostic::DiagnosticsVec::new()
+            },
             in_unsafe_block: false,
             tokens: Vec::new(),
             closure_body_next: false,
@@ -800,10 +847,8 @@ impl<'a> TypeChecker<'a> {
             trusted: None,
             borrow_clause_errors: std::collections::HashSet::new(),
             active_topology: Topology::CPU,
-            active_memory,
-            active_space_declares_dtypes,
+            active_device_declares_dtypes,
             region_element_reports: std::collections::HashSet::new(),
-            current_statement_span: crate::syntax::Span::default(),
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
@@ -832,10 +877,12 @@ impl<'a> TypeChecker<'a> {
             declared_vars: Vec::new(),
             declared_mut_vars: Vec::new(),
             literal_typed_lets: std::collections::HashMap::new(),
+            string_literal_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
             fact_change_frames: Vec::new(),
             old_values: Vec::new(),
             exit_values: Vec::new(),
+            end_values: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
@@ -850,14 +897,16 @@ impl<'a> TypeChecker<'a> {
             seam: Default::default(),
             traffic: Default::default(),
             lane_reductions: HashMap::new(),
+            lane_copies_out: HashMap::new(),
+            block_register_tiles: Vec::new(),
+            across_register_indices: Vec::new(),
         }
     }
 
-    /// Change the space the code being checked runs in, keeping the derived `dtypes:` flag
-    /// in step with it.
-    pub(crate) fn set_active_memory(&mut self, space: MemorySpace) {
-        self.active_space_declares_dtypes = self.space_declares_dtypes(&space);
-        self.active_memory = space;
+    /// Change the device the code being checked runs on, and keep the `dtypes:` flag in step.
+    pub(crate) fn set_active_topology(&mut self, device: Topology) {
+        self.active_device_declares_dtypes = self.declared_dtypes(&device).is_some();
+        self.active_topology = device;
     }
 
     pub fn push_scope(&mut self) {
@@ -921,6 +970,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.bound_behind_ref.pop();
         self.consteval.env.pop();
         self.literal_typed_lets.retain(|_, d| *d + 1 < depth);
+        self.string_literal_lets.retain(|_, (d, _)| *d + 1 < depth);
         self.borrow.unshadow(depth);
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope. A borrow
@@ -1093,7 +1143,10 @@ impl<'a> TypeChecker<'a> {
     pub fn extract_uses_expr(expr: &Expr, uses: &mut std::collections::HashSet<String>) {
         fn topology(value: &Topology, uses: &mut std::collections::HashSet<String>) {
             match value {
-                Topology::NPU(index) | Topology::AccCore(index) | Topology::GPU(index) => {
+                Topology::NPU(index)
+                | Topology::AccCore(index)
+                | Topology::GPU(index)
+                | Topology::Custom(_, Some(index)) => {
                     TypeChecker::extract_uses_expr(index, uses);
                 }
                 Topology::Slice(base, start, end) => {
@@ -1107,7 +1160,7 @@ impl<'a> TypeChecker<'a> {
                 | Topology::CpuAvx512
                 | Topology::CpuNeon
                 | Topology::Current
-                | Topology::Custom(_) => {}
+                | Topology::Custom(_, None) => {}
             }
         }
 
@@ -1678,7 +1731,7 @@ impl<'a> TypeChecker<'a> {
                 // to the argument's concrete topology; a concrete topology must match. Then
                 // unify the payload (which may itself carry type variables).
                 let tops_ok = match top1 {
-                    Topology::Custom(name) if self.mono.pending_topo_vars.contains(name) => {
+                    Topology::Custom(name, None) if self.mono.pending_topo_vars.contains(name) => {
                         self.mono
                             .pending_topo_bindings
                             .insert(name.clone(), top2.clone());
@@ -1721,7 +1774,7 @@ impl<'a> TypeChecker<'a> {
         top: Topology,
         topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
     ) -> Topology {
-        if let Topology::Custom(name) = &top {
+        if let Topology::Custom(name, None) = &top {
             if let Some(bound) = topo_mapping.get(name) {
                 return bound.clone();
             }
@@ -1992,6 +2045,7 @@ impl<'a> TypeChecker<'a> {
         // Diagnostics name the file the function is written in, even when it is a generic
         // instance or a copied default checked from inside another file's function.
         let prev_file = std::mem::replace(&mut self.errors.file, func.file.clone());
+        let prev_at = std::mem::replace(&mut self.errors.at, func.span);
 
         // `main` is the C entry point: its return value is the process exit code,
         // so it must return i32 (#210). A non-i32 `main` is a hard error rather
@@ -2019,6 +2073,8 @@ impl<'a> TypeChecker<'a> {
                     | Type::Ref(i, _)
                     | Type::Pinned(i, _)
                     | Type::Verified(i)
+                    | Type::Distinct(i)
+                    | Type::DisjointRanges(i)
                     | Type::Borrow { inner: i, .. } => walk(i, out),
                     Type::GenericInstance(b, args) => {
                         walk(b, out);
@@ -2137,6 +2193,7 @@ impl<'a> TypeChecker<'a> {
         let prev_declared_vars = std::mem::take(&mut self.declared_vars);
         let prev_declared_mut_vars = std::mem::take(&mut self.declared_mut_vars);
         let prev_literal_typed_lets = std::mem::take(&mut self.literal_typed_lets);
+        let prev_string_literal_lets = std::mem::take(&mut self.string_literal_lets);
         let prev_changed_vars = std::mem::take(&mut self.changed_vars);
         // The same for `unsafe`: a generic body is checked at the call that needs it, which may
         // be inside the caller's `unsafe` block, but the body is not inside that block.
@@ -2147,12 +2204,7 @@ impl<'a> TypeChecker<'a> {
         self.push_scope();
 
         let prev_top = self.active_topology.clone();
-        let prev_mem = self.active_memory.clone();
-        self.active_topology = func.topology.clone();
-        let mem = self
-            .transfer_cost_graph
-            .default_memory_for(&self.active_topology);
-        self.set_active_memory(mem);
+        self.set_active_topology(func.topology.clone());
 
         // Record the parameter set and clear per-function provenance state for the
         // return-escape analysis (#243). Saved/restored so nested checks (closures) don't
@@ -2162,6 +2214,8 @@ impl<'a> TypeChecker<'a> {
         let prev_store_targets = std::mem::take(&mut self.borrow.store_targets);
         let prev_store_target_vars = std::mem::take(&mut self.borrow.store_target_vars);
         let prev_views = std::mem::take(&mut self.borrow.views);
+        let prev_foreign_views = std::mem::take(&mut self.borrow.foreign_views);
+        let prev_const_views = std::mem::take(&mut self.borrow.const_views);
         let prev_view_owners = std::mem::take(&mut self.borrow.view_owners_by_let);
         // The borrow table too. A function's body can be checked from inside another's: a
         // generic method is checked when a call first instantiates it. The caller's borrows are
@@ -2349,6 +2403,8 @@ impl<'a> TypeChecker<'a> {
             self.check_across_loops(&func.params, &mut func.body);
         }
 
+        // A tile that the GPU keeps in registers takes no shared memory.
+        self.leave_out_tiles_in_registers(&func.body);
         // The whole function has been checked; verify the working set of each memory space
         // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.
         self.check_cumulative_capacity();
@@ -2367,13 +2423,14 @@ impl<'a> TypeChecker<'a> {
         self.consteval.constraints = prev_constraints;
         self.fact_change_frames = prev_fact_change_frames;
         self.pointer_facts_leave_body(prev_pointer_state);
-        self.active_topology = prev_top;
-        self.set_active_memory(prev_mem);
+        self.set_active_topology(prev_top);
         self.borrow.current_params = prev_params;
         self.borrow.ref_provenance = prev_provenance;
         self.borrow.store_targets = prev_store_targets;
         self.borrow.store_target_vars = prev_store_target_vars;
         self.borrow.views = prev_views;
+        self.borrow.foreign_views = prev_foreign_views;
+        self.borrow.const_views = prev_const_views;
         self.borrow.view_owners_by_let = prev_view_owners;
         self.borrow.restore(prev_borrows);
         self.borrow.restore_shadowed(prev_shadowed);
@@ -2390,6 +2447,7 @@ impl<'a> TypeChecker<'a> {
         self.declared_vars = prev_declared_vars;
         self.declared_mut_vars = prev_declared_mut_vars;
         self.literal_typed_lets = prev_literal_typed_lets;
+        self.string_literal_lets = prev_string_literal_lets;
         self.changed_vars = prev_changed_vars;
         self.tasks.exit_function(prev_tasks);
         self.in_unsafe_block = prev_in_unsafe;
@@ -2397,6 +2455,7 @@ impl<'a> TypeChecker<'a> {
         self.in_written_unsafe_block = prev_written_unsafe;
         self.unsafe_op_seen = prev_unsafe_op_seen;
         self.errors.file = prev_file;
+        self.errors.at = prev_at;
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {
@@ -2411,8 +2470,10 @@ impl<'a> TypeChecker<'a> {
         }
 
         let mut expr_parser = crate::parser::Parser::new(&tokens, s);
-        if let Ok(expr) = expr_parser.parse_primary_expr() {
-            return Type::Const(Box::new(expr));
+        if let Ok(expr) = expr_parser.parse_as_expr() {
+            if expr_parser.check(&crate::lexer::TokenType::Eof) {
+                return Type::Const(Box::new(expr));
+            }
         }
 
         Type::Unknown
@@ -2763,7 +2824,7 @@ mod specialization_identity_tests {
     #[case::tensor_host_gpu(tensor(None), gpu(0))]
     #[case::tensor_gpu_devices(gpu(0), gpu(1))]
     #[case::slice_bounds(slice("2"), slice("3"))]
-    #[case::custom_devices(tensor(Some(Placement::on(Topology::Custom("A".into())))), tensor(Some(Placement::on(Topology::Custom("B".into())))))]
+    #[case::custom_devices(tensor(Some(Placement::on(Topology::Custom("A".into(), None)))), tensor(Some(Placement::on(Topology::Custom("B".into(), None)))))]
     #[case::tensor_memory(
         gpu(0),
         tensor(Some(Placement::in_space(MemorySpace::CPUDRAM, Topology::gpu(0))))
@@ -2884,5 +2945,19 @@ mod specialization_identity_tests {
             (true, true),
             "unsupported indices must decline with a diagnostic"
         );
+    }
+
+    #[test]
+    fn parse_ty_str_preserves_cast_in_generic_argument() {
+        let env = GlobalAstEnv::build(&[]);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let checker = TypeChecker::new(&env, &mut worker);
+        let ty = checker.parse_ty_str("N as usize");
+        match ty {
+            Type::Const(c) => assert!(matches!(*c, Expr::AsCast(_))),
+            other => panic!("expected Type::Const(AsCast), got {:?}", other),
+        }
     }
 }

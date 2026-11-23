@@ -12,8 +12,8 @@ fn main() -> i32 {
   // CHECK: Error[E3033]{{.*}}holds a statement the evaluator cannot run
   let value = comptime {
     let mut mlir_local : i32 = 0i32;
-    let _ignored = mlir!(inputs : (), clobbers : [mlir_local], returns : void, dialects : []) {
-    };
+    let _ignored = unsafe { mlir!(inputs : (), clobbers : [mlir_local], returns : void, dialects : []) {
+      } };
     7i32
   };
   return value;

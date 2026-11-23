@@ -307,6 +307,12 @@ adds one merged fact for both. It keeps the facts that it had, so the end of an 
 fact that both branches have. A later write next to the merged fact grows it. So a chain of writes
 gives one fact, and a goal needs at most two facts.
 
+The checker decides whether two ranges touch without the solver when their bounds differ only by
+whole numbers, as for `p[0]` and `p[1]`. For other bounds, it asks the solver about four facts only:
+merged facts first, then the newest. Without this limit, a function with N writes asked about 4·N²
+questions, one solver process each. A merge that the limit misses leaves two facts where one could
+be, so a clause that needs the merged fact may fail to prove.
+
 Each goal uses exact integer arithmetic, with no wrap. Otherwise an offset near `i64::MAX` plus a
 length could wrap to a small number and pass the bound. An address can still wrap: `offset(p, k)`
 multiplies `k` by the size of an element. So the rule for one base needs a `Valid` fact. Inside

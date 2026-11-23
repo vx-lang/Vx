@@ -14,14 +14,17 @@
 // CHECK: .entry reverse_after_the_blocks(
 // CHECK-DAG: .shared .align 16 .b8 [[TILE:[a-z_0-9]+]][1024];
 // CHECK-DAG: .shared .align 16 .u32 [[FLAG:[a-z_0-9$]+]];
+// The address of this lane's element of the tile can come first.
+// CHECK: mov.b64 [[TILE_AT:%rd[0-9]+]], [[TILE]];
+// CHECK-NEXT: add.s64 [[ELEMENT:%rd[0-9]+]], [[TILE_AT]], {{%rd[0-9]+}};
 // Each pass adds 1 to the count. Then the lanes read the flag, and only the last pass goes on.
 // CHECK: atom.global.add.u32
 // CHECK: ld.shared.b32 [[LAST:%r[0-9]+]], {{\[}}[[FLAG]]{{\]}};
 // CHECK-NEXT: setp.ne.b32 [[NOT_LAST:%p[0-9]+]], [[LAST]], 1;
 // CHECK-NEXT: @[[NOT_LAST]] bra
 // The code after that uses the tile.
-// CHECK-NEXT: mov.b64 {{%rd[0-9]+}}, [[TILE]];
-// CHECK: st.shared.b32
+// CHECK-NEXT: ld.global.b32
+// CHECK-NEXT: st.shared.b32 {{\[}}[[ELEMENT]]{{\]}}
 // CHECK: bar.sync
 // CHECK: ld.shared.b32
 // CHECK: ret;

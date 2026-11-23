@@ -1,0 +1,76 @@
+//===- book_traits_a_key.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on operators and standard traits
+// (www/book/src/operators-and-traits.md): a struct implements `Hash` and `PartialEq`, so generic
+// functions that need a key accept it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}same hash true, other hash false{{$}}
+// CHECK: {{^}}added true false true{{$}}
+// CHECK: {{^}}cells 2{{$}}
+
+// ANCHOR: program
+import core::cmp;
+import core::hash;
+import core::marker;
+import std::vec;
+
+struct Cell {
+  row : i32,
+  col : i32,
+}
+
+impl Copy for Cell {}
+
+impl PartialEq for Cell {
+  fn eq(self : &Cell, other : &Cell) -> bool {
+    return self.row == other.row && self.col == other.col;
+  }
+}
+
+impl Hash for Cell {
+  fn hash<H : Hasher>(self : &Cell, state : &mut H) -> i32 {
+    self.row.hash(state);
+    return self.col.hash(state);
+  }
+}
+
+fn hash_of<K : Hash>(key : &K) -> u64 {
+  let mut state = FxHasher::new();
+  key.hash(&mut state);
+  return state.finish();
+}
+
+fn add_new<K : PartialEq>(seen : &mut Vec<K>, key : K) -> bool {
+  for i in 0..seen.len() {
+    if seen.get_ref(i) == &key {
+      return false;
+    }
+  }
+  seen.push(key);
+  return true;
+}
+
+fn main() -> i32 {
+  let a = Cell {
+    row: 1, col: 2
+  };
+  let b = Cell {
+    row: 1, col: 2
+  };
+  let c = Cell {
+    row: 2, col: 1
+  };
+  println!("same hash {}, other hash {}", hash_of(&a) == hash_of(&b), hash_of(&a) == hash_of(&c));
+  let mut seen = Vec<Cell>::new();
+  println!("added {} {} {}", add_new(&mut seen, a), add_new(&mut seen, b), add_new(&mut seen, c));
+  println!("cells {}", seen.len());
+  return 0;
+}
+// ANCHOR_END: program

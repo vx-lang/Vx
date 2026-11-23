@@ -1,0 +1,50 @@
+//===- book_errors_find_a_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on errors (www/book/src/errors.md): a search that may find
+// nothing gives an `Option`, and the caller reads it with `match`, `is_some` and `unwrap_or`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}first square above 20 is 25{{$}}
+// CHECK-NEXT: {{^}}no square above 200{{$}}
+// CHECK-NEXT: {{^}}found false{{$}}
+// CHECK-NEXT: {{^}}or 0 gives 0{{$}}
+
+// ANCHOR: program
+import core::option;
+
+fn first_square_above(limit : i64) -> Option<i64> {
+  for i in 1..10 {
+    let sq = (i * i) as i64;
+    if sq > limit {
+      return Option<i64>::Some(sq);
+    }
+  }
+  return Option<i64>::None();
+}
+
+fn report(limit : i64) -> void {
+  match first_square_above(limit) {
+    Option<i64>::Some(sq) => {
+      println!("first square above {} is {}", limit, sq);
+    }
+    Option<i64>::None() => {
+      println!("no square above {}", limit);
+    }
+  }
+}
+
+fn main() -> i32 {
+  report(20);
+  report(200);
+  let missing = first_square_above(500);
+  println!("found {}", missing.is_some());
+  println!("or 0 gives {}", missing.unwrap_or(0));
+  return 0;
+}
+// ANCHOR_END: program

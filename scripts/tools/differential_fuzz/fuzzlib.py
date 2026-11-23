@@ -90,6 +90,13 @@ def parse_config(text):
     return name, words, env
 
 
+def for_seed(configs, seed):
+    """The configurations with each `{seed}` in an environment value replaced by `seed`, so
+    that a configuration such as `seed=VX_TASK_SEED={seed}` differs from program to program."""
+    return [(name, flags, {var: value.replace("{seed}", str(seed)) for var, value in env.items()})
+            for name, flags, env in configs]
+
+
 def build_heap_counter(workdir):
     """Compile the heap counter into `workdir`. Returns the library's path."""
     library = os.path.join(workdir, "heap_count.so")

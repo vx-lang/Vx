@@ -1,0 +1,26 @@
+//===- a_function_returns_a_gpu_tensor_without_a_copy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that returns a tensor in GPU memory gives its caller that tensor, not a copy. A
+// channel takes each tensor out of its buffer this way. A copy would read GPU memory with the
+// CPU, and crash on a machine with a GPU. No GPU is needed to compile it.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s
+//
+// CHECK-LABEL: llvm.func {{.*}}@take(
+// CHECK-NOT: llvm.call @malloc(
+// CHECK-NOT: "llvm.intr.memcpy"(
+// CHECK: llvm.return
+
+pub unsafe fn take(p : *mut Tensor<f32, [4], Memory::GPU_HBM>) -> Tensor<f32, [4], Memory::GPU_HBM> {
+  return unsafe { p[0] };
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,40 @@
+// A loop of a kernel for the Apple GPU that counts up an i32 is a `for` loop in the MSL, so that
+// the Metal compiler can unroll a loop with a constant bound. The step adds as a `uint`, as the
+// integer arithmetic of the compiler wraps. A loop that compares without a sign stays a
+// `while (true)`. The flat code generator compares the u32 loop of `k` without a sign. The AST
+// code generator (`--legacy-codegen`) makes its bound an i32, so that loop is a `for` too. The
+// test needs no GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal
+// RUN: FileCheck %s --check-prefixes=CHECK,FLAT --input-file=%t.metal
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --emit-msl -o %t.ast.metal
+// RUN: FileCheck %s --check-prefixes=CHECK,AST --input-file=%t.ast.metal
+
+// The blocks, the lanes, and `j` of 0..8 are `for` loops.
+// CHECK-LABEL: kernel void sums(
+// CHECK: for (int [[B:v[0-9]+]] = {{v[0-9]+}}; [[B]] < {{v[0-9]+}}; [[B]] = (int)((uint)[[B]] + (uint){{v[0-9]+}})) {
+// CHECK: for (int [[L:v[0-9]+]] = {{v[0-9]+}}; [[L]] < {{v[0-9]+}}; [[L]] = (int)((uint)[[L]] + (uint){{v[0-9]+}})) {
+// CHECK: for (int [[J:v[0-9]+]] = {{v[0-9]+}}; [[J]] < {{v[0-9]+}}; [[J]] = (int)((uint)[[J]] + (uint){{v[0-9]+}})) {
+// FLAT: while (true) {
+// FLAT: bool {{v[0-9]+}} = (uint){{v[0-9]+}} < (uint)p3;
+// AST: int [[M:v[0-9]+]] = (int)p3;
+// AST: for (int [[K:v[0-9]+]] = {{v[0-9]+}}; [[K]] < [[M]]; [[K]] = (int)((uint)[[K]] + (uint){{v[0-9]+}})) {
+// CHECK-NOT: while (true)
+// CHECK: return;
+pub fn sums(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, n : i32, m : u32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        let mut s : f32 = 0.0;
+        for j in 0..8 {
+          s = s + x[l * 8 + j];
+        }
+        for k in 0u32..m {
+          s = s + x[(k as i32) % n];
+        }
+        out[l] = s;
+      }
+    }
+  }
+  return;
+}

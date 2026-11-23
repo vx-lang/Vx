@@ -322,8 +322,7 @@ impl<'a> TypeChecker<'a> {
             } else {
                 format!("{text} does not fit `{ty}`")
             };
-            // A number literal has no span of its own: spans take part in comparing types,
-            // and a literal is also a tensor dimension. The `-` before one has a span.
+            // A number the compiler wrote has no place in the source.
             let at = (span != Span::default())
                 .then(|| crate::diagnostic::SourceSpan::from_ast_span(&span));
             self.errors
@@ -475,10 +474,8 @@ impl<'a> TypeChecker<'a> {
         matches!(inner, Type::Tensor(ElementType::F32, dims, _) if dims.len() == 1)
     }
 
-    /// A rank-1 f16/bf16 tensor slice: half-precision STORAGE that every slice contract widens
-    /// to f32 on load (Vx#320). Storage precision and arithmetic precision are separate
-    /// decisions -- a wide-slice op computes in f32 and its result IS f32; only an explicit
-    /// store back into a half tensor narrows again.
+    /// A rank-1 f16/bf16 tensor slice. A reduction over it (`dot`, `sum`, `max`, `min`) gives
+    /// f32. Elementwise arithmetic gives f32 only when the other operand has another type.
     pub(crate) fn is_half_slice(t: &Type) -> bool {
         let inner = match t {
             Type::Borrow { inner, .. }
@@ -498,7 +495,9 @@ impl<'a> TypeChecker<'a> {
     fn is_located_tensor_payload(t: &Type) -> bool {
         match t {
             Type::Pinned(inner, _) | Type::Ref(inner, _) => matches!(**inner, Type::Tensor(..)),
-            Type::Verified(inner) => Self::is_located_tensor_payload(inner),
+            Type::Verified(inner) | Type::Distinct(inner) | Type::DisjointRanges(inner) => {
+                Self::is_located_tensor_payload(inner)
+            }
             _ => false,
         }
     }
@@ -844,7 +843,8 @@ impl<'a> TypeChecker<'a> {
                                         struct_fields[prev].0,
                                         order.join(", ")
                                     ),
-                                    // A number literal has no position, so the literal's is used.
+                                    // At the field's value, or at the struct literal when the
+                                    // value has no place.
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(
                                         &Some(f_expr.span())
                                             .filter(|s| s.line > 0)

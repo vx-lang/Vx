@@ -283,6 +283,20 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Scalar(src), Type::Scalar(dst)) => {
+                // Rust's rule: only a `bool` casts to a `bool`. From an integer the cast kept
+                // the lowest bit, so `2 as bool` was `false`.
+                if *dst == ElementType::Bool && *src != ElementType::Bool {
+                    let zero = if src.is_float() { "0.0" } else { "0" };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3011,
+                        format!(
+                            "cannot cast `{src}` to `bool`: compare it with zero instead, as in \
+                             `x != {zero}`"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                    return Type::Unknown;
+                }
                 // A literal is left alone, since a cast is one way to give a number its type.
                 // So is a generic instance: there `x as T` converts for every other `T`.
                 let literal = match &*expr.expr {
@@ -407,6 +421,18 @@ impl<'a> TypeChecker<'a> {
             span,
         });
         Some((**inner).clone())
+    }
+
+    /// The value that the reference `e` points at: `x` for `&x`, and `*e` for another reference.
+    fn through_reference(e: &Expr, inner: &Type) -> Expr {
+        if let Expr::Borrow(b) = e {
+            return (*b.expr).clone();
+        }
+        Expr::Dereference(DereferenceExpr {
+            expr: Box::new(e.clone()),
+            ty: Some(inner.clone()),
+            span: e.span(),
+        })
     }
 
     /// `a + b` on a struct or an enum whose type has the operator's trait method: the call
@@ -632,7 +658,7 @@ impl<'a> TypeChecker<'a> {
                 // did not typecheck, and the stdlib `copy` is a copy-*into*
                 // rather than a duplication. That is enough for a test and never
                 // enough for a model, whose weights are read once per token.
-                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, _top_r))) = (
+                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, top_r))) = (
                     Self::as_tensor_operand(&lhs_ty),
                     Self::as_tensor_operand(&rhs_ty),
                 ) {
@@ -683,10 +709,40 @@ impl<'a> TypeChecker<'a> {
                                     return Type::Unknown;
                                 }
                             }
+                            // In a device region, the product goes to the memory that its
+                            // target names, such as registers for sums in `Memory::REG`. Tiles in
+                            // two memories, such as weights in HBM and activations in shared
+                            // memory, need such a target: a default would hide a copy.
+                            let target = self
+                                .expected_type
+                                .as_ref()
+                                .and_then(Self::as_tensor_operand)
+                                .and_then(|(_, _, t)| t.clone())
+                                .filter(|_| self.device_spawn.is_some());
+                            let top = match (top_l, top_r) {
+                                _ if target.is_some() => target,
+                                (Some(l), Some(r))
+                                    if l.space != r.space && self.device_spawn.is_some() =>
+                                {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3004,
+                                        format!(
+                                            "the tiles of this `@` are in {} and in {}, so the \
+                                             product needs a target that names its memory; \
+                                             assign it to a tensor whose type names one",
+                                            l.as_written(),
+                                            r.as_written()
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                    return Type::Unknown;
+                                }
+                                _ => top_l.clone(),
+                            };
                             return Type::Tensor(
                                 el_ty_l.clone(),
                                 vec![dims_l[0].clone(), dims_r[1].clone()],
-                                top_l.clone(),
+                                top,
                             );
                         }
                     }
@@ -697,23 +753,18 @@ impl<'a> TypeChecker<'a> {
                 // slice's shape (here `*` is elementwise; matmul is `@`/MatMul, handled above).
                 // These lower to vector ops (load/broadcast + arith.{mulf,addf,subf,divf}).
                 //
-                // Half-precision slices participate as STORAGE (Vx#320): they widen to f32 on
-                // load, so any op touching an f16/bf16 slice yields an F32 slice -- storage
-                // precision and arithmetic precision are separate decisions, and arithmetic is
-                // always f32. Narrowing back happens only at an explicit store into a half
-                // tensor, which the assignment rules govern.
+                // Two operands of one element type give that type, as scalars and tensors of
+                // rank 2 do: f16 + f16 is f16. Operands of two float types, such as an f16
+                // slice and an f32 scalar, give f32, which holds every f16 and bf16 value.
                 if matches!(
                     op,
                     BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
                 ) {
-                    let l_half = Self::is_half_slice(&lhs_ty);
-                    let r_half = Self::is_half_slice(&rhs_ty);
-                    let l_slice = Self::is_f32_slice(&lhs_ty) || l_half;
-                    let r_slice = Self::is_f32_slice(&rhs_ty) || r_half;
+                    let l_slice = Self::is_f32_slice(&lhs_ty) || Self::is_half_slice(&lhs_ty);
+                    let r_slice = Self::is_f32_slice(&rhs_ty) || Self::is_half_slice(&rhs_ty);
                     // A half scalar is admitted alongside f32 for the same reason a half slice
-                    // is (Vx#320): it widens to f32 and the arithmetic happens there. Refusing
-                    // it here left `slice * f16_scalar` to fall through to the splat rule, which
-                    // typed it as a half slice and crashed the emitter.
+                    // is. Refusing it here left `slice * f16_scalar` to fall through to the
+                    // splat rule, which crashed the emitter.
                     let float_scalar = |t: &Type| {
                         matches!(
                             t,
@@ -724,14 +775,6 @@ impl<'a> TypeChecker<'a> {
                     };
                     let l_scalar = float_scalar(&lhs_ty);
                     let r_scalar = float_scalar(&rhs_ty);
-                    let l_half_scalar = matches!(
-                        lhs_ty,
-                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
-                    );
-                    let r_half_scalar = matches!(
-                        rhs_ty,
-                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
-                    );
                     // At least one slice operand; the other must be a slice or an f32 scalar.
                     let slice_op = match (l_slice, r_slice) {
                         (true, true) => true,      // slice OP slice
@@ -741,13 +784,19 @@ impl<'a> TypeChecker<'a> {
                     };
                     if slice_op {
                         let shape_side = if l_slice { &lhs_ty } else { &rhs_ty };
-                        if l_half || r_half || l_half_scalar || r_half_scalar {
-                            // The widened result: same shape and placement, f32 element.
-                            if let Type::Tensor(_, dims, top) = shape_side {
+                        let elem = |t: &Type| match t {
+                            Type::Scalar(e) => Some(e.clone()),
+                            other => Self::as_tensor_operand(other).map(|(e, _, _)| e.clone()),
+                        };
+                        let shape_elem = elem(shape_side);
+                        if elem(&lhs_ty) != elem(&rhs_ty) && shape_elem != Some(ElementType::F32) {
+                            // A half slice with another float type: the f32 result is a new
+                            // tensor of the same shape and placement, not a borrow.
+                            if let Some((_, dims, top)) = Self::as_tensor_operand(shape_side) {
                                 return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
                             }
                         }
-                        return shape_side.clone();
+                        return Self::owned_tensor_result(shape_side);
                     }
                 }
 
@@ -794,9 +843,18 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
-                lhs_ty
+                Self::owned_tensor_result(&lhs_ty)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// The type of the result of an elementwise operation whose operand has type `operand`. The
+    /// result is a new tensor, also when the operand is a borrow of one, as in `&a + &a`.
+    fn owned_tensor_result(operand: &Type) -> Type {
+        match operand {
+            Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => (**inner).clone(),
+            other => other.clone(),
         }
     }
 
@@ -893,8 +951,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
-    /// no elementwise lowering and are not defined on every element type. Returns false,
-    /// having reported E3030, when the operands are outside what the operator accepts.
+    /// no elementwise lowering and are not defined on every element type. `+`, `-`, `*`
+    /// and `/` only refuse two bools. Returns false, having reported E3030, when the operands
+    /// are outside what the operator accepts.
     ///
     /// Shared by `a % b` and `a %= b` so the two cannot drift apart. Before this was
     /// shared, the compound form was checked by the plain assignment rule, which does not
@@ -918,6 +977,38 @@ impl<'a> TypeChecker<'a> {
     ) -> bool {
         let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
         let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
+        // The other arithmetic operators take tensors too, so they refuse only two bools.
+        // As 1-bit integers, `true + true` would be `false`.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            let is_bool = |t: &Type| Self::scalar_elem(t) == Some(ElementType::Bool);
+            // One `bool` and one number is a type mismatch, which the caller reports.
+            if !(is_bool(lhs_ty) && is_bool(rhs_ty)) {
+                return true;
+            }
+            // A shaped tensor has no `&`, `|` or `^` either, so the hint is for single values.
+            let hint = if Self::single_value_elem(lhs_ty).is_some()
+                && Self::single_value_elem(rhs_ty).is_some()
+            {
+                ". For bools, use `&` (and), `|` (or) or `^` (xor)"
+            } else {
+                ""
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3030,
+                format!(
+                    "`{}` takes two numbers, got {} and {}{}",
+                    binary_op_symbol(op),
+                    lhs_ty,
+                    rhs_ty,
+                    hint
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+            return false;
+        }
         if *op != BinaryOp::Rem && !bitwise && !shift {
             return true;
         }
@@ -965,25 +1056,36 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The length of the text that `e` names: a string literal, or a `let` without `mut` whose
+    /// value is one.
+    fn text_len(&self, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::StringLiteral(l) => Some(l.value.as_ref().len()),
+            Expr::Identifier(id) => {
+                let (depth, len) = self.string_literal_lets.get(id.name.as_ref())?;
+                (*depth == self.scope_depth_of(&id.name)).then_some(*len)
+            }
+            _ => None,
+        }
+    }
+
     /// `s == "hello"` as `c_str_equals(s, "hello", 6)`, and `!=` as its `!`. The bound is the
-    /// literal's length and its NUL. When both sides are literals, the call is in a `comptime`
-    /// block, so the comparison becomes `true` or `false` while compiling.
-    fn text_compare(expr: &Expr) -> Option<Expr> {
+    /// length of the text and its NUL. A name for a string literal counts as the literal. When
+    /// both sides are literals, the call is in a `comptime` block, so the comparison becomes
+    /// `true` or `false` while compiling.
+    fn text_compare(&self, expr: &Expr) -> Option<Expr> {
         let Expr::RelationalOp(RelationalOpExpr {
             lhs, op, rhs, span, ..
         }) = expr
         else {
             return None;
         };
-        let literal = match (&**lhs, &**rhs) {
-            (Expr::StringLiteral(l), _) | (_, Expr::StringLiteral(l)) => l,
-            _ => return None,
-        };
+        let len = self.text_len(lhs).or_else(|| self.text_len(rhs))?;
         if !matches!(op, RelationalOp::Eq | RelationalOp::NotEq) {
             return None;
         }
         let bound = Expr::Number(crate::syntax::NumberExpr::new(
-            (literal.value.as_ref().len() + 1).to_string(),
+            (len + 1).to_string(),
             Some(ElementType::I64),
             *span,
         ));
@@ -1028,7 +1130,7 @@ impl<'a> TypeChecker<'a> {
         }
         // `==` or `!=` with a string literal compares the text: it is a call of `core::c_str`'s
         // `c_str_equals`, which the parser imports for such a program.
-        if let Some(call) = Self::text_compare(expr) {
+        if let Some(call) = self.text_compare(expr) {
             *expr = call;
             return self.check_expr_type_flag(expr, false);
         }
@@ -1047,6 +1149,37 @@ impl<'a> TypeChecker<'a> {
                 RelationalOp::Ge => "ge",
             };
             let span = *span;
+            // `&a == &b` compares the values, as Rust's impls for references do. Two references
+            // to numbers compare the numbers, and two references to a struct pass themselves to
+            // its `eq`.
+            if let (Type::Borrow { inner: li, .. }, Type::Borrow { inner: ri, .. }) =
+                (self.operand_type(lhs), self.operand_type(rhs))
+            {
+                if Self::is_user_type(&li)
+                    && self
+                        .resolve_method_in_impls(
+                            &li,
+                            &method.into(),
+                            &mut std::collections::HashMap::new(),
+                        )
+                        .is_some()
+                {
+                    let mut call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        base: Box::new(Self::through_reference(lhs, &li)),
+                        method_name: method.into(),
+                        type_args: None,
+                        args: vec![(**rhs).clone()],
+                        span,
+                    });
+                    let ty = self.check_expr_type_flag(&mut call, false);
+                    *expr = call;
+                    return ty;
+                }
+                if matches!(*li, Type::Scalar(_)) && matches!(*ri, Type::Scalar(_)) {
+                    **lhs = Self::through_reference(lhs, &li);
+                    **rhs = Self::through_reference(rhs, &ri);
+                }
+            }
             let rhs_ref = Expr::Borrow(crate::syntax::expr::BorrowExpr {
                 expr: rhs.clone(),
                 is_mut: false,
@@ -1121,6 +1254,30 @@ impl<'a> TypeChecker<'a> {
                 {
                     return Type::Scalar(ElementType::Bool);
                 }
+                // `&a == &b` compares the values, as in Rust, but a reference does not compare
+                // with a value: `r < 6.0` with `r : &f32` needs `*r`.
+                // The number of `&` around a type, and the type inside them.
+                let borrows = |mut ty: &Type| {
+                    let mut depth = 0;
+                    while let Type::Borrow { inner, .. } = ty {
+                        depth += 1;
+                        ty = inner;
+                    }
+                    (depth, ty.clone())
+                };
+                let ((ld, li), (rd, ri)) = (borrows(&lhs_ty), borrows(&rhs_ty));
+                // An `Unknown` side already has its error, a name with no `let` say.
+                if ld != rd && li != Type::Unknown && ri != Type::Unknown {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3005,
+                        format!(
+                            "`{symbol}` cannot compare {lhs_ty} with {rhs_ty}. Write `*` before \
+                             the reference to compare the value it points to"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                    return Type::Scalar(ElementType::Bool);
+                }
                 if self.is_struct_type(&lhs_ty) {
                     let at = if *span == crate::syntax::Span::default() {
                         lhs.span()
@@ -1144,7 +1301,7 @@ impl<'a> TypeChecker<'a> {
                         (Some(a), Some(b)) if a == b
                     );
                 // An `Unknown` side already has its error, a use of a moved value say.
-                if !compatible && lhs_ty != Type::Unknown && rhs_ty != Type::Unknown {
+                if !compatible && li != Type::Unknown && ri != Type::Unknown {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3005,
                         format!(
@@ -1267,6 +1424,33 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
             return Type::Unknown;
+        }
+        // Rust's rule: `-` takes a signed integer or a float. On another unsigned type it
+        // would wrap with no error, and on a `bool` it does nothing. A negative literal is
+        // left to the check that a literal fits its type (E3045).
+        if *op == UnaryOp::Neg && !matches!(inner, Expr::Number(_)) {
+            let elem = match &inner_ty {
+                Type::Simd(e, _) => Some(e.clone()),
+                _ => Self::scalar_elem(&inner_ty),
+            };
+            let why = match elem {
+                Some(ElementType::Bool) => {
+                    Some("`-` does not apply to a `bool`: use `!` to flip it".to_string())
+                }
+                Some(e) if e.is_unsigned_int() => Some(format!(
+                    "`-` does not apply to a `{e}`, which is never negative: cast it to a \
+                     signed type first, or call `wrapping_neg()` from `core::num`"
+                )),
+                _ => None,
+            };
+            if let Some(why) = why {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3030,
+                    why,
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+                return Type::Unknown;
+            }
         }
         let symbol = match op {
             UnaryOp::Neg => "-",

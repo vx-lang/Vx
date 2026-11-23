@@ -1,0 +1,89 @@
+//===- borrowed_tensors_in_arithmetic_and_transfer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `&a + &b` and `transfer(&t, ...)` read the tensors that `a`, `b` and `t` name, and do not
+// consume them. The tensors are `let mut` and `let` locals, and a view of raw memory. A write
+// to the raw memory after the transfer does not change the copy.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}rank 1: sum 2.5 difference 1.5 product 1 quotient 4, a is still 2{{$}}
+// CHECK: {{^}}rank 2: sum 7.5 product 9{{$}}
+// CHECK: {{^}}not mut: sum 4.25{{$}}
+// CHECK: {{^}}transfer of a local: 5.5{{$}}
+// CHECK: {{^}}transfer of a view: 1.5 4.5{{$}}
+
+import core::convert;
+
+extern "C" {
+  fn malloc(n : i64) -> *mut f32;
+  fn free(p : *mut f32) -> void;
+}
+
+fn rank_1() -> i32 {
+  let mut a = Tensor<f32, [2]>::new();
+  let mut b = Tensor<f32, [2]>::new();
+  a[0] = 2.0;
+  b[0] = 0.5;
+  let sum = &a + &b;
+  let difference = &a - &b;
+  let product = &a * &b;
+  let quotient = &a / &b;
+  println!("rank 1: sum {} difference {} product {} quotient {}, a is still {}", sum[0], difference[0], product[0], quotient[0], a[0]);
+  return 0;
+}
+
+fn rank_2() -> i32 {
+  let mut m = Tensor<f32, [2, 2]>::new();
+  let mut n = Tensor<f32, [2, 2]>::new();
+  m[1][0] = 6.0;
+  n[1][0] = 1.5;
+  let sum = &m + &n;
+  let product = &m * &n;
+  println!("rank 2: sum {} product {}", sum[1][0], product[1][0]);
+  return 0;
+}
+
+fn not_mut() -> i32 {
+  let c : Tensor<f32, [2]> = [ 3.0, 4.0 ];
+  let d : Tensor<f32, [2]> = [ 1.0, 0.25 ];
+  let sum = &c + &d;
+  println!("not mut: sum {}", sum[1]);
+  return 0;
+}
+
+fn transfer_of_a_local() -> i32 {
+  let mut t = Tensor<f32>([ 3 ]);
+  t[2] = 5.5;
+  let copy = transfer(&t, Memory::CPU_DRAM);
+  println!("transfer of a local: {}", copy[2]);
+  return 0;
+}
+
+fn load(p : *mut f32, n : i32) -> Tensor<f32, [?]> {
+  let view = unsafe { tensor_view_1d(p as *const f32, n) };
+  return transfer(&view, Memory::CPU_DRAM);
+}
+
+fn transfer_of_a_view() -> i32 {
+  let p : *mut f32 = unsafe { malloc(16) };
+  unsafe { for i in 0..4 { p[i] = i as f32 + 1.5; } }
+  let copy = load(p, 4);
+  unsafe { p[0] = 100.0; }
+  println!("transfer of a view: {} {}", copy[0], copy[3]);
+  unsafe { free(p); }
+  return 0;
+}
+
+fn main() -> i32 {
+  rank_1();
+  rank_2();
+  not_mut();
+  transfer_of_a_local();
+  transfer_of_a_view();
+  return 0;
+}

@@ -1,0 +1,35 @@
+//===- negating_an_unsigned_integer_or_a_bool.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `-` takes a signed integer or a float, as in Rust. On an unsigned integer it would wrap with
+// no error, and on a `bool` it would do nothing. A cast to a signed type first, and
+// `wrapping_neg()`, stay allowed. A negative literal gets only the error that it does not fit.
+
+import core::num;
+
+fn main() -> i32 {
+  let n : u32 = 5;
+  // CHECK: Error[E3030] at {{.*}}negating_an_unsigned_integer_or_a_bool.vx:19:11: `-` does not apply to a `u32`, which is never negative: cast it to a signed type first, or call `wrapping_neg()` from `core::num`
+  let a = -n;
+  let small : u8 = 1;
+  // CHECK: Error[E3030] at {{.*}}negating_an_unsigned_integer_or_a_bool.vx:22:11: `-` does not apply to a `u8`
+  let b = -small;
+  let t = Tensor<u8>([4]);
+  // CHECK: Error[E3030] at {{.*}}negating_an_unsigned_integer_or_a_bool.vx:25:12: `-` does not apply to a `u8`
+  let nt = -t;
+  let flag = true;
+  // CHECK: Error[E3030] at {{.*}}negating_an_unsigned_integer_or_a_bool.vx:28:11: `-` does not apply to a `bool`: use `!` to flip it
+  let c = -flag;
+  // CHECK: Error[E3045] at {{.*}}negating_an_unsigned_integer_or_a_bool.vx:30:17: -5 does not fit `u32`
+  let d : u32 = -5;
+  let signed : i64 = -(n as i64);
+  let wrapped : u32 = n.wrapping_neg();
+  return 0;
+}
+// CHECK: 5 error(s) emitted

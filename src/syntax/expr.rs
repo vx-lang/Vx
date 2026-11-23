@@ -91,11 +91,18 @@ impl EnumVariantExpr {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+/// A number compares by its value and type, not its place: a number can be a tensor dimension,
+/// and `[4]` written in two places is one type.
+#[derive(Debug, Clone)]
 pub struct NumberExpr {
     pub value: Symbol,
     pub ty: Option<ElementType>,
     pub span: Span,
+}
+impl PartialEq for NumberExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.ty == other.ty
+    }
 }
 impl NumberExpr {
     pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
@@ -151,6 +158,9 @@ impl SpawnOnExpr {
 pub struct TransferExpr {
     pub expr: Box<Expr>,
     pub space: MemorySpace,
+    /// The device of `transfer(x, Topology::X[i])`, which moves `x` into the memory of that
+    /// device. The checker sets `space` to that memory. `None` when the transfer names a memory.
+    pub device: Option<crate::syntax::Topology>,
     /// The bandwidth-derived roofline cost, filled in by sema. Cycles for a `B/cyc` hop,
     /// picoseconds for a `B/s` one — `u64` because picoseconds overflow `u32` at 4.3 ms.
     pub cost: Option<u64>,
@@ -169,6 +179,14 @@ pub struct TransferExpr {
     /// Set by sema when the source is a `&` tensor and the edge is `: shared`. The result is still
     /// a copy, but the lowering may skip the copy when every use of it only reads.
     pub shared: bool,
+    /// Set by sema with `shared` when the source is memory that nothing can write: a view made
+    /// from a `*const` pointer. The lowering may then read it in place, also when it is not a
+    /// parameter.
+    pub read_only_source: bool,
+    /// Set by sema with `shared` when the source is reached through a shared reference that a
+    /// parameter holds, such as `layer.codes` with `layer : &Layer`. Nothing can write it until
+    /// the call returns, so the lowering may read it in place, as it reads a `&` parameter.
+    pub source_borrowed_for_call: bool,
     pub span: Span,
 }
 
@@ -191,10 +209,13 @@ impl TransferExpr {
         Self {
             expr,
             space,
+            device: None,
             cost: None,
             lowering: None,
             is_async: false,
             shared: false,
+            read_only_source: false,
+            source_borrowed_for_call: false,
             span,
         }
     }
@@ -677,15 +698,28 @@ impl JvpExpr {
 /// an arm ending in a bare expression: `match x { 0 => { 7 }, _ => { 9 } }` computed 7 and 9 and
 /// then returned the default, silently.
 pub fn match_yields_a_value(m: &MatchExpr) -> bool {
-    m.arms.iter().any(|a| {
-        matches!(
-            a.body.last(),
-            Some(Statement::ExprStmt(ExprStmtStmt {
-                has_semi: false,
-                ..
-            }))
-        )
-    })
+    m.arms.iter().any(|a| block_gives_a_value(&a.body))
+}
+
+/// Whether `body`, a `match` arm or an `if` branch, gives a value: its last statement is an
+/// expression with no `;`. A last `match` or `if` gives a value only when one of its own arms or
+/// branches does. So an arm that ends in a `match` whose arms all `return` gives none.
+pub fn block_gives_a_value(body: &[Statement]) -> bool {
+    match body.last() {
+        Some(Statement::ExprStmt(ExprStmtStmt {
+            expr,
+            has_semi: false,
+            ..
+        })) => match expr {
+            Expr::Match(m) => match_yields_a_value(m),
+            Expr::If(i) => {
+                block_gives_a_value(&i.then_block)
+                    || i.else_block.as_deref().is_some_and(block_gives_a_value)
+            }
+            _ => true,
+        },
+        _ => false,
+    }
 }
 
 /// Whether control can reach the end of `stmts`, or whether every path out of it returns.
@@ -726,8 +760,65 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
             }) => block_always_exits(stmts, never),
             _ => false,
         },
+        // A `loop` that no `break` leaves ends only through a `return` or the end of the program.
+        Statement::Loop(l) => !breaks_out_of_loop(&l.body),
         _ => false,
     }
+}
+
+/// Whether a `break` in `stmts`, the body of a loop, can leave that loop. A `break` in an inner
+/// loop leaves the inner loop only. A `break` deep inside another expression counts, to be safe.
+pub fn breaks_out_of_loop(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|s| match s {
+        Statement::Break(_) => true,
+        Statement::Loop(_) => false,
+        Statement::ForLoop(f) => holds_a_break(&f.iterable),
+        Statement::ExprStmt(ExprStmtStmt { expr, .. }) => match expr {
+            Expr::If(i) => {
+                holds_a_break(&i.cond)
+                    || breaks_out_of_loop(&i.then_block)
+                    || i.else_block.as_deref().is_some_and(breaks_out_of_loop)
+            }
+            Expr::Match(m) => {
+                holds_a_break(&m.expr) || m.arms.iter().any(|a| breaks_out_of_loop(&a.body))
+            }
+            Expr::UnsafeBlock(UnsafeBlockExpr { stmts, ret, .. })
+            | Expr::TaskBlock(TaskBlockExpr { stmts, ret, .. }) => {
+                breaks_out_of_loop(stmts) || ret.as_deref().is_some_and(holds_a_break)
+            }
+            e => holds_a_break(e),
+        },
+        other => {
+            let mut found = false;
+            visit_exprs(std::slice::from_ref(other), &mut |e| {
+                found |= holds_a_break(e)
+            });
+            found
+        }
+    })
+}
+
+/// Whether a block inside `e` holds a `break`, at any depth. This also counts a `break` of an
+/// inner loop, so it may say yes when no `break` leaves the loop around `e`.
+fn holds_a_break(e: &Expr) -> bool {
+    let mut found = false;
+    visit_expr(e, &mut |e| {
+        let blocks: Vec<&[Statement]> = match e {
+            Expr::If(i) => std::iter::once(i.then_block.as_slice())
+                .chain(i.else_block.as_deref())
+                .collect(),
+            Expr::Match(m) => m.arms.iter().map(|a| a.body.as_slice()).collect(),
+            Expr::UnsafeBlock(b) => vec![&b.stmts],
+            Expr::TaskBlock(b) => vec![&b.stmts],
+            Expr::ComptimeBlock(b) => vec![&b.stmts],
+            Expr::SpawnOn(b) => vec![&b.stmts],
+            _ => Vec::new(),
+        };
+        found |= blocks
+            .iter()
+            .any(|b| b.iter().any(|s| matches!(s, Statement::Break(_))));
+    });
+    found
 }
 
 /// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program. A
@@ -963,6 +1054,15 @@ impl RangeExpr {
     pub fn new(start: Box<Expr>, end: Box<Expr>, span: Span) -> Self {
         Self { start, end, span }
     }
+
+    /// Both ends, when both are literal numbers: `(1, 3)` for `1..3`.
+    pub fn literal_ends(&self) -> Option<(u64, u64)> {
+        let literal = |e: &Expr| match e {
+            Expr::Number(n) => n.value.parse::<u64>().ok(),
+            _ => None,
+        };
+        Some((literal(&self.start)?, literal(&self.end)?))
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -979,6 +1079,16 @@ pub struct MatchArm {
     pub body: Vec<Statement>,
     /// The arm's first token. `Span::default()` for an arm the compiler wrote itself.
     pub span: Span,
+}
+
+impl MatchArm {
+    /// True if the arm's body has a `let` of `name`, as in `Some(v) => { let v = v as f32; v }`.
+    /// That `let` hides the payload, so the arm's value may have another type.
+    pub fn body_declares(&self, name: &str) -> bool {
+        self.body
+            .iter()
+            .any(|s| matches!(s, Statement::LetDecl(l) if l.name.as_ref() == name))
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1100,6 +1210,9 @@ pub struct InlineMlirExpr {
     pub dialects: Vec<String>,
     /// What the block writes, as `atomic(t)` clauses. Not evaluated, so visitors skip them.
     pub ensures: Vec<Expr>,
+    /// `threads : N`: every thread of a threadgroup of at least `N` runs the block. `None` for a
+    /// block that runs as the code around it runs.
+    pub threads: Option<u32>,
     pub block_str: String,
     pub span: Span,
 }
@@ -1239,9 +1352,19 @@ fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol
     }
 }
 
+/// The rank of the tensor that a view over raw memory has: 1 for `tensor_view_1d(ptr, len)`,
+/// 2 for `tensor_view_2d(ptr, rows, cols)`. `None` for any other function.
+pub fn tensor_view_rank(name: &str) -> Option<usize> {
+    match name {
+        "tensor_view_1d" => Some(1),
+        "tensor_view_2d" => Some(2),
+        _ => None,
+    }
+}
+
 /// Is this a tensor construction -- storage the compiler allocated?
 ///
-/// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
+/// A view built with `tensor_view_1d` or `tensor_view_2d` has the same type and a shape the checker enforces, but
 /// names memory the compiler does not control: two views over one pointer are two names for one
 /// buffer, which no rule about names can see.
 pub fn is_tensor_construction(e: &Expr) -> bool {
@@ -1286,22 +1409,6 @@ pub fn matmul_operand_root(e: &Expr) -> Option<&Symbol> {
     }
 }
 
-/// The locals in `stmts` whose element pointer is taken with `as_ptr()` or `as_mut_ptr()`.
-/// Through that pointer a view can share the tensor's memory under another name.
-pub fn locals_with_pointer_taken(stmts: &[Statement]) -> std::collections::HashSet<Symbol> {
-    let mut names = std::collections::HashSet::new();
-    visit_exprs(stmts, &mut |e| {
-        if let Expr::MethodCall(m) = e {
-            if matches!(m.method_name.as_ref(), "as_ptr" | "as_mut_ptr") {
-                if let Some(root) = matmul_operand_root(&m.base) {
-                    names.insert(root.clone());
-                }
-            }
-        }
-    });
-    names
-}
-
 /// The locals in `stmts` whose address is taken with `&x` or `&mut x`.
 pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashSet<Symbol> {
     let mut names = std::collections::HashSet::new();
@@ -1315,15 +1422,26 @@ pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashS
     names
 }
 
-/// Whether `stmts` compare with a string literal: `==` or `!=` with one, or a `match` arm with a
-/// string literal pattern. Such code calls `core::c_str`.
-pub fn compares_with_a_string_literal(stmts: &[Statement]) -> bool {
+/// The start of the name of the `let` that the parser adds for the sum in `let r = (v + w)[1]`.
+pub const INDEXED_TEMPORARY: &str = "$indexed";
+
+/// Whether `stmts` compare with a string literal: `==` or `!=` with one or with a name in
+/// `literal_names`, or a `match` arm with a string literal pattern. Such code calls
+/// `core::c_str`.
+pub fn compares_with_a_string_literal(
+    stmts: &[Statement],
+    literal_names: &std::collections::HashSet<Symbol>,
+) -> bool {
+    let is_text = |e: &Expr| match e {
+        Expr::StringLiteral(_) => true,
+        Expr::Identifier(id) => literal_names.contains(&id.name),
+        _ => false,
+    };
     let mut found = false;
     visit_exprs(stmts, &mut |e| match e {
         Expr::RelationalOp(r)
             if matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq)
-                && (matches!(&*r.lhs, Expr::StringLiteral(_))
-                    || matches!(&*r.rhs, Expr::StringLiteral(_))) =>
+                && (is_text(&r.lhs) || is_text(&r.rhs)) =>
         {
             found = true
         }
@@ -1671,10 +1789,13 @@ impl Expr {
             Expr::Transfer(e) => Expr::Transfer(TransferExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 space: e.space.clone(),
+                device: e.device.as_ref().map(|d| d.substitute(mapping)),
                 cost: e.cost,
                 lowering: e.lowering.clone(),
                 is_async: e.is_async,
                 shared: e.shared,
+                read_only_source: e.read_only_source,
+                source_borrowed_for_call: e.source_borrowed_for_call,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done
@@ -1982,6 +2103,7 @@ impl Expr {
                     .map(|t| substitute_mlir_returns(t, mapping)),
                 dialects: e.dialects.clone(),
                 ensures: e.ensures.iter().map(|ex| ex.substitute(mapping)).collect(),
+                threads: e.threads,
                 block_str: substitute_words(&e.block_str, mapping),
                 span: e.span,
             }),

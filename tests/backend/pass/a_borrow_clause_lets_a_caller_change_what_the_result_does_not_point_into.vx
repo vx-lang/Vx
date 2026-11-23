@@ -10,7 +10,6 @@
 // into `*c`, but it can point where a reference in `*c` points. A method call stops the inferred
 // summary, so without these clauses each caller below is refused.
 //
-// REQUIRES: flat-codegen
 // Only because the older code generator cannot lower a struct that holds a reference.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error

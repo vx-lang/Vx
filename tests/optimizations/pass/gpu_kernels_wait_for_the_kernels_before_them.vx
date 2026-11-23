@@ -1,0 +1,151 @@
+//===- gpu_kernels_wait_for_the_kernels_before_them.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// With `VX_GPU_PDL=1`, a kernel for sm_90 or later waits for the kernels before it on the stream
+// (`griddepcontrol.wait`). A launch can then start it while the kernel before it still runs.
+//
+// - `normalize`: all its reads and writes of global memory are in lane loops. Each pass of the block
+//   loop starts at the wait: the jump into the loop and the jump back both go to it. No read or
+//   write of global memory comes before the jump into the loop. `launch_dependents` follows the
+//   wait. A second wait comes before `ret`, for a block with no rows.
+// - `reversed_sums`: the fill of a shared tile comes before the wait, and the read in the call to
+//   `first` comes after it.
+// - `add_firsts`: `x[0]` and `z[0]` load after the wait with `ld.global`, not `ld.global.nc`. So
+//   LLVM does not take their memory as constant, which would let it move a load above the wait.
+//   For `x`, a `&`, the compiler drops `readonly`. `z` is only read, and the wait takes its
+//   pointer, so LLVM cannot find that it is read-only.
+//
+// The manifest and the payload mark each kernel that waits. Without `VX_GPU_PDL=1`, or for
+// `sm_80`, there is no wait, `x` keeps `ld.global.nc`, and the manifest marks no kernel. Without
+// `VX_GPU_PDL=1`, the payload marks no kernel either.
+//
+// REQUIRES: flat-codegen
+// RUN: env -u VX_GPU_CHIP VX_GPU_PDL=1 vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=PTX --implicit-check-not=griddepcontrol --implicit-check-not=ld.global.nc < %t.ptx
+// RUN: FileCheck %s --check-prefix=JSON < %t.json
+// RUN: env -u VX_GPU_CHIP VX_GPU_PDL=1 vxc %s --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// RUN: env -u VX_GPU_CHIP -u VX_GPU_PDL vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.off.ptx
+// RUN: FileCheck %s --check-prefix=OFF --implicit-check-not=griddepcontrol < %t.off.ptx
+// RUN: FileCheck %s --check-prefix=OFF-JSON --implicit-check-not=waits_for_earlier_kernels < %t.off.json
+// RUN: env -u VX_GPU_CHIP -u VX_GPU_PDL vxc %s --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=OFF-PAYLOAD --implicit-check-not=waits_for_earlier_kernels
+// RUN: env -u VX_GPU_CHIP VX_GPU_PDL=1 vxc %s --host default --machine fleet/a100-40.vx --emit-ptx -o %t.a100.ptx
+// RUN: FileCheck %s --check-prefix=OFF --implicit-check-not=griddepcontrol < %t.a100.ptx
+// RUN: FileCheck %s --check-prefix=OFF-JSON --implicit-check-not=waits_for_earlier_kernels < %t.a100.json
+
+// PTX-LABEL: .entry normalize(
+// PTX-NOT: {{(ld|st)\.global}}
+// PTX: bra.uni $L__BB0_[[BODY:[0-9]+]];
+// PTX: bra $L__BB0_[[BODY]];
+// PTX: $L__BB0_[[BODY]]:
+// PTX-NEXT: // begin inline asm
+// PTX-NEXT: griddepcontrol.wait;
+// PTX-NEXT: // end inline asm
+// PTX-NEXT: // begin inline asm
+// PTX-NEXT: griddepcontrol.launch_dependents;
+// PTX: griddepcontrol.wait;
+// PTX-NEXT: // end inline asm
+// PTX-NEXT: ret;
+
+// PTX-LABEL: .entry reversed_sums(
+// PTX-NOT: {{(ld|st)\.global}}
+// PTX: bra.uni $L__BB1_[[BODY:[0-9]+]];
+// PTX: $L__BB1_[[BODY]]:
+// PTX-NEXT: st.shared.b32 [{{%rd[0-9]+}}], 0;
+// PTX-NEXT: bar.sync 0;
+// PTX-NEXT: // begin inline asm
+// PTX-NEXT: griddepcontrol.wait;
+// PTX-NEXT: // end inline asm
+// PTX-NEXT: // begin inline asm
+// PTX-NEXT: griddepcontrol.launch_dependents;
+// PTX: ld.global.b32
+// PTX: griddepcontrol.wait;
+// PTX-NEXT: // end inline asm
+// PTX-NEXT: ret;
+
+// PTX-LABEL: .entry add_firsts(
+// PTX-NOT: {{(ld|st)\.global}}
+// PTX: griddepcontrol.wait;
+// PTX-NEXT: // end inline asm
+// PTX-NEXT: // begin inline asm
+// PTX-NEXT: griddepcontrol.launch_dependents;
+// PTX-NEXT: // end inline asm
+// PTX-NEXT: ld.global.b32
+// PTX-NEXT: ld.global.b32
+// PTX: griddepcontrol.wait;
+// PTX-NEXT: // end inline asm
+// PTX-NEXT: ret;
+
+// JSON: "name": "normalize",
+// JSON: "waits_for_earlier_kernels": true
+// JSON: "name": "reversed_sums",
+// JSON: "waits_for_earlier_kernels": true
+// JSON: "name": "add_firsts",
+// JSON: "waits_for_earlier_kernels": true
+
+// PAYLOAD-COUNT-3: waits_for_earlier_kernels=1
+
+// OFF-LABEL: .entry normalize(
+// OFF: ld.global.nc
+// OFF-JSON: "name": "normalize",
+
+// OFF-PAYLOAD-COUNT-3: host_blocks=1\00function={{[a-z_]+}}\00source={{[^\]*}}\00format=ptx
+
+pub fn normalize(o : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>,
+rows : i32, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for c in 0..cols / 256 {
+          s = s + x[b][256 * c + l];
+        }
+        part[l] = s;
+      }
+      let total = lanes::sum(&part, 256);
+      for l in 0..256 across lanes {
+        for c in 0..cols / 256 {
+          o[b][256 * c + l] = x[b][256 * c + l] / total;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn first(x : &Tensor<f32, [?, ?], Memory::HBM>, b : i32) on Topology::Device -> f32
+ensures reads_only(x)
+{
+  return x[b][0];
+}
+
+pub fn reversed_sums(o : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>,
+rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      lanes::fill(&mut part, 0.0);
+      let start = first(x, b);
+      for l in 0..256 across lanes {
+        part[255 - l] = part[255 - l] + x[b][l];
+      }
+      let total = lanes::sum(&part, 256);
+      o[b] = total + start;
+    }
+  }
+  return;
+}
+
+pub fn add_firsts(y : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>,
+z : &mut Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      y[b] = x[0] + z[0];
+    }
+  }
+  return;
+}

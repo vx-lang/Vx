@@ -145,6 +145,10 @@ binary_expr ::=
     | binary_expr "|" binary_expr
     | binary_expr "@" binary_expr
     | binary_expr ".." binary_expr
+    | as_expr
+
+as_expr ::=
+    | as_expr "as" type
     | primary_expr
 
 primary_expr ::= 
@@ -183,11 +187,14 @@ primary_expr ::=
 
 pattern ::= 
     | "_"
-    | number_literal
+    | "-"? number_literal
     | string_literal
+    | "true" | "false"
     | identifier ( "<" identifier ">" )? "::" identifier ( "(" ( pattern ","? )* ")" )?
     | identifier
 ```
+
+For unary operators and type casts (`as`), precedence follows Rust. Unary operators (`*`, `&`, `-`, `!`) bind tighter than type casts (`as`), which bind tighter than binary operators. Therefore, `-n as i64` and `*p as T` evaluate the unary operator first as `(-n) as i64` and `(*p) as T`. Unary negation on an unsigned integer or a `bool` reports error `E3030`.
 
 ## 5. Types & Memory Semantics
 

@@ -4,7 +4,7 @@ pub mod macro_expand;
 pub mod stmt;
 mod tuple_match;
 pub mod types;
-pub use macro_expand::MacroExpander;
+pub use macro_expand::{MacroExpander, MacroTable};
 
 //===- parser.rs - Vx Compiler ---------------------------------*- Rust -*-===//
 //
@@ -87,6 +87,12 @@ pub struct Parser<'a> {
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
     uses_tuples: bool,
+    /// Set once `Distinct::check` or `DisjointRanges::check` is seen: the module then imports
+    /// `core::distinct`, where the checks are.
+    uses_distinct_check: bool,
+    /// The names that a `let` without `mut` binds to a string literal. `==` on such a name
+    /// compares text, so it needs `core::c_str` as a literal does.
+    string_literal_names: std::collections::HashSet<crate::symbol::Symbol>,
     /// Statements a desugaring produced after the one it returned: `let (a, b) = e;` is a `let`
     /// of `e` followed by one per name. `parse_statement_into` appends them.
     pending_stmts: Vec<crate::syntax::Statement>,
@@ -100,6 +106,9 @@ pub struct Parser<'a> {
     match_is_statement: bool,
     /// Inside an impl block, the type the impl is for: what `Self` means there.
     impl_self: Option<crate::syntax::Type>,
+    /// The first token of an expression that a block follows, such as the condition of an `if`.
+    /// Outside brackets there, a name and `{` are the name and the block, not a struct literal.
+    block_follows: Option<usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -121,12 +130,41 @@ impl<'a> Parser<'a> {
             mut_params: Vec::new(),
             source,
             uses_tuples: false,
+            uses_distinct_check: false,
+            string_literal_names: std::collections::HashSet::new(),
             pending_stmts: Vec::new(),
             tuple_lets: 0,
             prefix_stmts: Vec::new(),
             match_is_statement: false,
             impl_self: None,
+            block_follows: None,
         }
+    }
+
+    /// Parse an expression that a block follows, such as the condition of an `if` or a `while`.
+    /// As in Rust, a struct literal there must be inside parentheses.
+    pub(crate) fn parse_expr_before_block(&mut self) -> ParseResult<'a, crate::syntax::Expr> {
+        let outer = self.block_follows.replace(self.pos);
+        let expr = self.parse_expr();
+        self.block_follows = outer;
+        expr
+    }
+
+    /// Whether the parser is at the top of an expression that a block follows: not inside a
+    /// `(`, a `[` or a `{` that the expression opened.
+    pub(crate) fn block_follows_here(&self) -> bool {
+        let Some(start) = self.block_follows else {
+            return false;
+        };
+        let depth: i64 = self.tokens[start..self.pos]
+            .iter()
+            .map(|t| match t.kind {
+                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => 1,
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => -1,
+                _ => 0,
+            })
+            .sum();
+        depth == 0
     }
 
     /// The largest tuple, as the number of `core::tuple`'s last struct, `Tuple6`.
@@ -161,6 +199,17 @@ impl<'a> Parser<'a> {
     /// expansion, so every span it makes carries the same id.
     pub(crate) fn expansion(&self) -> u32 {
         self.tokens.first().map_or(0, |t| t.expansion)
+    }
+
+    /// The place of the next token, the one that `advance` reads next.
+    pub(crate) fn next_span(&self) -> crate::syntax::Span {
+        let token = self.peek();
+        crate::syntax::Span {
+            line: token.line,
+            column: token.column,
+            length: token.length,
+            expansion: self.expansion(),
+        }
     }
 
     pub(crate) fn peek(&self) -> &'a Token<'a> {
@@ -412,7 +461,31 @@ mod tests {
         // Any identifier that is not a built-in is a user-defined topology.
         assert_eq!(
             parse_topology("Topology::MyTPU"),
-            Topology::Custom(crate::symbol::Symbol::from("MyTPU"))
+            Topology::Custom(crate::symbol::Symbol::from("MyTPU"), None)
+        );
+    }
+
+    #[test]
+    fn a_declared_topology_takes_an_index_or_a_slice() {
+        assert_eq!(
+            parse_topology("Topology::Dev[1]"),
+            Topology::declared_device("Dev".into(), 1)
+        );
+        assert_eq!(
+            parse_topology("Topology::Dev[0..2]"),
+            Topology::Slice(
+                Box::new(Topology::declared_device("Dev".into(), 0)),
+                Box::new(Expr::Number(NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    Span::default()
+                ))),
+                Box::new(Expr::Number(NumberExpr::new(
+                    "2".to_string(),
+                    None,
+                    Span::default()
+                ))),
+            )
         );
     }
 
@@ -441,6 +514,27 @@ mod tests {
             .descriptor
             .visibility
             .contains(&crate::syntax::MemorySpace::LocalSRAM));
+    }
+
+    /// `count:` is a number of devices from 1 to `MAX_TOPOLOGY_COUNT`. No `count:` is one device.
+    #[test]
+    fn a_topology_count_is_from_1_to_the_limit() {
+        let count = |field: &str| {
+            let input = format!("Topology Dev {{ memory: Memory::Local_SRAM, {field} }}");
+            let mut lexer = Lexer::new(&input);
+            let tokens = lexer.tokenize();
+            let mut parser = Parser::new(&tokens, &input);
+            // `None` when the parser refuses the declaration.
+            parser
+                .parse_topology_decl()
+                .ok()
+                .map(|d| d.descriptor.count)
+        };
+        assert_eq!(count("count: 2"), Some(Some(2)));
+        assert_eq!(count("count: 65536"), Some(Some(65536)));
+        assert_eq!(count("visible: [Memory::Local_SRAM]"), Some(None));
+        assert_eq!(count("count: 0"), None);
+        assert_eq!(count("count: 65537"), None);
     }
 
     #[test]
@@ -699,7 +793,7 @@ mod tests {
         // topology rather than erroring (its memory model comes from the registry).
         assert_eq!(
             parse_topology("Topology::Quantum"),
-            Topology::Custom(crate::symbol::Symbol::from("Quantum"))
+            Topology::Custom(crate::symbol::Symbol::from("Quantum"), None)
         );
     }
 

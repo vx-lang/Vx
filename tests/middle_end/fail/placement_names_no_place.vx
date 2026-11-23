@@ -31,9 +31,9 @@
 // The code is matched bare: the dump writes `E6025,` and the console `Error[E6025]:`, and the RUN
 // line above sees the second of those.
 // CHECK-DAG: E6025
-// CHECK-DAG: `Memory::Nowhere` in function 'as_a_parameter'
-// CHECK-DAG: `Topology::Nowhere` in function 'as_a_device'
-// CHECK-DAG: `Memory::Nowhere` in function 'as_a_return'
+// CHECK-DAG: `Memory::Nowhere` in parameter 't' of function 'as_a_parameter'
+// CHECK-DAG: `Topology::Nowhere` in parameter 't' of function 'as_a_device'
+// CHECK-DAG: `Memory::Nowhere` in the return type of function 'as_a_return'
 // CHECK-DAG: `Memory::Nowhere` in field 'absent' of struct 'Holder'
 // CHECK-DAG: `Memory::Nowhere` in variable 'annotated'
 //

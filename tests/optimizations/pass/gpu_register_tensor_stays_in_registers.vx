@@ -20,27 +20,27 @@
 // CHECK: image={{.*}}.entry vx_npu_kernel_2(
 
 fn mma_step(acc : &mut Tensor<f32, [32], Memory::REG>, a : i32, b : i32) on Topology::Device -> i32 {
-  return mlir!( inputs : (%acc = acc : memref<32xf32>, %a = a : i32, %b = b : i32), returns : i32, dialects : ["llvm", "memref", "arith"]) {
-    %i0 = arith.constant 0 : index
-    %i1 = arith.constant 1 : index
-    %i2 = arith.constant 2 : index
-    %i3 = arith.constant 3 : index
-    %c0 = memref.load %acc[%i0] : memref<32xf32>
-    %c1 = memref.load %acc[%i1] : memref<32xf32>
-    %c2 = memref.load %acc[%i2] : memref<32xf32>
-    %c3 = memref.load %acc[%i3] : memref<32xf32>
-    %r = llvm.inline_asm has_side_effects "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {$0,$1,$2,$3}, {$4,$4,$4,$4}, {$5,$5}, {$0,$1,$2,$3};", "=f,=f,=f,=f,r,r,0,1,2,3" %a, %b, %c0, %c1, %c2, %c3 : (i32, i32, f32, f32, f32, f32) -> !llvm.struct<(f32, f32, f32, f32)>
-    %o0 = llvm.extractvalue %r[0] : !llvm.struct<(f32, f32, f32, f32)>
-    %o1 = llvm.extractvalue %r[1] : !llvm.struct<(f32, f32, f32, f32)>
-    %o2 = llvm.extractvalue %r[2] : !llvm.struct<(f32, f32, f32, f32)>
-    %o3 = llvm.extractvalue %r[3] : !llvm.struct<(f32, f32, f32, f32)>
-    memref.store %o0, %acc[%i0] : memref<32xf32>
-    memref.store %o1, %acc[%i1] : memref<32xf32>
-    memref.store %o2, %acc[%i2] : memref<32xf32>
-    memref.store %o3, %acc[%i3] : memref<32xf32>
-    %z = arith.constant 0 : i32
-    macro.yield %z : i32
-  };
+  return unsafe { mlir!( inputs : (%acc = acc : memref<32xf32>, %a = a : i32, %b = b : i32), returns : i32, dialects : ["llvm", "memref", "arith"]) {
+      %i0 = arith.constant 0 : index
+      %i1 = arith.constant 1 : index
+      %i2 = arith.constant 2 : index
+      %i3 = arith.constant 3 : index
+      %c0 = memref.load %acc[%i0] : memref<32xf32>
+      %c1 = memref.load %acc[%i1] : memref<32xf32>
+      %c2 = memref.load %acc[%i2] : memref<32xf32>
+      %c3 = memref.load %acc[%i3] : memref<32xf32>
+      %r = llvm.inline_asm has_side_effects "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {$0,$1,$2,$3}, {$4,$4,$4,$4}, {$5,$5}, {$0,$1,$2,$3};", "=f,=f,=f,=f,r,r,0,1,2,3" %a, %b, %c0, %c1, %c2, %c3 : (i32, i32, f32, f32, f32, f32) -> !llvm.struct<(f32, f32, f32, f32)>
+      %o0 = llvm.extractvalue %r[0] : !llvm.struct<(f32, f32, f32, f32)>
+      %o1 = llvm.extractvalue %r[1] : !llvm.struct<(f32, f32, f32, f32)>
+      %o2 = llvm.extractvalue %r[2] : !llvm.struct<(f32, f32, f32, f32)>
+      %o3 = llvm.extractvalue %r[3] : !llvm.struct<(f32, f32, f32, f32)>
+      memref.store %o0, %acc[%i0] : memref<32xf32>
+      memref.store %o1, %acc[%i1] : memref<32xf32>
+      memref.store %o2, %acc[%i2] : memref<32xf32>
+      memref.store %o3, %acc[%i3] : memref<32xf32>
+      %z = arith.constant 0 : i32
+      macro.yield %z : i32
+    } };
 }
 
 pub fn gemm(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<i32, [?], Memory::HBM>, s : &Tensor<f32, [?], Memory::HBM>) -> void {
@@ -63,18 +63,18 @@ pub fn gemm(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<i32, [?], Memo
 // for `mma.sync`. Their stack slots are in the `if`, and the compiler moves them to the kernel's
 // entry block. Without the move, LLVM left `acc` in local memory.
 fn thread_id() on Topology::Device -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
-    %t = gpu.thread_id x
-    %r = "arith.index_cast"(%t) : (index) -> i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+      %t = gpu.thread_id x
+      %r = "arith.index_cast"(%t) : (index) -> i32
+      macro.yield %r : i32
+    } };
 }
 fn block_id() on Topology::Device -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
-    %t = gpu.block_id x
-    %r = "arith.index_cast"(%t) : (index) -> i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+      %t = gpu.block_id x
+      %r = "arith.index_cast"(%t) : (index) -> i32
+      macro.yield %r : i32
+    } };
 }
 pub fn tiles_in_an_if(out: &mut Tensor<f32, [?], Memory::HBM>, a: &Tensor<i32, [?], Memory::HBM>,
 b: &Tensor<i32, [?], Memory::HBM>, sizes: &Tensor<i32, [?], Memory::HBM>) -> void {

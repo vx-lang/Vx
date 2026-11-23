@@ -1,0 +1,96 @@
+//===- lane_scale_rows_with_wrong_arguments_or_races.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::scale_rows(&mut t, &s)` takes an `f32` matrix in shared memory as `&mut`, and an `f32`
+// tile in shared memory as `&` with one element for each row. Two subgroups must not scale the
+// same tile, and every lane of the block must get to the call. Each function below breaks one rule.
+//
+// RUN: not vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E6032] at {{.*}}lane_scale_rows_with_wrong_arguments_or_races.vx:30:{{.*}}each pass writes `tile`, which is declared outside the loop, so the passes race.
+// CHECK: Error[E3003] at {{.*}}lane_scale_rows_with_wrong_arguments_or_races.vx:42:{{.*}}`lanes::scale_rows` takes 2 arguments, a `&mut` tile in shared memory and a `&` tile of the scale of each row, but it got 1
+// CHECK: Error[E3003] at {{.*}}lane_scale_rows_with_wrong_arguments_or_races.vx:54:{{.*}}the first argument of `lanes::scale_rows` must borrow an `f32` matrix in shared memory or in registers as `&mut`, with sizes that are numbers, {{.*}} but it is `&mut Tensor<f32, [4, 4, 4], Memory::SMEM>`
+// CHECK: Error[E3003] at {{.*}}lane_scale_rows_with_wrong_arguments_or_races.vx:66:{{.*}}the second argument of `lanes::scale_rows` must borrow an `f32` tile in shared memory as `&`, with one element for each of the 4 rows of the first, {{.*}} but it is `&Tensor<f32, [8], Memory::SMEM>`
+// CHECK: Error[E3003] at {{.*}}lane_scale_rows_with_wrong_arguments_or_races.vx:77:{{.*}}the second argument of `lanes::scale_rows` must borrow an `f32` tile in shared memory as `&`, {{.*}} but it is `&Tensor<f32, [4], Memory::HBM>`
+// CHECK: Error[E6032] at {{.*}}lane_scale_rows_with_wrong_arguments_or_races.vx:90:{{.*}}each pass writes `tile`, which is declared outside the loop, so the passes race.
+// CHECK: Error[E6032] at {{.*}}lane_scale_rows_with_wrong_arguments_or_races.vx:90:{{.*}}`lanes::scale_rows` must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane loops.
+
+// Both subgroups scale the whole tile.
+pub fn two_subgroups_scale_one_tile(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [8, 32], Memory::SMEM>::uninit() };
+      let mut s = unsafe { Tensor<f32, [8], Memory::SMEM>::uninit() };
+      lanes::fill(&mut tile, 1.0);
+      lanes::fill(&mut s, 2.0);
+      for w in 0..2 across subgroups {
+        lanes::scale_rows(&mut tile, &s);
+      }
+    }
+  }
+  return;
+}
+
+// No tile of scales.
+pub fn no_scales(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      lanes::scale_rows(&mut tile);
+    }
+  }
+  return;
+}
+
+// A tile of three dimensions.
+pub fn not_a_matrix(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4, 4], Memory::SMEM>::uninit() };
+      let s = unsafe { Tensor<f32, [4], Memory::SMEM>::uninit() };
+      lanes::scale_rows(&mut tile, &s);
+    }
+  }
+  return;
+}
+
+// 8 scales for 4 rows.
+pub fn too_many_scales(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      let s = unsafe { Tensor<f32, [8], Memory::SMEM>::uninit() };
+      lanes::scale_rows(&mut tile, &s);
+    }
+  }
+  return;
+}
+
+// The scales are in global memory.
+pub fn scales_in_hbm(s : &Tensor<f32, [4], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      lanes::scale_rows(&mut tile, s);
+    }
+  }
+  return;
+}
+
+// A scale in a lane loop, where each lane would scale the whole tile.
+pub fn scale_in_a_lane_loop(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      let s = unsafe { Tensor<f32, [4], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        lanes::scale_rows(&mut tile, &s);
+      }
+      lanes::copy(y, &tile, [0, 0]);
+    }
+  }
+  return;
+}

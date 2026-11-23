@@ -203,6 +203,16 @@ def check : Option (Bool × Bool) := do
   have : DecidableRel (TransGen d.thinAirStep) := fun a b => decidable_of_iff _ (hair a b)
   return (decide d.toExecution.Consistent, !decide d.toExecution.RaceFree)
 
+/-- Whether the accesses `a` and `b` race. `none` when a closure did not converge. -/
+def raceOn (a b : Fin n) : Option Bool := do
+  let ⟨_, hchain⟩ ← certify d.chainStep
+  have : DecidableRel (TransGen d.chainStep) := fun a b => decidable_of_iff _ (hchain a b)
+  let ⟨_, hhb⟩ ← certify d.hbStep
+  have : DecidableRel (TransGen d.hbStep) := fun a b => decidable_of_iff _ (hhb a b)
+  have : Decidable (d.toExecution.DataRace a b) := by
+    unfold Execution.DataRace Execution.Conflict; infer_instance
+  return decide (d.toExecution.DataRace a b)
+
 end Data
 
 end Vx

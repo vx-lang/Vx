@@ -1,0 +1,40 @@
+// One Apple GPU kernel writes `c` and `d`. Then `show` takes both by value, and copies each one to
+// the CPU. The first copy waits for the kernel, so it reads the new values of `c`.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s
+// RUN: grep "Vx Metal" %t.gpu | FileCheck %s --check-prefix=GPU
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx | FileCheck %s
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// CHECK: {{^}}c[0] 1 d[0] 2{{$}}
+//
+// The kernel ran on the GPU.
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 1 x 1 x 1, block 64
+
+fn fill(c : &mut Tensor<f32, [64], Memory::HBM>, d : &mut Tensor<f32, [64], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..64 across lanes {
+        c[l] = 1.0;
+        d[l] = 2.0;
+      }
+    }
+  }
+  return;
+}
+
+fn show(c : Tensor<f32, [64], Memory::HBM>, d : Tensor<f32, [64], Memory::HBM>) -> void {
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let hd = transfer(d, Memory::CPU_DRAM);
+  println!("c[0] {} d[0] {}", hc[0], hd[0]);
+  return;
+}
+
+fn main() -> i32 {
+  let mut c = transfer(Tensor<f32, [64]>::fill(0.0), Memory::HBM);
+  let mut d = transfer(Tensor<f32, [64]>::fill(0.0), Memory::HBM);
+  fill(&mut c, &mut d);
+  show(c, d);
+  return 0;
+}

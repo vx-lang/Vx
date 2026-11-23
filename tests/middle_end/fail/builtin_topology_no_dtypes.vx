@@ -1,0 +1,13 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// A declaration of a built-in topology that declares no dtypes: is refused.
+// CHECK: E6016
+// CHECK: topology 'GPU' has the name of a built-in topology, and declares no `dtypes:`. A declaration with a built-in name can only add `dtypes:`
+
+Topology GPU {
+  memory: Memory::GPU_HBM
+}
+
+fn main() -> i32 {
+  return 0;
+}
+

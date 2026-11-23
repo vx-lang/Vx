@@ -95,14 +95,7 @@ fn lower_spawn_region<'c>(
         gen.two_level_plan = Some(plan);
         trip
     });
-    let arch = match &this.top {
-        syntax::Topology::Custom(name) => gen
-            .topologies
-            .get(name)
-            .and_then(|d| d.arch.as_ref())
-            .map(|a| a.to_string()),
-        _ => None,
-    };
+    let (arch, _, _) = crate::arch::topology_arch_and_chip(&this.top, &gen.topologies);
     gen.spawn_arches.push(arch);
     // A `&mut Tensor` parameter is a slot that holds the tensor. A SPIR-V kernel cannot take a
     // memref of memrefs or a memref with a memory space. So the region reads the tensor, loaded
@@ -228,6 +221,17 @@ fn lower_spawn_region<'c>(
             (Identifier::new(gen.context, "topology_name"), name_attr),
         ])
         .add_regions([region]);
+    // The line and the file of the `spawn`, which a runtime error names.
+    spawn_builder = spawn_builder.add_attributes(&[(
+        Identifier::new(gen.context, "vx.line"),
+        IntegerAttribute::new(gen.i64_ty, this.span.line as i64).into(),
+    )]);
+    if let Some(file) = &gen.function_file {
+        spawn_builder = spawn_builder.add_attributes(&[(
+            Identifier::new(gen.context, "vx.file"),
+            melior::ir::attribute::StringAttribute::new(gen.context, file).into(),
+        )]);
+    }
 
     // What the proofs found, as the flat code generator writes it: the trip of the loop, and for
     // a loop of blocks, the widest loop of threads and whether a barrier is in a thread loop.
@@ -265,30 +269,44 @@ fn lower_spawn_region<'c>(
         }
     }
 
-    // The declared arch travels on the spawn here exactly as on the flat path (Vx#352):
-    // without it, the same source lost its device image whenever flat codegen declined and
-    // this path took over -- silently, since the eligibility gate saw no attribute and a
-    // custom topology's id cannot enter the band fallback. Custom topologies only: built-ins
-    // declare no arch and ride the band, same asymmetry as the flat emitter.
-    if let syntax::Topology::Custom(name) = &this.top {
-        if let Some(desc) = gen.topologies.get(name) {
-            if let Some(arch) = &desc.arch {
-                let arch_attr =
-                    melior::ir::attribute::StringAttribute::new(gen.context, arch.as_ref()).into();
-                spawn_builder = spawn_builder
-                    .add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
-            }
-            if let Some(chip) = &desc.chip {
-                let chip_attr =
-                    melior::ir::attribute::StringAttribute::new(gen.context, chip.as_ref()).into();
-                spawn_builder = spawn_builder
-                    .add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
-            }
-            // Whether the fleet may run it on a worker of another node. A built-in has no mark.
-            let offload_attr = melior::ir::attribute::BoolAttribute::new(gen.context, desc.offload);
-            spawn_builder = spawn_builder
-                .add_attributes(&[(Identifier::new(gen.context, "offload"), offload_attr.into())]);
-        }
+    // The arch travels on the spawn on both paths, so the device pipeline is chosen
+    // from the topology's descriptor rather than from its dispatch-id band. A declared
+    // topology reads it from the machine file; a built-in reads it from the built-in table.
+    let (desc_arch, desc_chip, desc_offload) =
+        crate::arch::topology_arch_and_chip(&this.top, &gen.topologies);
+    if let Some(arch) = &desc_arch {
+        let arch_attr =
+            melior::ir::attribute::StringAttribute::new(gen.context, arch.as_ref()).into();
+        spawn_builder =
+            spawn_builder.add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
+    }
+    if let Some(chip) = &desc_chip {
+        let chip_attr =
+            melior::ir::attribute::StringAttribute::new(gen.context, chip.as_ref()).into();
+        spawn_builder =
+            spawn_builder.add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
+    }
+    if let Some(bytes) = match &this.top {
+        crate::syntax::Topology::Custom(name, _) => gen
+            .topologies
+            .get(name)
+            .and_then(|d| crate::arch::shared_memory_capacity(d, gen.memories.values())),
+        _ => None,
+    } {
+        let bytes_attr = melior::ir::attribute::IntegerAttribute::new(
+            melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
+            bytes as i64,
+        );
+        spawn_builder = spawn_builder.add_attributes(&[(
+            Identifier::new(gen.context, "shared_bytes"),
+            bytes_attr.into(),
+        )]);
+    }
+    // Whether the fleet may run it on a worker of another node. A built-in has no mark.
+    if let Some(offload) = desc_offload {
+        let offload_attr = melior::ir::attribute::BoolAttribute::new(gen.context, offload);
+        spawn_builder = spawn_builder
+            .add_attributes(&[(Identifier::new(gen.context, "offload"), offload_attr.into())]);
     }
 
     // Topology → plugin selection: if a hardware plugin claims this topology, record its
@@ -346,24 +364,9 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
     ) -> Self::Output {
         let (mut src_val, mut src_ty, block) = gen.generate_expr(&self.expr, block)?;
         let location = gen.loc();
-        // `&g` is the slot that holds g's memref, so the transfer reads the tensor out of it.
-        if matches!(
-            gen.infer_ast_type(&self.expr),
-            Some(syntax::Type::Borrow { .. })
-        ) {
-            if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(src_ty) {
-                use melior::ir::r#type::ShapedTypeLike;
-                let inner = outer.element();
-                if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
-                    let load = OperationBuilder::new("memref.load", location)
-                        .add_operands(&[src_val])
-                        .add_results(&[inner])
-                        .build()?;
-                    src_val = block.append_operation(load).result(0)?.into();
-                    src_ty = inner;
-                }
-            }
-        }
+        // `&g` is the slot that holds g's memref, so the transfer reads the tensor out of it. The
+        // type of the lowered value says so, also for `&view` of a view of raw memory.
+        src_val = super::expr::load_tensor_slot(gen, &block, src_val, &mut src_ty)?;
 
         // Static byte size of the transferred tile, for the SS2 sub-space bump allocator.
         let tile_bytes = gen.infer_ast_type(&self.expr).and_then(|ty| {
@@ -404,17 +407,9 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // at the first variable the value was bound to -- every `let` is an `alloca` and a store,
         // and the read is a load whose operand is the slot. The way home was compiled into a
         // `memcpy` from device memory for exactly that reason (#321, #348).
-        // A borrowed tensor says it with its placement, and no transfer made it there.
-        let source_topology_id = match gen.infer_ast_type(&self.expr) {
-            Some(syntax::Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top),
-            Some(syntax::Type::Borrow { inner, .. }) => match *inner {
-                syntax::Type::Tensor(_, _, Some(p)) => {
-                    crate::arch::topology_dispatch_id(&p.topology)
-                }
-                _ => 0,
-            },
-            _ => 0,
-        };
+        let source_topology_id = gen
+            .infer_ast_type(&self.expr)
+            .map_or(0, |ty| crate::arch::source_topology_id(&ty));
 
         use melior::ir::operation::OperationLike;
         let mut target_ty = src_ty;
@@ -512,6 +507,18 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             let unit = melior::ir::attribute::Attribute::unit(gen.context);
             transfer_builder =
                 transfer_builder.add_attributes(&[(Identifier::new(gen.context, "shared"), unit)]);
+        }
+        if self.read_only_source {
+            let unit = melior::ir::attribute::Attribute::unit(gen.context);
+            transfer_builder = transfer_builder
+                .add_attributes(&[(Identifier::new(gen.context, "read_only_source"), unit)]);
+        }
+        if self.source_borrowed_for_call {
+            let unit = melior::ir::attribute::Attribute::unit(gen.context);
+            transfer_builder = transfer_builder.add_attributes(&[(
+                Identifier::new(gen.context, "source_borrowed_for_call"),
+                unit,
+            )]);
         }
 
         // Sub-space descriptor as IR metadata (SS1, subspace_scheduling.md): the target space name
@@ -617,6 +624,14 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         if user_lowering.is_some() {
             transfer_builder = transfer_builder.add_attributes(&[(
                 Identifier::new(gen.context, "user_lowered"),
+                melior::ir::attribute::Attribute::unit(gen.context),
+            )]);
+        }
+
+        // A `transfer_async`: a device copies in the background until a use of the tensor.
+        if self.is_async {
+            transfer_builder = transfer_builder.add_attributes(&[(
+                Identifier::new(gen.context, "async"),
                 melior::ir::attribute::Attribute::unit(gen.context),
             )]);
         }

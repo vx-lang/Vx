@@ -61,6 +61,7 @@ pub(crate) struct TaskLocals {
     pub(crate) to_stderr: bool,
     pub(crate) site: Option<crate::ffi::tasks::Site>,
     pub(crate) cancels: u32,
+    pub(crate) select_turn: i64,
 }
 
 impl TaskLocals {
@@ -70,6 +71,7 @@ impl TaskLocals {
         lines::swap_with_thread(&mut self.line, &mut self.to_stderr);
         crate::ffi::tasks::swap_site(&mut self.site);
         crate::ffi::tasks::swap_cancels(&mut self.cancels);
+        crate::ffi::wait::swap_select_turn(&mut self.select_turn);
     }
 }
 
@@ -348,6 +350,12 @@ impl Scheduler {
         let ready = self.ready.lock().unwrap();
         ready.is_empty()
             && self.running.load(Ordering::SeqCst) == self.blocked.load(Ordering::SeqCst)
+    }
+
+    /// Whether a seed chooses the order of the tasks. Then the tasks run on a thread that is
+    /// not a worker.
+    pub(crate) fn has_seed(&self) -> bool {
+        self.random.is_some()
     }
 
     /// A running fiber starts to wait on its thread, under a callback.
@@ -1010,8 +1018,14 @@ mod tests {
         );
     }
 
+    // Under qemu-aarch64, QEMU itself sometimes aborts in this test, with an assert in its
+    // plugin code. `cargo test -- --ignored` still runs it.
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(
+        target_arch = "aarch64",
+        ignore = "QEMU sometimes aborts in this test on aarch64"
+    )]
     fn tasks_park_on_two_workers_with_shadow_stacks_on() {
         const NO_SHADOW_STACKS: i32 = 77;
         // As in the stack tests: the child turns shadow stacks on, and ends with `_exit`. Its

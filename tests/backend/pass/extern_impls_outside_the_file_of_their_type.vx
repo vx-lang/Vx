@@ -1,0 +1,37 @@
+//===- extern_impls_outside_the_file_of_their_type.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A file can write an impl of a type of another file, or of a built-in type, as `extern impl`.
+// An impl of `Send` there is `unsafe extern impl`.
+import tests::modules::types_with_impls_in_other_files;
+
+extern impl Show for Ticket {
+  fn show(self : &Ticket) -> i64 {
+    return self.number;
+  }
+}
+
+extern impl Show for i64 {
+  fn show(self : &i64) -> i64 {
+    return *self + 1i64;
+  }
+}
+
+unsafe extern impl Send for Handle {}
+
+fn main() -> i32 {
+  let t = Ticket {
+    number : 7i64
+  };
+  let n = 41i64;
+  print(t.show());
+  print!(" ");
+  print(n.show());
+  return 0;
+}
+
+// EXPECT: 7 42

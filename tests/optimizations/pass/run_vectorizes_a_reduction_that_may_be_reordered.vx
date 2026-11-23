@@ -19,20 +19,20 @@
 // CHECK: reordered
 
 fn reassoc_sum(a : &Tensor<f32, [?]>) -> f32 {
-  return mlir!( inputs : (%a = a : memref<?xf32>), returns : f32, dialects : ["arith", "linalg", "memref"]) {
-    %acc = memref.alloca() : memref<f32>
-    %z = arith.constant 0.0 : f32
-    memref.store %z, %acc[] : memref<f32>
-    linalg.generic {
-      indexing_maps = [affine_map<(d0) -> (d0)>, affine_map<(d0) -> ()>], iterator_types = ["reduction"]
-    } ins(%a : memref<?xf32>) outs(%acc : memref<f32>) {
-      ^bb0(%x : f32, %s : f32):
-      %r = arith.addf %s, %x fastmath<reassoc> : f32
-      linalg.yield %r : f32
-    }
-    %t = memref.load %acc[] : memref<f32>
-    macro.yield %t : f32
-  };
+  return unsafe { mlir!( inputs : (%a = a : memref<?xf32>), returns : f32, dialects : ["arith", "linalg", "memref"]) {
+      %acc = memref.alloca() : memref<f32>
+      %z = arith.constant 0.0 : f32
+      memref.store %z, %acc[] : memref<f32>
+      linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>, affine_map<(d0) -> ()>], iterator_types = ["reduction"]
+      } ins(%a : memref<?xf32>) outs(%acc : memref<f32>) {
+        ^bb0(%x : f32, %s : f32):
+        %r = arith.addf %s, %x fastmath<reassoc> : f32
+        linalg.yield %r : f32
+      }
+      %t = memref.load %acc[] : memref<f32>
+      macro.yield %t : f32
+    } };
 }
 
 fn main() -> i32 {

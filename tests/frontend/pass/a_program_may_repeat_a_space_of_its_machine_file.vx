@@ -1,0 +1,23 @@
+//===- a_program_may_repeat_a_space_of_its_machine_file.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: mkdir -p %t.d
+// RUN: printf 'Memory Pad {\n  capacity: 1 MiB, bandwidth: 2 TB/s, managed: explicit, scope: device\n}\n' > %t.d/machine.vx
+// RUN: vxc --machine %t.d/machine.vx %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The program declares the memory space `Pad` in the same words as its machine file. Two
+// declarations that say the same thing are one declaration, even in two files.
+// CHECK: 7
+
+Memory Pad {
+  capacity: 1 MiB, bandwidth: 2 TB/s, managed: explicit, scope: device
+}
+
+fn main() -> i32 {
+  print(7);
+  return 0;
+}

@@ -19,6 +19,7 @@
 
 use super::super::*;
 use crate::hir::check::tasks::{TaskLevel, TaskRun};
+use crate::hir::check_state::MemoryCopy;
 use crate::syntax::types::transfer_token_inner as token_inner;
 
 /// What resolving a transfer's edge produced: where the value is, where it is going, the route
@@ -42,6 +43,16 @@ pub(crate) struct ResolvedEdge {
     pub derived_cost: Option<u64>,
     pub derived_unit: Option<crate::syntax::RatePer>,
     pub cost_source: Option<crate::report::CostSource>,
+}
+
+/// A tensor that a type places in a memory.
+struct PlacedTensor {
+    elem: ElementType,
+    dims: Vec<Dim>,
+    /// The copy of the memory that holds it.
+    copy: MemoryCopy,
+    /// The device that the placement names, or `None` when it names only a memory.
+    device: Option<Topology>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -157,7 +168,10 @@ impl<'a> TypeChecker<'a> {
         out: &mut std::collections::HashMap<String, u64>,
     ) {
         match topology {
-            Topology::NPU(index) | Topology::AccCore(index) | Topology::GPU(index) => {
+            Topology::NPU(index)
+            | Topology::AccCore(index)
+            | Topology::GPU(index)
+            | Topology::Custom(_, Some(index)) => {
                 Self::scan_expr_for_asserts(index, out);
             }
             Topology::Slice(base, start, end) => {
@@ -170,7 +184,7 @@ impl<'a> TypeChecker<'a> {
             | Topology::ANE
             | Topology::CpuAvx512
             | Topology::CpuNeon
-            | Topology::Custom(_)
+            | Topology::Custom(_, None)
             | Topology::Current => {}
         }
     }
@@ -388,8 +402,7 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    /// Whether the hardware holding `space` can represent `elem` at all, per the `dtypes:` list
-    /// on its topology. E6026.
+    /// Whether `device` can represent `elem` at all, per its `dtypes:` list. E6026.
     ///
     /// The capacity check asks whether a value fits; this asks whether the machine can hold that
     /// kind of value in the first place. Both read a declared property of a device and compare a
@@ -400,7 +413,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_element_type(
         &mut self,
         elem: &ElementType,
-        space: &MemorySpace,
+        device: &Topology,
         context: &str,
         span: Option<crate::diagnostic::SourceSpan>,
     ) {
@@ -408,13 +421,7 @@ impl<'a> TypeChecker<'a> {
         if matches!(elem, ElementType::Generic(_)) {
             return;
         }
-        let Ok(topology) = self.transfer_cost_graph.owning_topology(space) else {
-            return;
-        };
-        let Some(desc) = self.transfer_cost_graph.descriptor(&topology.kind()) else {
-            return;
-        };
-        let Some(declared) = desc.dtypes.as_ref() else {
+        let Some(declared) = self.declared_dtypes(device) else {
             return;
         };
         if declared.contains(elem) {
@@ -429,27 +436,48 @@ impl<'a> TypeChecker<'a> {
             crate::diagnostic::DiagnosticCode::E6026,
             format!(
                 "{context} has element type {elem}, which {} cannot represent; it declares [{}]",
-                topology.display_name(),
+                device.display_name(),
                 listed
             ),
             span,
         );
     }
 
+    /// E6026 for a value placed in `space`. It asks `device`, the device that the placement
+    /// names. A placement that names only a memory asks the topology whose `memory:` it is. When
+    /// several topologies share that memory, no single device is asked.
+    fn check_placed_element_type(
+        &mut self,
+        elem: &ElementType,
+        device: Option<&Topology>,
+        space: &MemorySpace,
+        context: &str,
+        span: Option<crate::diagnostic::SourceSpan>,
+    ) {
+        let device = match device {
+            Some(device) => device.clone(),
+            None => match self.transfer_cost_graph.owning_topology(space) {
+                Ok(owner) => owner,
+                Err(_) => return,
+            },
+        };
+        self.check_element_type(elem, &device, context, span);
+    }
+
     /// E6026 for an element type used *inside* the active region, asked of that region's device.
     ///
-    /// The placement checks ask this of a space, so they only see values that were placed. A
-    /// value built inside a region reaches no space. This check asks the region's device instead.
+    /// The placement checks see only values that were placed. A value built inside a region
+    /// is not placed, so this check covers it.
     pub(crate) fn check_element_type_in_active_region(
         &mut self,
         elem: &ElementType,
         context: &str,
         span: &crate::syntax::Span,
     ) {
-        let space = self.active_memory.clone();
+        let device = self.active_topology.clone();
         self.check_element_type(
             elem,
-            &space,
+            &device,
             context,
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
@@ -475,15 +503,12 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Whether the space the code being checked runs in belongs to a device that declares
-    /// `dtypes:`. The expression check skips its work otherwise.
-    pub(crate) fn space_declares_dtypes(&self, space: &MemorySpace) -> bool {
-        self.transfer_cost_graph
-            .owning_topology(space)
-            .ok()
-            .and_then(|top| self.transfer_cost_graph.descriptor(&top.kind()))
-            .and_then(|desc| desc.dtypes.as_ref())
-            .is_some()
+    /// The `dtypes:` list of `device`, when it declares one.
+    pub(crate) fn declared_dtypes(&self, device: &Topology) -> Option<&'a [ElementType]> {
+        let graph: &'a crate::arch::TransferCostGraph = self.transfer_cost_graph;
+        graph
+            .descriptor(&device.kind())
+            .and_then(|desc| desc.dtypes.as_deref())
     }
 
     /// The declared fields of the struct `ty` names, from this module, a generated
@@ -541,6 +566,8 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(_, _, Some(_)) | Type::Pinned(..) => {}
                 Type::Ref(inner, _)
                 | Type::Verified(inner)
+                | Type::Distinct(inner)
+                | Type::DisjointRanges(inner)
                 | Type::Borrow { inner, .. }
                 | Type::Pointer(inner, _, _) => stack.push(*inner),
                 Type::Struct(..) | Type::GenericInstance(..) => {
@@ -576,11 +603,11 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         elem: &ElementType,
         dims: &[Dim],
-        space: &MemorySpace,
+        copy: &MemoryCopy,
         context: &str,
         span: &Span,
     ) {
-        self.check_capacity_of(elem, dims, space, context, span, true, 1)
+        self.check_capacity_of(elem, dims, copy, context, span, true, 1)
     }
 
     /// A channel of tensors in a memory with a capacity holds up to `n` of them, from the
@@ -591,7 +618,10 @@ impl<'a> TypeChecker<'a> {
         let bounded: Vec<_> = self
             .placed_tensors(t)
             .into_iter()
-            .filter(|(_, _, space)| h.descriptor(space).is_some_and(|d| d.capacity.is_some()))
+            .filter(|placed| {
+                h.descriptor(&placed.copy.space)
+                    .is_some_and(|d| d.capacity.is_some())
+            })
             .collect();
         if bounded.is_empty() {
             return;
@@ -603,13 +633,16 @@ impl<'a> TypeChecker<'a> {
             Expr::Number(num) => num.value.parse::<i64>().ok(),
             e => self.extent_value(e),
         };
-        for (elem, dims, space) in bounded {
+        for placed in bounded {
+            let PlacedTensor {
+                elem, dims, copy, ..
+            } = placed;
             match room {
                 Some(room) if room >= 1 => {
                     let context = format!("the room of this channel, {room} of `{t}`,");
-                    self.check_capacity_of(&elem, &dims, &space, &context, span, true, room as u64);
+                    self.check_capacity_of(&elem, &dims, &copy, &context, span, true, room as u64);
                 }
-                _ => self.report_channel_room_not_known(&space, t, span),
+                _ => self.report_channel_room_not_known(&copy.space, t, span),
             }
         }
     }
@@ -731,13 +764,35 @@ impl<'a> TypeChecker<'a> {
         true
     }
 
+    /// Report an error at `span` once. The checker visits some nodes twice, such as a transfer
+    /// that a method call becomes.
+    fn report_once(
+        &mut self,
+        code: crate::diagnostic::DiagnosticCode,
+        message: String,
+        span: &Span,
+    ) {
+        let said = self
+            .errors
+            .inner
+            .iter()
+            .any(|d| d.code.as_ref() == Some(&code) && d.message == message);
+        if !self.speculating && !said {
+            self.errors.error_with_code(
+                code,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
     /// `copies`: how many tensors of this shape the placement holds.
     #[allow(clippy::too_many_arguments)]
     fn check_capacity_of(
         &mut self,
         elem: &ElementType,
         dims: &[Dim],
-        space: &MemorySpace,
+        copy: &MemoryCopy,
         context: &str,
         span: &Span,
         record: bool,
@@ -746,6 +801,7 @@ impl<'a> TypeChecker<'a> {
         if self.refuse_unrepresentable_shape(elem, dims, span) {
             return;
         }
+        let space = &copy.space;
         let sized = {
             let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
             let Some(decl) = h.descriptor(space) else {
@@ -794,25 +850,61 @@ impl<'a> TypeChecker<'a> {
             (rounded, cap)
         };
         let (rounded, cap) = sized;
+        // A tile of f32 in shared memory or in registers, with a row for each subgroup, which a
+        // lane matmul may keep in registers. The checker knows that only at the end of the
+        // function.
+        let shared_tile = {
+            let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+            let shared = h.descriptor(space).is_some_and(|d| {
+                matches!(
+                    d.scope,
+                    Some(
+                        crate::syntax::Scope::Sm
+                            | crate::syntax::Scope::Cta
+                            | crate::syntax::Scope::Thread
+                    )
+                )
+            });
+            let sizes: Option<Vec<u64>> = dims
+                .iter()
+                .map(|d| d.literal().and_then(|v| v.parse::<u64>().ok()))
+                .collect();
+            sizes
+                .filter(|_| shared && copies == 1)
+                .map(|s| (elem.clone(), s))
+        };
+        let may_be_registers = record
+            && self.traffic.tile_holder.is_some()
+            && shared_tile
+                .as_ref()
+                .is_some_and(|(e, s)| *e == ElementType::F32 && s.len() == 3);
+        let mut held_e6009 = None;
         // Precise per-tile check: a single tile larger than the whole space is always wrong.
         if rounded > cap {
-            self.errors
-                .error_with_code(
-                    crate::diagnostic::DiagnosticCode::E6009,
-                    format!(
-                        "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
-                        space.name()
-                    ),
-                    // The room of a channel is at the `channel` call.
-                    (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span)),
-                )
-                // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
-                .facts = Some(crate::diagnostic::DiagnosticFacts::Capacity {
+            let message = format!(
+                "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
+                space.name()
+            );
+            // The room of a channel is at the `channel` call.
+            let at = (copies > 1).then(|| crate::diagnostic::SourceSpan::from_ast_span(span));
+            // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
+            let facts = crate::diagnostic::DiagnosticFacts::Capacity {
                 space: space.name(),
                 required_bytes: rounded,
                 available_bytes: cap,
                 tiles: None,
-            });
+            };
+            if may_be_registers {
+                held_e6009 = Some(crate::hir::check_state::HeldE6009 {
+                    message,
+                    span: at,
+                    facts,
+                });
+            } else {
+                self.errors
+                    .error_with_code(crate::diagnostic::DiagnosticCode::E6009, message, at)
+                    .facts = Some(facts);
+            }
         }
         if !record {
             return;
@@ -868,7 +960,7 @@ impl<'a> TypeChecker<'a> {
         let tiles = self
             .traffic
             .memory_placements
-            .entry(space.clone())
+            .entry(copy.clone())
             .or_default();
         let (order, end) = match tiles.get(&key) {
             Some(existing) => (existing.order, existing.end),
@@ -886,6 +978,8 @@ impl<'a> TypeChecker<'a> {
                 tasks: self.tasks.task_chain(),
                 holder: self.traffic.tile_holder.clone(),
                 end,
+                shared_tile,
+                held_e6009,
             },
         );
     }
@@ -1011,8 +1105,8 @@ impl<'a> TypeChecker<'a> {
                 .collect();
         }
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
-        // (space, total, cap, tile_count, overcommit, granule)
-        let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
+        // (copy of the memory, total, cap, tile_count, overcommit, granule)
+        let mut violations: Vec<(MemoryCopy, u64, u64, usize, bool, Option<u64>)> = Vec::new();
         // Sorted, because `placements` is a `HashMap` and Rust randomises its hasher per process.
         // Iterating it directly made `resident_sets` -- and therefore `--diagnostics-json` --
         // come out in a different order on every run: the same compiler on the same input emitted
@@ -1020,9 +1114,12 @@ impl<'a> TypeChecker<'a> {
         // nondeterminism in the machine-readable artifact downstream tools consume, and it broke
         // byte-reproducibility of the frozen predictions, which is where it was
         // found. Diagnostics are also emitted in this order, so it decided their order too.
+        // Each device of a topology with `count:` has its own copy of the memory, so each copy
+        // has its own working set.
         let mut placements: Vec<_> = placements.iter().collect();
-        placements.sort_by_key(|(space, _)| space.name());
-        for (space, tiles) in placements {
+        placements.sort_by_key(|(copy, _)| copy.name());
+        for (copy, tiles) in placements {
+            let space = &copy.space;
             let Some(decl) = h.descriptor(space) else {
                 continue;
             };
@@ -1106,14 +1203,14 @@ impl<'a> TypeChecker<'a> {
             if let Some(spawn) = not_known {
                 crate::hir::check::capacity_fold::report_task_count_not_known(
                     &mut self.errors,
-                    &space.name(),
+                    &copy.name(),
                     decl.overcommit,
                     &spawn,
                 );
             }
             let tile_count = peak_tiles.max(1);
             if total > 0 {
-                summary.self_peak.insert(space.name(), total);
+                summary.self_peak.insert(copy.name(), total);
             }
             // What is still resident when each call transfers control: every tile placed
             // earlier in program order whose block is still open -- the same prefix test the
@@ -1123,7 +1220,7 @@ impl<'a> TypeChecker<'a> {
                 // resident at any point is at most the function's peak.
                 if c.in_closure {
                     if total > 0 {
-                        summary.calls[k].live.insert(space.name(), total);
+                        summary.calls[k].live.insert(copy.name(), total);
                     }
                     continue;
                 }
@@ -1141,7 +1238,7 @@ impl<'a> TypeChecker<'a> {
                     .sum::<u64>()
                     + held_at_calls[k];
                 if held > 0 {
-                    summary.calls[k].live.insert(space.name(), held);
+                    summary.calls[k].live.insert(copy.name(), held);
                 }
             }
             // Record the working set whether or not it violates. An *admitted* program emits no
@@ -1150,6 +1247,7 @@ impl<'a> TypeChecker<'a> {
             // utilization an engine must be given (#285). A verdict alone does not carry it.
             self.traffic.resident_sets.push(crate::report::ResidentSet {
                 space: space.clone(),
+                device: copy.device.clone(),
                 total_bytes: total,
                 capacity_bytes: cap,
                 tiles: tile_count,
@@ -1159,7 +1257,7 @@ impl<'a> TypeChecker<'a> {
             // E6009's job, and reporting it twice would double-count in the record.
             if total > cap && tile_count > 1 {
                 violations.push((
-                    space.clone(),
+                    copy.clone(),
                     total,
                     cap,
                     tile_count,
@@ -1171,15 +1269,16 @@ impl<'a> TypeChecker<'a> {
         if !summary.self_peak.is_empty() || !summary.calls.is_empty() {
             self.traffic.capacity_summaries.push(summary);
         }
-        for (space, total, cap, count, overcommit, granule) in violations {
+        for (copy, total, cap, count, overcommit, granule) in violations {
+            let space = &copy.space;
             let rounded_note = match granule {
                 Some(g) => format!(" (each rounded up to the {g}-byte granule)"),
                 None => String::new(),
             };
             let msg = format!(
-                "the working set placed in memory space '{}' ({} tiles){} sums to {} bytes, over \
+                "the working set placed in memory space {} ({} tiles){} sums to {} bytes, over \
                  its {} byte capacity",
-                space.name(),
+                MemoryCopy::quoted(&copy.name()),
                 count,
                 rounded_note,
                 total,
@@ -1188,7 +1287,7 @@ impl<'a> TypeChecker<'a> {
             // The same working-set numbers in machine-readable form, on whichever of the two
             // codes this space's `overcommit` selects (#282).
             let facts = crate::diagnostic::DiagnosticFacts::Capacity {
-                space: space.name(),
+                space: copy.name(),
                 required_bytes: total,
                 available_bytes: cap,
                 tiles: Some(count),
@@ -1222,7 +1321,7 @@ impl<'a> TypeChecker<'a> {
     /// counts as one. The host does not.
     pub(crate) fn topology_offloads(&self, top: &Topology) -> bool {
         match top {
-            Topology::Custom(name) => self
+            Topology::Custom(name, _) => self
                 .env
                 .topologies
                 .get(name)
@@ -1282,28 +1381,35 @@ impl<'a> TypeChecker<'a> {
         self.transfer_cost_graph.placement_space(p)
     }
 
-    /// Every placed tensor a type carries, as (element type, dimensions, the space it occupies).
+    /// Every placed tensor a type carries.
     ///
     /// Descends the wrappers, so a placement inside `Verified<..>`, `&..` or `*const ..` is found
     /// rather than only the outermost one. A tensor that states its own placement takes it; a
     /// wrapper's location applies only to a tensor that states none.
-    fn placed_tensors(&self, ty: &Type) -> Vec<(ElementType, Vec<Dim>, MemorySpace)> {
+    fn placed_tensors(&self, ty: &Type) -> Vec<PlacedTensor> {
         let mut out = Vec::new();
         self.collect_placed_tensors(ty, &mut out);
         out
     }
 
-    fn collect_placed_tensors(
-        &self,
-        ty: &Type,
-        out: &mut Vec<(ElementType, Vec<Dim>, MemorySpace)>,
-    ) {
+    fn collect_placed_tensors(&self, ty: &Type, out: &mut Vec<PlacedTensor>) {
+        let placed = |e: &ElementType, d: &[Dim], space, copy_of, device| PlacedTensor {
+            elem: e.clone(),
+            dims: d.to_vec(),
+            copy: MemoryCopy {
+                space,
+                device: copy_of,
+            },
+            device,
+        };
         let before = out.len();
         match ty {
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => self.collect_placed_tensors(inner, out),
             // A channel end holds no tensor: `channel` counts the room of the channel.
             Type::GenericInstance(base, _) if Self::is_channel_end(base) => return,
@@ -1317,7 +1423,11 @@ impl<'a> TypeChecker<'a> {
         }
         if let (Some(p), Some((e, d))) = (ty.placement(), Self::tensor_of(ty)) {
             let space = self.placement_space(p);
-            out.push((e.clone(), d.to_vec(), space));
+            let device = match p.written() {
+                crate::syntax::Written::Device => Some(p.topology.clone()),
+                crate::syntax::Written::Space => None,
+            };
+            out.push(placed(e, d, space, self.device_copy(&p.topology), device));
             return;
         }
         // A wrapper states the location for a tensor that does not state one itself.
@@ -1325,13 +1435,14 @@ impl<'a> TypeChecker<'a> {
             match ty {
                 Type::Ref(inner, mem) => {
                     if let Some((e, d)) = Self::tensor_of(inner) {
-                        out.push((e.clone(), d.to_vec(), mem.clone()));
+                        out.push(placed(e, d, mem.clone(), None, None));
                     }
                 }
                 Type::Pinned(inner, top) if !matches!(top, Topology::Current) => {
                     if let Some((e, d)) = Self::tensor_of(inner) {
                         let space = self.transfer_cost_graph.default_memory_for(top);
-                        out.push((e.clone(), d.to_vec(), space));
+                        let copy_of = self.device_copy(top);
+                        out.push(placed(e, d, space, copy_of, Some(top.clone())));
                     }
                 }
                 _ => {}
@@ -1433,11 +1544,12 @@ impl<'a> TypeChecker<'a> {
         let record = record && !matches!(ty, Type::Pointer(..));
         self.report_unheld_placements(ty, context);
         self.check_alignments_in(ty, context, span);
-        for (e, d, space) in self.placed_tensors(ty) {
-            self.check_capacity_of(&e, &d, &space, context, span, record, 1);
-            self.check_element_type(
-                &e,
-                &space,
+        for t in self.placed_tensors(ty) {
+            self.check_capacity_of(&t.elem, &t.dims, &t.copy, context, span, record, 1);
+            self.check_placed_element_type(
+                &t.elem,
+                t.device.as_ref(),
+                &t.copy.space,
                 context,
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
@@ -1565,6 +1677,24 @@ impl<'a> TypeChecker<'a> {
     /// the other. Reports the edge's own diagnostics on the way: capacity, and a host memory
     /// nothing declared. `None` when no route exists at all.
     fn resolve_transfer_edge(&mut self, t: &mut TransferExpr) -> Option<ResolvedEdge> {
+        // `transfer(x, Topology::X[i])` moves the value into the memory of that device. A memory
+        // that several devices have does not say which device gets the value.
+        if let Some(device) = &mut t.device {
+            if *device == Topology::Current {
+                *device = self.active_topology.clone();
+            }
+            if let Some(why) = self.declared_device_problem(device) {
+                let message = format!("`transfer(.., {device})` names no device: {why}");
+                self.report_once(crate::diagnostic::DiagnosticCode::E6025, message, &t.span);
+            }
+            t.space = self.transfer_cost_graph.default_memory_for(device);
+        } else if let Some(why) = self.memory_of_several_devices(&t.space) {
+            let message = format!(
+                "`transfer(.., Memory::{})` names no location: {why}",
+                t.space.name()
+            );
+            self.report_once(crate::diagnostic::DiagnosticCode::E6025, message, &t.span);
+        }
         let prev = self.allow_cross_topology;
         self.allow_cross_topology = true;
         // Anything placed while checking this operand is a hop feeding this transfer, so it has
@@ -1585,12 +1715,13 @@ impl<'a> TypeChecker<'a> {
         // Extract source memory space, preferring exact space from an inner transfer if present
         let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {
             inner_t.space.clone()
-        } else if let Some(space) = inner_ty.placement().map(|p| p.space.clone()) {
+        } else if let Some(space) = inner_ty.placement().map(|p| self.placement_space(p)) {
             // A placed tensor names the space it is in. While `transfer` produced
             // `Pinned`, a transferred value matched an arm below and the fallback saw
             // only genuinely host-resident values; with the placement unread it called
             // this one host memory and computed the edge from CPU_DRAM, inserting a
-            // redundant staging hop into the region.
+            // redundant staging hop into the region. A placement written as a declared
+            // device gets its space from the declaration, not from the parser's guess.
             space
         } else {
             match &inner_ty {
@@ -1601,10 +1732,9 @@ impl<'a> TypeChecker<'a> {
                 // handoff reports "no hardware path" (#253). Only an undeclared custom topology
                 // falls back to the like-named space (`Memory::Foo` <-> `Topology::Foo`), the
                 // sub-space placement case (SMEM/TMEM), which has no descriptor.
-                Type::Pinned(_, Topology::Custom(name)) => {
-                    let top = Topology::Custom(name.clone());
+                Type::Pinned(_, top @ Topology::Custom(name, _)) => {
                     if self.transfer_cost_graph.descriptor(&top.kind()).is_some() {
-                        self.transfer_cost_graph.default_memory_for(&top)
+                        self.transfer_cost_graph.default_memory_for(top)
                     } else {
                         MemorySpace::from_name(name.as_ref())
                     }
@@ -1618,6 +1748,13 @@ impl<'a> TypeChecker<'a> {
             && self
                 .transfer_cost_graph
                 .is_shared_edge(&source_mem, &target_mem);
+        // `transfer(&v, M)` of a view made from a `*const` pointer: nothing can write `v`.
+        let source_place = match &*t.expr {
+            Expr::Borrow(b) => &*b.expr,
+            e => e,
+        };
+        t.read_only_source = t.shared && self.const_pointer_in_place(source_place).is_some();
+        t.source_borrowed_for_call = t.shared && self.borrowed_for_the_call(source_place);
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
@@ -1625,9 +1762,14 @@ impl<'a> TypeChecker<'a> {
             // one: distinct per `transfer(..)` written in the source, and the same on a
             // second visit to the same node.
             let placement_span = Self::buffer_span(&t.expr).unwrap_or(t.span);
-            self.check_capacity(e, d, &target_mem, "transferred tensor", &placement_span);
-            self.check_element_type(
+            let copy = MemoryCopy {
+                space: target_mem.clone(),
+                device: t.device.as_ref().and_then(|d| self.device_copy(d)),
+            };
+            self.check_capacity(e, d, &copy, "transferred tensor", &placement_span);
+            self.check_placed_element_type(
                 e,
+                t.device.as_ref(),
                 &target_mem,
                 "transferred tensor",
                 Some(crate::diagnostic::SourceSpan::from_ast_span(
@@ -2306,21 +2448,28 @@ impl<'a> TypeChecker<'a> {
             current_expr = Expr::Transfer(TransferExpr {
                 expr: Box::new(current_expr),
                 space: intermediate_space,
+                device: None,
                 cost: None,
                 lowering: None,
                 is_async: false,
                 shared: false,
+                read_only_source: false,
+                source_borrowed_for_call: false,
                 span: t.span,
             });
         }
-        // Only the last hop gives the token of `transfer_async`.
+        // Only the last hop gives the token of `transfer_async`, and only the last hop is into the
+        // memory of the device that the transfer names.
         *expr = Expr::Transfer(TransferExpr {
             expr: Box::new(current_expr),
             space: target_mem,
+            device: t.device,
             cost: None,
             lowering: None,
             is_async: t.is_async,
             shared: false,
+            read_only_source: false,
+            source_borrowed_for_call: false,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the
@@ -2399,7 +2548,7 @@ impl<'a> TypeChecker<'a> {
             MemorySpace::CPUDRAM => Topology::CPU,
             // A value in a user-defined memory space is pinned on the like-named
             // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
-            MemorySpace::Custom(name) => Topology::Custom(name.clone()),
+            MemorySpace::Custom(name) => Topology::Custom(name.clone(), None),
         }
     }
 
@@ -2412,6 +2561,19 @@ impl<'a> TypeChecker<'a> {
         target_mem: &MemorySpace,
         consume: bool,
     ) -> Type {
+        // `transfer(x, Topology::X[i])` gives a tensor on that device, in its memory.
+        let device = match &*expr {
+            Expr::Transfer(t) => t.device.clone(),
+            _ => None,
+        };
+        let placement = match &device {
+            Some(device) => {
+                let mut p = Placement::on(device.clone());
+                p.space = target_mem.clone();
+                p
+            }
+            None => Placement::in_space(target_mem.clone(), Self::pinned_topology_for(target_mem)),
+        };
         match inner_ty {
             Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
             // A dynamic tensor re-homes exactly as a statically shaped one does; only the
@@ -2423,14 +2585,20 @@ impl<'a> TypeChecker<'a> {
             // `Tensor<f16, [n, n], Memory::NPU_HBM>` were two different types for the same fact
             // and would not assign to one another. `Pinned` also carries only a topology, so the
             // space the transfer named was not recorded on the value at all.
-            Type::Tensor(el, dims, _) => Type::Tensor(
-                el,
-                dims,
-                Some(Placement::in_space(
-                    target_mem.clone(),
-                    Self::pinned_topology_for(target_mem),
-                )),
-            ),
+            Type::Tensor(el, dims, _) => Type::Tensor(el, dims, Some(placement)),
+            // A copy has the same values, so it is still `Distinct`.
+            Type::Distinct(inner) if matches!(*inner, Type::Tensor(..)) => {
+                let Type::Tensor(el, dims, _) = *inner else {
+                    unreachable!("matched above")
+                };
+                Type::Distinct(Box::new(Type::Tensor(el, dims, Some(placement))))
+            }
+            Type::DisjointRanges(inner) if matches!(*inner, Type::Tensor(..)) => {
+                let Type::Tensor(el, dims, _) = *inner else {
+                    unreachable!("matched above")
+                };
+                Type::DisjointRanges(Box::new(Type::Tensor(el, dims, Some(placement))))
+            }
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
                     let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume);
@@ -2439,7 +2607,10 @@ impl<'a> TypeChecker<'a> {
                     unreachable!()
                 }
             }
-            Type::Pinned(base, _) => Type::Pinned(base, Self::pinned_topology_for(target_mem)),
+            Type::Pinned(base, _) => Type::Pinned(
+                base,
+                device.unwrap_or_else(|| Self::pinned_topology_for(target_mem)),
+            ),
             // An error already reported made this value's type unknown.
             Type::Unknown => Type::Unknown,
             _ => {
@@ -2594,11 +2765,26 @@ impl<'a> TypeChecker<'a> {
                     *arrivals = Some((count, shared));
                 }
 
+                let no_device = self.declared_device_problem(&actual_top);
+                if let Some(why) = &no_device {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6025,
+                        format!("`spawn on({actual_top})` names no device: {why}"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                    );
+                } else if let Some(why) = self.device_with_no_gpu(&actual_top) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6042,
+                        format!("`spawn on({actual_top})`: {why}"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                    );
+                }
+
                 // Typo-safety for the open topology set: a user-defined topology with no
                 // registered descriptor (not declared via `Topology <Name> { ... }` and not
                 // registered by a plugin) is often a misspelled built-in. Warn; it still
                 // compiles with host-like placement.
-                if let Topology::Custom(name) = &actual_top {
+                if let (Topology::Custom(name, _), None) = (&actual_top, &no_device) {
                     if self
                         .transfer_cost_graph
                         .descriptor(&crate::syntax::TopologyKind::Custom(name.clone()))
@@ -2650,29 +2836,25 @@ impl<'a> TypeChecker<'a> {
                         let _t1 = self.check_expr_type(start);
                         let _t2 = self.check_expr_type(end);
                     }
-                    // No index expression to validate (Custom carries only a name).
-                    Topology::GPU(e) => {
+                    Topology::GPU(e) | Topology::Custom(_, Some(e)) => {
                         let _t = self.check_expr_type(e);
                     }
-                    // No index expression to validate (Custom carries only a name).
+                    // No index expression to validate.
                     Topology::CPU
                     | Topology::AMX
                     | Topology::ANE
                     | Topology::CpuAvx512
                     | Topology::CpuNeon
-                    | Topology::Custom(_)
+                    | Topology::Custom(_, None)
                     | Topology::Current => {}
                 }
 
                 let prev_top = self.active_topology.clone();
-                let prev_mem = self.active_memory.clone();
                 let prev_device_spawn = self.device_spawn;
                 if self.runs_on_a_device(&actual_top) {
                     self.device_spawn = Some(spawn_span);
                 }
-                self.active_topology = actual_top.clone();
-                let region_mem = self.transfer_cost_graph.default_memory_for(&actual_top);
-                self.set_active_memory(region_mem);
+                self.set_active_topology(actual_top.clone());
 
                 *top = actual_top;
 
@@ -2741,9 +2923,9 @@ impl<'a> TypeChecker<'a> {
                 }
                 // The result may be a value that was never bound to a name, and an untyped
                 // literal there was skipped by the expression check.
-                if self.active_space_declares_dtypes {
+                if self.active_device_declares_dtypes {
                     if let Some(ret_span) = ret_span {
-                        let statement = self.current_statement_span;
+                        let statement = self.errors.at;
                         let span = if ret_span.line != 0 {
                             ret_span
                         } else {
@@ -2809,8 +2991,7 @@ impl<'a> TypeChecker<'a> {
 
                 self.pop_scope();
 
-                self.active_topology = prev_top;
-                self.set_active_memory(prev_mem);
+                self.set_active_topology(prev_top);
                 self.device_spawn = prev_device_spawn;
 
                 // The result of a device kernel is located ON that device: return

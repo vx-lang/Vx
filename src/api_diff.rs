@@ -155,11 +155,11 @@ fn type_name(r: &ImmutableGlobalRegistry, id: TypeId) -> String {
 }
 
 /// The scalar types a method can be declared on. A scalar missing here prints as its GID.
-fn scalars() -> [ElementType; 21] {
+fn scalars() -> [ElementType; 22] {
     use ElementType::*;
     [
-        F16, F32, F64, BF16, F8E4M3, F8E5M2, F4E2M1, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64,
-        I128, U128, USize, Bool,
+        F16, F32, F64, BF16, F8E4M3, F8E5M2, F4E2M1, F8E8M0, I4, U4, I8, U8, I16, U16, I32, U32,
+        I64, U64, I128, U128, USize, Bool,
     ]
 }
 

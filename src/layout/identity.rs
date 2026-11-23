@@ -160,9 +160,10 @@ impl AggregateIdentities {
         fn normalize_topology(topology: &mut crate::syntax::Topology) {
             use crate::syntax::Topology;
             match topology {
-                Topology::GPU(index) | Topology::NPU(index) | Topology::AccCore(index) => {
-                    normalize_constant(index)
-                }
+                Topology::GPU(index)
+                | Topology::NPU(index)
+                | Topology::AccCore(index)
+                | Topology::Custom(_, Some(index)) => normalize_constant(index),
                 Topology::Slice(base, start, end) => {
                     normalize_topology(base);
                     normalize_constant(start);
@@ -192,7 +193,10 @@ impl AggregateIdentities {
                 *region_id = 0;
                 self.normalize_type(inner)?;
             }
-            Type::Ref(inner, ..) | Type::Verified(inner) => {
+            Type::Ref(inner, ..)
+            | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => {
                 self.normalize_type(inner)?;
             }
             Type::Pointer(inner, placement, _) => {
@@ -276,6 +280,16 @@ fn aggregate_type_key(ty: &Type, identities: &AggregateIdentities) -> Option<Str
             }
             Type::Verified(inner) => {
                 key.begin("verified");
+                write(inner, identities, key)?;
+                key.end();
+            }
+            Type::Distinct(inner) => {
+                key.begin("distinct");
+                write(inner, identities, key)?;
+                key.end();
+            }
+            Type::DisjointRanges(inner) => {
+                key.begin("disjoint_ranges");
                 write(inner, identities, key)?;
                 key.end();
             }

@@ -63,7 +63,7 @@ fn main() -> i32 {
 
   // A value that appears only as the region's result is checked too: the
   // untyped decimal defaults to f32, which Narrow does not declare.
-  // CHECK: Error[E6026] at {{.*}}f64_built_inside_a_device_region.vx:[[@LINE+1]]:3: this region's result has element type f32
+  // CHECK: Error[E6026] at {{.*}}f64_built_inside_a_device_region.vx:[[@LINE+2]]:5: this region's result has element type f32
   let _result = spawn on(Topology::Narrow) {
     1.0
   };

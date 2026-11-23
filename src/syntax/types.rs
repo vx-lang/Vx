@@ -134,6 +134,20 @@ fn topology_index_eq(a: &Expr, b: &Expr) -> bool {
     a == b
 }
 
+/// The index of a declared topology. A bare name is device 0, so `X` and `X[0]` are one device.
+/// Constant indices compare by value, also with a bare name, so the relation stays transitive.
+fn declared_index_eq(a: &Option<Box<Expr>>, b: &Option<Box<Expr>>) -> bool {
+    let value = |e: &Option<Box<Expr>>| match e {
+        None => Some(0),
+        Some(e) => crate::arch::const_topology_index(e),
+    };
+    match (value(a), value(b), a, b) {
+        (Some(x), Some(y), _, _) => x == y,
+        (_, _, Some(x), Some(y)) => topology_index_eq(x, y),
+        _ => false,
+    }
+}
+
 /// Two topologies are equal when they name the SAME DEVICE.
 ///
 /// Hand-written rather than derived, and that is a semantic choice, not a style one. The
@@ -186,7 +200,9 @@ impl PartialEq for Topology {
             (Topology::NPU(a), Topology::NPU(b))
             | (Topology::AccCore(a), Topology::AccCore(b))
             | (Topology::GPU(a), Topology::GPU(b)) => topology_index_eq(a, b),
-            (Topology::Custom(a), Topology::Custom(b)) => a == b,
+            (Topology::Custom(a, ia), Topology::Custom(b, ib)) => {
+                a == b && declared_index_eq(ia, ib)
+            }
             (Topology::Slice(ba, sa, ea), Topology::Slice(bb, sb, eb)) => {
                 ba == bb && topology_index_eq(sa, sb) && topology_index_eq(ea, eb)
             }
@@ -280,7 +296,7 @@ impl Placement {
     /// other direction -- and `complete` replaces it.
     pub fn at(space: MemorySpace) -> Self {
         let topology = crate::arch::owning_topology_in(&space, &Default::default())
-            .unwrap_or_else(|_| Topology::Custom(Symbol::from(space.name().as_str())));
+            .unwrap_or_else(|_| Topology::Custom(Symbol::from(space.name().as_str()), None));
         Self {
             topology,
             space,
@@ -344,7 +360,7 @@ impl Placement {
     pub fn as_written(&self) -> String {
         match self.stated {
             Stated::Device => match self.topology.kind() {
-                TopologyKind::Custom(name) => format!("Topology::{name}"),
+                TopologyKind::Custom(_) => self.topology.to_string(),
                 builtin => format!("Topology::{builtin:?}"),
             },
             Stated::Space => format!("Memory::{}", self.space.name()),
@@ -374,7 +390,10 @@ pub enum Topology {
     /// A user-defined topology, identified by name and described in the topology
     /// registry (`crate::arch::topology_descriptor`). This is the open identity that
     /// lets users add their own topologies without editing the language.
-    Custom(Symbol),
+    ///
+    /// The index picks one device of a topology that declares `count:`. A bare name has
+    /// `None`, and it means device 0.
+    Custom(Symbol, Option<Box<Expr>>),
     Current,
 }
 
@@ -477,7 +496,10 @@ impl std::fmt::Display for Topology {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Topology::")?;
         match self {
-            Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => {
+            Topology::NPU(e)
+            | Topology::AccCore(e)
+            | Topology::GPU(e)
+            | Topology::Custom(_, Some(e)) => {
                 write!(f, "{}[", self.kind())?;
                 write_index(f, e)?;
                 write!(f, "]")
@@ -527,6 +549,18 @@ impl Topology {
         ))))
     }
 
+    /// `Topology::<name>[index]`, device `index` of a declared topology.
+    pub fn declared_device(name: Symbol, index: i64) -> Topology {
+        Topology::Custom(
+            name,
+            Some(Box::new(Expr::Number(crate::syntax::NumberExpr::new(
+                index.to_string(),
+                None,
+                crate::syntax::Span::default(),
+            )))),
+        )
+    }
+
     pub fn kind(&self) -> TopologyKind {
         match self {
             Topology::CPU => TopologyKind::CPU,
@@ -537,8 +571,13 @@ impl Topology {
             Topology::GPU(_) => TopologyKind::GPU,
             Topology::CpuAvx512 => TopologyKind::CpuAvx512,
             Topology::CpuNeon => TopologyKind::CpuNeon,
-            Topology::Slice(..) => TopologyKind::Slice,
-            Topology::Custom(name) => TopologyKind::Custom(name.clone()),
+            // A slice of a declared topology is devices of that topology, with its memory and its
+            // element types. The built-in `Slice` kind is a range of NPUs.
+            Topology::Slice(base, ..) => match base.kind() {
+                declared @ TopologyKind::Custom(_) => declared,
+                _ => TopologyKind::Slice,
+            },
+            Topology::Custom(name, _) => TopologyKind::Custom(name.clone()),
             Topology::Current => TopologyKind::Current,
         }
     }
@@ -554,7 +593,10 @@ impl Topology {
             _ => None,
         };
         match self {
-            Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => literal(e),
+            Topology::NPU(e)
+            | Topology::AccCore(e)
+            | Topology::GPU(e)
+            | Topology::Custom(_, Some(e)) => literal(e),
             _ => None,
         }
     }
@@ -592,6 +634,9 @@ impl Topology {
             Topology::NPU(e) => Topology::NPU(Box::new(e.substitute(mapping))),
             Topology::GPU(e) => Topology::GPU(Box::new(e.substitute(mapping))),
             Topology::AccCore(e) => Topology::AccCore(Box::new(e.substitute(mapping))),
+            Topology::Custom(name, Some(e)) => {
+                Topology::Custom(name.clone(), Some(Box::new(e.substitute(mapping))))
+            }
             Topology::Slice(base, start, end) => Topology::Slice(
                 Box::new(base.substitute(mapping)),
                 Box::new(start.substitute(mapping)),
@@ -625,7 +670,8 @@ impl Topology {
             Topology::Slice(base, start, end) => {
                 format!("{}[{}..{}]", base.display_name(), idx(start), idx(end))
             }
-            Topology::Custom(name) => name.to_string(),
+            Topology::Custom(name, None) => name.to_string(),
+            Topology::Custom(name, Some(e)) => format!("{name}[{}]", idx(e)),
             Topology::Current => "Current".to_string(),
         }
     }
@@ -642,6 +688,8 @@ pub enum ElementType {
     /// OCP fp4 (E2M1). Blackwell-class tensor cores have it; Hopper does not,
     /// which is the boundary a machine file needs to be able to state.
     F4E2M1,
+    /// OCP E8M0: a power of two from 2^-127 to 2^127, or NaN. It holds the block scales of MXFP4.
+    F8E8M0,
     I4,
     U4,
     I8,
@@ -826,6 +874,12 @@ pub enum Type {
     Struct(Symbol, Option<crate::gid::TypeId>),
     Enum(Symbol, Option<crate::gid::TypeId>),
     Verified(Box<Type>),
+    /// A tensor whose elements are all different. It is read only, so the claim holds while it
+    /// lives.
+    Distinct(Box<Type>),
+    /// A table of `[start, end)` ranges, one in each row, that do not overlap. It is read only, so
+    /// the claim holds while it lives.
+    DisjointRanges(Box<Type>),
     Pinned(Box<Type>, Topology),
     Generic(Symbol, Option<crate::gid::TypeId>), // e.g. T
     GenericInstance(Box<Type>, Vec<Type>),       // e.g. Config<f32>
@@ -910,6 +964,8 @@ impl Type {
             Type::Ref(_, _)
             | Type::Tensor(_, _, _)
             | Type::Verified(_)
+            | Type::Distinct(_)
+            | Type::DisjointRanges(_)
             | Type::Pinned(_, _)
             | Type::Enum(_, _) => true,
             // `void` is spelled as a struct, but there is nothing in it to move.
@@ -970,6 +1026,10 @@ impl Type {
             }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),
+            Type::Distinct(inner) => Type::Distinct(Box::new(inner.substitute(mapping))),
+            Type::DisjointRanges(inner) => {
+                Type::DisjointRanges(Box::new(inner.substitute(mapping)))
+            }
             Type::Pinned(inner, top) => {
                 Type::Pinned(Box::new(inner.substitute(mapping)), top.clone())
             }
@@ -1010,6 +1070,8 @@ impl Type {
     pub fn placement(&self) -> Option<&Placement> {
         match self {
             Type::Tensor(_, _, p) => p.as_ref(),
+            // A `Distinct` tensor is the tensor, with a claim about its values.
+            Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.placement(),
             _ => None,
         }
     }
@@ -1031,6 +1093,8 @@ impl Type {
             | Type::Ref(inner, _)
             | Type::Pointer(inner, ..)
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => inner.has_generic_params(),
             Type::Function(params, ret, _) | Type::Closure(params, ret) => {
                 params.iter().any(Type::has_generic_params) || ret.has_generic_params()
@@ -1046,6 +1110,8 @@ impl Type {
             | Type::Borrow { inner, .. }
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => inner.mentions_tensor(),
             Type::GenericInstance(base, args) => {
                 base.mentions_tensor() || args.iter().any(Type::mentions_tensor)
@@ -1074,6 +1140,8 @@ impl Type {
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => inner.states_a_location(),
             Type::GenericInstance(base, args) => {
                 base.states_a_location() || args.iter().any(Type::states_a_location)
@@ -1125,6 +1193,8 @@ impl Type {
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => inner.for_each_placement(f),
             Type::GenericInstance(base, args) => {
                 base.for_each_placement(f);
@@ -1225,6 +1295,12 @@ impl ElementType {
         matches!(self, I4 | I8 | I16 | I32 | I64 | I128)
     }
 
+    /// Whether this is an unsigned integer, `usize` included. `bool` is not.
+    pub fn is_unsigned_int(&self) -> bool {
+        use ElementType::*;
+        matches!(self, U4 | U8 | U16 | U32 | U64 | U128 | USize)
+    }
+
     /// Whether this is a floating-point element type (`f16`/`f32`/`f64`/`bf16`/`f8e4m3`/`f8e5m2`).
     pub fn is_float(&self) -> bool {
         matches!(
@@ -1236,7 +1312,13 @@ impl ElementType {
                 | ElementType::F8E4M3
                 | ElementType::F8E5M2
                 | ElementType::F4E2M1
+                | ElementType::F8E8M0
         )
+    }
+
+    /// Whether this is a 16-bit float type (`f16` or `bf16`).
+    pub fn is_half(&self) -> bool {
+        matches!(self, ElementType::F16 | ElementType::BF16)
     }
 
     /// Storage width in bits — the single source of truth for element widths, from which
@@ -1249,7 +1331,7 @@ impl ElementType {
     pub fn is_narrow_float(&self) -> bool {
         matches!(
             self,
-            ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1
+            ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1 | ElementType::F8E8M0
         )
     }
 
@@ -1258,6 +1340,9 @@ impl ElementType {
     /// of the `vx-expand-narrow-floats` pass, for a constant that never reaches it: MLIR would
     /// fold a literal too large for `f8e4m3` to NaN. `None` for any other type.
     pub fn nearest_narrow_value(&self, x: f64) -> Option<f64> {
+        if *self == ElementType::F8E8M0 {
+            return Some(power_of_two_below(x));
+        }
         let (mant_bits, bias, max_finite): (i32, i32, u32) = match self {
             ElementType::F8E4M3 => (3, 7, 0x7E),
             ElementType::F8E5M2 => (2, 15, 0x7B),
@@ -1293,7 +1378,11 @@ impl ElementType {
         Some(match self {
             ElementType::Bool => 1,
             ElementType::I4 | ElementType::U4 | ElementType::F4E2M1 => 4,
-            ElementType::I8 | ElementType::U8 | ElementType::F8E4M3 | ElementType::F8E5M2 => 8,
+            ElementType::I8
+            | ElementType::U8
+            | ElementType::F8E4M3
+            | ElementType::F8E5M2
+            | ElementType::F8E8M0 => 8,
             ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 16,
             ElementType::F32 | ElementType::I32 | ElementType::U32 => 32,
             ElementType::F64 | ElementType::I64 | ElementType::U64 | ElementType::USize => 64,
@@ -1347,6 +1436,27 @@ impl ElementType {
     }
 }
 
+/// `x as f8e8m0`: the largest power of two that is at most `x`. A value below 2^-127, 0 included,
+/// gives 2^-127, and a value above 2^127 gives 2^127. A value below 0 gives NaN. These are the
+/// rules of the `vx-expand-narrow-floats` pass.
+fn power_of_two_below(x: f64) -> f64 {
+    if x < 0.0 || x.is_nan() {
+        return f64::NAN;
+    }
+    if x >= 2f64.powi(127) {
+        return 2f64.powi(127);
+    }
+    if x <= 2f64.powi(-127) {
+        return 2f64.powi(-127);
+    }
+    let mut p = 2f64.powi(x.log2().floor() as i32);
+    // `log2` can round up to the next whole number for a value just below a power of two.
+    if p > x {
+        p /= 2.0;
+    }
+    p
+}
+
 impl std::fmt::Display for ElementType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1357,6 +1467,7 @@ impl std::fmt::Display for ElementType {
             ElementType::F8E4M3 => write!(f, "f8e4m3"),
             ElementType::F8E5M2 => write!(f, "f8e5m2"),
             ElementType::F4E2M1 => write!(f, "f4e2m1"),
+            ElementType::F8E8M0 => write!(f, "f8e8m0"),
             ElementType::I4 => write!(f, "i4"),
             ElementType::U4 => write!(f, "u4"),
             ElementType::I8 => write!(f, "i8"),
@@ -1396,6 +1507,7 @@ impl std::str::FromStr for ElementType {
             "f8e4m3" => Ok(ElementType::F8E4M3),
             "f8e5m2" => Ok(ElementType::F8E5M2),
             "f4e2m1" => Ok(ElementType::F4E2M1),
+            "f8e8m0" => Ok(ElementType::F8E8M0),
             "i4" => Ok(ElementType::I4),
             "u4" => Ok(ElementType::U4),
             "i8" => Ok(ElementType::I8),
@@ -1511,6 +1623,8 @@ impl std::fmt::Display for Type {
                 write!(f, "| -> {}", ret)
             }
             Type::Verified(inner) => write!(f, "Verified<{inner}>"),
+            Type::Distinct(inner) => write!(f, "Distinct<{inner}>"),
+            Type::DisjointRanges(inner) => write!(f, "DisjointRanges<{inner}>"),
             Type::Ref(inner, space) => write!(f, "Ref<{inner}, Memory::{}>", space.name()),
             Type::Pinned(inner, topo) => write!(f, "Pinned<{inner}, {topo}>"),
             Type::Module(path, _) => write!(f, "module {path}"),
@@ -1580,6 +1694,14 @@ impl Mangle for Type {
             Type::Closure(_, _) => write!(w, "closure"),
             Type::Verified(inner) => {
                 write!(w, "Verified$")?;
+                inner.mangle_to(w)
+            }
+            Type::Distinct(inner) => {
+                write!(w, "Distinct$")?;
+                inner.mangle_to(w)
+            }
+            Type::DisjointRanges(inner) => {
+                write!(w, "DisjointRanges$")?;
                 inner.mangle_to(w)
             }
             Type::Pinned(inner, _) => {
@@ -1877,6 +1999,12 @@ mod tests {
             make_npu_expr("4"),
         );
         assert_eq!(slice.kind(), TopologyKind::Slice);
+        let declared = Topology::Slice(
+            Box::new(Topology::Custom("Dev".into(), Some(make_npu_expr("0")))),
+            make_npu_expr("0"),
+            make_npu_expr("2"),
+        );
+        assert_eq!(declared.kind(), TopologyKind::Custom("Dev".into()));
     }
 
     #[test]
@@ -2092,7 +2220,8 @@ mod tests {
             Topology::CpuAvx512,
             Topology::CpuNeon,
             Topology::Slice(Box::new(Topology::CPU), idx(), idx()),
-            Topology::Custom("Dev".into()),
+            Topology::Custom("Dev".into(), None),
+            Topology::Custom("Dev".into(), Some(idx())),
             Topology::Current,
         ];
         for t in &all {
@@ -2107,6 +2236,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A declared topology with no index is its device 0, and no other device.
+    #[test]
+    fn a_bare_declared_topology_is_its_device_0() {
+        let at = |i: &str| {
+            Topology::Custom(
+                "Dev".into(),
+                Some(Box::new(Expr::Number(NumberExpr::new(
+                    i.to_string(),
+                    None,
+                    Span::default(),
+                )))),
+            )
+        };
+        let bare = Topology::Custom("Dev".into(), None);
+        assert_eq!(bare, at("0"));
+        assert_eq!(at("0"), bare);
+        assert_ne!(bare, at("1"));
+        assert_ne!(at("1"), bare);
+        assert_ne!(bare, Topology::Custom("Other".into(), None));
     }
 
     /// `Display` and `from_name` each list the built-in names, so the two lists must agree:

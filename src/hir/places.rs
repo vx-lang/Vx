@@ -23,6 +23,7 @@ use crate::syntax::Expr;
 /// either of them.
 pub fn index_element(index: &Expr) -> String {
     match index {
+        Expr::Range(_) => RANGE_INDEX.to_string(),
         Expr::Number(n) => match n.value.parse::<u64>() {
             Ok(k) => format!("[{k}]"),
             Err(_) => ANY_INDEX.to_string(),
@@ -33,6 +34,24 @@ pub fn index_element(index: &Expr) -> String {
 
 /// The path element of an index whose value is not known: it may name any element.
 pub const ANY_INDEX: &str = "[?]";
+
+/// The path element of a range index, `q[1..3]`: some rows of `q`. The result keeps its first
+/// dimension, so an index after it, `q[1..3][1]`, picks a row of `q` again, not a column.
+pub const RANGE_INDEX: &str = "[..]";
+
+/// Add `elem` to the end of `path`. An index after a range is a row of the same dimension, so
+/// it joins the range into [`ANY_INDEX`], and a range after a range stays a range.
+pub fn push_path_element<T: AsRef<str> + From<String>>(path: &mut Vec<T>, elem: String) {
+    if let Some(last) = path.last_mut() {
+        if last.as_ref() == RANGE_INDEX && elem.starts_with('[') {
+            if elem != RANGE_INDEX {
+                *last = T::from(ANY_INDEX.to_string());
+            }
+            return;
+        }
+    }
+    path.push(T::from(elem));
+}
 
 /// The root local and projection path of an lvalue: `o.x.y` -> `(o, [x, y])`, `q[0].x` ->
 /// `(q, [[0], x])`, a bare local -> `(o, [])`. An index is a path element, written by
@@ -47,7 +66,7 @@ pub fn base_and_path(e: &Expr) -> Option<(Symbol, Vec<Symbol>)> {
         }
         Expr::IndexAccess(ix) => {
             let (root, mut path) = base_and_path(&ix.base)?;
-            path.push(Symbol::from(index_element(&ix.index)));
+            push_path_element(&mut path, index_element(&ix.index));
             Some((root, path))
         }
         _ => None,
@@ -63,7 +82,7 @@ pub fn base_and_path(e: &Expr) -> Option<(Symbol, Vec<Symbol>)> {
 pub fn paths_may_alias<T: AsRef<str>>(a: &[T], b: &[T]) -> bool {
     a.iter().zip(b).all(|(x, y)| {
         let (x, y) = (x.as_ref(), y.as_ref());
-        x == y || x == ANY_INDEX || y == ANY_INDEX
+        x == y || [ANY_INDEX, RANGE_INDEX].contains(&x) || [ANY_INDEX, RANGE_INDEX].contains(&y)
     })
 }
 

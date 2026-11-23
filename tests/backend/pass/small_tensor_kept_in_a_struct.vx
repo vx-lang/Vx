@@ -20,7 +20,6 @@
 // stack, the second call would overwrite it. Only running the program shows that, which is why
 // the check is the printed answer.
 //
-// REQUIRES: flat-codegen
 // Only because the older code generator cannot compile a tensor inside a struct at all.
 //
 // EXPECT: 3 7 3 7

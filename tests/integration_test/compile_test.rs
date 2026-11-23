@@ -14,15 +14,23 @@
 //===----------------------------------------------------------------------===//
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
 
-static INIT_RAYON: Once = Once::new();
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 use super::time_limit::{has_timeout, SECONDS as RUN_LINE_SECONDS};
 
 /// Whether clang can link a program with ThreadSanitizer. Linux packages ship its runtime
 /// apart from clang, in `libclang-rt-<version>-dev`.
+/// Whether a program can see an NVIDIA GPU: a device file exists, and `CUDA_VISIBLE_DEVICES` does
+/// not hide every GPU. A test that only shows its bug on a GPU says `// REQUIRES: nvidia-gpu`.
+fn has_nvidia_gpu() -> bool {
+    if std::env::var("CUDA_VISIBLE_DEVICES").is_ok_and(|v| v.trim().is_empty()) {
+        return false;
+    }
+    Path::new("/dev/nvidia0").exists()
+}
+
 fn has_thread_sanitizer() -> bool {
     static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HAS.get_or_init(|| {
@@ -47,18 +55,6 @@ fn has_thread_sanitizer() -> bool {
 /// `s` as one word for bash, in single quotes.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn init_rayon() {
-    INIT_RAYON.call_once(|| {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(2);
-        let threads = if cores > 2 { cores - 2 } else { 1 };
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global();
-    });
 }
 
 use rayon::prelude::*;
@@ -145,20 +141,12 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
         .unwrap();
     let mut program = program_arr.remove(syntax_idx);
 
-    let mut global_macros = std::collections::HashMap::new();
-    for p in &program_arr {
-        for mac in &p.macros {
-            global_macros.insert(mac.name.clone(), mac.rules.clone());
-        }
-    }
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(program_arr.iter().chain(std::iter::once(&program)));
     // The main module is held apart from its imports here, exactly as it is for the macro
     // table above, so the trait a default belongs to may be in either.
     let trait_defaults =
         vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             if !expect_pass || xfail {
@@ -288,20 +276,12 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         .unwrap();
     let mut program = program_arr.remove(syntax_idx);
 
-    let mut global_macros = std::collections::HashMap::new();
-    for p in &program_arr {
-        for mac in &p.macros {
-            global_macros.insert(mac.name.clone(), mac.rules.clone());
-        }
-    }
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(program_arr.iter().chain(std::iter::once(&program)));
     // The main module is held apart from its imports here, exactly as it is for the macro
     // table above, so the trait a default belongs to may be in either.
     let trait_defaults =
         vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -461,20 +441,12 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
         .unwrap();
     let mut program = program_arr.remove(syntax_idx);
 
-    let mut global_macros = std::collections::HashMap::new();
-    for p in &program_arr {
-        for mac in &p.macros {
-            global_macros.insert(mac.name.clone(), mac.rules.clone());
-        }
-    }
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(program_arr.iter().chain(std::iter::once(&program)));
     // The main module is held apart from its imports here, exactly as it is for the macro
     // table above, so the trait a default belongs to may be in either.
     let trait_defaults =
         vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     for p in &mut program_arr {
         expander
             .expand_module(p)
@@ -578,20 +550,12 @@ fn run_expect_lines_on_the_ast_code_generator(path: &Path) -> Result<(), String>
         .unwrap();
     let mut program = program_arr.remove(syntax_idx);
 
-    let mut global_macros = std::collections::HashMap::new();
-    for p in &program_arr {
-        for mac in &p.macros {
-            global_macros.insert(mac.name.clone(), mac.rules.clone());
-        }
-    }
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(program_arr.iter().chain(std::iter::once(&program)));
     // The main module is held apart from its imports here, exactly as it is for the macro
     // table above, so the trait a default belongs to may be in either.
     let trait_defaults =
         vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -1005,12 +969,24 @@ fn legacy_codegen_goes_after_each_vxc_command() {
 }
 
 fn run_lit_test(path: &Path) -> Result<(), String> {
+    run_lit_test_with_env(path, &[])
+}
+
+/// As `run_lit_test`, with the variables `env` set for each RUN line. With variables, the RUN
+/// lines that set a `VX_TASK_` variable of their own or use a sanitizer do not run.
+fn run_lit_test_with_env(path: &Path, env: &[(&str, String)]) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     // Same lit-style gate the middle-end and backend runners apply. A check against IR that
     // only a macOS-registered plugin can produce is not a failure elsewhere, it is a test
     // that does not apply.
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    if source.contains("// REQUIRES: linux") && !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    if source.contains("// REQUIRES: nvidia-gpu") && !has_nvidia_gpu() {
         return Ok(());
     }
     if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
@@ -1060,6 +1036,19 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             path
         ));
     }
+    let run_lines: Vec<&str> = if env.is_empty() {
+        run_lines
+    } else {
+        if xfail {
+            return Ok(());
+        }
+        run_lines
+            .into_iter()
+            .filter(|l| !l.contains("VX_TASK_") && !l.contains("--sanitize"))
+            .collect()
+    };
+    // The settings, for an error message. A person can run a failed line again with them.
+    let settings: String = env.iter().map(|(k, v)| format!(" {k}={v}")).collect();
 
     // The freshly built vxc/vx-opt lead; the rest of PATH is what carries FileCheck.
     let bin_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
@@ -1136,7 +1125,8 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
         } else {
             line
         };
-        let output = std::process::Command::new("bash")
+        let mut command = std::process::Command::new("bash");
+        command
             .arg("-c")
             .arg(line)
             .env("PATH", &path_var)
@@ -1144,9 +1134,14 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             // A RUN line without `--legacy-codegen` tests the default code generator. If that
             // code generator declines the program, vxc fails, and does not use the AST one.
             .env("VX_NO_AST_FALLBACK", "1")
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .expect("Failed to execute RUN line");
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+        if !env.is_empty() {
+            for name in TASK_RUNTIME_VARIABLES {
+                command.env_remove(name);
+            }
+        }
+        command.envs(env.iter().map(|(k, v)| (k, v)));
+        let output = command.output().expect("Failed to execute RUN line");
 
         if xfail {
             if !output.status.success() {
@@ -1157,7 +1152,7 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
 
         if output.status.code() == Some(124) && has_timeout() {
             return Err(format!(
-                "RUN line did not finish in {RUN_LINE_SECONDS} seconds for {:?}:\n  {}",
+                "RUN line did not finish in {RUN_LINE_SECONDS} seconds for {:?}:\n {settings} {}",
                 path,
                 cmd.trim()
             ));
@@ -1169,7 +1164,7 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
                 ""
             };
             return Err(format!(
-                "RUN line failed{only} for {:?}:\n  {}\nStdout:\n{}\nStderr:\n{}",
+                "RUN line failed{only} for {:?}:\n {settings} {}\nStdout:\n{}\nStderr:\n{}",
                 path,
                 cmd.trim(),
                 String::from_utf8_lossy(&output.stdout),
@@ -1388,20 +1383,12 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         .unwrap();
     let mut program = program_arr.remove(syntax_idx);
 
-    let mut global_macros = std::collections::HashMap::new();
-    for p in &program_arr {
-        for mac in &p.macros {
-            global_macros.insert(mac.name.clone(), mac.rules.clone());
-        }
-    }
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(program_arr.iter().chain(std::iter::once(&program)));
     // The main module is held apart from its imports here, exactly as it is for the macro
     // table above, so the trait a default belongs to may be in either.
     let trait_defaults =
         vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -1541,6 +1528,68 @@ fn test_backend_fail() -> Result<(), String> {
     )
 }
 
+/// The variables that choose how the runtime runs tasks.
+const TASK_RUNTIME_VARIABLES: [&str; 4] = [
+    "VX_TASK_RUNTIME",
+    "VX_TASK_WORKERS",
+    "VX_TASK_MAX_WORKERS",
+    "VX_TASK_SEED",
+];
+
+/// The settings of the task runtime that `test_tasks_under_many_schedules` runs each test with:
+/// the seeds 1 to `seeds`, and the shared runtime with 1, 2 and 8 workers. A seed runs the tasks
+/// on one thread, in an order that the seed chooses.
+fn task_runtime_settings(seeds: u64) -> Vec<Vec<(&'static str, String)>> {
+    let mut settings: Vec<_> = (1..=seeds)
+        .map(|seed| vec![("VX_TASK_SEED", seed.to_string())])
+        .collect();
+    for workers in [1, 2, 8] {
+        settings.push(vec![
+            ("VX_TASK_RUNTIME", "shared".to_string()),
+            ("VX_TASK_WORKERS", workers.to_string()),
+        ]);
+    }
+    settings
+}
+
+/// Runs each test in `tests/backend/pass` that starts tasks again, under other orders of its
+/// tasks. A test of tasks usually runs with one order, so a race that shows only in another
+/// order passes. `VX_TEST_TASK_SEEDS` sets the number of seeds (3 by default). CI runs this
+/// test by name with more seeds on every 10th run.
+///
+/// A seed runs all tasks on one thread. So a test that checks for more than one thread, or
+/// that loops with no wait until another task acts, says `// NO-SEED-SWEEP: <reason>`. It
+/// still runs with the shared runtime. A RUN line that sets a `VX_TASK_` variable keeps it,
+/// and does not run again here.
+#[test]
+#[ignore = "it runs each test of tasks many times; CI runs it by name"]
+fn test_tasks_under_many_schedules() -> Result<(), String> {
+    let seeds = match std::env::var("VX_TEST_TASK_SEEDS") {
+        Ok(n) => n
+            .parse::<u64>()
+            .map_err(|_| format!("VX_TEST_TASK_SEEDS must be a number, not '{n}'"))?,
+        Err(_) => 3,
+    };
+    let settings = task_runtime_settings(seeds);
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
+        |path| {
+            let source = fs::read_to_string(path).map_err(|e| format!("{path:?}: {e}"))?;
+            // A file with no RUN line checks its `EXPECT` lines in `test_backend`.
+            if !source.contains("tasks {") || !source.contains("// RUN:") {
+                return Ok(());
+            }
+            let no_seeds = source.contains("// NO-SEED-SWEEP:");
+            for env in &settings {
+                if !(no_seeds && env.iter().any(|(k, _)| *k == "VX_TASK_SEED")) {
+                    run_lit_test_with_env(path, env)?;
+                }
+            }
+            Ok(())
+        },
+    )
+}
+
 // --- Test Runners ---
 /// Every `.vx` under `dir`, recursively, except inside a directory named in `skip`.
 ///
@@ -1593,7 +1642,7 @@ fn run_directory_tests_inner<F>(
 where
     F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
 {
-    init_rayon();
+    super::parallel::init_rayon();
     let _guard = TEST_MUTEX.lock().unwrap();
 
     if dir.exists() {
@@ -1661,15 +1710,12 @@ fn test_melior_matmul() -> Result<(), String> {
         .unwrap();
     let mut program = program_arr.remove(syntax_idx);
 
-    let mut global_macros = std::collections::HashMap::new();
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(program_arr.iter().chain(std::iter::once(&program)));
     // The main module is held apart from its imports here, exactly as it is for the macro
     // table above, so the trait a default belongs to may be in either.
     let trait_defaults =
         vxc::resolver::collect_trait_defaults(program_arr.iter().chain(std::iter::once(&program)));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }

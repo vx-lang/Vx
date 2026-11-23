@@ -188,7 +188,10 @@ pub(crate) fn structural_field_info(ty: &Type) -> Option<(usize, usize, FieldTy)
             let (size, align) = vector_size_align(el, *n)?;
             Some((size, align, FieldTy::Vector(el.clone(), *n)))
         }
-        Type::Pinned(inner, _) | Type::Verified(inner) => structural_field_info(inner),
+        Type::Pinned(inner, _)
+        | Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner) => structural_field_info(inner),
         _ => None,
     }
 }
@@ -458,7 +461,10 @@ impl<'a> LayoutComputer<'a> {
         }
 
         match ty {
-            Type::Pinned(inner, _) | Type::Verified(inner) => self.field_info(inner),
+            Type::Pinned(inner, _)
+            | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => self.field_info(inner),
             Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
                 let layout = self.layout_of(*id)?;
                 Some((layout.size, layout.align, FieldTy::Nominal(*id)))
@@ -891,7 +897,7 @@ mod tests {
             generics: Vec::new(),
             fields: fields.into_iter().map(|(n, t)| (sym(n), t)).collect(),
             invariants: Vec::new(),
-            file: None,
+            place: Default::default(),
             doc_comment: None,
         }
     }
@@ -954,6 +960,7 @@ mod tests {
             ElementType::F8E4M3,
             ElementType::F8E5M2,
             ElementType::F4E2M1,
+            ElementType::F8E8M0,
             ElementType::F16,
             ElementType::BF16,
             ElementType::F32,
@@ -1103,6 +1110,7 @@ mod tests {
                 (sym("Green"), None),
                 (sym("Blue"), None),
             ],
+            place: Default::default(),
             doc_comment: None,
         };
         let mut enums = FxHashMap::default();
@@ -1123,6 +1131,7 @@ mod tests {
                 (sym("None"), None),
                 (sym("Some"), Some(vec![scalar(ElementType::I32)])),
             ],
+            place: Default::default(),
             doc_comment: None,
         };
         let mut enums = FxHashMap::default();

@@ -640,7 +640,7 @@ static void vx_note_cpu_fallback(const void *payload, size_t size,
   const int32_t topo = vx_payload_topology(payload, size);
   const std::string where =
       vx_placement_name(topo, vx_payload_field(payload, size, "toponame="));
-  // A declared topology gives its `arch:`. A built-in one gives only its id.
+  // The topology gives its `arch:` when it has one. Otherwise only its id.
   const char *arch = vx_payload_field(payload, size, "arch=");
   const bool on_host =
       topo == VX_TOPO_CPU || topo == VX_TOPO_AMX ||
@@ -697,6 +697,7 @@ void vx_metal_wait_for_launch(const void *payload, size_t payload_size,
 // GPU memory with one Metal buffer for its whole life. vx_metal_alloc returns
 // null for memory that `malloc` gives instead.
 void *vx_metal_alloc(size_t bytes);
+void *vx_metal_map_copy(const void *source, size_t bytes);
 int vx_metal_free(void *memory);
 
 static void *alloc_gpu_memory(size_t bytes) {
@@ -721,11 +722,25 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   if (vx_routing_try_alloc(bytes, host_ptr, topology_id, &remote)) {
     return remote;
   }
+  // A read-only mapping of a file, such as the weights of a model, needs no
+  // copy.
+  if (void *mapped = vx_metal_map_copy(host_ptr, bytes)) {
+    return mapped;
+  }
   void *ptr = alloc_gpu_memory(bytes);
   if (host_ptr) {
     memcpy(ptr, host_ptr, bytes);
   }
   return ptr;
+}
+
+/// A copy into host memory ends before it returns, so `transfer_async` is a
+/// `transfer` here.
+void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
+                                         uint32_t topology_id,
+                                         uint32_t space_access) {
+  return vx_plugin_alloc_and_transfer(bytes, host_ptr, topology_id,
+                                      space_access);
 }
 
 // Invoke the JIT-compiled kernel through its MLIR C-interface. The producer
@@ -913,7 +928,7 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // and the program cannot tell that from an answer. The other two backends
   // abort here; this one returned 1 for the first case -- "skipping execution"
   // reported as success -- and 0 for the second, which no caller checks.
-  vx_host_refuse_coop(binary_payload, payload_size, kernel_name, "Dispatcher");
+  vx_host_refuse_coop(binary_payload, payload_size, "Dispatcher");
   void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     fprintf(stderr, "[Vx Dispatcher] FATAL: outlined kernel %s not found\n",

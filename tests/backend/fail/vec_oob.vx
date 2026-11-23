@@ -1,4 +1,6 @@
-// RUN: not vxc %s | FileCheck %s
+// REQUIRES: linux
+// On macOS the runtime has no crash handler for now, so it prints no report there.
+// RUN: not vxc %s 2>&1 | FileCheck %s
 // A wild raw-pointer read is caught by the runtime crash handler. The exact
 // signal (SIGSEGV vs SIGBUS) depends on where the out-of-range address lands, so
 // match the invariant: a fatal memory-access signal is caught and backtraced.

@@ -1114,6 +1114,11 @@ fn lower_loop_body<'c>(
         );
     }
 
+    // No `break` leaves the loop, so nothing reaches the block after it.
+    if !crate::syntax::expr::breaks_out_of_loop(body) {
+        merge_block.append_operation(OperationBuilder::new("llvm.unreachable", gen.loc()).build()?);
+        return Ok(None);
+    }
     Ok(Some(merge_block))
 }
 

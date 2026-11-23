@@ -1,0 +1,38 @@
+//===- book_unsafe_ffi_inline_mlir.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on unsafe code and FFI (www/book/src/unsafe-and-ffi.md, "Inline
+// MLIR"): two functions whose bodies are `mlir!` blocks, one with one input and one with two.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}ones in 255: 8{{$}}
+// CHECK: {{^}}ones in 1024: 1{{$}}
+// CHECK: {{^}}larger of 3 and 7: 7{{$}}
+
+// ANCHOR: program
+fn count_ones(x : i32) -> i32 {
+  return mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["math"]) {
+    %r = math.ctpop %a : i32
+    macro.yield %r : i32
+  };
+}
+
+fn larger(x : i64, y : i64) -> i64 {
+  return mlir!(inputs : (%a = x : i64, %b = y : i64), returns : i64, dialects : ["arith"]) {
+    %r = arith.maxsi %a, %b : i64
+    macro.yield %r : i64
+  };
+}
+
+fn main() -> i32 {
+  println!("ones in 255: {}", count_ones(255));
+  println!("ones in 1024: {}", count_ones(1024));
+  println!("larger of 3 and 7: {}", larger(3, 7));
+  return 0;
+}
+// ANCHOR_END: program

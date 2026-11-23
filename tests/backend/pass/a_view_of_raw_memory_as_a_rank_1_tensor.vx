@@ -1,0 +1,52 @@
+//===- a_view_of_raw_memory_as_a_rank_1_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `tensor_view_1d(p, len)` is a rank-1 tensor over the memory that `p` points at, with no copy.
+// The element type comes from the pointer. The program checks that the view and the pointer are
+// two names for the same memory: a write through one shows in the other.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: f32 view: 1.5 2.5 3.5 4.5, sum 12
+// CHECK-NEXT: after a write through the pointer: 10.5
+// CHECK-NEXT: u32 view of 5 words: 0 7 14 21 28
+// CHECK-NEXT: after a write through the view: 99
+
+extern "C" {
+  fn malloc(n : i64) -> *mut f32;
+  fn calloc(count : i64, size : i64) -> *mut u32;
+  fn free(p : *mut f32) -> void;
+}
+
+// The sum of a view with a run-time length.
+fn sum(v : &Tensor<f32, [?]>) -> f32 {
+  let mut s = 0.0;
+  for i in 0..v.extent(0) {
+    s = s + v[i];
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let pf : *mut f32 = unsafe { malloc(16) };
+  unsafe { for i in 0..4 { pf[i] = i as f32 + 1.5; } }
+  let f = unsafe { tensor_view_1d(pf, 4) };
+  println!("f32 view: {} {} {} {}, sum {}", f[0], f[1], f[2], f[3], sum(&f));
+  unsafe { pf[2] = 10.5; }
+  println!("after a write through the pointer: {}", f[2]);
+
+  let words : i64 = 5;
+  let pu : *mut u32 = unsafe { calloc(words, 4) };
+  unsafe { for i in 0..words { pu[i] = (i * 7) as u32; } }
+  let mut u = unsafe { tensor_view_1d(pu, words) };
+  println!("u32 view of {} words: {} {} {} {} {}", words, u[0], u[1], u[2], u[3], u[4]);
+  u[4] = 99;
+  let last = unsafe { pu[4] };
+  println!("after a write through the view: {}", last);
+  unsafe { free(pf); }
+  return 0;
+}

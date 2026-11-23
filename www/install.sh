@@ -26,7 +26,15 @@ set -eu
 
 REPO="vx-lang/Vx"
 LLVM_MAJOR="22"
+# The CUDA toolchain links the CUDA runtime and cuBLAS of this major version. It must match the
+# toolkit that .github/workflows/release.yml installs for the CUDA job.
+CUDA_MAJOR="12"
 VX_HOME="${VX_HOME:-$HOME/.vx}"
+# The links in VX_HOME name their targets by this path, so a relative path would break them.
+case "$VX_HOME" in
+    /*) ;;
+    *) VX_HOME="$(pwd)/${VX_HOME}" ;;
+esac
 
 # ------------------------------------------------------------------ output --
 
@@ -66,6 +74,23 @@ has_nvidia_driver() {
     return 1
 }
 
+# Whether a program can load the CUDA runtime and cuBLAS that the CUDA toolchain links. The
+# places are the ones the loader searches for that toolchain: the ldconfig cache,
+# LD_LIBRARY_PATH, and /usr/local/cuda/lib64, which the toolchain names as its RUNPATH.
+has_cuda_runtime() {
+    for lib in "libcudart.so.${CUDA_MAJOR}" "libcublas.so.${CUDA_MAJOR}"; do
+        found=""
+        if command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q "$lib"; then
+            found=1
+        fi
+        for d in $(printf '%s' "${LD_LIBRARY_PATH:-}" | tr ':' ' ') /usr/local/cuda/lib64; do
+            [ -e "$d/$lib" ] && found=1
+        done
+        [ -n "$found" ] || return 1
+    done
+    return 0
+}
+
 detect_platform() {
     os=$(uname -s)
     arch=$(uname -m)
@@ -85,9 +110,16 @@ detect_platform() {
             # Keyed on the driver, not the toolkit. A machine with a GPU has libcuda.so.1 from the
             # driver package; nvidia-smi is a weaker signal, since a GPU-image host without a
             # device attached still has the binary. VX_NO_CUDA takes the portable build anyway.
+            #
+            # A driver without the CUDA runtime of the right version also gets the portable build.
+            # The CUDA build would not link even a program with no GPU code.
             if [ -z "${VX_NO_CUDA:-}" ] && has_nvidia_driver; then
-                TARGET="x86_64-unknown-linux-gnu-cuda"
-                PLATFORM_NAME="Linux x86_64 (NVIDIA)"
+                if has_cuda_runtime; then
+                    TARGET="x86_64-unknown-linux-gnu-cuda"
+                    PLATFORM_NAME="Linux x86_64 (NVIDIA)"
+                else
+                    NO_CUDA_RUNTIME=1
+                fi
             fi
             ;;
         Darwin/x86_64)
@@ -207,6 +239,12 @@ check_prereqs() {
         Z3_MISSING=1
     fi
 
+    if [ -n "${NO_CUDA_RUNTIME:-}" ]; then
+        say "    ${YLW}--${R}  NVIDIA driver found, but no CUDA ${CUDA_MAJOR} runtime (libcudart.so.${CUDA_MAJOR} and libcublas.so.${CUDA_MAJOR})"
+        say "        The CUDA build of Vx needs CUDA ${CUDA_MAJOR}, so this installs the build without CUDA."
+        say "        To use the GPU, install CUDA ${CUDA_MAJOR} and run this script again."
+    fi
+
     [ "$missing" -eq 0 ] || die "install the missing prerequisites above, then run this script again"
 }
 
@@ -241,7 +279,7 @@ resolve_version() {
         https://github.com/${REPO}/blob/main/docs/INSTALL.md
 
       Install a specific version, once one is published:
-        curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.3 sh
+        curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.5 sh
 
     Published releases are listed at https://github.com/${REPO}/releases"
 }
@@ -394,6 +432,17 @@ print_next_steps() {
             fi
             ;;
     esac
+
+    # Scripts find a toolchain outside ~/.vx, and its machine files in current/fleet, only
+    # through VX_HOME.
+    if [ "$VX_HOME" != "$HOME/.vx" ] && [ -z "${VX_NO_MODIFY_PATH:-}" ]; then
+        say ""
+        say "  Vx is not in ~/.vx, so keep VX_HOME set for the scripts that look for Vx:"
+        say ""
+        say "    ${B}export VX_HOME=\"${VX_HOME}\"${R}"
+        say ""
+        say "  ${DIM}Put that line in your shell's profile too.${R}"
+    fi
 
     if [ -n "${Z3_MISSING:-}" ]; then
         say ""

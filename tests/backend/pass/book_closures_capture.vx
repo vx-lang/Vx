@@ -1,0 +1,52 @@
+//===- book_closures_capture.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on closures (www/book/src/closures.md): the two forms of a
+// closure, and the three ways a closure holds a local: a copy, a change and a read.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}double 8 add_k 14{{$}}
+// CHECK: {{^}}total 12{{$}}
+// CHECK: {{^}}peek 3 count 3{{$}}
+
+// ANCHOR: program
+struct Counter {
+  count : i64,
+}
+
+fn main() -> i32 {
+  // A short closure: the body is one expression.
+  let double = |x : i64| x * 2;
+
+  // A closure with a block body and a return type. It copies `k`.
+  let k : i64 = 10;
+  let add_k = |x : i64| -> i64 {
+    x + k
+  };
+  println!("double {} add_k {}", double(4i64), add_k(4i64));
+
+  // This closure changes `total`, so it changes the local itself.
+  let mut total : i64 = 0;
+  let add = |x : i64| -> void {
+    total += x;
+  };
+  add(5i64);
+  add(7i64);
+  println!("total {}", total);
+
+  // This closure only reads `c`, so it borrows `c`.
+  let c = Counter {
+    count : 3
+  };
+  let peek = || -> i64 {
+    c.count
+  };
+  println!("peek {} count {}", peek(), c.count);
+  return 0;
+}
+// ANCHOR_END: program

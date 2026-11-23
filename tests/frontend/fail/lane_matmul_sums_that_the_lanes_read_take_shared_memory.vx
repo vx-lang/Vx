@@ -1,0 +1,98 @@
+//===- lane_matmul_sums_that_the_lanes_read_take_shared_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The kernels of lane_matmul_sums_in_simdgroup_matrices_take_no_threadgroup_memory.vx, with 64
+// and 128 columns, where the lanes also read `acc`. So `acc` stays in threadgroup memory. With 64
+// columns, `sa`, `sb` and `acc` need 44 KB, more than the 32 KB of the M4. With 128 columns, `acc`
+// alone needs 64 KB.
+//
+// RUN: not vxc %s --host default --machine fleet/m4-uma.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// CHECK: Error[E6010] at {{.*}}.vx:[[@LINE+1]]:8: the working set placed in memory space 'SMEM' (3 tiles)
+pub fn read_by_the_lanes(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 32, 32], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [32, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 32, 64], Memory::SMEM>::uninit()
+      };
+      for s in 0..4 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+      }
+      for kb in 0..4 {
+        for s in 0..4 across subgroups {
+          for l in 0..32 across lanes(32) {
+            for i in 0..32 {
+              sa[s][i][l] = a[blk * 128 + s * 32 + i][kb * 32 + l];
+            }
+            for r in 0..8 {
+              for c in 0..2 {
+                sb[s * 8 + r][c * 32 + l] = b[kb * 32 + s * 8 + r][c * 32 + l];
+              }
+            }
+          }
+        }
+        for s in 0..4 across subgroups {
+          acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        }
+      }
+      for s in 0..4 across subgroups {
+        for l in 0..32 across lanes(32) {
+          for i in 0..32 {
+            out[blk * 128 + s * 32 + i][l] = acc[s][i][l];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// CHECK: Error[E6009] at {{.*}}.vx:[[@LINE+1]]:8: variable 'acc' needs 65536 bytes but memory space 'SMEM' has capacity 32768 bytes
+pub fn too_big_for_the_lanes_to_read(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 32, 32], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [32, 128], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 32, 128], Memory::SMEM>::uninit()
+      };
+      for s in 0..4 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+      }
+      for kb in 0..4 {
+        for s in 0..4 across subgroups {
+          for l in 0..32 across lanes(32) {
+            for i in 0..32 {
+              sa[s][i][l] = a[blk * 128 + s * 32 + i][kb * 32 + l];
+            }
+            for r in 0..8 {
+              for c in 0..4 {
+                sb[s * 8 + r][c * 32 + l] = b[kb * 32 + s * 8 + r][c * 32 + l];
+              }
+            }
+          }
+        }
+        for s in 0..4 across subgroups {
+          acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        }
+      }
+      for s in 0..4 across subgroups {
+        for l in 0..32 across lanes(32) {
+          for i in 0..32 {
+            out[blk * 128 + s * 32 + i][l] = acc[s][i][l];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

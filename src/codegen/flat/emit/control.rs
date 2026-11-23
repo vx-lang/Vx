@@ -182,7 +182,15 @@ impl FnEmit<'_> {
                             self.body += &format!("  func.return {a} : {memty}\n");
                         } else if reference.is_some() {
                             // A reference names the tensor it was given, so it is never a copy.
-                            return Err(crate::emitter_gap!());
+                            // A row of it is a strided view: give back the same memory, as a
+                            // call does with a row passed to a `&Tensor` parameter.
+                            let r = self.cast_memref_value(
+                                &format!("rref{idx}"),
+                                &a,
+                                &memty,
+                                &declared,
+                            )?;
+                            self.body += &format!("  func.return {r} : {declared}\n");
                         } else {
                             // A row is a strided view, and a `?`-shaped result is a buffer of
                             // its own: return a copy.

@@ -9,10 +9,10 @@
 //
 // An impl of `Send` or `Sync` must be `unsafe impl` (E3053). Any other impl must not be (E3054).
 //
-// CHECK-DAG: Error[E3053]: `impl Send for Handle` must be `unsafe impl`: the compiler derives `Send` from the fields, and cannot check this claim
-// CHECK-DAG: Error[E3053]: `impl Sync for Handle` must be `unsafe impl`
-// CHECK-DAG: Error[E3054]: `unsafe impl Describe for Handle`: only `Send`, `Sync` and `Owned` take `unsafe impl`. Remove `unsafe`
-// CHECK-DAG: Error[E3054]: `unsafe impl Handle`: an impl with no trait cannot be `unsafe`
+// CHECK-DAG: Error[E3053] at {{.*}}.vx:25:1: `impl Send for Handle` must be `unsafe impl`: the compiler derives `Send` from the fields, and cannot check this claim
+// CHECK-DAG: Error[E3053] at {{.*}}.vx:27:1: `impl Sync for Handle` must be `unsafe impl`
+// CHECK-DAG: Error[E3054] at {{.*}}.vx:29:8: `unsafe impl Describe for Handle`: only `Send`, `Sync` and `Owned` take `unsafe impl`. Remove `unsafe`
+// CHECK-DAG: Error[E3054] at {{.*}}.vx:31:8: `unsafe impl Handle`: an impl with no trait cannot be `unsafe`
 
 import core::marker;
 

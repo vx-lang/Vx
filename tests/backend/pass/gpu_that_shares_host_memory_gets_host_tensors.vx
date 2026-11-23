@@ -10,6 +10,10 @@
 // (`image=`), and the launch gets the host tensors' own stack buffers.
 // When a remote worker runs this kernel, the client must copy its writes back
 // to these buffers. tests/runtime/remote_kernel_output_test.cpp checks that.
+// The machine here is not the machine of the test: its chip is sm_90, and its GPU reads host
+// memory. So this file only checks the generated code, and `NO_EXEC` stops the test runner from
+// running it.
+// NO_EXEC
 //
 // RUN: vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=vx_plugin_alloc_and_transfer # flat-codegen
 // CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0{{.*}}format=ptx\00image=

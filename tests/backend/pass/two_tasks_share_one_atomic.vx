@@ -9,7 +9,7 @@
 // Each task adds 1 to the counter 100000 times, so the counter ends at 200000. If the adds were
 // not atomic, the two threads could lose adds, and the counter could end lower.
 //
-// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=threads vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: two tasks run on two threads
 // CHECK-NEXT: {{^}}count 200000{{$}}
 

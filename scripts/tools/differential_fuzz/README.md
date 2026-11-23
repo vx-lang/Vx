@@ -20,6 +20,7 @@ fuzz.py run tensors --seeds 1-300 --keep /tmp/failures
 fuzz.py run views --seeds 1-1000            # rows and reshapes, used as the borrow rules allow
 fuzz.py run owners --seeds 1-1000           # tensors moved into calls, in branches and loops
 fuzz.py run drops --seeds 1-1000            # structs whose `drop` prints: the order must be Rust's
+fuzz.py run tasks --seeds 1-200 --jobs 6    # tasks and channels on each task runtime; no --heap
 fuzz.py show tensors 1133                   # the Vx program for a seed (--rust: its twin)
 ```
 
@@ -39,6 +40,10 @@ that the same set of configurations still disagrees with Rust; with `--message`,
 still prints the text. `--repeat N` runs each candidate up to N times, for a failure that does
 not happen on every run.
 
+Each candidate runs every configuration, one candidate at a time. To reduce faster, give only
+the configuration that fails, and `--no-rust` with `--message`:
+`fuzz.py reduce tasks 2 --message "deadlock" --no-rust --config "seed=VX_TASK_SEED={seed}"`.
+
 ## Existing programs
 
 ```
@@ -57,6 +62,11 @@ marked `// REQUIRES: flat-codegen` is expected to fail on `ast`, and the report 
 fuzz.py run shadowing --config flat= --config o0=-O0
 fuzz.py compare tests/backend/pass/*.vx --config flat= --config ast=--legacy-codegen --config j4="-j 4"
 ```
+
+A generator can name its own default configurations. `tasks` runs each program with one OS
+thread per task, with the shared runtime, and with `VX_TASK_SEED`. In an environment value,
+`{seed}` is the seed of the program, so `seed=VX_TASK_SEED={seed}` gives each program its own
+order of tasks.
 
 Giving any `--config` replaces the defaults. `--vxc PATH` picks the compiler (by default
 `$CARGO_TARGET_DIR/debug/vxc`), `--jobs N` how many programs run at once, and `--timeout S` the

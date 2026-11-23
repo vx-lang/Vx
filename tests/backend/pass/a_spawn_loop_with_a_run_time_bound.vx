@@ -1,0 +1,41 @@
+//===- a_spawn_loop_with_a_run_time_bound.vx -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` loop whose bounds are known only at run time runs in parallel, and each pass
+// still runs once: rows 2 to 5 get their row number plus one, and the other rows keep 0. An
+// empty range writes nothing.
+//
+// EXPECT: [[0],
+// EXPECT:  [0],
+// EXPECT:  [3],
+// EXPECT:  [4],
+// EXPECT:  [5],
+// EXPECT:  [6],
+// EXPECT:  [0],
+// EXPECT:  [0]]
+// EXPECT: 0
+
+fn rows(lo : i32, hi : i32) -> Tensor<i32, [8, 1], Memory::CPU_DRAM> {
+  let mut o = Tensor<i32, [8, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in lo..hi {
+      o[r][0] = r + 1;
+    }
+  }
+  return transfer(o, Memory::CPU_DRAM);
+}
+
+fn main() -> i32 {
+  print(rows(2, 6));
+  let empty = rows(6, 2);
+  let mut sum = 0;
+  for r in 0..8 {
+    sum = sum + empty[r][0];
+  }
+  println!(sum);
+  return 0;
+}

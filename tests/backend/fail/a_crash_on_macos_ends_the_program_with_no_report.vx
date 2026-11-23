@@ -1,0 +1,18 @@
+//===- a_crash_on_macos_ends_the_program_with_no_report.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On macOS the runtime has no crash handler for now, because its report lost the function that
+// crashed. So a write through a null pointer ends the program with SIGSEGV, and no report.
+//
+// REQUIRES: macos
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Caught --implicit-check-not=Backtrace
+// CHECK: Program was killed by signal 11 (SIGSEGV
+
+fn main() -> i32 {
+  unsafe { let ptr: *mut i32 = 0 as *mut i32; ptr[0] = 42; }
+  return 0;
+}

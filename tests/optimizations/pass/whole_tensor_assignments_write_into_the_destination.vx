@@ -1,0 +1,140 @@
+//===- whole_tensor_assignments_write_into_the_destination.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `c = a @ b` and `c = a + b` on whole tensors write the result into the buffer that `c` holds,
+// when `c` holds one: the checker decides, and both code generators follow it.
+//
+// - `in_a_region`: the regions write into `sum`, a tensor in the Neural Engine's memory, and
+//   into `product`, a tensor that a `transfer` put in the GPU's memory. A second buffer made
+//   inside a region was not one that the code after it could free.
+// - `operand_too`: `c = c + a` reads each element of `c` before it writes it.
+// - `matmul_operand_too` and `through_a_view`: a matmul fills its destination with zero first,
+//   so a destination that is also an operand, under its name or through a view of its memory,
+//   gets a new buffer.
+// - `view_destination`: `r` is a view of a row of `t`, so the sum goes into a new buffer, and
+//   `t` keeps its values.
+// - `after_a_move`: `take` frees the buffer of `c`, so the product goes into a new buffer.
+// - `in_a_loop`: each pass writes `x + y` into `c`.
+// - `moved_in_a_loop`: `take` frees the buffer of `c` on each pass, so each sum goes into a new
+//   buffer.
+//
+// The M4's GPU memory is the host's memory. `VX_METAL=0` runs the regions on the host, so the
+// program runs on any machine.
+//
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_METAL=0 vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --action emit-mlir 2>&1 | FileCheck %s --check-prefix=IN_PLACE
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --action emit-mlir 2>&1 | FileCheck %s --check-prefix=IN_PLACE
+// CHECK: {{^}}region: sum 3, product 8{{$}}
+// CHECK: {{^}}operand too: 4 4, through a view: 4, view: 15{{$}}
+// CHECK: {{^}}after a move: 1 4{{$}}
+// CHECK: {{^}}in a loop: 3 7{{$}}
+//
+// `operand_too` makes `a` and `c`, and then no other buffer for the sum.
+// IN_PLACE-LABEL: func.func @operand_too(
+// IN_PLACE: linalg.fill
+// IN_PLACE: linalg.fill
+// IN_PLACE-NOT: memref.alloc(
+// IN_PLACE: linalg.add
+
+fn in_a_region() -> void {
+  let mut a = Tensor<i32, [8, 8], Memory::NPU_HBM>::new();
+  let mut b = Tensor<i32, [8, 8], Memory::NPU_HBM>::new();
+  let mut sum = Tensor<i32, [8, 8], Memory::NPU_HBM>::new();
+  for i in 0..8 {
+    for j in 0..8 {
+      a[i][j] = 2;
+      b[i][j] = 1;
+    }
+  }
+  spawn on(Topology::NPU[0]) {
+    sum = a + b;
+  }
+  let ga = transfer(Tensor<f32, [4, 4]>::fill(1.0), Memory::HBM);
+  let gb = transfer(Tensor<f32, [4, 4]>::fill(2.0), Memory::HBM);
+  let mut product = transfer(Tensor<f32, [4, 4]>::new(), Memory::HBM);
+  spawn on(Topology::Device) {
+    product = ga @ gb;
+  }
+  let p = transfer(product, Memory::CPU_DRAM);
+  println!("region: sum {}, product {}", sum[0][0], p[0][0] as i32);
+}
+
+fn operand_too() -> f32 {
+  let a = Tensor<f32, [2, 2]>::fill(1.0);
+  let mut c = Tensor<f32, [2, 2]>::fill(3.0);
+  c = c + a;
+  return c[1][1];
+}
+
+fn matmul_operand_too() -> f32 {
+  let b = Tensor<f32, [2, 2]>::fill(2.0);
+  let mut m = Tensor<f32, [2, 2]>::fill(1.0);
+  m = m @ b;
+  return m[1][1];
+}
+
+fn through_a_view() -> f32 {
+  let b = Tensor<f32, [2, 2]>::fill(2.0);
+  let mut c = Tensor<f32, [2, 2]>::fill(1.0);
+  let p = c.as_mut_ptr();
+  let v = unsafe { tensor_view_2d(p, 2, 2) };
+  c = v @ b;
+  return c[1][1];
+}
+
+fn view_destination() -> f32 {
+  let mut t = Tensor<f32, [2, 2]>::fill(1.0);
+  let mut r = t[1];
+  let a = Tensor<f32, [2]>::fill(2.0);
+  let b = Tensor<f32, [2]>::fill(3.0);
+  r = a + b;
+  return t[1][0] * 10.0 + r[0];
+}
+
+fn take(t : Tensor<f32, [2, 2]>) -> f32 {
+  return t[0][0];
+}
+
+fn after_a_move() -> void {
+  let a = Tensor<f32, [2, 2]>::fill(1.0);
+  let b = Tensor<f32, [2, 2]>::fill(2.0);
+  let mut c = Tensor<f32, [2, 2]>::fill(1.0);
+  let first = take(c);
+  c = a @ b;
+  println!("after a move: {} {}", first as i32, c[0][0] as i32);
+}
+
+fn in_a_loop() -> f32 {
+  let mut c = Tensor<f32, [2, 2]>::fill(1.0);
+  for i in 0..3 {
+    let x = Tensor<f32, [2, 2]>::fill(1.0);
+    let y = Tensor<f32, [2, 2]>::fill(2.0);
+    c = x + y;
+  }
+  return c[0][0];
+}
+
+fn moved_in_a_loop() -> f32 {
+  let mut c = Tensor<f32, [2, 2]>::fill(1.0);
+  let mut total = 0.0;
+  for i in 0..2 {
+    total = total + take(c);
+    let a = Tensor<f32, [2, 2]>::fill(1.0);
+    let b = Tensor<f32, [2, 2]>::fill(2.0);
+    c = a + b;
+  }
+  return total + c[0][0];
+}
+
+fn main() -> i32 {
+  in_a_region();
+  println!("operand too: {} {}, through a view: {}, view: {}", operand_too() as i32, matmul_operand_too() as i32, through_a_view() as i32, view_destination() as i32);
+  after_a_move();
+  println!("in a loop: {} {}", in_a_loop() as i32, moved_in_a_loop() as i32);
+  return 0;
+}

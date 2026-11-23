@@ -16,20 +16,42 @@ use crate::syntax::stmt::Statement;
 use crate::syntax::{Expr, Span};
 use std::collections::HashSet;
 
-/// Whether `s` holds an `across` loop, a lane reduction or a lane matmul at any depth. Every lane
-/// of the block or the subgroup must get to each of them.
+/// The `mlir!` block with `threads : N` that `s` is, as `let x = mlir!(..)` or a statement of its
+/// own, alone or in an `unsafe` block. Every thread of the threadgroup runs it.
+pub(crate) fn threadgroup_block(s: &Statement) -> Option<&crate::syntax::expr::InlineMlirExpr> {
+    let e = match s {
+        Statement::LetDecl(l) => &l.expr,
+        Statement::ExprStmt(e) => &e.expr,
+        _ => return None,
+    };
+    match e {
+        Expr::InlineMlir(m) if m.threads.is_some() => Some(m),
+        Expr::UnsafeBlock(b) => match (b.stmts.as_slice(), b.ret.as_deref()) {
+            ([], Some(Expr::InlineMlir(m))) if m.threads.is_some() => Some(m),
+            ([only], None) => threadgroup_block(only),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `s` holds an `across` loop, a lane reduction, a lane copy, a lane matmul or an `mlir!`
+/// block with `threads` at any depth. Every lane of the block or the subgroup must get to each of
+/// them.
 pub(crate) fn holds_across(s: &Statement) -> bool {
+    use crate::hir::check::lanes;
     let mut found = false;
     visit_stmts(std::slice::from_ref(s), &mut |s| {
-        found |= match s {
-            Statement::ForLoop(f) => f.across.is_some(),
-            Statement::LetDecl(l) => crate::hir::check::lanes::bare_lanes_call(&l.expr).is_some(),
-            Statement::ExprStmt(e) => {
-                crate::hir::check::lanes::bare_lane_statement(&e.expr).is_some()
-            }
-            Statement::Assign(a) => crate::hir::check::lanes::lane_matmul(a).is_some(),
-            _ => false,
-        };
+        found |= threadgroup_block(s).is_some()
+            || match s {
+                Statement::ForLoop(f) => f.across.is_some(),
+                Statement::LetDecl(l) => lanes::bare_lanes_call(&l.expr).is_some(),
+                Statement::ExprStmt(e) => lanes::bare_lane_statement(&e.expr).is_some(),
+                Statement::Assign(a) => {
+                    lanes::lane_matmul(a).is_some() || lanes::next_copy(a).is_some()
+                }
+                _ => false,
+            };
     });
     found
 }
@@ -43,27 +65,33 @@ pub(crate) fn visit_stmts(stmts: &[Statement], f: &mut dyn FnMut(&Statement)) {
             Statement::Loop(l) => visit_stmts(&l.body, f),
             _ => {}
         }
-        let mut blocks: Vec<Vec<Statement>> = Vec::new();
-        let mut each = |e: &Expr| match e {
-            Expr::If(i) => {
-                blocks.push(i.then_block.clone());
-                if let Some(b) = &i.else_block {
-                    blocks.push(b.clone());
-                }
-            }
-            Expr::Match(m) => m.arms.iter().for_each(|a| blocks.push(a.body.clone())),
-            Expr::UnsafeBlock(b) => blocks.push(b.stmts.clone()),
-            _ => {}
-        };
-        match s {
-            Statement::LetDecl(l) => crate::syntax::visit_expr(&l.expr, &mut each),
-            Statement::ExprStmt(e) => crate::syntax::visit_expr(&e.expr, &mut each),
-            _ => {}
-        }
-        for b in &blocks {
+        for b in &expr_blocks(s) {
             visit_stmts(b, f);
         }
     }
+}
+
+/// The blocks of the `if`, `match` and `unsafe` expressions in `s`, a `let` or an expression
+/// statement, at any depth.
+fn expr_blocks(s: &Statement) -> Vec<Vec<Statement>> {
+    let mut blocks: Vec<Vec<Statement>> = Vec::new();
+    let mut each = |e: &Expr| match e {
+        Expr::If(i) => {
+            blocks.push(i.then_block.clone());
+            if let Some(b) = &i.else_block {
+                blocks.push(b.clone());
+            }
+        }
+        Expr::Match(m) => m.arms.iter().for_each(|a| blocks.push(a.body.clone())),
+        Expr::UnsafeBlock(b) => blocks.push(b.stmts.clone()),
+        _ => {}
+    };
+    match s {
+        Statement::LetDecl(l) => crate::syntax::visit_expr(&l.expr, &mut each),
+        Statement::ExprStmt(e) => crate::syntax::visit_expr(&e.expr, &mut each),
+        _ => {}
+    }
+    blocks
 }
 
 /// Every expression in `stmts`, at any depth.
@@ -95,6 +123,50 @@ pub(crate) fn expr_reads_any(e: &Expr, names: &HashSet<String>) -> Option<(Strin
         }
     });
     found
+}
+
+/// How an access in a lane loop reaches an element that belongs to its lane alone
+/// (docs/lane_reductions.md). The device copy of a kernel can keep such elements in the
+/// registers of the lane.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum LaneOwn {
+    /// `t[w][..][l]`, where `w` is the number of the subgroup.
+    Subgroup,
+    /// `t[..][l]`, where one block, or one subgroup, has all of `t`.
+    Whole,
+}
+
+impl LaneOwn {
+    /// The value of the `vx.lane_own` attribute.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            LaneOwn::Subgroup => "subgroup",
+            LaneOwn::Whole => "whole",
+        }
+    }
+}
+
+/// The `LaneOwn` of `ix`, an element access in a lane loop whose index `lane` is the lane: its
+/// last index is `lane`, and under it is a tensor `e` for which `own(e)` says how the subgroup or
+/// the block has it. The indices between them may be anything.
+pub(crate) fn lane_own_access(
+    ix: &crate::syntax::expr::IndexAccessExpr,
+    lane: &str,
+    own: impl Fn(&Expr) -> Option<LaneOwn>,
+) -> Option<LaneOwn> {
+    if !matches!(&*ix.index, Expr::Identifier(id) if id.name.as_ref() == lane) {
+        return None;
+    }
+    let mut e = &*ix.base;
+    loop {
+        if let Some(form) = own(e) {
+            return Some(form);
+        }
+        match e {
+            Expr::IndexAccess(r) => e = &r.base,
+            _ => return None,
+        }
+    }
 }
 
 /// The root name of an assignment's target: `a` of `a`, `a[i]` and `a.f`.
@@ -179,7 +251,8 @@ pub(crate) fn stretch(stmts: &[&Statement]) -> Stretch {
 }
 
 /// Whether lane 0 alone runs the stretch `part` (L5): it writes memory, or it reads a name in
-/// `lane0`, which only lane 0 has. Then `lane0` gains the names that the stretch sets.
+/// `lane0`, which only lane 0 has. Then `lane0` gains the names that the stretch sets. When every
+/// lane runs it, each name that it declares is a new value, which every lane has.
 pub(crate) fn runs_on_lane0(part: &[Statement], lane0: &mut HashSet<String>) -> bool {
     let refs: Vec<&Statement> = part.iter().collect();
     let st = stretch(&refs);
@@ -187,8 +260,83 @@ pub(crate) fn runs_on_lane0(part: &[Statement], lane0: &mut HashSet<String>) -> 
     if on_lane0 {
         lane0.extend(st.values);
         lane0.extend(st.assigned);
+    } else {
+        lane0.retain(|n| !st.values.contains(n));
     }
     on_lane0
+}
+
+/// Where the stretch of `stmts` that starts at `start` ends: before the next statement that holds
+/// an `across` loop. The `let`s at the start of a stretch that are not `mut`, write nothing and
+/// read no name in `lane0` make a stretch of their own. So every lane has their values, even when
+/// the code after them writes memory and runs on lane 0.
+pub(crate) fn stretch_end(stmts: &[Statement], start: usize, lane0: &HashSet<String>) -> usize {
+    let every_lane = |s: &Statement| {
+        matches!(s, Statement::LetDecl(l) if !l.is_mut)
+            && !holds_across(s)
+            && !runs_on_lane0(std::slice::from_ref(s), &mut lane0.clone())
+    };
+    let mut i = start;
+    while i < stmts.len() && every_lane(&stmts[i]) {
+        i += 1;
+    }
+    if i > start {
+        return i;
+    }
+    while i < stmts.len() && !holds_across(&stmts[i]) {
+        i += 1;
+    }
+    i
+}
+
+/// The names that only lane 0 has after `stmts` in the code of a level, which start as `lane0`.
+fn lane0_after(stmts: &[Statement], lane0: &mut HashSet<String>) {
+    let mut i = 0;
+    while i < stmts.len() {
+        if holds_across(&stmts[i]) {
+            lane0_after_holder(&stmts[i], lane0);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i = stretch_end(stmts, start, lane0);
+        runs_on_lane0(&stmts[start..i], lane0);
+    }
+}
+
+/// `lane0_after` for `s`, a statement that holds an `across` loop. A plain loop or an `if` passes
+/// on what lane 0 alone sets in its code. An `across` loop does not: a name that it sets is its own.
+pub(crate) fn lane0_after_holder(s: &Statement, lane0: &mut HashSet<String>) {
+    match s {
+        Statement::ForLoop(f) if f.across.is_some() => {}
+        Statement::ForLoop(f) => *lane0 = lane0_in_loop(&f.body, lane0),
+        Statement::Loop(l) => *lane0 = lane0_in_loop(&l.body, lane0),
+        _ => {
+            // Any one of the blocks may run. `expr_blocks` also gives each block inside another
+            // one, and its walk from `before` can only add names.
+            let before = lane0.clone();
+            for b in &expr_blocks(s) {
+                let mut after = before.clone();
+                lane0_after(b, &mut after);
+                lane0.extend(after);
+            }
+        }
+    }
+}
+
+/// The names that only lane 0 has at the start of each turn of a loop with `body`, from `lane0`
+/// before the loop. Lane 0 alone may set a name late in one turn, and the next turn reads it.
+pub(crate) fn lane0_in_loop(body: &[Statement], lane0: &HashSet<String>) -> HashSet<String> {
+    let mut entry = lane0.clone();
+    loop {
+        let mut after = entry.clone();
+        lane0_after(body, &mut after);
+        let known = entry.len();
+        entry.extend(after);
+        if entry.len() == known {
+            return entry;
+        }
+    }
 }
 
 fn note_target(lhs: &Expr, writes: &mut bool, assigned: &mut HashSet<String>) {

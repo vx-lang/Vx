@@ -165,7 +165,8 @@ gives `Cancelled`, and `send(v)` gives `v` back with `cancelled` set. The task s
 compiler warns about a loop that waits again after a `Cancelled` (W1035), because each wait in a
 cancelled task gives `Cancelled` at once, and such a loop never ends.
 
-A `join()` and a `lock()` cannot be cancelled.
+`sleep(d)` and the `tick()` of an `Interval` can be cancelled too: `sleep` gives `false`, and `tick`
+gives `None`. A `join()` and a `lock()` cannot be cancelled.
 
 When each task waits and nothing can wake one, the program has a deadlock. The runtime then stops
 the program with the message `vx: deadlock: ...`, so that it does not hang. It never reports a
@@ -227,6 +228,81 @@ So for `n` channels, if one channel has a value at each of `n` calls in a row, o
 takes a value from it. [What Vx guarantees about concurrency](guarantees.md) lists this promise
 and the others about tasks, and says how we check each one.
 
+### Sources of different types
+
+`select2` to `select6` from `std::sync::select` wait on sources of different types: a `Receiver`
+of any element type, a `Deadline`, and a `TcpListener`, `TcpStream`, `UdpSocket` or `TcpBufReader`
+from `std::net`. A socket is ready when its `accept`, `read` or `recv` does not wait. The receivers
+of the channels in the next section, a `Semaphore` and an `Interval` from `std::time` are sources
+too. Each `select` gives the index of the first source that is ready, and
+starts its search after the last choice of the task. The caller then takes the value, for example
+with `try_recv`. A `select` takes no value itself, so a source that loses keeps its value.
+
+A closed channel is ready, and its `try_recv` gives `Closed`. `when(false, &source)` turns a source
+off. `select_list` waits on a `Vec` of sources of one type. A cancel of the `tasks` block and the
+limit of `within` end the wait with `SelectError::Cancelled`. This program takes jobs and notes
+until both channels are closed, and gives up when nothing comes for five seconds
+(`book_select_on_two_kinds_of_channel_and_a_deadline.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_select_on_two_kinds_of_channel_and_a_deadline.vx:program}}
+```
+
+It prints `3 jobs and 2 notes`.
+
+## Other kinds of channel
+
+`std::sync` has four more kinds of channel. Each one is a library on the atomics and the waits
+that `channel` uses, so each one works as `channel` does in these ways:
+
+- A wait parks only its task. On the shared runtime, the thread runs other tasks.
+- A cancel of the `tasks` block ends a wait: `recv` gives `Cancelled`, and a `send` that waits
+  gives its value back with `cancelled` set.
+- `within` limits each wait. `recv_for(limit)` and `recv_until(deadline)` give `TimedOut`, and
+  `send_for` and `send_until` give the value back with `timed_out` set.
+- The deadlock report names each wait, with the line that made the channel and the task that
+  can end the wait.
+
+| Kind | Make it with | Who gets a value | Use it for |
+| --- | --- | --- | --- |
+| `channel` | `channel<T>(n)` | One receiver | A stream of values to one task |
+| oneshot | `oneshot<T>()` | The one receiver, once | The reply to a request |
+| work queue | `work_queue<T>(n)` | One of many receivers | Jobs that many workers share |
+| broadcast | `broadcast<T>(n)` | Each receiver | Events that each task must see |
+| watch | `watch<T>(v)` | Each receiver sees the latest value | A setting or a status |
+
+- **oneshot** (`std::sync::oneshot`): `send(v)` takes the `OneshotSender` by value, so the type
+  allows only one `send`. It never waits. After the value, `recv` gives `Closed`.
+- **work queue** (`std::sync::work_queue`): it sends with the `Sender` of `channel`. Clone the
+  `WorkReceiver` for each worker. Each value goes to one worker.
+- **broadcast** (`std::sync::broadcast`): each `BroadcastReceiver` gets each value that a
+  sender sends after the program makes the receiver. `subscribe()` on the sender makes a new
+  receiver, and `clone()` on a receiver makes one that gets the same values. `T` must be `Clone`.
+  When the room is full, `send` waits for the slowest receiver. So no receiver misses a value.
+- **watch** (`std::sync::watch`): the channel holds one value. `send(v)` replaces it and never
+  waits. `recv()` waits for a value that this receiver did not see, and gives only the latest one.
+  `get()` gives the value now, and `has_changed()` says if it is new. `try_recv()` gives the value
+  only when it is new, and does not wait. `T` must be `Clone`.
+
+In this program, three workers take jobs from a work queue. Each job carries a oneshot channel for
+its answer (`book_workers_reply_on_oneshot_channels.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_workers_reply_on_oneshot_channels.vx:program}}
+```
+
+It prints `the squares of 1 to 5 add up to 55`.
+
+Rust's tokio has the same four kinds. The Vx kinds differ in these ways:
+
+- A cancel of a `tasks` block ends each wait in its tasks, with `Cancelled`. In tokio, each
+  program writes its own cancel, with `select!` and a `CancellationToken`, or with `abort`.
+- A deadlock in Vx stops the program with a report that names each wait and each cycle. In tokio,
+  a deadlock is a program that hangs.
+- A broadcast `send` in Vx waits for the slowest receiver, so no receiver misses a value. In
+  tokio, a slow receiver loses the old values and gets the error `Lagged`.
+- The waits are normal calls. They need no `async` and no `.await`.
+
 ## `Mutex`
 
 A `Mutex<T>` guards a value that many tasks change. `lock()` waits until no other task holds the
@@ -239,6 +315,37 @@ unlocks the `Mutex` (`book_mutex_guards_a_total.vx`):
 
 It prints `total 20000`. Use an atomic for one number, and a `Mutex` when a change touches more
 than one number.
+
+## `Semaphore`
+
+A `Semaphore` from `std::sync::semaphore` limits how many tasks do a thing at the same time.
+`Semaphore::new(n)` makes `n` permits. `acquire()` takes a permit, and waits while none is
+free. It gives a `Permit`, and the drop of the `Permit` gives the permit back. In this program,
+at most 2 of 10 tasks "download" at the same time (`book_semaphore_limits_the_tasks_that_download.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_semaphore_limits_the_tasks_that_download.vx:program}}
+```
+
+It prints `10 downloads, at most 2 at once`.
+
+An `acquire` can be cancelled, as a `recv` can. It gives `Cancelled` when the `tasks` block of
+the task was cancelled. `acquire_for(limit)` also gives `TimedOut` after the time limit, and
+`acquire_until(deadline)` at a deadline. `try_acquire()` does not wait: it gives `None` when no
+permit is free. The tasks do not get the permits in the order of their `acquire` calls. So when
+many tasks compete, one waiter can wait without limit.
+
+### Compared with tokio
+
+tokio's `Semaphore` gives the permits in the order of the `acquire` calls, and the Vx
+`Semaphore` does not. tokio's also has `acquire_many`, `add_permits` and `close`, which the Vx
+`Semaphore` does not have yet. Two things differ in the other direction:
+
+- A cancel of the `tasks` block stops a task that waits in `acquire`. The cancel follows the
+  blocks of the program, so it needs no extra code. In tokio, a task stops at its next `.await`
+  when `JoinHandle::abort` or the drop of a `JoinSet` cancels it.
+- When each task waits and nothing can wake one, the runtime stops the program. Its report names
+  each `acquire` that waits, its line, and the line that made the `Semaphore`.
 
 ## `Arc`
 
@@ -271,7 +378,8 @@ Set these variables when the program starts:
 - `VX_TASK_SEED=n` runs all tasks on one thread, and the seed picks the next task to run. The same
   seed gives the same order each time, so a bug that depends on the order happens again in the
   next run. Try other seeds to find such a bug. A seed cannot go with `VX_TASK_WORKERS` or
-  `VX_TASK_MAX_WORKERS`.
+  `VX_TASK_MAX_WORKERS`. Only a wait, such as `recv`, `lock` or `sleep`, lets another task run.
+  So with a seed, a task that loops with no wait until another task acts never ends.
 
 ## Finding a data race at run time
 
@@ -287,7 +395,8 @@ only when `vxc` runs the program. On Ubuntu, the runtime of ThreadSanitizer is i
 ## Why Vx has no `async`
 
 In Vx, a function that waits is a normal function. `recv`, `join`, `lock` and a network read wait
-for an event, and the task continues after it. A function that calls them is a normal function too.
+for an event, and `sleep` waits for a time. The task continues after the wait. A function that
+calls them is a normal function too.
 So Vx has no `async` and no `await`.
 
 In a language with `async`, a function that waits must be `async`, and so must each function that
@@ -296,7 +405,8 @@ have that problem. A borrow that lives across a wait is a borrow across a call, 
 checker needs no new rule.
 
 A task that waits holds no OS thread in the shared runtime, so a program can have many waiting
-tasks. The language is the same for both runtimes.
+tasks. The language is the same for both runtimes. [Networks](files-input-time.md#networks) shows
+a TCP server and a client as two tasks.
 
 ## Compared with Rust and Go
 
@@ -308,4 +418,5 @@ tasks. The language is the same for both runtimes.
 | A task that fails | Its `join` leaves the block | `join` gives a `Result` | Each program writes it |
 | Cancel the other tasks | When the block leaves or a task fails | Each program writes it | `context`, by hand |
 | Functions that wait | Normal functions | `async fn`, or a blocked thread | Normal functions |
-| Wait on many channels | `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
+| Wait on many channels | `select2` to `select6`, or `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
+| Kinds of channel | `channel`, oneshot, work queue, broadcast, watch | The same in tokio | One kind, `chan` |

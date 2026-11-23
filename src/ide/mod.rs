@@ -126,14 +126,9 @@ impl Analysis {
         let mut modules: Vec<_> = loader.loaded_modules.values().cloned().collect();
 
         // 1. Macro Expansion
-        let mut global_macros = std::collections::HashMap::new();
-        for m in modules.iter() {
-            for mac in &m.macros {
-                global_macros.insert(mac.name.clone(), mac.rules.clone());
-            }
-        }
+        let macros = crate::parser::MacroTable::new(&modules);
         let trait_defaults = crate::resolver::collect_trait_defaults(modules.iter());
-        let expander = MacroExpander::new(&global_macros, &trait_defaults);
+        let expander = MacroExpander::new(&macros, &trait_defaults);
         for m in modules.iter_mut() {
             let _ = expander.expand_module(m); // Ignore expansion errors for IDE
         }

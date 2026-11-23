@@ -1,0 +1,252 @@
+//===- distinct.vx - Vx Standard Library --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Distinct::check(t)` and `DisjointRanges::check(t)` are calls of the functions here for the
+// element type of `t`. A program that calls one gets this module without an `import`.
+//
+// `Distinct::check` copies the values into a tensor of `i64`, sorts the copy and compares each
+// value with the next. An `as` from `u64` to `i64` keeps the bits, so two different values stay
+// different.
+//
+// `DisjointRanges::check` copies the ranges, sorts them by the start and then by the end, and
+// compares each end with the next start. The order matters here, so a `u64` value gets its top
+// bit flipped before the `as`: the order of the `i64` values is then the order of the `u64` ones.
+
+import core::option;
+
+/// Moves the value at `root` down the heap in `v[0..end]`, until it is not smaller than its
+/// children.
+fn distinct_sift_down(v : &mut Tensor<i64, [?]>, start : i64, end : i64) -> void {
+  let mut root = start;
+  while 2 * root + 1 < end {
+    let mut child = 2 * root + 1;
+    if child + 1 < end && v[child] < v[child + 1] {
+      child = child + 1;
+    }
+    if v[root] >= v[child] {
+      return;
+    }
+    let held = v[root];
+    v[root] = v[child];
+    v[child] = held;
+    root = child;
+  }
+  return;
+}
+
+/// Whether no two of the `n` values in `v` are equal. It sorts `v` with a heap sort.
+fn distinct_values_differ(v : &mut Tensor<i64, [?]>, n : i64) -> bool {
+  let mut start = n / 2;
+  while start > 0 {
+    start = start - 1;
+    distinct_sift_down(v, start, n);
+  }
+  let mut end = n;
+  while end > 1 {
+    end = end - 1;
+    let held = v[0];
+    v[0] = v[end];
+    v[end] = held;
+    distinct_sift_down(v, 0, end);
+  }
+  let mut i = 1i64;
+  while i < n {
+    if v[i - 1] == v[i] {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+}
+
+/// `t` as a `Distinct` tensor, or `None` when two of its elements are equal.
+pub fn distinct_check_i32(t : Tensor<i32, [?]>) -> Option<Distinct<Tensor<i32, [?]>>> {
+  let n = t.len();
+  let mut v = Tensor<i64, [?]>::new([n]);
+  for i in 0..n {
+    v[i] = t[i] as i64;
+  }
+  if distinct_values_differ(&mut v, n as i64) {
+    return Option<Distinct<Tensor<i32, [?]>>>::Some(unsafe { Distinct(t) });
+  }
+  return Option<Distinct<Tensor<i32, [?]>>>::None;
+}
+
+/// `t` as a `Distinct` tensor, or `None` when two of its elements are equal.
+pub fn distinct_check_i64(t : Tensor<i64, [?]>) -> Option<Distinct<Tensor<i64, [?]>>> {
+  let n = t.len();
+  let mut v = Tensor<i64, [?]>::new([n]);
+  for i in 0..n {
+    v[i] = t[i];
+  }
+  if distinct_values_differ(&mut v, n as i64) {
+    return Option<Distinct<Tensor<i64, [?]>>>::Some(unsafe { Distinct(t) });
+  }
+  return Option<Distinct<Tensor<i64, [?]>>>::None;
+}
+
+/// `t` as a `Distinct` tensor, or `None` when two of its elements are equal.
+pub fn distinct_check_u32(t : Tensor<u32, [?]>) -> Option<Distinct<Tensor<u32, [?]>>> {
+  let n = t.len();
+  let mut v = Tensor<i64, [?]>::new([n]);
+  for i in 0..n {
+    v[i] = t[i] as i64;
+  }
+  if distinct_values_differ(&mut v, n as i64) {
+    return Option<Distinct<Tensor<u32, [?]>>>::Some(unsafe { Distinct(t) });
+  }
+  return Option<Distinct<Tensor<u32, [?]>>>::None;
+}
+
+/// `t` as a `Distinct` tensor, or `None` when two of its elements are equal.
+pub fn distinct_check_u64(t : Tensor<u64, [?]>) -> Option<Distinct<Tensor<u64, [?]>>> {
+  let n = t.len();
+  let mut v = Tensor<i64, [?]>::new([n]);
+  for i in 0..n {
+    v[i] = t[i] as i64;
+  }
+  if distinct_values_differ(&mut v, n as i64) {
+    return Option<Distinct<Tensor<u64, [?]>>>::Some(unsafe { Distinct(t) });
+  }
+  return Option<Distinct<Tensor<u64, [?]>>>::None;
+}
+
+/// Whether row `a` of `r` sorts after row `b`: by the start, then by the end.
+fn ranges_after(r : &Tensor<i64, [?, 2]>, a : i64, b : i64) -> bool {
+  if r[a][0] != r[b][0] {
+    return r[a][0] > r[b][0];
+  }
+  return r[a][1] > r[b][1];
+}
+
+/// Swaps rows `a` and `b` of `r`.
+fn ranges_swap(r : &mut Tensor<i64, [?, 2]>, a : i64, b : i64) -> void {
+  let start = r[a][0];
+  let end = r[a][1];
+  r[a][0] = r[b][0];
+  r[a][1] = r[b][1];
+  r[b][0] = start;
+  r[b][1] = end;
+  return;
+}
+
+/// Moves the row at `root` down the heap in `r[0..end]`, until it does not sort before its
+/// children.
+fn ranges_sift_down(r : &mut Tensor<i64, [?, 2]>, start : i64, end : i64) -> void {
+  let mut root = start;
+  while 2 * root + 1 < end {
+    let mut child = 2 * root + 1;
+    if child + 1 < end && ranges_after(r, child + 1, child) {
+      child = child + 1;
+    }
+    if !ranges_after(r, child, root) {
+      return;
+    }
+    ranges_swap(r, root, child);
+    root = child;
+  }
+  return;
+}
+
+/// Whether no two of the `n` ranges `[r[i][0], r[i][1])` overlap. It sorts `r` with a heap sort.
+fn ranges_do_not_overlap(r : &mut Tensor<i64, [?, 2]>, n : i64) -> bool {
+  let mut i = 0i64;
+  while i < n {
+    if r[i][0] > r[i][1] {
+      return false;
+    }
+    i = i + 1;
+  }
+  let mut start = n / 2;
+  while start > 0 {
+    start = start - 1;
+    ranges_sift_down(r, start, n);
+  }
+  let mut end = n;
+  while end > 1 {
+    end = end - 1;
+    ranges_swap(r, 0, end);
+    ranges_sift_down(r, 0, end);
+  }
+  // Sorted, each range ends no later than the next one starts.
+  i = 1i64;
+  while i < n {
+    if r[i - 1][1] > r[i][0] {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+}
+
+/// `t` as a `DisjointRanges` table, or `None` when two of its ranges overlap or a range ends
+/// before it starts.
+pub fn disjoint_ranges_check_i32(t : Tensor<i32, [?, 2]>) -> Option<DisjointRanges<Tensor<i32, [?, 2]>>> {
+  let n = t.len();
+  let mut r = Tensor<i64, [?, 2]>::new([n, 2]);
+  for i in 0..n {
+    r[i][0] = t[i][0] as i64;
+    r[i][1] = t[i][1] as i64;
+  }
+  if ranges_do_not_overlap(&mut r, n as i64) {
+    return Option<DisjointRanges<Tensor<i32, [?, 2]>>>::Some(unsafe {
+      DisjointRanges(t)
+    });
+  }
+  return Option<DisjointRanges<Tensor<i32, [?, 2]>>>::None;
+}
+
+/// `t` as a `DisjointRanges` table, or `None` when two of its ranges overlap or a range ends
+/// before it starts.
+pub fn disjoint_ranges_check_i64(t : Tensor<i64, [?, 2]>) -> Option<DisjointRanges<Tensor<i64, [?, 2]>>> {
+  let n = t.len();
+  let mut r = Tensor<i64, [?, 2]>::new([n, 2]);
+  for i in 0..n {
+    r[i][0] = t[i][0];
+    r[i][1] = t[i][1];
+  }
+  if ranges_do_not_overlap(&mut r, n as i64) {
+    return Option<DisjointRanges<Tensor<i64, [?, 2]>>>::Some(unsafe {
+      DisjointRanges(t)
+    });
+  }
+  return Option<DisjointRanges<Tensor<i64, [?, 2]>>>::None;
+}
+
+/// `t` as a `DisjointRanges` table, or `None` when two of its ranges overlap or a range ends
+/// before it starts.
+pub fn disjoint_ranges_check_u32(t : Tensor<u32, [?, 2]>) -> Option<DisjointRanges<Tensor<u32, [?, 2]>>> {
+  let n = t.len();
+  let mut r = Tensor<i64, [?, 2]>::new([n, 2]);
+  for i in 0..n {
+    r[i][0] = t[i][0] as i64;
+    r[i][1] = t[i][1] as i64;
+  }
+  if ranges_do_not_overlap(&mut r, n as i64) {
+    return Option<DisjointRanges<Tensor<u32, [?, 2]>>>::Some(unsafe {
+      DisjointRanges(t)
+    });
+  }
+  return Option<DisjointRanges<Tensor<u32, [?, 2]>>>::None;
+}
+
+/// `t` as a `DisjointRanges` table, or `None` when two of its ranges overlap or a range ends
+/// before it starts.
+pub fn disjoint_ranges_check_u64(t : Tensor<u64, [?, 2]>) -> Option<DisjointRanges<Tensor<u64, [?, 2]>>> {
+  let n = t.len();
+  let mut r = Tensor<i64, [?, 2]>::new([n, 2]);
+  for i in 0..n {
+    r[i][0] = (t[i][0] ^ 9223372036854775808u64) as i64;
+    r[i][1] = (t[i][1] ^ 9223372036854775808u64) as i64;
+  }
+  if ranges_do_not_overlap(&mut r, n as i64) {
+    return Option<DisjointRanges<Tensor<u64, [?, 2]>>>::Some(unsafe {
+      DisjointRanges(t)
+    });
+  }
+  return Option<DisjointRanges<Tensor<u64, [?, 2]>>>::None;
+}

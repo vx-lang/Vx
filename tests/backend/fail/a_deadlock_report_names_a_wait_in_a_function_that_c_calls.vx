@@ -10,14 +10,20 @@
 // each task waits, and the program stops with a deadlock report.
 //
 // A task that waits under a call from C stays on its thread, and does not park. The report must
-// still see it, on both runtimes.
+// still see it, on both runtimes and with a seed.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 not vxc %s 2>&1 | FileCheck %s --check-prefix=SEED --implicit-check-not=Error
 // CHECK: {{^}}vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.{{$}}
 // CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:[[#SPAWN:]]{{$}}
 // CHECK-NEXT: {{^}}  a task waits on an atomic word{{$}}
 // CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:[[#SPAWN]]{{$}}
+//
+// With a seed, the main thread runs the task, so the report has no line for the main code.
+// SEED: {{^}}vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.{{$}}
+// SEED-NEXT: {{^}}  a task waits on an atomic word{{$}}
+// SEED-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:{{[0-9]+}}{{$}}
 
 import core::sync::atomic;
 import std::sync::wait;

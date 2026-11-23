@@ -9,7 +9,7 @@
 // so it must return i32. A non-i32 `main` is a compiler error rather than a
 // silently-discarded value.
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: must return i32
+// CHECK: Error at {{.*}}main_must_return_i32.vx:[[@LINE+1]]:4: `main` must return i32
 fn main() -> f32 {
   return 1.0;
 }

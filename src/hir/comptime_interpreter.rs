@@ -1369,7 +1369,22 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     && self.topology_exprs_equal(left_start, right_start)?
                     && self.topology_exprs_equal(left_end, right_end)?,
             ),
-            (Topology::Custom(left), Topology::Custom(right)) => Some(left == right),
+            (Topology::Custom(left, left_index), Topology::Custom(right, right_index)) => {
+                if left != right {
+                    return Some(false);
+                }
+                match (left_index, right_index) {
+                    (None, None) => Some(true),
+                    (Some(left), Some(right)) => self.topology_exprs_equal(left, right),
+                    // A bare name is device 0.
+                    (Some(index), None) | (None, Some(index)) => {
+                        match self.clone().expr(index).value.concrete? {
+                            Value::Int(index) => Some(index == 0),
+                            _ => None,
+                        }
+                    }
+                }
+            }
             _ => Some(false),
         }
     }
@@ -2785,7 +2800,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
 
     fn topology(&mut self, topology: &Topology) -> ComptimeEvalOutcome {
         match topology {
-            Topology::NPU(index) | Topology::AccCore(index) | Topology::GPU(index) => {
+            Topology::NPU(index)
+            | Topology::AccCore(index)
+            | Topology::GPU(index)
+            | Topology::Custom(_, Some(index)) => {
                 let index = self.expr(index);
                 let index_is_concrete = index.value.concrete.is_some();
                 let mut outcome = self.unknown_after([index]);
@@ -2812,7 +2830,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             | Topology::ANE
             | Topology::CpuAvx512
             | Topology::CpuNeon
-            | Topology::Custom(_) => ComptimeEvalOutcome::known(Value::Topology(topology.clone())),
+            | Topology::Custom(_, None) => {
+                ComptimeEvalOutcome::known(Value::Topology(topology.clone()))
+            }
             Topology::Current => {
                 ComptimeEvalOutcome::known(Value::Topology(self.active_topology.clone()))
             }
