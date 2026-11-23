@@ -1,7 +1,7 @@
 # One `select` for channels, sockets, timers and tokens
 
 Issue #3414, part of #3413. The review took the recommended answer of each question in section 10.
-Stage 1 of section 9 is in `stdlib/std/sync/select.vx`.
+Stage 1 of section 9 is in `stdlib/std/sync/select.vx`, and stage 2 in `stdlib/std/net.vx`.
 
 ## 1. The problem
 
@@ -209,6 +209,10 @@ is the rule that the poller already follows.
 | `Deadline`, `Interval` | the clock passed the time | nothing: `select` waits with the earliest `deadline()` |
 | semaphore (#3418) | a permit is free | as a channel |
 | `Token<T>` | the copy ended | today: always ready. With a background copy: the end of the copy calls `vx_wake_watchers` |
+
+Before stage 2, the poller stored 1 in the word of a wait. It now adds 1, because the word of a
+`select` can hold 1 already, and a store of 1 would then not change it. The poller takes off only
+the entry of the socket that got ready, so the other sockets of the `select` stay on the list.
 
 A new source implements the four methods of the trait. The three runtime calls are its whole
 interface to the runtime.
