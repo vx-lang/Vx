@@ -98,6 +98,25 @@ bool verbose() {
     }                                                                          \
   } while (0)
 
+/* VX_XPU_CHECK for a step of a kernel launch: the message also names the
+   kernel. The macro evaluates `kernel` only when the step failed. */
+#define VX_XPU_CHECK_LAUNCH(expr, kernel)                                      \
+  do {                                                                         \
+    ze_result_t vx_r_ = (expr);                                                \
+    if (vx_r_ != ZE_RESULT_SUCCESS) {                                          \
+      fprintf(stderr, "[Vx XPU] FATAL: %s failed with 0x%x for %s\n", #expr,   \
+              (unsigned)vx_r_, (kernel));                                      \
+      abort();                                                                 \
+    }                                                                          \
+  } while (0)
+
+/// The kernel of `payload` for a message, with the Vx function and the line of
+/// its `spawn` when the payload has them.
+std::string label_of(const void *payload, size_t payload_size) {
+  char text[512];
+  return vx_kernel_label(payload, payload_size, text, sizeof text);
+}
+
 /// The Level Zero GPU this library serves, decided once.
 ///
 /// A build with the XPU backend compiled in can still run on a machine with no
@@ -356,8 +375,10 @@ struct LoadedKernel {
   int param_count = -1;
 };
 
-LoadedKernel load_kernel(const std::string &key, const char *name,
-                         const void *image, size_t image_size) {
+LoadedKernel load_kernel(const std::string &key, const void *payload,
+                         size_t payload_size, const void *image,
+                         size_t image_size) {
+  const char *name = static_cast<const char *>(payload);
   /* The caller holds the launch lock for the whole call, which is what keeps
      this map safe. */
   static std::unordered_map<std::string, LoadedKernel> loaded;
@@ -385,12 +406,12 @@ LoadedKernel load_kernel(const std::string &key, const char *name,
       std::string text(log_size + 1, '\0');
       zeModuleBuildLogGetString(log, &log_size, text.data());
       fprintf(stderr, "[Vx XPU] the driver refused the module for %s:\n%s\n",
-              name, text.c_str());
+              label_of(payload, payload_size).c_str(), text.c_str());
     } else {
       fprintf(stderr,
               "[Vx XPU] FATAL: loading the image for %s failed with "
               "0x%x.\n",
-              name, (unsigned)rc);
+              label_of(payload, payload_size).c_str(), (unsigned)rc);
     }
     abort();
   }
@@ -403,7 +424,7 @@ LoadedKernel load_kernel(const std::string &key, const char *name,
     fprintf(stderr,
             "[Vx XPU] FATAL: the image loaded but has no entry named %s "
             "(0x%x).\n",
-            name, (unsigned)rc);
+            label_of(payload, payload_size).c_str(), (unsigned)rc);
     abort();
   }
 
@@ -474,6 +495,8 @@ bool run_device_image(const void *payload, size_t payload_size,
   }
 
   const char *kernel_name = static_cast<const char *>(payload);
+  /* The text is made only for a message, so a launch does not pay for it. */
+  auto label = [&] { return label_of(payload, payload_size); };
   const char *format = vx_payload_field(payload, payload_size, "format=");
 
   /* The format key is what tells a consumer whether the bytes are something it
@@ -484,7 +507,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       fprintf(stderr,
               "[Vx XPU] %s has format=%s, which this backend does not load; "
               "not launching\n",
-              kernel_name, format ? format : "<none>");
+              label().c_str(), format ? format : "<none>");
     }
     return false;
   }
@@ -496,7 +519,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       fprintf(stderr,
               "[Vx XPU] %s says format=spirv but carries no usable image "
               "section (code %lld); not launching\n",
-              kernel_name, (long long)image_size);
+              label().c_str(), (long long)image_size);
     }
     return false;
   }
@@ -533,7 +556,7 @@ bool run_device_image(const void *payload, size_t payload_size,
 
   if (announce) {
     fprintf(stderr, "[Vx XPU] %s: format=spirv accepted, %lld-byte image\n",
-            kernel_name, (long long)image_size);
+            label().c_str(), (long long)image_size);
   }
 
   /* A kernel that contains an `assert` takes one more parameter than the
@@ -559,7 +582,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       fprintf(stderr,
               "[Vx XPU] %s has an argument this path cannot marshal (a "
               "publication slot); not launching\n",
-              kernel_name);
+              label().c_str());
     }
     return false;
   }
@@ -570,7 +593,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       width_count != params.count) {
     fprintf(stderr,
             "[Vx XPU] FATAL: %s has %d parameters and their widths cover %d.\n",
-            kernel_name, params.count, width_count);
+            label().c_str(), params.count, width_count);
     abort();
   }
 
@@ -590,7 +613,7 @@ bool run_device_image(const void *payload, size_t payload_size,
         fprintf(stderr,
                 "[Vx XPU] %s: argument %lld is at an address the device "
                 "cannot reach; not launching\n",
-                kernel_name, (long long)i);
+                label().c_str(), (long long)i);
       }
       return false;
     }
@@ -605,7 +628,7 @@ bool run_device_image(const void *payload, size_t payload_size,
      instead walked the whole image on every launch, inside the lock a launch
      holds. */
   LoadedKernel loaded =
-      load_kernel(key, kernel_name, image, (size_t)image_size);
+      load_kernel(key, payload, payload_size, image, (size_t)image_size);
   ze_kernel_handle_t kernel = loaded.kernel;
   const int64_t given = params.count + (takes_assert_flag ? 1 : 0);
   if (loaded.param_count != given) {
@@ -613,7 +636,7 @@ bool run_device_image(const void *payload, size_t payload_size,
             "[Vx XPU] FATAL: %s declares %d parameters and its arguments "
             "produced %lld.\n"
             "          Launching would read past what was supplied.\n",
-            kernel_name, loaded.param_count, (long long)given);
+            label().c_str(), loaded.param_count, (long long)given);
     abort();
   }
 
@@ -639,7 +662,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       vx_launch_shape(payload, payload_size, device_args, arg_tags, num_args,
                       grid, &group_size, why, sizeof why);
   if (set_by_program < 0) {
-    fprintf(stderr, "[Vx XPU] FATAL: %s: %s\n", kernel_name, why);
+    fprintf(stderr, "[Vx XPU] FATAL: %s: %s\n", label().c_str(), why);
     abort();
   }
   if (!set_by_program) {
@@ -661,41 +684,49 @@ bool run_device_image(const void *payload, size_t payload_size,
       }
     }
   }
-  VX_XPU_CHECK(zeKernelSetGroupSize(kernel, group_size, 1, 1));
+  VX_XPU_CHECK_LAUNCH(zeKernelSetGroupSize(kernel, group_size, 1, 1),
+                      label().c_str());
 
   for (int i = 0; i < params.count; ++i) {
-    VX_XPU_CHECK(
-        zeKernelSetArgumentValue(kernel, i, widths[i], params.params[i]));
+    VX_XPU_CHECK_LAUNCH(
+        zeKernelSetArgumentValue(kernel, i, widths[i], params.params[i]),
+        label().c_str());
   }
   if (takes_assert_flag) {
     void *flag = failed_assert;
-    VX_XPU_CHECK(
-        zeKernelSetArgumentValue(kernel, params.count, sizeof(void *), &flag));
+    VX_XPU_CHECK_LAUNCH(
+        zeKernelSetArgumentValue(kernel, params.count, sizeof(void *), &flag),
+        label().c_str());
   }
 
   LaunchQueue &lq = launch_queue();
-  VX_XPU_CHECK(zeCommandListReset(lq.list));
+  VX_XPU_CHECK_LAUNCH(zeCommandListReset(lq.list), label().c_str());
   if (takes_assert_flag) {
     /* Cleared on the list, so the launch sees zero whatever the last launch
        of this kernel left, and the wait below is what makes it visible. */
     const int zero = 0;
-    VX_XPU_CHECK(zeCommandListAppendMemoryFill(lq.list, failed_assert, &zero,
-                                               sizeof zero, sizeof zero,
-                                               nullptr, 0, nullptr));
+    VX_XPU_CHECK_LAUNCH(zeCommandListAppendMemoryFill(
+                            lq.list, failed_assert, &zero, sizeof zero,
+                            sizeof zero, nullptr, 0, nullptr),
+                        label().c_str());
   }
   ze_group_count_t group_count = {grid[0], grid[1], grid[2]};
-  VX_XPU_CHECK(zeCommandListAppendLaunchKernel(lq.list, kernel, &group_count,
-                                               nullptr, 0, nullptr));
-  VX_XPU_CHECK(zeCommandListClose(lq.list));
-  VX_XPU_CHECK(
-      zeCommandQueueExecuteCommandLists(lq.queue, 1, &lq.list, nullptr));
-  VX_XPU_CHECK(zeCommandQueueSynchronize(lq.queue, UINT64_MAX));
+  VX_XPU_CHECK_LAUNCH(zeCommandListAppendLaunchKernel(
+                          lq.list, kernel, &group_count, nullptr, 0, nullptr),
+                      label().c_str());
+  VX_XPU_CHECK_LAUNCH(zeCommandListClose(lq.list), label().c_str());
+  VX_XPU_CHECK_LAUNCH(
+      zeCommandQueueExecuteCommandLists(lq.queue, 1, &lq.list, nullptr),
+      label().c_str());
+  VX_XPU_CHECK_LAUNCH(zeCommandQueueSynchronize(lq.queue, UINT64_MAX),
+                      label().c_str());
 
   /* The device's `printf` output comes out at the wait above, so the message
      of the failed assert has already been printed when this says which kernel
      it was in. */
   if (takes_assert_flag && *failed_assert != 0) {
-    fprintf(stderr, "[Vx XPU] FATAL: an assert failed in %s\n", kernel_name);
+    fprintf(stderr, "[Vx XPU] FATAL: an assert failed in %s\n",
+            label().c_str());
     abort();
   }
 
@@ -703,7 +734,8 @@ bool run_device_image(const void *payload, size_t payload_size,
     fprintf(stderr,
             "[Vx XPU] %s ran from its own image (%d params, %ux%ux%u groups "
             "of %u)\n",
-            kernel_name, params.count, grid[0], grid[1], grid[2], group_size);
+            label().c_str(), params.count, grid[0], grid[1], grid[2],
+            group_size);
   }
   return true;
 }
@@ -979,7 +1011,7 @@ bool run_gemm(const vx_gemm_plan &plan) {
 /// allocation lands, the mirroring is what has to come back here.
 void refuse_device_operands_on_host(void *const *device_args,
                                     const int32_t *arg_tags, int64_t num_args,
-                                    const char *kernel_name) {
+                                    const void *payload, size_t payload_size) {
   for (int64_t i = 0; i < num_args; ++i) {
     const int32_t tag = arg_tags[i];
     if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF) {
@@ -999,7 +1031,7 @@ void refuse_device_operands_on_host(void *const *device_args,
               "device-only memory\n"
               "          the host cannot address. A host copy needs shared "
               "USM.\n",
-              kernel_name, (long long)i);
+              label_of(payload, payload_size).c_str(), (long long)i);
       abort();
     }
   }
@@ -1161,6 +1193,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                   size_t payload_size, void **device_args,
                                   const int32_t *arg_tags, int64_t num_args) {
   const char *kernel_name = static_cast<const char *>(binary_payload);
+  auto label = [&] { return label_of(binary_payload, payload_size); };
 
   if (vx_routing_try_dispatch(binary_payload, payload_size, device_args,
                               arg_tags, num_args)) {
@@ -1177,7 +1210,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
             "[Vx XPU] FATAL: %s carries payload abi=%d and this runtime knows "
             "%d.\n"
             "          Refusing rather than misreading a newer format.\n",
-            kernel_name, (int)abi, VX_PAYLOAD_ABI);
+            label().c_str(), (int)abi, VX_PAYLOAD_ABI);
     abort();
   }
 
@@ -1215,14 +1248,14 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
      it cannot follow. */
   if (device_args) {
     refuse_device_operands_on_host(device_args, arg_tags, num_args,
-                                   kernel_name);
+                                   binary_payload, payload_size);
   }
 
-  vx_host_refuse_coop(binary_payload, payload_size, kernel_name, "XPU");
+  vx_host_refuse_coop(binary_payload, payload_size, "XPU");
   void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     fprintf(stderr, "[Vx XPU] FATAL: outlined kernel %s not found\n",
-            kernel_name);
+            label().c_str());
     abort();
   }
   bool called = vx_host_call_kernel(
@@ -1233,7 +1266,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
 
   if (!called) {
     fprintf(stderr, "[Vx XPU] FATAL: could not build a call for %s\n",
-            kernel_name);
+            label().c_str());
     abort();
   }
   return 1;
