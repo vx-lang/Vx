@@ -42,7 +42,7 @@ pub(crate) struct LoopHeader<'e> {
 pub(crate) struct InvariantLoop {
     invariants: Vec<Expr>,
     /// The first scope of the loop. It and the scopes above it hold the variables of the body.
-    scope: usize,
+    pub(crate) scope: usize,
     /// The variable of a `for` loop, and its value in the next pass when the checker knows it.
     next: Option<(crate::symbol::Symbol, Option<Expr>)>,
     /// Whether the body declares a variable with the name of the loop variable.

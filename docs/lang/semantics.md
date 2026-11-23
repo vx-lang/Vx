@@ -212,12 +212,16 @@ A tensor type can name where its buffer is allocated, with a last argument: `Sto
 
 - `Storage::Stack` puts the buffer in the frame of the function that declares it. The shape must
   be known when the program compiles, so no dimension can be `?`. A placement on a stack tensor is
-  advisory: the buffer is in the frame either way, and the written `aligned(N)` sets the slot's
-  alignment.
+  refused unless it names the host's memory: the buffer is in the frame, and no device's memory is
+  that. The written `aligned(N)` sets the slot's alignment.
 - `Storage::Heap` puts the buffer on the heap, whatever its size. The buffer is freed by its drop.
-- A stack tensor cannot leave its function. It cannot be returned, passed by value to a call,
-  stored in a struct or enum value, assigned to a place other than a local variable, or used inside
-  a `spawn` block. Pass it by reference with `&` instead.
+- A stack tensor cannot leave its function. It cannot be returned unless the function says
+  `Storage::Stack`, passed by value to a call, stored in a struct or enum value, assigned to a
+  place other than a local variable, or used inside a `spawn` block, which a `&` does not rescue.
+  Pass it by reference with `&` to a call instead.
+- A stack tensor of a loop body is one buffer that every pass shares: its slot is hoisted to the
+  function's entry block. So it cannot be assigned to a variable declared outside the loop, and a
+  function's by-value parameter or a struct's field cannot name `Storage::Stack`.
 - A function may return `Storage::Stack`. Its caller then makes the buffer in the caller's stack,
   and the function writes its result there. The caller uses the result until the caller returns.
 

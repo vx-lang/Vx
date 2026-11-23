@@ -1508,6 +1508,7 @@ impl<'a> TypeChecker<'a> {
         // A raw pointer, such as the room of a channel, points at tensors that it does not hold.
         let record = record && !matches!(ty, Type::Pointer(..));
         self.report_unheld_placements(ty, context);
+        self.check_stack_storage_with_placement(ty, context, span);
         self.check_alignments_in(ty, context, span);
         for (e, d, copy) in self.placed_tensors(ty) {
             self.check_capacity_of(&e, &d, &copy, context, span, record, 1);
@@ -1515,6 +1516,36 @@ impl<'a> TypeChecker<'a> {
                 &e,
                 &copy.space,
                 context,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
+    /// A stack buffer is the memory of this function's frame, so it cannot sit in the memory of
+    /// a device: the runtime would allocate a host `memref.alloca` for it and hand the device's
+    /// kernel a host stack pointer. Only the host's own memory can name a placement, since that
+    /// is where the frame is.
+    fn check_stack_storage_with_placement(&mut self, ty: &Type, context: &str, span: &Span) {
+        let mut bad: Vec<String> = Vec::new();
+        ty.for_each_tensor_type(&mut |_, _, place, storage| {
+            if *storage != Storage::Stack {
+                return;
+            }
+            if let Some(p) = place {
+                if p.space != MemorySpace::CPUDRAM {
+                    bad.push(format!("`Memory::{}`", p.space.name()));
+                }
+            }
+        });
+        for space in bad {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3001,
+                format!(
+                    "{context} names both `Storage::Stack` and {space}. A stack buffer is the \
+                     memory of the function's frame, which no device's memory is: write the \
+                     `Storage::Stack` without the placement, or the placement with \
+                     `Storage::Heap` or `Storage::Auto`",
+                ),
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
         }

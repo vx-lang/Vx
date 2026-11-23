@@ -4107,6 +4107,19 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // arguments. Normalising the first into the second's shape -- one array argument of
             // extents -- keeps a single lowering rather than two that must agree.
             let written = type_args.as_ref().and_then(|t| t.first());
+            // This code generator reads no storage: a buffer of the stack would come out as a
+            // `memref.alloc`, and its drop as a `free` of the frame's memory. The flat code
+            // generator, which is the default, reads it.
+            if let Some(syntax::Type::Tensor(_, _, _, storage)) = written {
+                if !matches!(storage, syntax::Storage::Auto) {
+                    return Err(LowerError::from(
+                        "a tensor that names `Storage::Stack` or `Storage::Heap` needs the \
+                         flat code generator, which is the default; this compile asked for \
+                         `--legacy-codegen`, which reads no storage"
+                            .to_string(),
+                    ));
+                }
+            }
             let (elem, shape_args): (syntax::Type, Vec<Expr>) = match written {
                 // A shape with a run-time extent is not in the type, so it stays where it was
                 // written; a static one is rebuilt from the type as the one array argument.

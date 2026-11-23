@@ -38,11 +38,14 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Assign(AssignStmt { lhs, rhs, .. }) => {
                 self.check_stack_tensor_escape_in(rhs);
-                if self.is_stack_tensor_value(rhs) && !matches!(lhs, Expr::Identifier(_)) {
-                    self.report_stack_tensor_escape(
-                        "this stores a stack tensor into a place other than a local variable",
-                        &rhs.span(),
-                    );
+                if self.is_stack_tensor_value(rhs) {
+                    if !matches!(lhs, Expr::Identifier(_)) {
+                        self.report_stack_tensor_escape(
+                            "this stores a stack tensor into a place other than a local variable",
+                            &rhs.span(),
+                        );
+                    }
+                    self.check_stack_tensor_loop_escape(lhs, rhs);
                 }
                 self.check_escape_in_calls(rhs);
                 // The error points at the place written to.
@@ -96,6 +99,42 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
+    /// `prev = t`, where `t` is a stack tensor and `prev` is a variable of an outer block:
+    /// an assignment points `prev` at the buffer of `t` rather than copying it, and the
+    /// buffer of a value made in a loop body -- a `let` of the body, or the result of a call
+    /// the pass makes -- is one slot that every pass shares (its `memref.alloca` is hoisted
+    /// to the entry block). So `prev` would keep only the last pass's buffer, and the buffer
+    /// of an earlier pass is gone though `prev` still names it.
+    fn check_stack_tensor_loop_escape(&mut self, lhs: &Expr, rhs: &Expr) {
+        let Expr::Identifier(id) = lhs else {
+            return;
+        };
+        // The innermost loop body the assignment sits in, if there is one. An `if` or a
+        // block inside the body is inside the loop for this purpose: its statements are
+        // checked while the loop is on the stack.
+        let Some(loop_scope) = self.invariant_loops.last().map(|lp| lp.scope) else {
+            return;
+        };
+        if self.scope_depth_of(&id.name) >= loop_scope {
+            return;
+        }
+        // A plain name of the loop body names a buffer made in this pass. Anything else --
+        // a call, a literal, an index -- makes its buffer now, which is in this pass too.
+        let made_in_the_loop = match rhs {
+            Expr::Identifier(inner) => self.scope_depth_of(&inner.name) >= loop_scope,
+            _ => true,
+        };
+        if made_in_the_loop {
+            self.report_stack_tensor_escape(
+                "this assigns a stack tensor of a loop body to a variable declared outside \
+                 the loop. The passes share one buffer, so the variable would keep only the \
+                 last pass's. Declare the variable inside the loop, or make it \
+                 `Storage::Heap` or `Storage::Auto`",
+                &rhs.span(),
+            );
+        }
+    }
+
     fn report_stack_tensor_escape(&mut self, what: &str, span: &crate::syntax::Span) {
         self.errors.error_with_code(
             crate::diagnostic::DiagnosticCode::E4005,
@@ -131,12 +170,25 @@ impl<'a> TypeChecker<'a> {
             });
         }
         for span in uses {
-            self.report_stack_tensor_escape("this task uses a stack tensor", &span);
+            // A `&` does not rescue a task's use, so this message asks for the heap and
+            // not for a reference.
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4005,
+                "this task uses a stack tensor. A task can run after the function that \
+                 started it returns, and a tensor with `Storage::Stack` is the memory of \
+                 that function's frame, which is gone: make the tensor `Storage::Heap` or \
+                 `Storage::Auto`"
+                    .to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+            );
         }
     }
 
     pub(crate) fn check_stack_tensor_escape_in(&mut self, expr: &Expr) {
         let args: Vec<&Expr> = match expr {
+            // `print` reads its operand where the program is running, so a stack tensor
+            // reaches it in place and is not passed by value.
+            Expr::FunctionCall(c) if c.name.as_ref() == "print" => Vec::new(),
             Expr::FunctionCall(c) => c.args.iter().collect(),
             Expr::MethodCall(c) => c.args.iter().collect(),
             Expr::IndirectCall(c) => c.args.iter().collect(),

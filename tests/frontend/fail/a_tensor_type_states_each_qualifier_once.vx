@@ -1,0 +1,18 @@
+//===- a_tensor_type_states_each_qualifier_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A second qualifier of a kind would make the type's meaning depend on the order of the
+// list, so a tensor type states each of them once.
+
+// CHECK: states where it lives once
+fn main() -> i32 {
+  let t : Tensor<f32, [4], Memory::CPU_DRAM, Memory::CPU_DRAM> = Tensor<f32, [4]>::fill(0.0);
+  print(t[0]);
+  return 0;
+}

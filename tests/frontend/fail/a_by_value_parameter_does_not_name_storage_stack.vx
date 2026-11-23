@@ -1,0 +1,21 @@
+//===- a_by_value_parameter_does_not_name_storage_stack.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A by-value parameter's buffer is the callee's frame, and the ABI hands a buffer across
+// frames, so a parameter cannot name `Storage::Stack`, whose buffer belongs to the frame of
+// the function that made it. A parameter that says `&` borrows, and can.
+
+// CHECK: parameter 't' of function 'take' takes a `Storage::Stack` tensor by value
+fn take(t : Tensor<f32, [4], Storage::Stack>) -> f32 {
+  return t[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -8,7 +8,10 @@
 // A function that returns `Storage::Stack` writes its result into the caller's stack, so the
 // caller's buffer outlives the call. Printed: the element written in the callee.
 //
-// EXPECT: 2
+// REQUIRES: flat-codegen
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+//
+// CHECK: {{^}}2{{$}}
 
 fn make() -> Tensor<f32, [4], Storage::Stack> {
   let mut t : Tensor<f32, [4], Storage::Stack> = Tensor<f32, [4], Storage::Stack>::new();

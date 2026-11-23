@@ -51,11 +51,37 @@ impl TypeChecker<'_> {
             let params = f.params.iter().map(|(p, t)| (Some(p), t));
             let ret = std::iter::once((None, &f.return_type));
             for (i, (param, ty)) in params.chain(ret).enumerate() {
+                let context = match param {
+                    Some(p) => format!("parameter '{p}' of function '{name}'"),
+                    None => format!("the return type of function '{name}'"),
+                };
+                // A tensor given by value travels: the ABI hands a buffer across frames, and
+                // a stack buffer belongs to the frame of the function that made it. A
+                // parameter that says `&` borrows, and does not travel.
+                if let (Some(p), Type::Tensor(.., sto)) = (param, ty) {
+                    if *sto == crate::syntax::Storage::Stack {
+                        self.errors.point_at(
+                            &crate::syntax::DeclPlace {
+                                file: f.file.clone(),
+                                span: f.span,
+                            },
+                            &self.errors.here(),
+                        );
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4005,
+                            format!(
+                                "parameter '{p}' of function '{name}' takes a \
+                                 `Storage::Stack` tensor by value. A tensor with \
+                                 `Storage::Stack` is the memory of the frame of the function \
+                                 that made it, and a by-value parameter is memory of the \
+                                 frame of the callee: pass it by reference with `&`, or take \
+                                 `Storage::Heap` or `Storage::Auto`"
+                            ),
+                            None,
+                        );
+                    }
+                }
                 if ty.states_a_location() {
-                    let context = match param {
-                        Some(p) => format!("parameter '{p}' of function '{name}'"),
-                        None => format!("the return type of function '{name}'"),
-                    };
                     sites.push(Site {
                         order: (format!("function '{name}'"), i),
                         context,
@@ -70,6 +96,24 @@ impl TypeChecker<'_> {
         }
         for (name, s) in &self.env.structs {
             for (field, ty) in &s.fields {
+                // A struct value can outlive the function that made it, so no field of it can
+                // hold a buffer of one function's frame.
+                if let Type::Tensor(.., sto) = ty {
+                    if *sto == crate::syntax::Storage::Stack {
+                        self.errors.point_at(&s.place, &self.errors.here());
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4005,
+                            format!(
+                                "field '{field}' of struct '{name}' holds a `Storage::Stack` \
+                                 tensor. A struct value can outlive the function that made it, \
+                                 and a tensor with `Storage::Stack` is the memory of the frame \
+                                 of the function that made it: give the field `Storage::Heap` \
+                                 or `Storage::Auto`"
+                            ),
+                            None,
+                        );
+                    }
+                }
                 if ty.states_a_location() {
                     let context = format!("field '{field}' of struct '{name}'");
                     sites.push(Site {

@@ -572,14 +572,32 @@ impl<'a> Parser<'a> {
 
                     let mut top = None;
                     let mut storage = Storage::Auto;
+                    // Each qualifier is stated once. A second one would make a type whose
+                    // meaning depends on the order of the list, so it is refused.
+                    let mut saw_placement = false;
+                    let mut saw_storage = false;
                     loop {
                         if !self.match_token(&TokenType::Comma) {
                             break;
                         }
                         if self.check(&TokenType::Storage) {
+                            if saw_storage {
+                                return Err(self.error(
+                                    "a tensor type states `Storage::` once; the type already \
+                                     has a storage",
+                                ));
+                            }
+                            saw_storage = true;
                             storage = self.parse_storage()?;
                         } else if self.check(&TokenType::Topology) || self.check(&TokenType::Memory)
                         {
+                            if saw_placement {
+                                return Err(self.error(
+                                    "a tensor type states where it lives once; the type \
+                                     already has a placement",
+                                ));
+                            }
+                            saw_placement = true;
                             let mut p = self.parse_placement()?;
                             if self.check(&TokenType::Comma)
                                 && self.peek_n(1).kind == TokenType::Identifier("aligned")

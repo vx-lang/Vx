@@ -7,7 +7,10 @@
 // A tensor type can name its storage: `Storage::Stack` or `Storage::Heap`.
 // Printed: the first element of the stack tensor, then the first element of the heap tensor.
 //
-// EXPECT: 7 9
+// REQUIRES: flat-codegen
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+//
+// CHECK: {{^}}7 9{{$}}
 
 fn main() -> i32 {
   let mut tile : Tensor<f32, [16384], Storage::Stack> = Tensor<f32, [16384], Storage::Stack>::new();

@@ -611,6 +611,15 @@ impl<'a> TypeChecker<'a> {
         if let (Some((t_inner, t_top)), Some((s_inner, s_top))) =
             (Self::located_parts(target), Self::located_parts(source))
         {
+            // The storage is part of a tensor's type, and a placement does not lift it: a
+            // stack buffer is the memory of this function's frame, and the place that would
+            // hold it treats it as heap memory. The tensor branch below makes the same
+            // comparison for tensors that name no placement.
+            if let (Type::Tensor(_, _, _, t_sto), Type::Tensor(_, _, _, s_sto)) = (target, source) {
+                if t_sto != s_sto {
+                    return false;
+                }
+            }
             // A tensor fits where a smaller alignment is asked, not a larger one.
             if let (Type::Tensor(_, _, Some(t), _), Type::Tensor(_, _, Some(s), _)) =
                 (target, source)

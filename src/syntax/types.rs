@@ -1227,6 +1227,39 @@ impl Type {
             _ => {}
         }
     }
+
+    /// Every tensor type written anywhere inside this type, outermost first, with its
+    /// placement and its storage as written. A check that pairs the two qualifiers of a
+    /// tensor, such as the one that refuses `Storage::Stack` in the memory of a device,
+    /// walks the type with this.
+    pub fn for_each_tensor_type(
+        &self,
+        f: &mut impl FnMut(
+            Option<&ElementType>,
+            Option<&[Dim]>,
+            Option<&Placement>,
+            &Storage,
+        ),
+    ) {
+        if let Type::Tensor(e, d, p, s) = self {
+            f(Some(e), Some(d), p.as_ref(), s);
+        }
+        match self {
+            Type::Pointer(inner, _, _) => inner.for_each_tensor_type(f),
+            Type::Ref(inner, _)
+            | Type::Borrow { inner, .. }
+            | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::Pinned(inner, _) => inner.for_each_tensor_type(f),
+            Type::GenericInstance(base, args) => {
+                base.for_each_tensor_type(f);
+                for a in args {
+                    a.for_each_tensor_type(f);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The value of a const generic argument written with numbers and `+ - * /`, as text: `3.14`,
