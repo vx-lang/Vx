@@ -38,10 +38,22 @@ macro_rules read_first {
   };
 }
 
+// The compiler verifies this `mlir!` block, so the block is not trusted code.
 fn ones(x : i32) -> i32 {
   return mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["math"]) {
     %r = math.ctpop %a : i32
     macro.yield %r : i32
+  };
+}
+
+// The compiler cannot verify an integer division, so this `mlir!` block is trusted code.
+fn half(x : i32) -> i32 {
+  return unsafe {
+    mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["arith"]) {
+      %two = arith.constant 2 : i32
+      %r = arith.divsi %a, %two : i32
+      macro.yield %r : i32
+    }
   };
 }
 
@@ -50,5 +62,5 @@ fn checked_value() -> i64 {
   let p = &n as *const i64;
   let x = read_first!(p);
   let five = 5i64;
-  return (ones(3) + abs(-1)) as i64 + x + five.size();
+  return (ones(3) + half(4) + abs(-1)) as i64 + x + five.size();
 }
