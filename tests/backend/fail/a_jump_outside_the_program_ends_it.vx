@@ -23,11 +23,11 @@
 
 // Calls the code at `address`.
 fn jump_to(address : i64) -> i32 {
-  return mlir!( inputs : (%a = address : i64), returns : i32, dialects : ["llvm"]) {
-    %p = llvm.inttoptr %a : i64 to !llvm.ptr
-    %r = llvm.call %p() : !llvm.ptr, () -> i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (%a = address : i64), returns : i32, dialects : ["llvm"]) {
+      %p = llvm.inttoptr %a : i64 to !llvm.ptr
+      %r = llvm.call %p() : !llvm.ptr, () -> i32
+      macro.yield %r : i32
+    } };
 }
 
 fn main() -> i32 {

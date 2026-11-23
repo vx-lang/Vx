@@ -490,6 +490,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.check_atomic_block(e);
                 self.check_block_dialects(e);
+                self.check_mlir_is_verified(e);
                 // The block can free memory through a pointer that it gets.
                 let frees = !e.clobbers.is_empty()
                     || e.inputs.iter().any(|(_, arg, _)| {

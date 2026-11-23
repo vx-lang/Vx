@@ -18,17 +18,17 @@
 // CHECK-COUNT-2: llvm.inline_asm {{.*}}"nop\0Anop", "=r,0"
 
 fn two_lines(a : u64) -> u64 {
-  return mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["llvm"]) {
-    %r = llvm.inline_asm has_side_effects "nop\0Anop", "=r,0" %a : (i64) -> i64
-    macro.yield %r : i64
-  };
+  return unsafe { mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["llvm"]) {
+      %r = llvm.inline_asm has_side_effects "nop\0Anop", "=r,0" %a : (i64) -> i64
+      macro.yield %r : i64
+    } };
 }
 
 fn two_lines_again(a : u64) -> u64 {
-  return mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["llvm"]) {
-    %r = llvm.inline_asm has_side_effects "nop\nnop", "=r,0" %a : (i64) -> i64
-    macro.yield %r : i64
-  };
+  return unsafe { mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["llvm"]) {
+      %r = llvm.inline_asm has_side_effects "nop\nnop", "=r,0" %a : (i64) -> i64
+      macro.yield %r : i64
+    } };
 }
 
 fn main() -> i32 {

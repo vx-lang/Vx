@@ -32,40 +32,40 @@ pub fn mirror(out : &mut Tensor<i32, [?], Memory::HBM>, twice : &mut Tensor<i32,
   spawn on(Topology::Device) {
     for b in 0..2 across blocks {
       let mut t = unsafe { Tensor<i32, [64], Memory::SMEM>::uninit() };
-      let _d = mlir!( threads : 64, inputs : (%t = &mut t : memref<64xi32, 3>, %o = out : memref<?xi32>, %s = sums : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "gpu", "scf"], ensures : [writes_only(t), writes_only(out[b * 64..b * 64 + 64]), writes_only(sums[b * 2..b * 2 + 2])]) {
-        %tid = gpu.thread_id x
-        %ti = arith.index_cast %tid : index to i32
-        memref.store %ti, %t[%tid] : memref<64xi32, 3>
-        gpu.barrier
-        %c63 = arith.constant 63 : index
-        %other = arith.subi %c63, %tid : index
-        %v = memref.load %t[%other] : memref<64xi32, 3>
-        %c1000 = arith.constant 1000 : i32
-        %bk = arith.muli %b, %c1000 : i32
-        %w = arith.addi %v, %bk : i32
-        %c64 = arith.constant 64 : i32
-        %base = arith.muli %b, %c64 : i32
-        %bi = arith.index_cast %base : i32 to index
-        %at = arith.addi %bi, %tid : index
-        memref.store %w, %o[%at] : memref<?xi32>
-        gpu.barrier
-        %c3 = arith.constant 3 : i32
-        %t3 = arith.muli %ti, %c3 : i32
-        memref.store %t3, %t[%tid] : memref<64xi32, 3>
-        %sum = gpu.subgroup_reduce add %ti : (i32) -> i32
-        %sg = gpu.subgroup_id : index
-        %lane = gpu.lane_id
-        %c0 = arith.constant 0 : index
-        %first = arith.cmpi eq, %lane, %c0 : index
-        scf.if %first {
-          %c2 = arith.constant 2 : index
-          %bb = arith.index_cast %b : i32 to index
-          %b2 = arith.muli %bb, %c2 : index
-          %at2 = arith.addi %b2, %sg : index
-          memref.store %sum, %s[%at2] : memref<?xi32>
-        }
-        macro.yield %w : i32
-      };
+      let _d = unsafe { mlir!( threads : 64, inputs : (%t = &mut t : memref<64xi32, 3>, %o = out : memref<?xi32>, %s = sums : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "gpu", "scf"], ensures : [writes_only(t), writes_only(out[b * 64..b * 64 + 64]), writes_only(sums[b * 2..b * 2 + 2])]) {
+          %tid = gpu.thread_id x
+          %ti = arith.index_cast %tid : index to i32
+          memref.store %ti, %t[%tid] : memref<64xi32, 3>
+          gpu.barrier
+          %c63 = arith.constant 63 : index
+          %other = arith.subi %c63, %tid : index
+          %v = memref.load %t[%other] : memref<64xi32, 3>
+          %c1000 = arith.constant 1000 : i32
+          %bk = arith.muli %b, %c1000 : i32
+          %w = arith.addi %v, %bk : i32
+          %c64 = arith.constant 64 : i32
+          %base = arith.muli %b, %c64 : i32
+          %bi = arith.index_cast %base : i32 to index
+          %at = arith.addi %bi, %tid : index
+          memref.store %w, %o[%at] : memref<?xi32>
+          gpu.barrier
+          %c3 = arith.constant 3 : i32
+          %t3 = arith.muli %ti, %c3 : i32
+          memref.store %t3, %t[%tid] : memref<64xi32, 3>
+          %sum = gpu.subgroup_reduce add %ti : (i32) -> i32
+          %sg = gpu.subgroup_id : index
+          %lane = gpu.lane_id
+          %c0 = arith.constant 0 : index
+          %first = arith.cmpi eq, %lane, %c0 : index
+          scf.if %first {
+            %c2 = arith.constant 2 : index
+            %bb = arith.index_cast %b : i32 to index
+            %b2 = arith.muli %bb, %c2 : index
+            %at2 = arith.addi %b2, %sg : index
+            memref.store %sum, %s[%at2] : memref<?xi32>
+          }
+          macro.yield %w : i32
+        } };
       for l in 0..64 across lanes(64) {
         twice[b * 64 + l] = t[63 - l] * 2;
       }

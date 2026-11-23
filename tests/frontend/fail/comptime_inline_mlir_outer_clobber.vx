@@ -11,8 +11,8 @@ fn main() -> i32 {
   let mut mlir_outer : i32 = 0i32;
   // CHECK: Error[E3033]{{.*}}writes to 'mlir_outer'
   let value = comptime {
-    let _ignored = mlir!(inputs : (), clobbers : [mlir_outer], returns : void, dialects : []) {
-    };
+    let _ignored = unsafe { mlir!(inputs : (), clobbers : [mlir_outer], returns : void, dialects : []) {
+      } };
     7i32
   };
   return value;

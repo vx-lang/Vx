@@ -1,0 +1,80 @@
+//===- mlir_blocks_that_need_unsafe.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=E8016
+//
+// An `mlir!` block outside `unsafe` must be one that the compiler can verify as safe. Each block
+// here is not, so each one gives E8016 with the reason. `peek` loaded from any address and
+// crashed, with no `unsafe` in the program. The block in `twice` is safe, so it gives no error.
+
+// CHECK-DAG: E8016{{.*}}vx:[[@LINE+2]]:{{.*}}the block uses `llvm.inttoptr`. Put the block in `unsafe { }`
+fn peek(addr : i64) -> i64 {
+  return mlir!(inputs : (%a = addr : i64), returns : i64, dialects : ["llvm"]) {
+    %p = llvm.inttoptr %a : i64 to !llvm.ptr
+    %v = llvm.load %p : !llvm.ptr -> i64
+    macro.yield %v : i64
+  };
+}
+
+// An `nsw` add gives poison when it overflows.
+// CHECK-DAG: E8016{{.*}}vx:[[@LINE+2]]:{{.*}}the block uses `arith.addi` with an `overflow` flag, which can give poison
+fn add_no_wrap(x : i64) -> i64 {
+  return mlir!(inputs : (%a = x : i64), returns : i64, dialects : ["arith"]) {
+    %r = arith.addi %a, %a overflow<nsw> : i64
+    macro.yield %r : i64
+  };
+}
+
+// A zero divisor gives undefined behavior.
+// CHECK-DAG: E8016{{.*}}vx:[[@LINE+2]]:{{.*}}the block uses `arith.divsi`
+fn divide(x : i64, y : i64) -> i64 {
+  return mlir!(inputs : (%a = x : i64, %b = y : i64), returns : i64, dialects : ["arith"]) {
+    %r = arith.divsi %a, %b : i64
+    macro.yield %r : i64
+  };
+}
+
+// `fastmath<fast>` lets the operation assume that its input is not a NaN.
+// CHECK-DAG: E8016{{.*}}vx:[[@LINE+2]]:{{.*}}the block uses `math.sqrt` with a `fastmath` flag, which can give poison
+fn root(x : f32) -> f32 {
+  return mlir!(inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
+    %r = math.sqrt %a fastmath<fast> : f32
+    macro.yield %r : f32
+  };
+}
+
+// The operations are on the list, but the block takes a memref.
+// CHECK-DAG: E8016{{.*}}vx:[[@LINE+2]]:{{.*}}the block takes or gives a `memref<4xf32>`, which is not a number
+fn first(t : &Tensor<f32, [4]>) -> f32 {
+  return mlir!(inputs : (%t = t : memref<4xf32>), returns : f32, dialects : ["arith"]) {
+    %r = arith.constant 0.0 : f32
+    macro.yield %r : f32
+  };
+}
+
+// The block writes `n`, which the compiler does not check.
+// CHECK-DAG: E8016{{.*}}vx:[[@LINE+3]]:{{.*}}the block writes the variables of its `clobbers` list
+fn reset(x : i64) -> i64 {
+  let mut n = x;
+  mlir!(inputs : (%a = x : i64), clobbers : [n], dialects : ["arith"]) {
+    %r = arith.addi %a, %a : i64
+  };
+  return n;
+}
+
+fn twice(x : i64) -> i64 {
+  return mlir!(inputs : (%a = x : i64), returns : i64, dialects : ["arith"]) {
+    %r = arith.addi %a, %a : i64
+    macro.yield %r : i64
+  };
+}
+
+fn main() -> i32 {
+  let t = Tensor<f32, [4]>::new();
+  let s = add_no_wrap(1) + divide(4, 2) + twice(1) + reset(1) + peek(0);
+  return (s as f32 + root(4.0) + first(&t)) as i32;
+}

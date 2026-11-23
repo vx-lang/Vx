@@ -146,34 +146,34 @@ macro_rules stamp_atomic_rmw {
       fn $method(self : &$name, val : $t, order : AtomicOrdering) -> $t {
         match order {
           AtomicOrdering::Relaxed => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
-              %r = llvm.atomicrmw $op %p, %x monotonic : !llvm.ptr, $mlir
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+                %r = llvm.atomicrmw $op %p, %x monotonic : !llvm.ptr, $mlir
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::Release => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
-              %r = llvm.atomicrmw $op %p, %x release : !llvm.ptr, $mlir
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+                %r = llvm.atomicrmw $op %p, %x release : !llvm.ptr, $mlir
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::Acquire => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
-              %r = llvm.atomicrmw $op %p, %x acquire : !llvm.ptr, $mlir
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+                %r = llvm.atomicrmw $op %p, %x acquire : !llvm.ptr, $mlir
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::AcqRel => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
-              %r = llvm.atomicrmw $op %p, %x acq_rel : !llvm.ptr, $mlir
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+                %r = llvm.atomicrmw $op %p, %x acq_rel : !llvm.ptr, $mlir
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::SeqCst => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
-              %r = llvm.atomicrmw $op %p, %x seq_cst : !llvm.ptr, $mlir
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), returns : $t, dialects : ["llvm"]) {
+                %r = llvm.atomicrmw $op %p, %x seq_cst : !llvm.ptr, $mlir
+                macro.yield %r : $mlir
+              } };
           }
         }
       }
@@ -221,28 +221,28 @@ macro_rules stamp_atomic_int {
         assert(core_atomic_load_order_ok(order), "load: the ordering cannot be Release or AcqRel");
         match order {
           AtomicOrdering::Relaxed => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
-              %r = llvm.load %p atomic monotonic {
-                alignment = $align : i64
-              } : !llvm.ptr -> $mlir
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
+                %r = llvm.load %p atomic monotonic {
+                  alignment = $align : i64
+                } : !llvm.ptr -> $mlir
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::Acquire => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
-              %r = llvm.load %p atomic acquire {
-                alignment = $align : i64
-              } : !llvm.ptr -> $mlir
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
+                %r = llvm.load %p atomic acquire {
+                  alignment = $align : i64
+                } : !llvm.ptr -> $mlir
+                macro.yield %r : $mlir
+              } };
           }
           _ => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
-              %r = llvm.load %p atomic seq_cst {
-                alignment = $align : i64
-              } : !llvm.ptr -> $mlir
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : $t, dialects : ["llvm"]) {
+                %r = llvm.load %p atomic seq_cst {
+                  alignment = $align : i64
+                } : !llvm.ptr -> $mlir
+                macro.yield %r : $mlir
+              } };
           }
         }
       }
@@ -252,28 +252,28 @@ macro_rules stamp_atomic_int {
         assert(core_atomic_store_order_ok(order), "store: the ordering cannot be Acquire or AcqRel");
         match order {
           AtomicOrdering::Relaxed => {
-            mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
-              llvm.store %x, %p atomic monotonic {
-                alignment = $align : i64
-              } : $mlir, !llvm.ptr
-              macro.yield
-            };
+            unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
+                llvm.store %x, %p atomic monotonic {
+                  alignment = $align : i64
+                } : $mlir, !llvm.ptr
+                macro.yield
+              } };
           }
           AtomicOrdering::Release => {
-            mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
-              llvm.store %x, %p atomic release {
-                alignment = $align : i64
-              } : $mlir, !llvm.ptr
-              macro.yield
-            };
+            unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
+                llvm.store %x, %p atomic release {
+                  alignment = $align : i64
+                } : $mlir, !llvm.ptr
+                macro.yield
+              } };
           }
           _ => {
-            mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
-              llvm.store %x, %p atomic seq_cst {
-                alignment = $align : i64
-              } : $mlir, !llvm.ptr
-              macro.yield
-            };
+            unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = val : $mlir), dialects : ["llvm"]) {
+                llvm.store %x, %p atomic seq_cst {
+                  alignment = $align : i64
+                } : $mlir, !llvm.ptr
+                macro.yield
+              } };
           }
         }
         // A `match` ending a function counts as its result; this keeps it a statement.
@@ -327,39 +327,39 @@ macro_rules stamp_atomic_int {
       fn core_atomic_cmpxchg(self : &$name, current : $t, new : $t, order : AtomicOrdering) -> $t {
         match order {
           AtomicOrdering::Relaxed => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
-              %s = llvm.cmpxchg %p, %c, %n monotonic monotonic : !llvm.ptr, $mlir
-              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+                %s = llvm.cmpxchg %p, %c, %n monotonic monotonic : !llvm.ptr, $mlir
+                %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::Release => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
-              %s = llvm.cmpxchg %p, %c, %n release monotonic : !llvm.ptr, $mlir
-              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+                %s = llvm.cmpxchg %p, %c, %n release monotonic : !llvm.ptr, $mlir
+                %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::Acquire => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
-              %s = llvm.cmpxchg %p, %c, %n acquire acquire : !llvm.ptr, $mlir
-              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+                %s = llvm.cmpxchg %p, %c, %n acquire acquire : !llvm.ptr, $mlir
+                %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::AcqRel => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
-              %s = llvm.cmpxchg %p, %c, %n acq_rel acquire : !llvm.ptr, $mlir
-              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+                %s = llvm.cmpxchg %p, %c, %n acq_rel acquire : !llvm.ptr, $mlir
+                %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+                macro.yield %r : $mlir
+              } };
           }
           AtomicOrdering::SeqCst => {
-            return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
-              %s = llvm.cmpxchg %p, %c, %n seq_cst seq_cst : !llvm.ptr, $mlir
-              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-              macro.yield %r : $mlir
-            };
+            return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["llvm"]) {
+                %s = llvm.cmpxchg %p, %c, %n seq_cst seq_cst : !llvm.ptr, $mlir
+                %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+                macro.yield %r : $mlir
+              } };
           }
         }
       }
@@ -552,10 +552,10 @@ unsafe impl<T> Sync for AtomicPtr<T> {}
 
 /// Whether `a` and `b` hold the same address.
 fn core_atomic_ptr_eq<T>(a : *mut T, b : *mut T) -> bool {
-  return mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : bool, dialects : ["llvm"]) {
-    %r = llvm.icmp "eq" %a, %b : !llvm.ptr
-    macro.yield %r : i1
-  };
+  return unsafe { mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : bool, dialects : ["llvm"]) {
+      %r = llvm.icmp "eq" %a, %b : !llvm.ptr
+      macro.yield %r : i1
+    } };
 }
 
 impl<T> AtomicPtr<T> {
@@ -586,28 +586,28 @@ impl<T> AtomicPtr<T> {
     assert(core_atomic_load_order_ok(order), "load: the ordering cannot be Release or AcqRel");
     match order {
       AtomicOrdering::Relaxed => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %r = llvm.load %p atomic monotonic {
-            alignment = 8 : i64
-          } : !llvm.ptr -> !llvm.ptr
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %r = llvm.load %p atomic monotonic {
+              alignment = 8 : i64
+            } : !llvm.ptr -> !llvm.ptr
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::Acquire => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %r = llvm.load %p atomic acquire {
-            alignment = 8 : i64
-          } : !llvm.ptr -> !llvm.ptr
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %r = llvm.load %p atomic acquire {
+              alignment = 8 : i64
+            } : !llvm.ptr -> !llvm.ptr
+            macro.yield %r : !llvm.ptr
+          } };
       }
       _ => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %r = llvm.load %p atomic seq_cst {
-            alignment = 8 : i64
-          } : !llvm.ptr -> !llvm.ptr
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %r = llvm.load %p atomic seq_cst {
+              alignment = 8 : i64
+            } : !llvm.ptr -> !llvm.ptr
+            macro.yield %r : !llvm.ptr
+          } };
       }
     }
   }
@@ -617,28 +617,28 @@ impl<T> AtomicPtr<T> {
     assert(core_atomic_store_order_ok(order), "store: the ordering cannot be Acquire or AcqRel");
     match order {
       AtomicOrdering::Relaxed => {
-        mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), dialects : ["llvm"]) {
-          llvm.store %x, %p atomic monotonic {
-            alignment = 8 : i64
-          } : !llvm.ptr, !llvm.ptr
-          macro.yield
-        };
+        unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), dialects : ["llvm"]) {
+            llvm.store %x, %p atomic monotonic {
+              alignment = 8 : i64
+            } : !llvm.ptr, !llvm.ptr
+            macro.yield
+          } };
       }
       AtomicOrdering::Release => {
-        mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), dialects : ["llvm"]) {
-          llvm.store %x, %p atomic release {
-            alignment = 8 : i64
-          } : !llvm.ptr, !llvm.ptr
-          macro.yield
-        };
+        unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), dialects : ["llvm"]) {
+            llvm.store %x, %p atomic release {
+              alignment = 8 : i64
+            } : !llvm.ptr, !llvm.ptr
+            macro.yield
+          } };
       }
       _ => {
-        mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), dialects : ["llvm"]) {
-          llvm.store %x, %p atomic seq_cst {
-            alignment = 8 : i64
-          } : !llvm.ptr, !llvm.ptr
-          macro.yield
-        };
+        unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), dialects : ["llvm"]) {
+            llvm.store %x, %p atomic seq_cst {
+              alignment = 8 : i64
+            } : !llvm.ptr, !llvm.ptr
+            macro.yield
+          } };
       }
     }
     // A `match` ending a function counts as its result; this keeps it a statement.
@@ -649,34 +649,34 @@ impl<T> AtomicPtr<T> {
   fn swap(self : &AtomicPtr<T>, p : *mut T, order : AtomicOrdering) -> *mut T {
     match order {
       AtomicOrdering::Relaxed => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %r = llvm.atomicrmw xchg %p, %x monotonic : !llvm.ptr, !llvm.ptr
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %r = llvm.atomicrmw xchg %p, %x monotonic : !llvm.ptr, !llvm.ptr
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::Release => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %r = llvm.atomicrmw xchg %p, %x release : !llvm.ptr, !llvm.ptr
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %r = llvm.atomicrmw xchg %p, %x release : !llvm.ptr, !llvm.ptr
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::Acquire => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %r = llvm.atomicrmw xchg %p, %x acquire : !llvm.ptr, !llvm.ptr
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %r = llvm.atomicrmw xchg %p, %x acquire : !llvm.ptr, !llvm.ptr
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::AcqRel => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %r = llvm.atomicrmw xchg %p, %x acq_rel : !llvm.ptr, !llvm.ptr
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %r = llvm.atomicrmw xchg %p, %x acq_rel : !llvm.ptr, !llvm.ptr
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::SeqCst => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %r = llvm.atomicrmw xchg %p, %x seq_cst : !llvm.ptr, !llvm.ptr
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %x = p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %r = llvm.atomicrmw xchg %p, %x seq_cst : !llvm.ptr, !llvm.ptr
+            macro.yield %r : !llvm.ptr
+          } };
       }
     }
   }
@@ -701,39 +701,39 @@ impl<T> AtomicPtr<T> {
   fn core_atomic_cmpxchg(self : &AtomicPtr<T>, current : *mut T, new : *mut T, order : AtomicOrdering) -> *mut T {
     match order {
       AtomicOrdering::Relaxed => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %s = llvm.cmpxchg %p, %c, %n monotonic monotonic : !llvm.ptr, !llvm.ptr
-          %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %s = llvm.cmpxchg %p, %c, %n monotonic monotonic : !llvm.ptr, !llvm.ptr
+            %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::Release => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %s = llvm.cmpxchg %p, %c, %n release monotonic : !llvm.ptr, !llvm.ptr
-          %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %s = llvm.cmpxchg %p, %c, %n release monotonic : !llvm.ptr, !llvm.ptr
+            %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::Acquire => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %s = llvm.cmpxchg %p, %c, %n acquire acquire : !llvm.ptr, !llvm.ptr
-          %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %s = llvm.cmpxchg %p, %c, %n acquire acquire : !llvm.ptr, !llvm.ptr
+            %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::AcqRel => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %s = llvm.cmpxchg %p, %c, %n acq_rel acquire : !llvm.ptr, !llvm.ptr
-          %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %s = llvm.cmpxchg %p, %c, %n acq_rel acquire : !llvm.ptr, !llvm.ptr
+            %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
+            macro.yield %r : !llvm.ptr
+          } };
       }
       AtomicOrdering::SeqCst => {
-        return mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-          %s = llvm.cmpxchg %p, %c, %n seq_cst seq_cst : !llvm.ptr, !llvm.ptr
-          %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
-          macro.yield %r : !llvm.ptr
-        };
+        return unsafe { mlir!( inputs : (%p = self.v.get() : !llvm.ptr, %c = current : !llvm.ptr, %n = new : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+            %s = llvm.cmpxchg %p, %c, %n seq_cst seq_cst : !llvm.ptr, !llvm.ptr
+            %r = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i1)>
+            macro.yield %r : !llvm.ptr
+          } };
       }
     }
   }
@@ -759,28 +759,28 @@ fn fence(order : AtomicOrdering) -> void {
   assert(core_atomic_fence_order_ok(order), "fence: the ordering cannot be Relaxed");
   match order {
     AtomicOrdering::Release => {
-      mlir!( inputs : (), dialects : ["llvm"]) {
-        llvm.fence release
-        macro.yield
-      };
+      unsafe { mlir!( inputs : (), dialects : ["llvm"]) {
+          llvm.fence release
+          macro.yield
+        } };
     }
     AtomicOrdering::Acquire => {
-      mlir!( inputs : (), dialects : ["llvm"]) {
-        llvm.fence acquire
-        macro.yield
-      };
+      unsafe { mlir!( inputs : (), dialects : ["llvm"]) {
+          llvm.fence acquire
+          macro.yield
+        } };
     }
     AtomicOrdering::AcqRel => {
-      mlir!( inputs : (), dialects : ["llvm"]) {
-        llvm.fence acq_rel
-        macro.yield
-      };
+      unsafe { mlir!( inputs : (), dialects : ["llvm"]) {
+          llvm.fence acq_rel
+          macro.yield
+        } };
     }
     AtomicOrdering::SeqCst => {
-      mlir!( inputs : (), dialects : ["llvm"]) {
-        llvm.fence seq_cst
-        macro.yield
-      };
+      unsafe { mlir!( inputs : (), dialects : ["llvm"]) {
+          llvm.fence seq_cst
+          macro.yield
+        } };
     }
     AtomicOrdering::Relaxed => {}
   }
@@ -810,28 +810,28 @@ ensures writes_only()
     FenceScope::Block => {
       match order {
         AtomicOrdering::Release => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence syncscope("block") release
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence syncscope("block") release
+              macro.yield
+            } };
         }
         AtomicOrdering::Acquire => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence syncscope("block") acquire
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence syncscope("block") acquire
+              macro.yield
+            } };
         }
         AtomicOrdering::AcqRel => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence syncscope("block") acq_rel
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence syncscope("block") acq_rel
+              macro.yield
+            } };
         }
         AtomicOrdering::SeqCst => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence syncscope("block") seq_cst
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence syncscope("block") seq_cst
+              macro.yield
+            } };
         }
         AtomicOrdering::Relaxed => {}
       }
@@ -839,28 +839,28 @@ ensures writes_only()
     FenceScope::Device => {
       match order {
         AtomicOrdering::Release => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence syncscope("device") release
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence syncscope("device") release
+              macro.yield
+            } };
         }
         AtomicOrdering::Acquire => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence syncscope("device") acquire
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence syncscope("device") acquire
+              macro.yield
+            } };
         }
         AtomicOrdering::AcqRel => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence syncscope("device") acq_rel
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence syncscope("device") acq_rel
+              macro.yield
+            } };
         }
         AtomicOrdering::SeqCst => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence syncscope("device") seq_cst
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence syncscope("device") seq_cst
+              macro.yield
+            } };
         }
         AtomicOrdering::Relaxed => {}
       }
@@ -868,28 +868,28 @@ ensures writes_only()
     FenceScope::System => {
       match order {
         AtomicOrdering::Release => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence release
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence release
+              macro.yield
+            } };
         }
         AtomicOrdering::Acquire => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence acquire
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence acquire
+              macro.yield
+            } };
         }
         AtomicOrdering::AcqRel => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence acq_rel
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence acq_rel
+              macro.yield
+            } };
         }
         AtomicOrdering::SeqCst => {
-          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
-            llvm.fence seq_cst
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+              llvm.fence seq_cst
+              macro.yield
+            } };
         }
         AtomicOrdering::Relaxed => {}
       }
@@ -904,28 +904,28 @@ fn compiler_fence(order : AtomicOrdering) -> void {
   assert(core_atomic_fence_order_ok(order), "compiler_fence: the ordering cannot be Relaxed");
   match order {
     AtomicOrdering::Release => {
-      mlir!( inputs : (), dialects : ["llvm"]) {
-        llvm.fence syncscope("singlethread") release
-        macro.yield
-      };
+      unsafe { mlir!( inputs : (), dialects : ["llvm"]) {
+          llvm.fence syncscope("singlethread") release
+          macro.yield
+        } };
     }
     AtomicOrdering::Acquire => {
-      mlir!( inputs : (), dialects : ["llvm"]) {
-        llvm.fence syncscope("singlethread") acquire
-        macro.yield
-      };
+      unsafe { mlir!( inputs : (), dialects : ["llvm"]) {
+          llvm.fence syncscope("singlethread") acquire
+          macro.yield
+        } };
     }
     AtomicOrdering::AcqRel => {
-      mlir!( inputs : (), dialects : ["llvm"]) {
-        llvm.fence syncscope("singlethread") acq_rel
-        macro.yield
-      };
+      unsafe { mlir!( inputs : (), dialects : ["llvm"]) {
+          llvm.fence syncscope("singlethread") acq_rel
+          macro.yield
+        } };
     }
     AtomicOrdering::SeqCst => {
-      mlir!( inputs : (), dialects : ["llvm"]) {
-        llvm.fence syncscope("singlethread") seq_cst
-        macro.yield
-      };
+      unsafe { mlir!( inputs : (), dialects : ["llvm"]) {
+          llvm.fence syncscope("singlethread") seq_cst
+          macro.yield
+        } };
     }
     AtomicOrdering::Relaxed => {}
   }
@@ -951,12 +951,12 @@ macro_rules stamp_element_atomics {
     fn $len<M : Memory, D : Topology>(t : &Tensor<$t, [?], Memory::M>) on Topology::D -> i32
     ensures atomic(t)
     {
-      return mlir!( inputs : (%t = t : memref<?x$mlir>), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
-        %c0 = arith.constant 0 : index
-        %d = memref.dim %t, %c0 : memref<?x$mlir>
-        %n = arith.index_cast %d : index to i32
-        macro.yield %n : i32
-      };
+      return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
+          %c0 = arith.constant 0 : index
+          %d = memref.dim %t, %c0 : memref<?x$mlir>
+          %n = arith.index_cast %d : index to i32
+          macro.yield %n : i32
+        } };
     }
 
     /// Reads `t[i]`. `order` cannot be `Release` or `AcqRel`.
@@ -967,52 +967,52 @@ macro_rules stamp_element_atomics {
       assert(core_atomic_load_order_ok(order), "atomic load: the ordering cannot be Release or AcqRel");
       match order {
         AtomicOrdering::Relaxed => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %r = llvm.load %p atomic monotonic {
-              alignment = $align : i64
-            } : !llvm.ptr -> $mlir
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %r = llvm.load %p atomic monotonic {
+                alignment = $align : i64
+              } : !llvm.ptr -> $mlir
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::Acquire => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %r = llvm.load %p atomic acquire {
-              alignment = $align : i64
-            } : !llvm.ptr -> $mlir
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %r = llvm.load %p atomic acquire {
+                alignment = $align : i64
+              } : !llvm.ptr -> $mlir
+              macro.yield %r : $mlir
+            } };
         }
         _ => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %r = llvm.load %p atomic seq_cst {
-              alignment = $align : i64
-            } : !llvm.ptr -> $mlir
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %r = llvm.load %p atomic seq_cst {
+                alignment = $align : i64
+              } : !llvm.ptr -> $mlir
+              macro.yield %r : $mlir
+            } };
         }
       }
     }
@@ -1025,52 +1025,52 @@ macro_rules stamp_element_atomics {
       assert(core_atomic_store_order_ok(order), "atomic store: the ordering cannot be Acquire or AcqRel");
       match order {
         AtomicOrdering::Relaxed => {
-          mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            llvm.store %x, %p atomic monotonic {
-              alignment = $align : i64
-            } : $mlir, !llvm.ptr
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              llvm.store %x, %p atomic monotonic {
+                alignment = $align : i64
+              } : $mlir, !llvm.ptr
+              macro.yield
+            } };
         }
         AtomicOrdering::Release => {
-          mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            llvm.store %x, %p atomic release {
-              alignment = $align : i64
-            } : $mlir, !llvm.ptr
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              llvm.store %x, %p atomic release {
+                alignment = $align : i64
+              } : $mlir, !llvm.ptr
+              macro.yield
+            } };
         }
         _ => {
-          mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            llvm.store %x, %p atomic seq_cst {
-              alignment = $align : i64
-            } : $mlir, !llvm.ptr
-            macro.yield
-          };
+          unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              llvm.store %x, %p atomic seq_cst {
+                alignment = $align : i64
+              } : $mlir, !llvm.ptr
+              macro.yield
+            } };
         }
       }
       // A `match` ending a function counts as its result. This keeps it a statement.
@@ -1090,79 +1090,79 @@ macro_rules stamp_element_cas {
       assert(i >= 0 && i < $len(t), "atomic compare_and_swap: the index is outside the tensor");
       match order {
         AtomicOrdering::Relaxed => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %s = llvm.cmpxchg %p, %c, %n monotonic monotonic : !llvm.ptr, $mlir
-            %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %s = llvm.cmpxchg %p, %c, %n monotonic monotonic : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::Release => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %s = llvm.cmpxchg %p, %c, %n release monotonic : !llvm.ptr, $mlir
-            %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %s = llvm.cmpxchg %p, %c, %n release monotonic : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::Acquire => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %s = llvm.cmpxchg %p, %c, %n acquire acquire : !llvm.ptr, $mlir
-            %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %s = llvm.cmpxchg %p, %c, %n acquire acquire : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::AcqRel => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %s = llvm.cmpxchg %p, %c, %n acq_rel acquire : !llvm.ptr, $mlir
-            %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %s = llvm.cmpxchg %p, %c, %n acq_rel acquire : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::SeqCst => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %s = llvm.cmpxchg %p, %c, %n seq_cst seq_cst : !llvm.ptr, $mlir
-            %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %c = current : $mlir, %n = new : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %s = llvm.cmpxchg %p, %c, %n seq_cst seq_cst : !llvm.ptr, $mlir
+              %r = llvm.extractvalue %s[0] : !llvm.struct<($mlir, i1)>
+              macro.yield %r : $mlir
+            } };
         }
       }
     }
@@ -1179,74 +1179,74 @@ macro_rules stamp_element_rmw {
       assert(i >= 0 && i < $len(t), "atomic read-modify-write: the index is outside the tensor");
       match order {
         AtomicOrdering::Relaxed => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %r = llvm.atomicrmw $op %p, %x monotonic : !llvm.ptr, $mlir
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %r = llvm.atomicrmw $op %p, %x monotonic : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::Release => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %r = llvm.atomicrmw $op %p, %x release : !llvm.ptr, $mlir
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %r = llvm.atomicrmw $op %p, %x release : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::Acquire => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %r = llvm.atomicrmw $op %p, %x acquire : !llvm.ptr, $mlir
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %r = llvm.atomicrmw $op %p, %x acquire : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::AcqRel => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %r = llvm.atomicrmw $op %p, %x acq_rel : !llvm.ptr, $mlir
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %r = llvm.atomicrmw $op %p, %x acq_rel : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            } };
         }
         AtomicOrdering::SeqCst => {
-          return mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
-            %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
-            %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
-            %ai = arith.index_cast %a : index to i64
-            %base = llvm.inttoptr %ai : i64 to !llvm.ptr
-            %oi = arith.index_cast %off : index to i64
-            %i64 = arith.extsi %i : i32 to i64
-            %k = arith.addi %oi, %i64 : i64
-            %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
-            %r = llvm.atomicrmw $op %p, %x seq_cst : !llvm.ptr, $mlir
-            macro.yield %r : $mlir
-          };
+          return unsafe { mlir!( inputs : (%t = t : memref<?x$mlir>, %i = i : i32, %x = val : $mlir), returns : $t, dialects : ["memref", "arith", "llvm"], ensures : [atomic(t)]) {
+              %a = memref.extract_aligned_pointer_as_index %t : memref<?x$mlir> -> index
+              %b, %off, %sz, %st = memref.extract_strided_metadata %t : memref<?x$mlir> -> memref<$mlir>, index, index, index
+              %ai = arith.index_cast %a : index to i64
+              %base = llvm.inttoptr %ai : i64 to !llvm.ptr
+              %oi = arith.index_cast %off : index to i64
+              %i64 = arith.extsi %i : i32 to i64
+              %k = arith.addi %oi, %i64 : i64
+              %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -> !llvm.ptr, $mlir
+              %r = llvm.atomicrmw $op %p, %x seq_cst : !llvm.ptr, $mlir
+              macro.yield %r : $mlir
+            } };
         }
       }
     }

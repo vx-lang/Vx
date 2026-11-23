@@ -878,6 +878,12 @@ pub enum DiagnosticCode {
     /// `safe` function needs no `unsafe`. So C code could return or change such a value with no
     /// mark in the program. Remove `safe`, so that each call is in an `unsafe` block.
     E8015,
+    /// An `mlir!` block outside `unsafe` that the compiler cannot verify as safe. The compiler
+    /// verifies a block whose operations are on a list of `arith` and `math` operations that give
+    /// a defined result for every input, with no `overflow` or `fastmath` flags, and that takes
+    /// and gives only numbers. Any other block goes in `unsafe { }`, because the compiler does not
+    /// verify what its operations do.
+    E8016,
 }
 
 impl std::fmt::Display for DiagnosticCode {
