@@ -318,8 +318,8 @@ impl FnEmit<'_> {
                     })
                 }
             };
-            let xa = widen(xa, &ea, &sa)?;
-            let xb = widen(xb, &eb, &sb)?;
+            let xa = widen(xa, &ea, sa)?;
+            let xb = widen(xb, &eb, sb)?;
             let r = format!("%ewr{idx}");
             self.body += &format!("    {r} = {op} {xa}, {xb} : {et}\n");
             self.body += &format!("    linalg.yield {r} : {et}\n  }}\n");
