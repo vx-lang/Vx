@@ -861,8 +861,9 @@ impl Proof<'_> {
                             });
                         format!(
                             "the call to `{}` writes memory that another pass can see, or the \
-                             compiler cannot show that it writes only its own variables. Write \
-                             its work in the loop",
+                             compiler cannot show that it writes only its own variables. If it \
+                             writes no memory, say `ensures writes_only()`. Write its work in \
+                             the loop",
                             name
                         )
                     };

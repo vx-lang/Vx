@@ -19,15 +19,16 @@
 // RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=SPLIT --implicit-check-not=Error
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=SERIAL --implicit-check-not=Error
 
-// SPLIT-DAG: func.func @exp_helper{{.*}}(%arg0: f32) -> f32
-// SPLIT-DAG: func.call @exp_helper
-// SPLIT-DAG: } {topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}
-// SPLIT-DAG: func.func @quiet_through_a_helper{{.*}}() -> f32
+// SPLIT: func.func @quiet_through_a_helper{{.*}}() -> f32
+// SPLIT-LABEL: func.func @fill_with_exp_helper
+// SPLIT: vx.spawn topology(500) {
+// SPLIT: func.call @exp_helper
+// SPLIT: } {arch = "nvptx64", topology_name = "GPU[0]", {{.*}}vx_parallel_trip = 64 : i64}
 
 // SERIAL-LABEL: func.func @fill_through_a_writer
 // SERIAL: vx.spawn topology(500) {
 // SERIAL: func.call @add_through_a_tensor
-// SERIAL: } {topology_name = "GPU[0]"}
+// SERIAL: } {arch = "nvptx64", topology_name = "GPU[0]", {{.*}}}
 
 fn exp_helper(x : f32) on Topology::Any -> f32 {
   return mlir!( inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
