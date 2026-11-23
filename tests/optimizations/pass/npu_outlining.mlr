@@ -3,7 +3,7 @@
 // The spawn region is outlined: its body moves into a `vx.kernel` that carries the topology,
 // and the site it left becomes a `vx.launch` naming that kernel.
 // CHECK-LABEL: func.func @test_gpu_lowering() {
-// CHECK-NEXT: vx.launch @[[K:[a-z0-9_]+]]() {topology = 100 : i32} : () -> ()
+// CHECK-NEXT: vx.launch @[[K:[a-z0-9_]+]]() {topology = 100 : i32, vx.source_function = "test_gpu_lowering", vx.source_line = "{{.*}}npu_outlining.mlr:16"} : () -> ()
 // CHECK-NEXT: return
 // CHECK: vx.kernel @[[K]](100) : () -> () {
 // CHECK-NEXT: func.call @dummy() : () -> ()

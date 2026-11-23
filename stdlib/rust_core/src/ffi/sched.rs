@@ -61,6 +61,7 @@ pub(crate) struct TaskLocals {
     pub(crate) to_stderr: bool,
     pub(crate) site: Option<crate::ffi::tasks::Site>,
     pub(crate) cancels: u32,
+    pub(crate) select_turn: i64,
 }
 
 impl TaskLocals {
@@ -70,6 +71,7 @@ impl TaskLocals {
         lines::swap_with_thread(&mut self.line, &mut self.to_stderr);
         crate::ffi::tasks::swap_site(&mut self.site);
         crate::ffi::tasks::swap_cancels(&mut self.cancels);
+        crate::ffi::wait::swap_select_turn(&mut self.select_turn);
     }
 }
 

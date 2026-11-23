@@ -152,6 +152,21 @@ fn run_frontend_on(
     timed("macro_expand", || {
         macro_expansion_phase(&mut modules, sched)
     })?;
+    // Trusted code in a package that `--no-trusted-code` names. After expansion, so the code
+    // that a macro writes counts too.
+    let refused: Vec<_> = modules
+        .iter()
+        .flat_map(crate::hir::check::audit::refused_trusted_code)
+        .collect();
+    if !refused.is_empty() {
+        for d in &refused {
+            eprintln!("{d}");
+        }
+        return Err(PipelineError::Failed {
+            count: refused.len(),
+            in_declarations: true,
+        });
+    }
     // Every function names its file, so a diagnostic found while checking it names the file
     // too, wherever the check runs from. A struct names its file, because only that file can
     // change the fields of a type with an invariant. After expansion, which adds functions.

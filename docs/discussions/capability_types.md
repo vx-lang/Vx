@@ -94,12 +94,13 @@ and a review reads each of them.
 
 Two tools keep the trusted code small and easy to find:
 
-- A package setting that refuses `unsafe`, `extern impl`, `mlir!` and `extern` in the package, as
-  `#![forbid(unsafe_code)]` does in Rust. A dependency then cannot add trusted code without a
-  change to its manifest.
-- `vxc --audit` lists each use of `unsafe`, `extern impl`, `mlir!` and `extern`, with its file and
-  line. Today it lists the facts that the compiler trusts, such as each `assume`, but not each
-  use.
+- `vxc --no-trusted-code NAME` refuses `unsafe`, `extern impl`, `unsafe impl`, `mlir!` and `extern`
+  in the package `NAME`, as `#![forbid(unsafe_code)]` does in Rust. The program that uses the
+  package gives the flag, so a new version of the package cannot add trusted code without an
+  error.
+- `vxc --audit` lists each use of `unsafe`, `extern impl`, `mlir!` and `extern` in the program,
+  with its file and line. For `core` and `std`, it gives only the counts, and
+  `vxc --audit-library` lists them too.
 
 ## 5. No ambient authority
 
@@ -155,7 +156,7 @@ no global fact depend on a function body. Each new check reads one declaration:
 - #3747 reads one `mlir!` block and the type that it returns.
 - #3748 reads one `extern` declaration.
 - #3751 reads the body of the closure, in the function that makes it.
-- The package setting reads the manifest, and each file on its own.
+- `--no-trusted-code` reads each file of the package on its own, after macro expansion.
 - A capability parameter is an ordinary parameter. A signature is the whole contract, so a caller
   sees from it which capabilities a function needs.
 
@@ -163,7 +164,8 @@ no global fact depend on a function body. Each new check reads one declaration:
 
 1. How does `main` get the root capabilities: as a parameter, as in Austral, or from a call that
    only the module of `main` can make?
-1. Is the package setting a field of the manifest, or a line at the top of each file?
+1. The package setting is a flag of `vxc`, because Vx has no manifest yet. Does it move into a
+   manifest when Vx gets one?
 1. What is the type of a parameter that takes a closure that runs once (#3751)?
 1. Does a test get root capabilities, and which ones?
 

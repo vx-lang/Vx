@@ -203,12 +203,12 @@ impl<'a> Parser<'a> {
 
         let mut requires = Vec::new();
         while self.match_token(&TokenType::Requires) {
-            requires.push(self.parse_expr()?);
+            requires.push(self.parse_expr_before_block()?);
         }
 
         let mut ensures = Vec::new();
         while self.match_token(&TokenType::Ensures) {
-            ensures.push(self.parse_expr()?);
+            ensures.push(self.parse_expr_before_block()?);
         }
 
         // `where Reachable<A, B> [, Reachable<C, D>]*` -- topology transfer constraints.
@@ -1357,6 +1357,7 @@ impl<'a> Parser<'a> {
                     length: 0,
                     expansion: self.expansion(),
                 },
+                file: None,
                 doc_comment,
             });
         }
@@ -1425,7 +1426,7 @@ impl<'a> Parser<'a> {
             let return_type = self.parse_return_type()?;
             let mut ensures = Vec::new();
             while self.match_token(&TokenType::Ensures) {
-                ensures.push(self.parse_expr()?);
+                ensures.push(self.parse_expr_before_block()?);
             }
             // A trait method is either a requirement, ending in `;`, or a default, whose body
             // an impl inherits unless it writes its own.
@@ -1509,9 +1510,11 @@ impl<'a> Parser<'a> {
         // if we see `Identifier` followed by `for`, it's a trait. Otherwise it's a type.
         // Note: parse_type handles `Struct(name)`, which is an identifier!
         // We can just peek ahead.
+        let mut target_token = self.peek().clone();
         let parsed_type = self.parse_type()?;
         let target_type = if self.check(&TokenType::For) {
             self.advance(); // consume 'for'
+            target_token = self.peek().clone();
             if let Type::Struct(name, _) = parsed_type {
                 trait_name = Some(name);
             } else if let Type::GenericInstance(inner, args) = parsed_type {
@@ -1528,6 +1531,22 @@ impl<'a> Parser<'a> {
         } else {
             parsed_type
         };
+        // No method call finds a method of an impl for `&T` or `*mut T`.
+        if let Type::Borrow { inner, .. } | Type::Ref(inner, _) | Type::Pointer(inner, ..) =
+            &target_type
+        {
+            let header = match &trait_name {
+                Some(t) => format!("impl {t} for {inner}"),
+                None => format!("impl {inner}"),
+            };
+            return Err(self.error_at(
+                &target_token,
+                &format!(
+                    "an impl is for a type, not for a reference or a raw pointer to it. Write \
+                     `{header}`"
+                ),
+            ));
+        }
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
         let outer_self = self.impl_self.replace(target_type.clone());
@@ -1983,6 +2002,7 @@ impl<'a> Parser<'a> {
             memories,
             transfer_impls,
             macro_call_sites: Vec::new(),
+            no_trusted_code: None,
         })
     }
 

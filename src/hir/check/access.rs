@@ -800,7 +800,12 @@ impl<'a> TypeChecker<'a> {
     /// `*p` or `p[i]` read by value through a raw pointer: the value stays with its owner, so
     /// moving it out would drop it twice. An `unsafe fn` such as `core::ptr::read` may, for its
     /// caller.
-    fn refuse_move_through_raw_pointer(&mut self, inner: &Type, consume: bool, span: &Span) {
+    pub(crate) fn refuse_move_through_raw_pointer(
+        &mut self,
+        inner: &Type,
+        consume: bool,
+        span: &Span,
+    ) {
         if !consume
             || self.checking_assign_lhs
             || self.speculating
@@ -823,7 +828,7 @@ impl<'a> TypeChecker<'a> {
     /// A raw-pointer access needs an unsafe context: nothing here knows the address is valid,
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
-    fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
+    pub(crate) fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
         if !self.unsafe_is_missing() {
             return;
         }

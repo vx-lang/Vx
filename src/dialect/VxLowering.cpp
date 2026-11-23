@@ -932,6 +932,36 @@ static void addLaneCopyTensorMaps(PatternRewriter &rewriter, Operation *spawn,
   }
 }
 
+// "file:line" of a `spawn`, or "" when the line is not known. Both code
+// generators put the line in `vx.line` and the file of the function in
+// `vx.file`. A `spawn` in an MLIR file has them in its location. The file of
+// the module is the last choice.
+static std::string sourceLineOf(Operation *op) {
+  int64_t line = 0;
+  StringRef file;
+  if (auto attr = op->getAttrOfType<IntegerAttr>("vx.line"))
+    line = attr.getInt();
+  if (auto attr = op->getAttrOfType<StringAttr>("vx.file"))
+    file = attr.getValue();
+  op->getLoc()->walk([&](Location loc) {
+    auto at = dyn_cast<FileLineColLoc>(loc);
+    if (!at || at.getFilename().getValue() == "-")
+      return WalkResult::advance();
+    if (line == 0)
+      line = at.getLine();
+    if (file.empty())
+      file = at.getFilename().getValue();
+    return WalkResult::interrupt();
+  });
+  if (file.empty())
+    if (auto module = op->getParentOfType<ModuleOp>())
+      if (auto attr = module->getAttrOfType<StringAttr>("vx.source"))
+        file = attr.getValue();
+  if (line == 0)
+    return "";
+  return file.empty() ? std::to_string(line) : (file + ":" + Twine(line)).str();
+}
+
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   using OpRewritePattern<SpawnOp>::OpRewritePattern;
 
@@ -1344,6 +1374,14 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         op.getLoc(), resultTypes,
         SymbolRefAttr::get(rewriter.getContext(), funcName),
         rewriter.getI32IntegerAttr(topology), launchOperands);
+
+    // The function that holds the `spawn`, and its file and line, for the
+    // errors of the runtime. An inlining copies the launch into callers later,
+    // so a copy still names the function that the programmer wrote it in.
+    if (parentFunc)
+      launchOp->setAttr("vx.source_function", parentFunc.getSymNameAttr());
+    if (std::string at = sourceLineOf(op); !at.empty())
+      launchOp->setAttr("vx.source_line", rewriter.getStringAttr(at));
 
     // Carried on the launch as well as the kernel: the launch is what lowers to
     // the dispatch call, so this is where the fact has to be to reach a plugin.
@@ -9935,6 +9973,17 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // produce confidently wrong numbers instead of slow right ones.
     if (op->hasAttr("vx_parallel_coop")) {
       payload += "coop=1";
+      payload.push_back('\0');
+    }
+
+    // The Vx function and the line of the `spawn`, which a runtime error names
+    // next to the kernel (vx_kernel_label).
+    if (auto function = op->getAttrOfType<StringAttr>("vx.source_function")) {
+      payload += "function=" + function.getValue().str();
+      payload.push_back('\0');
+    }
+    if (auto at = op->getAttrOfType<StringAttr>("vx.source_line")) {
+      payload += "source=" + at.getValue().str();
       payload.push_back('\0');
     }
 

@@ -173,11 +173,14 @@ module can read each field. It cannot do these things (`E8014`):
 - take a `&mut` to a field
 - call a method that takes `&mut self` on a field
 - move a field out of the value
-- build the type with a struct literal
+- make a value of the type with a struct literal or an `mlir!` block
 
 It calls a function of the module instead. For example, `Vec` has an invariant, so `v.len = 5` is an
 error outside `std::vec`. Code in another module can still assign a whole value, as in
 `v = Vec::new()`.
+
+A `safe` extern function cannot return a value of such a type, or take a `&mut` or a `*mut` to such
+a value (`E8015`). C code does not keep the invariant. Without `safe`, each call is in an `unsafe` block.
 
 The prover does not check the invariant yet, so the module of the type must keep it true. Later,
 each use of the type will get the invariant as a fact

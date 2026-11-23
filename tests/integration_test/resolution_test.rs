@@ -385,6 +385,7 @@ fn test_local_name_resolution() -> Result<(), String> {
         memories: vec![],
         transfer_impls: Vec::new(),
         macro_call_sites: Vec::new(),
+        no_trusted_code: None,
         externs: vec![],
         structs: vec![StructDecl {
             name: "Vector".into(),
@@ -461,6 +462,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
         memories: vec![],
         transfer_impls: Vec::new(),
         macro_call_sites: Vec::new(),
+        no_trusted_code: None,
         externs: vec![],
         structs: vec![], // Empty structs, "Vector" does not exist!
         enums: vec![],
@@ -515,6 +517,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
         memories: vec![],
         transfer_impls: Vec::new(),
         macro_call_sites: Vec::new(),
+        no_trusted_code: None,
         externs: vec![],
         structs: vec![StructDecl {
             name: "Matrix".into(),
@@ -589,6 +592,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         memories: vec![],
         transfer_impls: Vec::new(),
         macro_call_sites: Vec::new(),
+        no_trusted_code: None,
         externs: vec![],
         structs: vec![StructDecl {
             name: "Config".into(),

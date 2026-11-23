@@ -177,6 +177,45 @@ Vec<T> {
     return 0;
   }
 
+  /// A vector of `len` elements whose bytes are all zero, made with one allocation and one fill.
+  ///
+  /// Unsafe because all-zero bytes must be a valid `T`. They are for a number, but not for a type
+  /// that holds a reference.
+  unsafe fn zeroed(len : i32) -> Vec<T> {
+    let mut v = Vec<T>::with_capacity(len);
+    unsafe { write_bytes(v.data, 0u8, len as usize); }
+    v.len = len;
+    return v;
+  }
+
+  /// Copy `count` values from `src` to the end of the vector in one copy. The buffer grows at
+  /// most once.
+  ///
+  /// Unsafe because `src` must have `count` values to read, outside this vector. The vector gets
+  /// copies of their bits, so for a type that is not `Copy`, the caller must not drop the
+  /// originals.
+  unsafe fn extend_from_raw(self : &mut Vec<T>, src : *const T, count : i32) -> i32 {
+    let needed = (self.len as i64) + (count as i64);
+    if count < 0 || needed > 2147483647i64 {
+      panic("Vec: extend_from_raw got a negative count, or a length that does not fit in an i32");
+    }
+    if needed > self.capacity as i64 {
+      let doubled = (self.capacity as i64) * 2;
+      let mut new_cap = needed;
+      if doubled > needed && doubled <= 2147483647i64 {
+        new_cap = doubled;
+      }
+      let ptr : *mut i8 = self.data;
+      self.data = vec_grow(ptr, self.capacity as i64, new_cap, sizeof<T>());
+      self.capacity = new_cap as i32;
+    }
+    unsafe {
+      copy_nonoverlapping(src, add_mut(self.data, self.len as usize), count as usize);
+    }
+    self.len = needed as i32;
+    return 0;
+  }
+
   /// A reference to the element at `index`. `v[i]` reads through this when the element type
   /// is not `Copy`.
   ///

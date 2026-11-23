@@ -186,6 +186,8 @@ pub struct ExternDecl {
     pub ensures: Vec<crate::syntax::Expr>,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.
     pub span: Span,
+    /// The file of the declaration, set as for the other items.
+    pub file: Option<Symbol>,
     /// The `///` lines above the declaration. Six library modules are nothing but an extern
     /// block, so without this they had no way to say what their functions do.
     pub doc_comment: Option<String>,
@@ -509,6 +511,9 @@ pub struct Program {
     /// it wrote. It is the macro call when another module declares the macro, because the
     /// places in that code are in the other file. `None` keeps the places in the code.
     pub macro_call_sites: Vec<Option<crate::syntax::Span>>,
+    /// The package of this module, when `vxc --no-trusted-code` names it. Trusted code in the
+    /// module is then an error.
+    pub no_trusted_code: Option<Symbol>,
 }
 
 pub type VxModule = Program;
@@ -541,6 +546,9 @@ impl Program {
         let places = places.chain(self.transfer_impls.iter_mut().map(|t| &mut t.place));
         for place in places {
             place.file = file.clone();
+        }
+        for ext in &mut self.externs {
+            ext.file = file.clone();
         }
     }
 
@@ -587,6 +595,7 @@ impl Program {
                 })
                 .collect(),
             macro_call_sites: self.macro_call_sites.clone(),
+            no_trusted_code: self.no_trusted_code.clone(),
         }
     }
 }

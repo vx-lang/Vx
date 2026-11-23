@@ -27,6 +27,8 @@ lists what to change. Each item shows the Rust form and the Vx form.
 - **No `async`, and no tokio.** A `tasks` block and `spawn` start tasks, and a function that waits
   is a normal function. [Writing parallel code](writing-parallel-code.md) maps tokio to Vx.
 - **No `impl Trait` parameters.** `fn show(g : &impl Area)` is `fn show<T : Area>(g : &T)`.
+- **An impl is for the type itself.** `impl Area for &Rect` and `impl Area for *const Rect` are
+  errors. Write `impl Area for Rect`.
 
 ## Types and values
 

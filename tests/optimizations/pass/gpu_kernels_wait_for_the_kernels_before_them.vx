@@ -92,7 +92,7 @@
 // OFF: ld.global.nc
 // OFF-JSON: "name": "normalize",
 
-// OFF-PAYLOAD-COUNT-3: host_blocks=1\00format=ptx
+// OFF-PAYLOAD-COUNT-3: host_blocks=1\00function={{[a-z_]+}}\00source={{[^\]*}}\00format=ptx
 
 pub fn normalize(o : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>,
 rows : i32, cols : i32) -> void {

@@ -1,6 +1,7 @@
 # One `select` for channels, sockets, timers and tokens
 
-Issue #3414, part of #3413. This is a design for review. No code comes before the review.
+Issue #3414, part of #3413. The review took the recommended answer of each question in section 10.
+Stage 1 of section 9 is in `stdlib/std/sync/select.vx`.
 
 ## 1. The problem
 
@@ -24,14 +25,19 @@ let mut tick = Interval::every(Duration::from_secs(1));
 let mut jobs_open = true;
 loop {
   match select3(&when(jobs_open, &jobs), &listener, &tick) {
-    Result<i32, SelectError>::Ok(0) => {
-      match jobs.try_recv() {
-        Result<Job, TryRecvError>::Ok(job) => { run(job); }
-        Result<Job, TryRecvError>::Err(_) => { jobs_open = false; }
+    Result<i32, SelectError>::Ok(i) => {
+      if i == 0 {
+        match jobs.try_recv() {
+          Result<Job, TryRecvError>::Ok(job) => { run(job); }
+          Result<Job, TryRecvError>::Err(_) => { jobs_open = false; }
+        }
+      } else if i == 1 {
+        serve(listener.accept()?);
+      } else {
+        tick.next();
+        flush_log();
       }
     }
-    Result<i32, SelectError>::Ok(1) => { serve(listener.accept()?); }
-    Result<i32, SelectError>::Ok(_) => { tick.next(); flush_log(); }
     Result<i32, SelectError>::Err(_) => { break; } // the `tasks` block was cancelled
   }
 }
@@ -220,7 +226,11 @@ Step 3 closes the race between the first search and the watch. A source that get
 step 2 adds 1 to the word, and the wait of step 4 returns at once. The pair "the source changes
 its state and then reads `WATCHERS`", and "the select adds 1 to `WATCHERS` and then reads the
 state", is the store-buffering pattern. Both sides need `SeqCst`, as the channel needs today for
-`SLEEPERS` (see the header of `channel.vx`). A herd7 test checks it.
+`SLEEPERS` (see the header of `channel.vx`). A `send` fills its slot with only `Release`, so the
+check of a `Receiver` reads `WAKE` with `SeqCst` before the slot: the `notify` of the `send` adds
+to `WAKE` with `SeqCst`. Two herd7 tests check this.
+`select_watch_then_check_slot_only.litmus` shows the lost wake when the check reads only the slot,
+and `select_watch_then_check_seq_cst.litmus` shows that the read of `WAKE` prevents it.
 
 **Two sources get ready at once.** Both add 1 to the word. The fiber is on the list of one
 bucket, so the first `wake_all` removes it from the list, and the second finds nothing. The search

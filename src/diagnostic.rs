@@ -516,7 +516,8 @@ pub enum DiagnosticCode {
     E4007,
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
-    /// away. Copy or clone it instead. A `match` on a reference names parts of the value behind
+    /// away. Copy or clone it instead. A method that takes `self` by value, called as `r.f()`,
+    /// takes `*r` the same way. A `match` on a reference names parts of the value behind
     /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
     /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
     /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take
@@ -578,8 +579,15 @@ pub enum DiagnosticCode {
     /// hold whatever the memory held, so the program says with `unsafe` that it writes each one
     /// before reading it.
     E5001,
-    /// Unsafe memory operation outside unsafe block
+    /// An operation that only an `unsafe` block allows, outside one. An access through a raw
+    /// pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot
+    /// know that the value is still at the address. So is `assume`.
     E5002,
+    /// Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or
+    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`.
+    /// The program that uses the package gives the flag, so a new version of the package cannot
+    /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
+    E5003,
 
     // --- Topology/Hardware Errors (E6xxx) ---
     /// Topology mismatch in function call
@@ -861,10 +869,15 @@ pub enum DiagnosticCode {
     /// Code outside the module of a type with an invariant changes a field of the type. Only
     /// the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a
     /// field, call a method that takes `&mut self` on a field, move a field out of the value, or
-    /// build the type with a struct literal. Other code calls a function of the module to change
-    /// a value of the type. Then
-    /// the invariant holds for each value of the type outside its module.
+    /// make a value of the type with a struct literal or an `mlir!` block. Other code calls a
+    /// function of the module to change a value of the type. Then the invariant holds for each
+    /// value of the type outside its module.
     E8014,
+    /// A `safe` extern function that returns a value of a type with an invariant, or takes a
+    /// `&mut` or a `*mut` to such a value. C code does not keep the invariant, and a call of a
+    /// `safe` function needs no `unsafe`. So C code could return or change such a value with no
+    /// mark in the program. Remove `safe`, so that each call is in an `unsafe` block.
+    E8015,
 }
 
 impl std::fmt::Display for DiagnosticCode {
