@@ -828,6 +828,13 @@ macro_rules! instantiate_tcp_stream_ffi {
                 let _ = unsafe { Box::from_raw(ptr as *mut std::net::TcpStream) };
             }
         }
+
+        /// The file descriptor of the socket, for a `select` to watch.
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_stream_fd(ptr: *mut std::ffi::c_void) -> i32 {
+            assert!(!ptr.is_null(), "a select on a socket that is gone");
+            std::os::fd::AsRawFd::as_raw_fd(unsafe { &*(ptr as *const std::net::TcpStream) })
+        }
     };
 }
 
@@ -929,6 +936,13 @@ macro_rules! instantiate_udp_socket_ffi {
                 let _ = unsafe { Box::from_raw(ptr as *mut std::net::UdpSocket) };
             }
         }
+
+        /// The file descriptor of the socket, for a `select` to watch.
+        #[no_mangle]
+        pub extern "C" fn vx_udp_socket_fd(ptr: *mut std::ffi::c_void) -> i32 {
+            assert!(!ptr.is_null(), "a select on a socket that is gone");
+            std::os::fd::AsRawFd::as_raw_fd(unsafe { &*(ptr as *const std::net::UdpSocket) })
+        }
     };
 }
 
@@ -986,6 +1000,13 @@ macro_rules! instantiate_tcp_listener_ffi {
             if !ptr.is_null() {
                 let _ = unsafe { Box::from_raw(ptr as *mut std::net::TcpListener) };
             }
+        }
+
+        /// The file descriptor of the socket, for a `select` to watch.
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_listener_fd(ptr: *mut std::ffi::c_void) -> i32 {
+            assert!(!ptr.is_null(), "a select on a socket that is gone");
+            std::os::fd::AsRawFd::as_raw_fd(unsafe { &*(ptr as *const std::net::TcpListener) })
         }
     };
 }

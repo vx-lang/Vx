@@ -20,11 +20,11 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3066` (65 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5003` (3 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8015` (15 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8016` (16 codes)
 
 ## Warnings
 
@@ -190,6 +190,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4014`](/errors/E4014/) | A task that can still run when a variable that it uses ends or changes. A task in a loop that the same pass does not join runs at the same time as the next pass, so it must not write a variable from outside the loop, or read one that the loop writes. A task must not use a variable that ends before its `tasks` block, such as one of the loop body. Join the task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break` or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so it cannot drop a value from outside the inner block yet. |
 | [`E4015`](/errors/E4015/) | A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)` with a parameter that takes `t` by value, where `t` is declared before the region. The region only borrows what it uses, and the function drops `t` after the region. Borrow it (`&t`), or clone it (`t.clone()`). |
 | [`E4016`](/errors/E4016/) | A borrow clause that is not well formed, or one that the body does not keep. In `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its own. |
+| [`E4017`](/errors/E4017/) | A closure that runs only once is copied, returned, passed or written outside a `let`. A closure whose body moves a value that it captures can run only once, because a second call would move the value again. Write such a closure in a `let` with no type, and call it there. A second call of it is E4001. |
 
 ## Safety Errors
 
@@ -282,7 +283,8 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8013`](/errors/E8013/) | A type invariant that is not well formed. An `invariant` comes after the last field of a struct, inside its braces. It can use the fields of the struct at any depth, numbers, operators, `as` and the pointer clauses `valid`, `initialized` and `overlaps`. It calls no other function, and it names no constant. |
 | [`E8014`](/errors/E8014/) | Code outside the module of a type with an invariant changes a field of the type. Only the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a field, call a method that takes `&mut self` on a field, move a field out of the value, or make a value of the type with a struct literal or an `mlir!` block. Other code calls a function of the module to change a value of the type. Then the invariant holds for each value of the type outside its module. |
 | [`E8015`](/errors/E8015/) | A `safe` extern function that returns a value of a type with an invariant, or takes a `&mut` or a `*mut` to such a value. C code does not keep the invariant, and a call of a `safe` function needs no `unsafe`. So C code could return or change such a value with no mark in the program. Remove `safe`, so that each call is in an `unsafe` block. |
+| [`E8016`](/errors/E8016/) | An `mlir!` block outside `unsafe` that the compiler cannot verify as safe. The compiler verifies a block whose operations are on a list of `arith` and `math` operations that give a defined result for every input, with no `overflow` or `fastmath` flags, and that takes and gives only numbers. Any other block goes in `unsafe { }`, because the compiler does not verify what its operations do. |
 
 ______________________________________________________________________
 
-194 diagnostics.
+195 diagnostics.

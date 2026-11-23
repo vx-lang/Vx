@@ -15,10 +15,10 @@ import std::alloc;
 
 /// The address in a pointer, which Vx cannot cast to an integer.
 fn address(p : *mut i8) -> i64 {
-  return mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
-    %a = llvm.ptrtoint %p : !llvm.ptr to i64
-    macro.yield %a : i64
-  };
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %a = llvm.ptrtoint %p : !llvm.ptr to i64
+      macro.yield %a : i64
+    } };
 }
 
 /// Whether 8 blocks of 40 bytes each have the alignment. One block could have it by chance.

@@ -16,6 +16,7 @@ import core::result;
 import core::sync::atomic;
 import core::time;
 import std::sync::channel;
+import std::sync::select;
 import std::sync::wait;
 import std::time;
 
@@ -87,5 +88,20 @@ OneshotReceiver<T> {
   /// The value, if it came. It does not wait.
   fn try_recv(self : &OneshotReceiver<T>) -> Result<T, TryRecvError> {
     return self.end.try_recv();
+  }
+}
+
+// A `select` can wait until the value comes, or the `OneshotSender` is dropped.
+impl<T> WaitSource for OneshotReceiver<T> {
+  fn is_ready(self : &OneshotReceiver<T>) -> bool {
+    return self.end.is_ready();
+  }
+
+  fn watch(self : &OneshotReceiver<T>, w : &Waiter) -> void {
+    self.end.watch(w);
+  }
+
+  fn unwatch(self : &OneshotReceiver<T>, w : &Waiter) -> void {
+    self.end.unwatch(w);
   }
 }

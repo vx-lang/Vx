@@ -1,0 +1,36 @@
+//===- a_closure_that_moves_a_captured_value.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure whose body moves a value that it captures runs once. A closure that only reads its
+// captures runs as often as the program calls it.
+import std::vec;
+
+fn consume(v : Vec<i64>) -> i64 {
+  return v.len() as i64;
+}
+
+fn make() -> Vec<i64> {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  return v;
+}
+
+fn main() -> i32 {
+  let v = make();
+  let f = || consume(v);
+  print(f());
+  print!(" ");
+  let w = make();
+  let n = 5i64;
+  let g = || w.len() as i64 + n;
+  print(g());
+  print!(" ");
+  print(g());
+  return 0;
+}
+
+// EXPECT: 1 6 6

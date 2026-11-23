@@ -17,7 +17,7 @@ use crate::syntax::{Expr, Span};
 use std::collections::HashSet;
 
 /// The `mlir!` block with `threads : N` that `s` is, as `let x = mlir!(..)` or a statement of its
-/// own. Every thread of the threadgroup runs it.
+/// own, alone or in an `unsafe` block. Every thread of the threadgroup runs it.
 pub(crate) fn threadgroup_block(s: &Statement) -> Option<&crate::syntax::expr::InlineMlirExpr> {
     let e = match s {
         Statement::LetDecl(l) => &l.expr,
@@ -26,6 +26,11 @@ pub(crate) fn threadgroup_block(s: &Statement) -> Option<&crate::syntax::expr::I
     };
     match e {
         Expr::InlineMlir(m) if m.threads.is_some() => Some(m),
+        Expr::UnsafeBlock(b) => match (b.stmts.as_slice(), b.ret.as_deref()) {
+            ([], Some(Expr::InlineMlir(m))) if m.threads.is_some() => Some(m),
+            ([only], None) => threadgroup_block(only),
+            _ => None,
+        },
         _ => None,
     }
 }
