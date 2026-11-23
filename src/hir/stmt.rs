@@ -988,7 +988,15 @@ impl<'a> TypeChecker<'a> {
         // `y == y + 1` would be false. Each change of a `let mut` ends its facts. Its fact
         // must be one that the prover can model, so that no new program warns.
         let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
-        if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
+        if matches!(value, Expr::StructInit(_)) {
+            let place = Expr::Identifier(IdentifierExpr {
+                name: name.clone(),
+                span: Span::default(),
+            });
+            let ty = self.lookup(name.as_ref()).map(|(t, _)| t.clone());
+            let facts = ty.map(|ty| self.facts_of_a_struct_literal(&place, &ty, &value, name));
+            self.consteval.constraints.extend(facts.unwrap_or_default());
+        } else if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
             // A call can change its arguments. Re-evaluating it in a later proof would use
             // their new values, not the values from when the result was returned.
             let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
@@ -1009,6 +1017,65 @@ impl<'a> TypeChecker<'a> {
             }
             self.keep_call_result_ensures(name, expr);
         }
+    }
+
+    /// The facts of the struct literal `value` of type `ty` at `place`: `place.f == e` for each
+    /// field `f` of an integer type, when the prover can model `e`. A field that is a struct
+    /// literal gives the facts of its own fields. A value that names `root` gives no fact: in
+    /// `let c = Counter { n : c.n + 1i32, .. }`, the `c` on the right is the earlier `c`.
+    fn facts_of_a_struct_literal(
+        &self,
+        place: &Expr,
+        ty: &Type,
+        value: &Expr,
+        root: &str,
+    ) -> Vec<Expr> {
+        let Expr::StructInit(si) = value else {
+            return Vec::new();
+        };
+        let (name, args) = match ty {
+            Type::Struct(n, _) => (n.clone(), Vec::new()),
+            Type::GenericInstance(b, a) => match &**b {
+                Type::Struct(n, _) => (n.clone(), a.clone()),
+                _ => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+        let mut facts = Vec::new();
+        for (field, e) in &si.fields {
+            let Some(field_ty) = self.struct_field_type(&name, &args, field) else {
+                continue;
+            };
+            let member = Expr::MemberAccess(MemberAccessExpr::new(
+                Box::new(place.clone()),
+                field.clone(),
+                Span::default(),
+            ));
+            let e = crate::syntax::bare_unsafe_value(e);
+            if matches!(e, Expr::StructInit(_)) {
+                facts.extend(self.facts_of_a_struct_literal(&member, &field_ty, e, root));
+                continue;
+            }
+            let integer = matches!(field_ty,
+                Type::Scalar(t) if t.int_bits().is_some() && t != ElementType::Bool);
+            // As in a `let`, a call that can change its arguments gives no fact.
+            let changes_an_argument = matches!(e, Expr::FunctionCall(c)
+                if c.args.iter().any(|a| self.call_may_change_argument(a)));
+            if integer
+                && hir::prover::is_modelled(e)
+                && !crate::hir::check::raw::expr_mentions(e, root)
+                && !changes_an_argument
+            {
+                facts.push(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(member),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(e.clone()),
+                    span: Span::default(),
+                    operand_ty: None,
+                }));
+            }
+        }
+        facts
     }
 
     /// Whether a call can change the value behind the argument `arg`: a `&mut` or a pointer.
@@ -2529,6 +2596,11 @@ impl<'a> TypeChecker<'a> {
         let new_fact = renamed
             .as_ref()
             .and_then(|names| Self::fact_of_an_assignment(lhs, &assigned, names));
+        // A write to an integer field keeps the facts about the other fields.
+        let field_fact = match renamed {
+            Some(_) => None,
+            None => self.name_the_old_value_of_a_field(lhs, &lhs_ty, &assigned),
+        };
 
         // A fact the prover holds about the assigned variable stops being true here. A write to
         // a field, an element or through a pointer drops every fact about the variable.
@@ -2553,11 +2625,12 @@ impl<'a> TypeChecker<'a> {
                 self.note_a_change_behind(root.to_string());
             } else if let Some(names) = &renamed {
                 self.pointer_facts_name_the_old_value(root.as_ref(), names);
-            } else {
+            } else if field_fact.is_none() {
                 self.note_a_change_to_variable(root.to_string());
             }
         }
         self.consteval.constraints.extend(new_fact);
+        self.consteval.constraints.extend(field_fact.flatten());
         if let Expr::Identifier(id) = lhs {
             self.note_pointer_value(id.name.as_ref(), pointer);
         }
@@ -2897,13 +2970,6 @@ impl<'a> TypeChecker<'a> {
             name: "return".to_string().into(),
             span: *span,
         });
-        let return_eq = Expr::RelationalOp(RelationalOpExpr {
-            lhs: Box::new(return_ident),
-            op: RelationalOp::Eq,
-            rhs: Box::new(expr.clone()),
-            span: *span,
-            operand_ty: None,
-        });
         // A `match` or an `if` whose branches all return makes no value. The parser writes a
         // `match` at the end of a body as such a `return`.
         let makes_no_value = crate::syntax::is_never_ty(&ty)
@@ -2922,8 +2988,21 @@ impl<'a> TypeChecker<'a> {
         let ensures = self.consteval.current_ensures.clone();
         if !ensures.is_empty() && !self.speculating {
             let facts = self.consteval.constraints.len();
+            // A struct literal gives the fact of each field, such as `return.n == 0`.
             if !makes_no_value {
-                self.consteval.constraints.push(return_eq);
+                let return_facts = match crate::syntax::bare_unsafe_value(expr) {
+                    value @ Expr::StructInit(_) => {
+                        self.facts_of_a_struct_literal(&return_ident, return_type, value, "return")
+                    }
+                    _ => vec![Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(return_ident),
+                        op: RelationalOp::Eq,
+                        rhs: Box::new(expr.clone()),
+                        span: *span,
+                        operand_ty: None,
+                    })],
+                };
+                self.consteval.constraints.extend(return_facts);
             }
             for ens in &ensures {
                 if !self.prove_expr(ens) {
