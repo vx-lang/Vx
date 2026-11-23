@@ -13,10 +13,6 @@
 // arithmetic, so the kernel stays on the device, and this file checks the
 // answer the host path computes.
 //
-// Flat path only: the legacy code generator lowers a `memref.dim` of a row view
-// with the wrong number of indices. Both shapes are the flat emitter's.
-//
-// REQUIRES: flat-codegen
 // CHECK: vx.spawn topology({{[0-9]+}}) {
 // CHECK: } {arch = "spirv64"
 // EXPECT: [[0,   4,   8],

@@ -1,0 +1,35 @@
+//===- macros_that_write_code_with_errors.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares a type with an invariant and three macros. The code that the macros write has
+// errors when another file calls them.
+
+struct Token {
+  invariant true,
+}
+
+macro_rules make_token {
+  () => {
+    Token {}
+  };
+}
+
+macro_rules add_wrong_method {
+  ($t : ident) => {
+    impl $t {
+      fn wrong(self : &Self) -> i32 {
+        return true;
+      }
+    }
+  };
+}
+
+macro_rules make_token_through_another_macro {
+  () => {
+    make_token!()
+  };
+}

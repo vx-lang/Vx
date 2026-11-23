@@ -310,7 +310,7 @@ impl<T, E> Result<T, E> {
 /// `Option`'s two bridges to `Result`. They belong to `core::option` and sit here because
 /// that module cannot import this one back: the import would be a cycle, and this file
 /// already has both types in scope.
-impl<T> Option<T> {
+extern impl<T> Option<T> {
   /// The value as a success, or the given failure.
   fn ok_or<E>(self : Option<T>, err : E) -> Result<T, E> {
     match self {

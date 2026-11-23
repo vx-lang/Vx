@@ -1,0 +1,84 @@
+//===- spirv_atomics_count_and_pass_a_message_between_blocks.vx --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Atomics in a kernel for an Intel GPU (`arch: spirv64`). The first kernel
+// adds 1 to a bin for each of 256 values, from 4 blocks at once. In the second,
+// each of two blocks first waits until the other one has arrived. Then block 0
+// writes 42 and sets a flag with a release store, and block 1 waits for the flag
+// with an acquire load and reads 42. The waits need both blocks to run at the
+// same time, which a GPU does with two blocks, and pocl does on a CPU with more
+// than one core.
+//
+// LLVM's SPIR-V backend writes an atomic load or store as a plain one. A wait
+// then read a value that a register held, and never ended on pocl. So the image
+// makes each atomic load and store a read-modify-write.
+// tests/integration_test/spirv_images_on_pocl.rs runs the images on the CPU
+// with pocl and compares the output with this one.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --implicit-check-not='cannot become'
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}format=spirv
+// CHECK: @vx_npu_kernel_1_str("vx_npu_kernel_1\00{{.*}}format=spirv
+// EXPECT: bins 64 64 64 64
+// EXPECT: block 1 read 42
+import core::sync::atomic;
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+Topology Simd {
+  arch: spirv64,
+  levels: [blocks(max_lanes: 1024, memory: cta), lanes(memory: thread)],
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn main() -> i32 {
+  let bins = transfer(Tensor<u32, [4]>::fill(0u32), Memory::DEV_HBM);
+  spawn on(Topology::Simd) {
+    for b in 0..4 across blocks {
+      for t in 0..64 across lanes {
+        let _old = atomic_fetch_add_u32(&bins, (b * 64 + t) % 4, 1u32, AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  let h = transfer(bins, Memory::CPU_DRAM);
+  println!("bins {} {} {} {}", h[0], h[1], h[2], h[3]);
+
+  let go = transfer(Tensor<i32, [2]>::fill(0), Memory::DEV_HBM);
+  let data = transfer(Tensor<i32, [1]>::fill(0), Memory::DEV_HBM);
+  let flag = transfer(Tensor<i32, [1]>::fill(0), Memory::DEV_HBM);
+  let mut seen = transfer(Tensor<i32, [2]>::fill(-1), Memory::DEV_HBM);
+  spawn on(Topology::Simd) {
+    for b in 0..2 across blocks {
+      for l in 0..1 across lanes {
+        let _arrived = atomic_fetch_add_i32(&go, b, 1, AtomicOrdering::Relaxed);
+        loop {
+          if atomic_load_i32(&go, 1 - b, AtomicOrdering::Relaxed) > 0 {
+            break;
+          }
+        }
+        if b == 0 {
+          atomic_store_i32(&data, 0, 42, AtomicOrdering::Relaxed);
+          atomic_store_i32(&flag, 0, 1, AtomicOrdering::Release);
+        } else {
+          loop {
+            if atomic_load_i32(&flag, 0, AtomicOrdering::Acquire) == 1 {
+              break;
+            }
+          }
+          seen[b + l] = atomic_load_i32(&data, 0, AtomicOrdering::Relaxed);
+        }
+      }
+    }
+  }
+  let s = transfer(seen, Memory::CPU_DRAM);
+  println!("block 1 read {}", s[1]);
+  return 0;
+}

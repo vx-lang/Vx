@@ -60,13 +60,14 @@ the same in each run.
 | A copy of a tile to or from shared memory | `lanes::copy` |
 | The same value in each element of a tile in shared memory | `lanes::fill` |
 | Each row of a tile in shared memory times a value of its own | `lanes::scale_rows` |
+| A part of a tensor in the L2 cache before the lanes read it | `lanes::prefetch` |
 | A faster `exp` or `tanh` in a GPU kernel | `fast_exp`, `fast_tanh` ([Exact and fast math](exact-and-fast-math.md)) |
 | Work on several devices at the same time | a task for each device, with a `spawn on` in each task |
 | The result of one task | `join()` on its handle |
 | Values from many tasks | a channel |
 | A counter or a flag that tasks share | an atomic |
 | A change to more than one value at a time | a `Mutex` |
-| Values from more than one channel | a `Selector` |
+| Values from more than one channel, or a channel and a time limit | `select2` to `select6`, or a `Selector` |
 | A value that lives longer than its `tasks` block | an `Arc` |
 | At most `n` tasks that do one thing at the same time | a `Semaphore` |
 
@@ -162,7 +163,7 @@ of each kernel, and the result must be the same as on the GPU.
 | a multi-thread tokio runtime | `VX_TASK_RUNTIME=shared`, with no change to the program |
 | `async fn` and `.await` | a normal function: `recv()`, `join()` and `lock()` wait in place |
 | `tokio::sync::mpsc` | `std::sync::channel` |
-| `tokio::select!` | `Selector` |
+| `tokio::select!` | `select2` to `select6` from `std::sync::select` |
 | `tokio::sync::Semaphore` | `std::sync::semaphore::Semaphore` |
 | `AtomicU64` with `Ordering::Relaxed` | `AtomicU64` with `AtomicOrdering::Relaxed` |
 

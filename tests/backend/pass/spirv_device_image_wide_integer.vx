@@ -10,7 +10,7 @@
 // compiler does not stop, and the second region keeps its image.
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
-// CHECK: cannot become a `spirv64` device image: it computes with a 128-bit integer in `high_bits`, and a SPIR-V image holds integers of at most 64 bits
+// CHECK: cannot become a `spirv64` device image: it computes with a 128-bit integer, and a SPIR-V image holds integers of at most 64 bits
 // CHECK: format=spirv
 // EXPECT: 499499 998998
 

@@ -158,6 +158,10 @@ pub struct GlobalAstEnv<'a> {
     /// Top-level `const` items of every module, by name. A use of one is replaced by its value
     /// where the checker resolves the name.
     pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
+    /// Where to report the code that a macro of another file wrote, by the file of the call.
+    pub macro_call_sites: crate::diagnostic::MacroCallSites,
+    /// The files of the modules of `core` and `std`, which declare the built-in types.
+    pub library_files: std::collections::HashSet<crate::symbol::Symbol>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -189,7 +193,25 @@ impl<'a> GlobalAstEnv<'a> {
             decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
+            macro_call_sites: Default::default(),
+            library_files: Default::default(),
         };
+        let mut macro_call_sites = HashMap::new();
+        for module in modules {
+            if let Some(file) = &module.file {
+                let path = module.module_path.as_ref();
+                let library = ["core", "std"]
+                    .iter()
+                    .any(|l| path == *l || path.starts_with(&format!("{l}::")));
+                if library {
+                    env.library_files.insert(file.clone());
+                }
+                if module.macro_call_sites.iter().any(Option::is_some) {
+                    macro_call_sites.insert(file.clone(), module.macro_call_sites.clone());
+                }
+            }
+        }
+        env.macro_call_sites = std::sync::Arc::new(macro_call_sites);
 
         // Where each trait impl was first written, to report a second one for the same type.
         let mut impl_modules: HashMap<String, (crate::symbol::Symbol, &ImplBlock)> = HashMap::new();
@@ -746,6 +768,9 @@ pub struct TypeChecker<'a> {
     /// The integer type of each value of the variable of a `for` loop where the loop ends, as
     /// `$exit_N`. Each loop gets its own name, so the facts of two loops over `i` do not meet.
     pub(crate) exit_values: Vec<ElementType>,
+    /// The integer type of the end of each `for` loop over a range, as `$end_N`. A loop reads its
+    /// end once, so the name holds that value also after the body changes the variables of `b`.
+    pub(crate) end_values: Vec<ElementType>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -781,6 +806,13 @@ pub struct TypeChecker<'a> {
     /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
     /// call.
     pub(crate) lane_copies_out: HashMap<crate::syntax::Span, Vec<u64>>,
+    /// The tensors in a `scope: thread` space that the code of a block makes outside its lane
+    /// loops, with the position of each `let` and the type of the tensor. Each one must be a tile
+    /// of sums that stays in the registers of the subgroups (check/subgroup_registers.rs).
+    pub(crate) block_register_tiles: Vec<(String, crate::syntax::Span, crate::syntax::Type)>,
+    /// Each index into a register tensor with the variable of an `across` loop: the tensor, the
+    /// variable and the position of the index.
+    pub(crate) across_register_indices: Vec<(String, String, crate::syntax::Span)>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -800,7 +832,10 @@ impl<'a> TypeChecker<'a> {
             env,
             worker,
             scopes: vec![HashMap::new()],
-            errors: crate::diagnostic::DiagnosticsVec::new(),
+            errors: crate::diagnostic::DiagnosticsVec {
+                macro_call_sites: env.macro_call_sites.clone(),
+                ..crate::diagnostic::DiagnosticsVec::new()
+            },
             in_unsafe_block: false,
             tokens: Vec::new(),
             closure_body_next: false,
@@ -847,6 +882,7 @@ impl<'a> TypeChecker<'a> {
             fact_change_frames: Vec::new(),
             old_values: Vec::new(),
             exit_values: Vec::new(),
+            end_values: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
@@ -862,6 +898,8 @@ impl<'a> TypeChecker<'a> {
             traffic: Default::default(),
             lane_reductions: HashMap::new(),
             lane_copies_out: HashMap::new(),
+            block_register_tiles: Vec::new(),
+            across_register_indices: Vec::new(),
         }
     }
 

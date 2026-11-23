@@ -1,18 +1,18 @@
-//===- spirv_region_calls_a_helper_on_cached_memory.vx -------------*- Vx -*-===//
+//===- spirv_region_that_calls_a_helper_gets_an_image.vx ----------*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A placed region calls a helper, which a SPIR-V image cannot do with a tensor
-// argument, so the region gets no image and runs on the host. Its memory is
-// `managed: cached`, which the host can read, so that is safe and only the
-// warning is needed.
+// A placed region passes two tensors to a helper. The SPIR-V image inlines the
+// helper into the kernel, so the region gets an image. The loop of the helper
+// counts in `index`, which the image gives the type `i64`.
+// tests/integration_test/spirv_images_on_pocl.rs runs the image on the CPU with
+// pocl and compares the output with this one.
 //
-// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
-// CHECK: the region placed on `Topology::Dev` in `main` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it passes a tensor to `add_one`
-// CHECK: It will run on the host instead.
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --implicit-check-not=Warning # flat-codegen
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}format=spirv
 // EXPECT: [1,  1,  1,  1]
 
 Memory CPU_DRAM {}

@@ -20,8 +20,8 @@
 //
 // Still missing:
 //
-//   `copy`, `copy_nonoverlapping`, `write_bytes`
-//                            want `llvm.intr.memcpy` and friends through `mlir!`.
+//   `copy`                   wants `llvm.intr.memmove` through `mlir!`, as
+//                            `copy_nonoverlapping` uses `llvm.intr.memcpy`.
 //   `read_volatile`,         want the volatile forms of the load and store.
 //   `write_volatile`
 //   `NonNull<T>`             not written yet.
@@ -63,6 +63,30 @@ fn offset_mut<T, M : Memory>(p : *mut T in Memory::M, count : i64) -> *mut T in 
   return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *mut T in Memory::M, dialects : ["llvm"]) {
     %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     macro.yield %r : !llvm.ptr
+  };
+}
+
+/// Copies `count` values from `src` to `dst`, as C's `memcpy` does. The two ranges must not
+/// overlap. The values are copied bit for bit, so for a type that is not `Copy`, only one of the
+/// two copies may be dropped.
+unsafe fn copy_nonoverlapping<T>(src : *const T, dst : *mut T, count : usize) -> void {
+  let bytes = (count as i64) * sizeof<T>();
+  let _copied : i64 = mlir!( inputs : (%s = src : !llvm.ptr, %d = dst : !llvm.ptr, %b = bytes : i64), returns : i64, dialects : ["llvm"]) {
+    "llvm.intr.memcpy"(%d, %s, %b) < {
+      isVolatile = false
+    }> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+    macro.yield %b : i64
+  };
+}
+
+/// Sets each byte of `count` values at `dst` to `byte`, as C's `memset` does.
+unsafe fn write_bytes<T>(dst : *mut T, byte : u8, count : usize) -> void {
+  let bytes = (count as i64) * sizeof<T>();
+  let _written : i64 = mlir!( inputs : (%d = dst : !llvm.ptr, %v = byte : i8, %b = bytes : i64), returns : i64, dialects : ["llvm"]) {
+    "llvm.intr.memset"(%d, %v, %b) < {
+      isVolatile = false
+    }> : (!llvm.ptr, i8, i64) -> ()
+    macro.yield %b : i64
   };
 }
 

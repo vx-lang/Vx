@@ -198,6 +198,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/across_loops_run_in_parallel_on_both_code_generators.vx", // needs --machine
         "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
         "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
+        "optimizations/pass/lane_prefetch_into_the_l2_cache.vx",              // needs --machine
         "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
         "optimizations/pass/values_at_the_start_of_block_code_reach_every_lane.vx", // needs --machine
         "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
@@ -268,8 +269,6 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
         "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
-        // needs -fauto-schedule-levels
-        "optimizations/pass/an_across_loop_on_a_spirv64_topology_has_no_launch_shape.vx",
         "frontend/pass/packages/import_from_a_package.vx", // needs --package
         // needs --machine
         "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
@@ -334,6 +333,12 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_matmuls_of_a_tile_in_hbm_give_the_sums.vx",
         // needs --machine
         "optimizations/pass/lane_matmuls_load_16_bytes_of_a_row_at_once.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_that_stay_in_shared_memory.vx",
+        // needs --machine
+        "optimizations/pass/a_gpu_kernel_the_cpu_cannot_run_names_its_function_and_line.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

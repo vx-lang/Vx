@@ -64,6 +64,7 @@ print(r.v);
 
 **A reference cannot give away what it points at (E4008).** `let b = *r;` would move the value out
 of `r`, which only borrows it. Copy or clone it instead; for a number, `*r` is a copy and is fine.
+A method that takes `self` by value is the same: `r.f()` passes `*r`, so it needs a `Copy` value.
 
 **Reading a field that has something to drop moves it out of its struct.** After `let x = s.a;`,
 `s.a` has no value and `s` cannot be used whole, but its other fields can, and `s` drops only the

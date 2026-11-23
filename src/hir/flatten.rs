@@ -2530,6 +2530,9 @@ impl<'r> Lowerer<'r> {
         let Expr::Identifier(id) = &es.expr else {
             return None;
         };
+        if arm.body_declares(id.name.as_ref()) {
+            return None;
+        }
         let crate::syntax::Pattern::EnumVariant(pattern_en, variant, Some(pats)) = &arm.pattern
         else {
             return None;
@@ -4056,6 +4059,8 @@ impl<'r> Lowerer<'r> {
         let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
         let name = self.strings.len() as u64 + 1;
         self.strings.push(s.top.display_name());
+        // The string after the name is the line of the `spawn`. A runtime error names it.
+        self.strings.push(s.span.line.to_string());
         // The host computes the launch shape before the region starts, from the loops of blocks
         // of a region with `across` loops (#252), whose block has a number of lanes.
         let lanes = across_block_lanes(&s.stmts);
@@ -4255,9 +4260,9 @@ impl<'r> Lowerer<'r> {
             return lowered;
         }
         // The value of a block that can fail is in a slot: its last value, or the failure of a
-        // join that leaves it.
+        // join that leaves it. When nothing uses the value, nothing reads the failure either.
         let value = match (&u.fails_as, &u.ret) {
-            (Some(ty), Some(_)) => {
+            (Some(ty), _) => {
                 let lty = self.lower_ty_synth(ty).ok_or(Decline::TypeNotModelled {
                     what: "the type of a tasks block that can fail",
                 })?;
@@ -4473,9 +4478,7 @@ impl<'r> Lowerer<'r> {
             .tasks_exits
             .last()
             .and_then(|t| t.value.clone())
-            .ok_or(Decline::Unsupported {
-                what: "a failed join in a tasks block whose value is not used",
-            })?;
+            .expect("a tasks block that can fail has a slot for its failure");
         let failure = Expr::EnumVariant(crate::syntax::failure_of(&ty, value.clone(), span));
         let v = self.lower_expr(&failure)?;
         let v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
@@ -7318,6 +7321,9 @@ impl<'r> Lowerer<'r> {
                     .or(fn_value_ty)
                 {
                     self.ast_types.insert(l.name.clone(), t);
+                } else {
+                    // The type of an earlier local of this name is not the type of this one.
+                    self.ast_types.remove(&l.name);
                 }
                 // `let r = &<lvalue>` the escape analysis realized as a place (§5): bind `r` to the
                 // borrowed *place expression* itself, so `*r` re-lowers it (a bare local reads directly

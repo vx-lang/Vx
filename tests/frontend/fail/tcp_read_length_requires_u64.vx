@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // A positive signed length must not reach a TCP read.
-// CHECK: Error[E3003]{{.*}}'TcpStream::read'. Expected u64, got i64
+// CHECK: Error[E3003]{{.*}}'TcpStream::read_raw'. Expected u64, got i64
 import std::net;
 
 fn main() -> i32 {
@@ -16,7 +16,7 @@ fn main() -> i32 {
       ptr: 0 as *mut i8
     };
     let length : i64 = 1;
-    let _count = stream.read(0 as *mut u8, length);
+    let _count = stream.read_raw(0 as *mut u8, length);
   }
   return 0;
 }

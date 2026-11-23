@@ -23,14 +23,14 @@ trait Counts {
   }
 }
 
-impl Counts for i32 {
+extern impl Counts for i32 {
   type Item = i64;
   fn value(self : i32) -> i64 {
     return 21;
   }
 }
 
-impl Counts for f32 {
+extern impl Counts for f32 {
   type Item = f32;
   // Written out rather than inherited, and spelling the associated type rather than `f32`.
   // A binding that reached only the copied signatures would leave this one unsubstituted.

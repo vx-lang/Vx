@@ -1,4 +1,4 @@
-//===- spirv_device_image_result_slot.vx - a yielding region warns -*- Vx -*-===//
+//===- spirv_region_that_ends_in_a_number_gets_an_image.vx --------*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,12 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// A `spirv64` region that yields a value hands it back through a host stack
-// slot, which a device cannot address, so the kernel gets no image and the
-// compiler says so. The region runs on the host and computes the same answer.
-//
-// Here: the spawn carries the arch and the answer is right. The warning and the
-// absent `format=spirv` entry are device_image_test.rs's business.
+// A `spirv64` region that ends in a number gets a SPIR-V image. The kernel stores the number in a
+// buffer in device memory, and the host copies it back. device_image_test.rs checks the image.
+// Here: the spawn carries the arch and the answer is right.
 //
 // CHECK: vx.spawn topology({{[0-9]+}}) {
 // CHECK: } {arch = "spirv64"

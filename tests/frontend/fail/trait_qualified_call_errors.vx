@@ -16,7 +16,7 @@ trait Speak {
   fn speak(self : &Self) -> i32;
 }
 
-impl Speak for i32 {
+extern impl Speak for i32 {
   fn speak(self : &i32) -> i32 {
     return 1;
   }

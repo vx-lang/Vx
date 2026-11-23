@@ -782,7 +782,12 @@ impl<'a> TypeChecker<'a> {
     /// `*p` or `p[i]` read by value through a raw pointer: the value stays with its owner, so
     /// moving it out would drop it twice. An `unsafe fn` such as `core::ptr::read` may, for its
     /// caller.
-    fn refuse_move_through_raw_pointer(&mut self, inner: &Type, consume: bool, span: &Span) {
+    pub(crate) fn refuse_move_through_raw_pointer(
+        &mut self,
+        inner: &Type,
+        consume: bool,
+        span: &Span,
+    ) {
         if !consume
             || self.checking_assign_lhs
             || self.speculating
@@ -805,7 +810,7 @@ impl<'a> TypeChecker<'a> {
     /// A raw-pointer access needs an unsafe context: nothing here knows the address is valid,
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
-    fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
+    pub(crate) fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
         if !self.unsafe_is_missing() {
             return;
         }
@@ -1427,6 +1432,18 @@ impl<'a> TypeChecker<'a> {
                 .rev()
                 .find(|c| c.var == *name);
             match candidate {
+                // The row of a subgroup in a tile of sums in registers, `acc[w]`. Only such a
+                // tile may take the variable of an `across` loop, which is never unrolled. The
+                // end of the function decides (check/subgroup_registers.rs).
+                Some(c) if c.across => {
+                    if let Some((root, _)) = crate::hir::places::base_and_path(base) {
+                        self.across_register_indices.push((
+                            root.to_string(),
+                            name.to_string(),
+                            *ix_span,
+                        ));
+                    }
+                }
                 Some(c) => match c.bounds {
                     Some((lo, hi)) if hi - lo <= MAX_UNROLLED_PASSES => c.used = true,
                     Some((lo, hi)) => {

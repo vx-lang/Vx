@@ -13,9 +13,6 @@
 // unsigned values are above the signed range, so a signed shift or compare would print a
 // different answer. `div_ceil` is unsigned only, as it is stable in Rust.
 //
-// Flat path only: the legacy code generator shifts and compares an unsigned value as signed.
-//
-// REQUIRES: flat-codegen
 // EXPECT: 0 1 9 11 181 46340 3037000499 1 7 | -1 1 0 0 -4 4 0 2147483647 -2147483648 127 0 -128 9223372036854775806 | 15 14 255 65535 4294967295 3513641828 | 255 127 150 15396211487472059752 | 4 4 0 128 1 1763668414462081128
 import core::num;
 import core::option;

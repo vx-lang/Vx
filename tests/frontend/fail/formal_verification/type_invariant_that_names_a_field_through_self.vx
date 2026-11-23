@@ -1,0 +1,22 @@
+//===- type_invariant_that_names_a_field_through_self.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An invariant names a field of its struct without `self`: `hi`, not `self.hi`.
+
+struct Interval {
+  lo : i64,
+  hi : i64,
+
+  // CHECK: Error at {{.*}}type_invariant_that_names_a_field_through_self.vx:[[@LINE+1]]:19: an invariant names a field without `self`. Write `hi`, not `self.hi`.{{$}}
+  invariant lo <= self.hi,
+}
+
+fn main() -> i32 {
+  return 0;
+}

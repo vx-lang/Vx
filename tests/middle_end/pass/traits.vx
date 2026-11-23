@@ -11,7 +11,7 @@ trait Dimension {
   fn dim(self : Tensor<f32, [?, ?]>)->i32;
 }
 
-impl Dimension for Tensor<f32, [?, ?]> {
+extern impl Dimension for Tensor<f32, [?, ?]> {
   fn dim(self : Tensor<f32, [?, ?]>) -> i32 {
     return 2;
   }

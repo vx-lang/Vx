@@ -15,7 +15,7 @@
 // CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:32:{{.*}}two passes of this block loop may write the same element of `y`: an index of the write must fix `b`
 // CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:46:{{.*}}two passes of this block loop may write the same element of `y`: an index of the write must fix `b`
 // CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:65:{{.*}}two passes of this subgroup loop may write the same element of `y`: an index of the write must fix `w`
-// CHECK: Error[E3003] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:76:{{.*}}`lanes::copy` copies a tile in shared memory with a size that is a number, into the first argument or out of the second.
+// CHECK: Error[E3003] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:76:{{.*}}`lanes::copy` copies a tile in shared memory or in registers with a size that is a number, into the first argument or out of the second.
 // CHECK: Error[E3003] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:90:{{.*}}the first argument of `lanes::copy` must borrow a tensor as `&mut`, such as `&mut tiles[0]` or a parameter `c : &mut Tensor<..>`, but it is `&Tensor<f32, [?, ?], Memory::HBM>`
 // CHECK: Error[E3003] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:104:{{.*}}the third argument of `lanes::copy` is the place of the tile, written as a list of 2 integers such as `[r, c]`
 // CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:119:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `t`

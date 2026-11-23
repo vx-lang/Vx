@@ -308,6 +308,14 @@ shared memory, and its entry also gives `dynamic_shared_bytes`. A program that
 launches it calls `cuFuncSetAttribute(f, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, n)` once, and passes `n` as
 the `sharedMemBytes` of `cuLaunchKernel`. Vx's own launch does both.
 
+A kernel that `vxc` compiled with `VX_GPU_PDL=1` for `sm_90` or later also gives
+`"waits_for_earlier_kernels": true`. It waits for the kernels before it on the
+stream before it reads or writes global memory. So a launcher may launch it
+with `cuLaunchKernelEx` and `CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION`
+set to 1, and it can then start while the kernel before it still runs. Do not
+launch a kernel without this field that way: it could read memory before the
+kernel before it wrote it.
+
 A kernel from a region with `across` loops also has `launch`: `grid`, one entry for each loop
 of blocks, `block` for the lanes of a block, and `"grid_loops": true`. An entry is a number,
 `{"param": "rows"}` for the value of a parameter, or `{"computed": "(rows + 3) / 4"}` for a size

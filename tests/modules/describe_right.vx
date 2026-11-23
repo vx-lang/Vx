@@ -8,7 +8,7 @@
 // One of two modules that each implement `Describe` for `Point`.
 import tests::modules::describe_shape;
 
-impl Describe for Point {
+extern impl Describe for Point {
   fn describe(self : &Point) -> i32 {
     return 2;
   }
