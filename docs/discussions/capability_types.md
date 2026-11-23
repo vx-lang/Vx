@@ -104,9 +104,10 @@ Two tools keep the trusted code small and easy to find:
 
 ## 5. No ambient authority
 
-The rules above stop forged capabilities. They do not stop code that needs no capability. Today any
-module can `import std::fs` and open any file, or `import std::net` and open any socket. A
-capability protects something only when each way to the operating system needs one:
+The rules above stop forged capabilities. They do not stop code that needs no capability. Before
+the `Network` capability, any module could `import std::net` and open any socket with no
+`unsafe`. A file needs `unsafe` to open, which is trusted code (section 4). A capability protects
+something only when each way to the operating system needs one:
 
 - `std::fs`, `std::net`, `std::mmap`, the start of a process and the loading of native code each
   take a capability parameter.
@@ -163,11 +164,13 @@ no global fact depend on a function body. Each new check reads one declaration:
 ## 8. Open questions
 
 1. How does `main` get the root capabilities: as a parameter, as in Austral, or from a call that
-   only the module of `main` can make?
+   only the module of `main` can make? **Decided (2026-11-23): as a parameter,
+   `fn main(root : Root) -> i32`.** A program that needs no capability keeps `fn main() -> i32`.
 1. The package setting is a flag of `vxc`, because Vx has no manifest yet. Does it move into a
    manifest when Vx gets one?
 1. What is the type of a parameter that takes a closure that runs once (#3751)?
-1. Does a test get root capabilities, and which ones?
+1. Does a test get root capabilities, and which ones? **Decided (2026-11-23): a test is a program,
+   so it gets `Root` in the same way.**
 
 ## 9. Steps
 
@@ -175,4 +178,8 @@ no global fact depend on a function body. Each new check reads one declaration:
 1. #3754, which also closes #3746. Then #3747 and #3748.
 1. `vxc --audit` lists each use of `unsafe`, `mlir!` and `extern`.
 1. The package setting.
-1. Capability types in `std`: files first, then sockets, processes and native code.
+1. Capability types in `std`. Safe code could open sockets with no `unsafe`, but not files:
+   `File::open` was an `unsafe fn` already. So the network came first: `TcpStream::connect`,
+   `TcpListener::bind` and `UdpSocket::bind` take a `&Network`, which a program gets as
+   `root.network`. Then a safe `File::open` that takes a capability, then processes and native
+   code.

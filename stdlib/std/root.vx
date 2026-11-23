@@ -1,0 +1,32 @@
+//===- root.vx - Vx Compiler -------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The capabilities of a program: the rights to use the operating system. A program gets them as
+// the parameter of `main`, `fn main(root : Root) -> i32`, and passes each one on to the code that
+// needs it. A library gets only the capabilities that its caller passes, so a library that gets
+// no `&Network` cannot open a connection. `docs/discussions/capability_types.md` explains the
+// design.
+//===----------------------------------------------------------------------===//
+
+import std::net;
+
+/// The capabilities of a program. Only this file can make a `Root`, and the compiler makes one
+/// for a `main` that takes it.
+struct Root {
+  // The right to open network connections and to bind network addresses.
+  network : Network,
+
+  invariant true,
+}
+
+/// The `Root` of the program. The compiler calls it once, for a `main` that takes a `Root`.
+/// Unsafe because a second `Root` gives the rights to code that did not get them.
+unsafe fn root_of_the_program() -> Root {
+  return Root {
+    network : unsafe { network_of_the_program() }
+  };
+}

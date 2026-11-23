@@ -15,6 +15,9 @@
 // `TcpStream`, `TcpListener`, `UdpSocket` and `TcpBufReader` are sources of `select`: each is
 // ready when a read, an `accept` or a `recv` does not wait.
 //
+// A connection and a bound socket need the right to use the network, a `Network`. A program
+// gets it in its `Root`, as `root.network` (`std::root`), and passes `&root.network` on.
+//
 // The Rust core gives a status for each call: 0 when it worked, a number below 0 for each error
 // that `NetError` names, and else the error number of the system. A call that worked writes its
 // value through its last pointer.
@@ -59,6 +62,19 @@ extern {
   fn vx_udp_socket_fd(ptr : *mut i8) -> i32;
   /// 1 when a read of `fd` does not wait, else 0.
   fn vx_fd_can_read(fd : i32) -> i32;
+}
+
+/// The right to open network connections and to bind network addresses. Only this file can
+/// make a `Network`, and a program gets one in its `Root` (`std::root`). A function that gets a
+/// `&Network` uses it during the call and cannot keep it.
+struct Network {
+  invariant true,
+}
+
+/// The network right of the program, for `std::root`. Unsafe because a second `Network` gives
+/// the right to code that did not get it.
+unsafe fn network_of_the_program() -> Network {
+  return Network {};
 }
 
 /// Why a network call did not work.
@@ -232,9 +248,9 @@ impl TcpStream {
     return Result<u64, NetError>::Ok(done);
   }
 
-  /// Connect to `addr`, written as `host:port`. A task of the shared runtime parks while it
-  /// waits.
-  fn connect(addr : &String) -> Result<TcpStream, NetError> {
+  /// Connect to `addr`, written as `host:port`. The caller needs the network right, a
+  /// `&Network`. A task of the shared runtime parks while it waits.
+  fn connect(_network : &Network, addr : &String) -> Result<TcpStream, NetError> {
     let c_addr = CAddress::of(addr)?;
     return unsafe { TcpStream::connect_c_str(c_addr.ptr) };
   }
@@ -342,8 +358,8 @@ impl UdpSocket {
     return count_or_error(status, count);
   }
 
-  /// Bind to `addr`, written as `host:port`.
-  fn bind(addr : &String) -> Result<UdpSocket, NetError> {
+  /// Bind to `addr`, written as `host:port`. The caller needs the network right, a `&Network`.
+  fn bind(_network : &Network, addr : &String) -> Result<UdpSocket, NetError> {
     let c_addr = CAddress::of(addr)?;
     return unsafe { UdpSocket::bind_c_str(c_addr.ptr) };
   }
@@ -414,8 +430,9 @@ impl TcpListener {
     });
   }
 
-  /// Listen on `addr`, written as `host:port`.
-  fn bind(addr : &String) -> Result<TcpListener, NetError> {
+  /// Listen on `addr`, written as `host:port`. The caller needs the network right, a
+  /// `&Network`. Each connection that `accept` gives needs no other right.
+  fn bind(_network : &Network, addr : &String) -> Result<TcpListener, NetError> {
     let c_addr = CAddress::of(addr)?;
     return unsafe { TcpListener::bind_c_str(c_addr.ptr) };
   }

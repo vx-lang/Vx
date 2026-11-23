@@ -1,0 +1,29 @@
+//===- main_gets_the_capabilities_of_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not='Warning' --implicit-check-not='Error'
+// RUN: vxc %s --audit 2>&1 | FileCheck %s --check-prefix=AUDIT
+//
+// A `main` that takes a `Root` gets the capabilities of the program, and passes them on. The
+// compiler makes the `Root` in an `unsafe` block of its own, which `vxc --audit` does not list as
+// trusted code of the program.
+import std::net;
+
+// A function that needs the network gets the right to it as a parameter.
+fn can_connect(network : &Network) -> bool {
+  let _right = network;
+  return true;
+}
+
+fn main(root : Root) -> i32 {
+  println!("{}", can_connect(&root.network));
+  return 0;
+}
+
+// CHECK: {{^}}true{{$}}
+// AUDIT-NOT: main_gets_the_capabilities_of_the_program.vx{{.*}}trusted code
+// AUDIT: core and std:

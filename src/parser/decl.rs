@@ -1985,6 +1985,15 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "c_str".into()],
             });
         }
+        if give_main_its_root(&mut functions)
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "std" && &*i.path[1] == "root"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["std".into(), "root".into()],
+            });
+        }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             file: None,
@@ -2109,6 +2118,39 @@ impl<'a> Parser<'a> {
         })
     }
 }
+/// `fn main(root : Root) -> i32` gets the capabilities of the program. Its body becomes the
+/// function `main_with_root`, and a generated `main` passes it the `Root` of `std::root`. The
+/// generated `unsafe` block is not trusted code that a program wrote, so `vxc --audit` leaves it
+/// out. Returns whether `main` takes a `Root`.
+fn give_main_its_root(functions: &mut Vec<Function>) -> bool {
+    let takes_a_root = |f: &Function| {
+        f.name.as_ref() == "main"
+            && matches!(&f.params[..], [(_, Type::Struct(t, _))] if t.as_ref() == "Root")
+    };
+    let Some(user) = functions.iter_mut().find(|f| takes_a_root(f)) else {
+        return false;
+    };
+    user.name = "main_with_root".into();
+    let span = user.span;
+    let mut main = Parser::parse_fn_from_str(
+        "fn main() -> i32 { return main_with_root(unsafe { root_of_the_program() }); }",
+    );
+    main.span = span;
+    let Some(Statement::Return(ReturnStmt {
+        expr: Some(Expr::FunctionCall(call)),
+        ..
+    })) = main.body.first_mut()
+    else {
+        unreachable!("the generated `main` is one `return` of a call");
+    };
+    let Some(Expr::UnsafeBlock(block)) = call.args.first_mut() else {
+        unreachable!("the argument of the generated call is an `unsafe` block");
+    };
+    block.generated = true;
+    functions.push(main);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

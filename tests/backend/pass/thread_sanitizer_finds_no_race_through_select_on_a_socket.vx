@@ -85,8 +85,8 @@ fn say(what : *const i8, r : Result<i32, SelectError>) -> void {
   }
 }
 
-fn connect() -> void {
-  match TcpStream::connect(&address("127.0.0.1:41784")) {
+fn connect(network : &Network) -> void {
+  match TcpStream::connect(network, &address("127.0.0.1:41784")) {
     Result<TcpStream, NetError>::Ok(_s) => {}
     Result<TcpStream, NetError>::Err(_e) => {
       println!("connect: Error");
@@ -94,7 +94,7 @@ fn connect() -> void {
   }
 }
 
-fn serve(listener : TcpListener) -> void {
+fn serve(network : &Network, listener : TcpListener) -> void {
   let mut l = listener;
   let (tx, rx) = channel<i64>(1);
   // The task sends on a clone, so the channel stays open after it ends.
@@ -123,7 +123,7 @@ fn serve(listener : TcpListener) -> void {
     say("within", select2(&l, &rx));
   });
   scribbled = scribbled + scribble(50);
-  connect();
+  connect(network);
   // The poller sees the connection during the sleep.
   sleep(Duration::from_millis(100));
   scribbled = scribbled + scribble(51);
@@ -139,10 +139,11 @@ fn serve(listener : TcpListener) -> void {
   drop(tx);
 }
 
-fn main() -> i32 {
-  match TcpListener::bind(&address("127.0.0.1:41784")) {
+fn main(root : Root) -> i32 {
+  let network = &root.network;
+  match TcpListener::bind(network, &address("127.0.0.1:41784")) {
     Result<TcpListener, NetError>::Ok(listener) => {
-      serve(listener);
+      serve(network, listener);
     }
     Result<TcpListener, NetError>::Err(_e) => {
       println!("bind: Error");
