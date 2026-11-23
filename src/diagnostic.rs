@@ -568,6 +568,11 @@ pub enum DiagnosticCode {
     /// outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its
     /// own.
     E4016,
+    /// A closure that runs only once is copied, returned, passed or written outside a `let`. A
+    /// closure whose body moves a value that it captures can run only once, because a second
+    /// call would move the value again. Write such a closure in a `let` with no type, and call
+    /// it there. A second call of it is E4001.
+    E4017,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements

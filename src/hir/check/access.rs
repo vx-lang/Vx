@@ -473,6 +473,24 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Type::Unknown;
                 }
+                // A closure that runs once is only called, and a call does not come here.
+                if let (Some((Type::Struct(closure, _), _)), false) =
+                    (&lookup_res, self.speculating)
+                {
+                    if let Some(moved) = self.mono.closures_that_run_once.get(closure).cloned() {
+                        if !self.is_moved(name.as_ref()) {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4017,
+                                format!(
+                                    "`{name}` moves `{moved}`, a value that it captures, so it \
+                                     can run only once. Call `{name}`, and do not copy, return \
+                                     or pass it"
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                            );
+                        }
+                    }
+                }
                 if self.is_moved(name.as_ref()) {
                     if !self.speculating {
                         self.errors.error_with_code(
