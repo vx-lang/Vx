@@ -574,7 +574,9 @@ pub enum DiagnosticCode {
     /// hold whatever the memory held, so the program says with `unsafe` that it writes each one
     /// before reading it.
     E5001,
-    /// Unsafe memory operation outside unsafe block
+    /// An operation that only an `unsafe` block allows, outside one. An access through a raw
+    /// pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot
+    /// know that the value is still at the address. So is `assume`.
     E5002,
     /// Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or
     /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`.

@@ -21,7 +21,8 @@ fn main() -> i32 {
 ```
 
 Reading through a raw pointer — `*p` — is the operation that needs the block. So does indexing
-through one, or reading a field through one.
+through one, reading a field through one, or calling a method through one. `p.get()` gives the
+method a reference to `*p`, and the compiler cannot know that `*p` is still there.
 
 ## Raw pointers
 

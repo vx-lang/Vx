@@ -3680,7 +3680,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// `r.f()` for a method `f` that takes `self` by value passes `*r`. A reference cannot give
-    /// away a value that is not `Copy` (E4008), and a raw pointer needs `unsafe` (E5002).
+    /// away a value that is not `Copy` (E4008).
     fn check_receiver_taken_through(&mut self, base_ty: &Type, method: &str, span: &Span) {
         match base_ty {
             Type::Borrow { inner, .. } if inner.is_linear() && !self.is_copy(inner) => {
@@ -3694,13 +3694,7 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
-            Type::Pointer(inner, _, _) => {
-                let what = format!(
-                    "Calling `{method}`, which takes `self` by value, through a raw pointer"
-                );
-                self.require_unsafe_raw_access(&what, span);
-                self.refuse_move_through_raw_pointer(inner, true, span);
-            }
+            Type::Pointer(inner, _, _) => self.refuse_move_through_raw_pointer(inner, true, span),
             _ => {}
         }
     }
@@ -4044,6 +4038,12 @@ impl<'a> TypeChecker<'a> {
                     // Through a reference or a raw pointer, the call takes `*r`, as `f(*r)` does.
                     if self_by_value && !self.speculating {
                         self.check_receiver_taken_through(&base_ty, _method, &method_span);
+                    }
+                    // The method reads or changes the value that a raw pointer points at, as
+                    // `p.field` does.
+                    if matches!(base_ty, Type::Pointer(..)) && !self.speculating {
+                        let what = format!("Calling `{_method}` through a raw pointer");
+                        self.require_unsafe_raw_access(&what, &method_span);
                     }
                     // Where the result may point. The receiver is argument 0.
                     let summary = self.env.method_provenance_of(&ib, _method.as_ref());
