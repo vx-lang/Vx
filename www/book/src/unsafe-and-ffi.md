@@ -44,6 +44,11 @@ A raw pointer can name a memory, as in `*mut f32 in Memory::GPU_HBM`. The functi
 that move a pointer keep its memory: `offset`, `add` and `sub` and their `_mut` forms take a pointer
 in any memory `M` and give a pointer in `M`. `read` and `write` take only a host pointer.
 
+Any pointer can be cast to `*const void` or `*mut void` in the same memory, as in
+`p as *const void in Memory::GPU_HBM`. A `void` pointer is only an address, as C's `void *`, for
+example to give to a C function. It has no element type, so a read or a write through it is error
+E3067.
+
 ## unsafe functions
 
 A function whose *body* is not the dangerous part — but whose *contract* is — should be marked
