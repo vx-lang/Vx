@@ -2529,6 +2529,11 @@ impl<'a> TypeChecker<'a> {
         let new_fact = renamed
             .as_ref()
             .and_then(|names| Self::fact_of_an_assignment(lhs, &assigned, names));
+        // A write to an integer field keeps the facts about the other fields.
+        let field_fact = match renamed {
+            Some(_) => None,
+            None => self.name_the_old_value_of_a_field(lhs, &lhs_ty, &assigned),
+        };
 
         // A fact the prover holds about the assigned variable stops being true here. A write to
         // a field, an element or through a pointer drops every fact about the variable.
@@ -2553,11 +2558,12 @@ impl<'a> TypeChecker<'a> {
                 self.note_a_change_behind(root.to_string());
             } else if let Some(names) = &renamed {
                 self.pointer_facts_name_the_old_value(root.as_ref(), names);
-            } else {
+            } else if field_fact.is_none() {
                 self.note_a_change_to_variable(root.to_string());
             }
         }
         self.consteval.constraints.extend(new_fact);
+        self.consteval.constraints.extend(field_fact.flatten());
         if let Expr::Identifier(id) = lhs {
             self.note_pointer_value(id.name.as_ref(), pointer);
         }
