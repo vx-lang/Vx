@@ -1,0 +1,31 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// EXPECT: 6
+// A loop in a generic function starts tasks, and each task changes its own variable `i`. The
+// caller also has a variable `i`. The two are different variables, so the tasks do not share one.
+import core::sync::atomic;
+
+fn add_in_tasks<T>(n : i64, _t : T) -> i64 {
+  let total = AtomicI64::new(0);
+  tasks {
+    let mut w : i64 = 0;
+    while w < n {
+      spawn {
+        let mut i : i64 = 0;
+        i = i + 2;
+        total.fetch_add(i, AtomicOrdering::Relaxed);
+      };
+      w = w + 1;
+    }
+  };
+  return total.load(AtomicOrdering::Relaxed);
+}
+
+fn main() -> i32 {
+  let mut i : i64 = 3;
+  i = add_in_tasks(i, 0);
+  println!("{}", i);
+  return 0;
+}
