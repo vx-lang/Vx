@@ -44,6 +44,9 @@ fn main() -> i32 {
   for i in 0..n {
     a.push(0);
   }
+  // On macOS, the first loop that writes the vector after `push` took 3 to 5 times longer,
+  // whichever loop it was. This pass takes that cost, so that no timed loop does.
+  fill_raw(&mut a, n);
 
   let t0 = Instant::now();
   fill_set(&mut a, n);

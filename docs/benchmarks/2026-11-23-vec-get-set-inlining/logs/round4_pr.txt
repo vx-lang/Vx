@@ -3,8 +3,8 @@
 [JIT] Compiling to native object (-O3)...
 [JIT] Linking native executable...
 [JIT] Executing native binary...
-fill_set 21382 49999999
-fill_raw 6682 49999999
-sum_get 7441 1249999975000000
-sum_raw 6890 1249999975000000
+fill_set 8905 49999999
+fill_raw 6577 49999999
+sum_get 7737 1249999975000000
+sum_raw 8025 1249999975000000
 

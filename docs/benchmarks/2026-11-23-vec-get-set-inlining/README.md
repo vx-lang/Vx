@@ -10,18 +10,37 @@ run in brackets. Lower is better.
 
 | Loop | `main` (a488cc3d9) | PR #3841 (a355127ef) | `main` / PR |
 |---|---|---|---|
-| `sum_get`: sum with `a.get(i)` | 45.0 (44.5–45.3) | 7.3 (6.9–7.5) | 6.18× |
-| `fill_set`: fill with `a.set(i, v)` | 66.9 (52.5–77.4) | 26.5 (18.6–37.8) | 2.52× |
-| `sum_raw`: sum through a raw pointer | 6.7 (6.7–6.9) | 6.9 (6.8–7.4) | 0.98× |
-| `fill_raw`: fill through a raw pointer | 6.5 (6.2–6.8) | 6.4 (6.3–8.4) | 1.00× |
+| `sum_get`: sum with `a.get(i)` | 45.4 (44.8–46.0) | 6.9 (6.9–7.7) | 6.59× |
+| `fill_set`: fill with `a.set(i, v)` | 45.9 (45.1–48.5) | 6.4 (6.2–8.9) | 7.14× |
+| `sum_raw`: sum through a raw pointer | 6.9 (6.7–12.2) | 6.8 (6.7–8.0) | 1.01× |
+| `fill_raw`: fill through a raw pointer | 6.3 (6.2–6.4) | 6.6 (6.2–7.1) | 0.96× |
 
-- `sum_get` is now as fast as `sum_raw`. LLVM inlines `get` and vectorizes the loop.
-- `fill_set` is 2.5× faster, but still about 4× slower than `fill_raw`. LLVM inlines `set`, unrolls
-  the loop by 4, and moves the index check out of the loop. It does not vectorize the loop
-  ("the cost-model indicates that vectorization is not beneficial"). I did not look further.
+- With the PR, `sum_get` and `fill_set` are as fast as the raw pointer loops. LLVM inlines `get` and
+  `set` and takes the index check out of the loop.
 - The raw pointer loops are the controls. The PR does not change their code, and their times did not
   change beyond the noise.
 - All 10 runs printed the same results: the last value 49999999 and the sum 1249999975000000.
+
+## The first write after `push`
+
+An earlier version of this benchmark had no untimed pass. Its first timed loop, `fill_set`, was 3 to
+5 times slower than later passes, and it varied from 18 to 78 ms. So it reported `fill_set` as 4
+times slower than `fill_raw`, which was wrong. Tests on the PR's compiler showed this:
+
+- The first loop that writes the vector after `push` is slow, whichever loop it is. When `fill_raw`
+  ran first, it took 22 to 34 ms, and `fill_set` after it took 6.3 ms.
+- Later passes of either loop take about 6.3 ms.
+- It is not page faults: `getrusage` counted 0 minor and 0 major faults in the slow pass, and about
+  one fault for each 16 KB page during `push`.
+- It is not the values: the pass was slow also when `push` wrote non-zero values, and when each pass
+  wrote different values.
+- It is not the speed of the CPU: 400 ms of arithmetic before the pass did not make it faster.
+- All four quarters of the vector are equally slow, about 1 µs more for each 16 KB page.
+- After a pause of 3 s, the next pass was sometimes slow again (7 to 20 ms).
+
+The machine was under memory pressure (see Limits). The cost may come from how macOS tracks the use
+of each page. I could not confirm this without kernel tracing, which needs root. The program now
+writes the whole vector once before the timed loops, so this cost is in no measured loop.
 
 ## Setup
 
@@ -33,7 +52,7 @@ What both sides share:
 | OS | macOS 27.2.1 (26B131) |
 | LLVM | 22.1.8 |
 | Program | `vec_loops.vx`, compiled with `-O3` and the default code generator, run as a native program |
-| Data | `Vec<i64>` of 50 million values, filled with `push` before the timed loops |
+| Data | `Vec<i64>` of 50 million values, filled with `push` and then written once more before the timed loops |
 | Timer | `std::time::Instant` inside the program, so compile time is not counted |
 
 What differs:
@@ -58,8 +77,8 @@ What differs:
 
 - One machine, one size (50 million values) and one element type (`i64`).
 - The machine was not idle: a virtual machine used about 2 of its 10 cores.
-- `fill_set` varies a lot between runs on both sides (18.6 to 37.8 ms on the PR). I did not find
-  out why. It is the first timed loop in each run.
+- The machine was under memory pressure: about 90 MB of memory was free, and the compressor held
+  about 11.8 GB. Another machine may not show the first-write cost above.
 - Each loop runs once in each run, so the times include cold caches and branch predictors.
 
 ## Commands
