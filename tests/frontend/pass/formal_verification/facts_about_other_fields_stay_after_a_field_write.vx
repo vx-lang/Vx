@@ -1,0 +1,65 @@
+//===- facts_about_other_fields_stay_after_a_field_write.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not='Warning' --implicit-check-not='Error'
+// CHECK: 4 0 7
+//
+// After a write to a field of a number type, the prover still knows the facts about the other
+// fields. It also knows the new value of the field, from the old value.
+
+struct Counter {
+  n : i32,
+  cap : i32,
+}
+
+struct Outer {
+  inner : Counter,
+  k : i32,
+}
+
+// `c.n < c.cap` before the write and `c.n` one more after it give `c.n <= c.cap`.
+fn bump(c : &mut Counter) -> void
+requires c.n < c.cap
+ensures c.n <= c.cap {
+  c.n = c.n + 1i32;
+}
+
+fn reset(c : &mut Counter) -> void
+requires 0i32 <= c.cap
+ensures c.n <= c.cap {
+  c.n = 0i32;
+}
+
+// A write to `o.inner.n` keeps the facts about `o.inner.cap` and `o.k`.
+fn set_inner(o : &mut Outer) -> void
+requires o.inner.cap == 3i32 && o.k == 2i32
+ensures o.inner.cap == 3i32 && o.k == 2i32 {
+  o.inner.n = 7i32;
+}
+
+fn main() -> i32 {
+  let mut c = Counter {
+    n : 3i32, cap : 4i32
+  };
+  if c.n < c.cap {
+    bump(&mut c);
+  }
+  let n = c.n;
+  if 0i32 <= c.cap {
+    reset(&mut c);
+  }
+  let mut o = Outer {
+    inner : Counter {
+      n : 0i32, cap : 3i32
+    }, k : 2i32
+  };
+  if o.inner.cap == 3i32 && o.k == 2i32 {
+    set_inner(&mut o);
+  }
+  println!("{} {} {}", n, c.n, o.inner.n);
+  return 0;
+}
