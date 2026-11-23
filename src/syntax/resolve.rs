@@ -155,7 +155,7 @@ impl Type {
             // type variable with a concrete type). Its `id` is unused downstream (every consumer
             // binds it to `_`); leave it None.
             Type::Generic(..) => {}
-            Type::Tensor(_, dims, top) => {
+            Type::Tensor(_, dims, top, _) => {
                 for dim in dims.iter_mut().filter_map(|d| match d {
                     Dim::Static(e) => Some(e),
                     Dim::Dyn => None,

@@ -1829,7 +1829,7 @@ impl<'a> TypeChecker<'a> {
             },
             Expr::IndexAccess(ix) => match self.scan_type(&ix.base, declared) {
                 Type::Pointer(inner, ..) if scalar(&inner) => *inner,
-                Type::Tensor(el, dims, _) if dims.len() <= 1 => Type::Scalar(el),
+                Type::Tensor(el, dims, _, _) if dims.len() <= 1 => Type::Scalar(el),
                 _ => Type::Unknown,
             },
             // A block with a value has the type of its last expression.

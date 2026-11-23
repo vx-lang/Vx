@@ -95,7 +95,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v19";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v20";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -588,10 +588,16 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
         Unknown => w.u8(14),
         // A dimension is `?` or a literal. A const-generic name or an arithmetic dimension
         // belongs to a template, and a template is not an interface.
-        Tensor(e, dims, top) => {
+        Tensor(e, dims, top, storage) => {
             w.u8(15);
             write_element_type(w, e);
             write_opt_placement(w, top)?;
+            // The allocation choice is part of the type, so an interface keeps it.
+            w.u8(match storage {
+                crate::syntax::Storage::Auto => 0,
+                crate::syntax::Storage::Stack => 1,
+                crate::syntax::Storage::Heap => 2,
+            });
             w.u64(dims.len() as u64);
             for d in dims {
                 match d {
@@ -682,6 +688,12 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
         15 => {
             let e = read_element_type(r)?;
             let top = read_opt_placement(r)?;
+            let storage = match r.u8()? {
+                0 => crate::syntax::Storage::Auto,
+                1 => crate::syntax::Storage::Stack,
+                2 => crate::syntax::Storage::Heap,
+                t => return Err(format!("vxlib: bad Storage tag {t}")),
+            };
             let n = r.u64()? as usize;
             let mut dims = Vec::with_capacity(n);
             for _ in 0..n {
@@ -695,7 +707,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
                     t => return Err(format!("vxlib: bad Dim tag {t}")),
                 });
             }
-            Tensor(e, dims, top)
+            Tensor(e, dims, top, storage)
         }
         16 => Distinct(Box::new(read_type(r)?)),
         17 => DisjointRanges(Box::new(read_type(r)?)),
@@ -1166,6 +1178,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
             FnSig {
                 gid,
                 params,
+                ret_storage: ret_ty.storage(),
                 ret_ty,
                 ret_prov,
                 is_unsafe,
@@ -1186,6 +1199,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
             FnSig {
                 gid,
                 params,
+                ret_storage: ret_ty.storage(),
                 ret_ty,
                 ret_prov,
                 is_unsafe,
@@ -1272,6 +1286,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
 mod tests {
     use super::*;
     use crate::registry::ModuleInterface;
+    use crate::syntax::Storage;
 
     #[rstest::rstest]
     #[case::write(true)]
@@ -1767,6 +1782,43 @@ mod tests {
         assert!(deserialize_registry_interface(&good[..good.len() - 4]).is_err());
     }
 
+    /// A function that returns `Storage::Stack` keeps that storage through an interface file, so a
+    /// caller in another module still allocates the result in its stack.
+    #[test]
+    fn a_stack_return_keeps_its_storage_through_an_interface() {
+        let mut reg = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        reg.fn_sigs.insert(
+            Symbol::from("scratch"),
+            FnSig {
+                gid: TypeId::new(1, 3, 0, 0),
+                params: Vec::new(),
+                ret_ty: Type::Tensor(
+                    ElementType::F32,
+                    vec![crate::syntax::Dim::Static(crate::syntax::Expr::Number(
+                        crate::syntax::NumberExpr::new(
+                            "4".to_string(),
+                            Some(ElementType::I32),
+                            crate::syntax::Span::default(),
+                        ),
+                    ))],
+                    None,
+                    Storage::Stack,
+                ),
+                ret_storage: Storage::Stack,
+                ret_prov: 0,
+                is_unsafe: false,
+                ret_valid: None,
+            },
+        );
+        let bytes = serialize_registry_interface(&reg);
+        let back = deserialize_registry_interface(&bytes).unwrap();
+        let sig = back
+            .resolve_fn(&Symbol::from("scratch"))
+            .expect("the signature is read back");
+        assert_eq!(sig.ret_storage, Storage::Stack);
+        assert_eq!(sig.ret_ty.storage(), Storage::Stack);
+    }
+
     /// The #292 acceptance: a deliberately unencodable signature is skipped from the artifact AND
     /// reported — named, counted, with the codec's reason — instead of silently dropped.
     #[test]
@@ -1778,6 +1830,7 @@ mod tests {
                 gid: TypeId::new(1, 1, 0, 0),
                 params: Vec::new(),
                 ret_ty: Type::Scalar(ElementType::I32),
+                ret_storage: Storage::Auto,
                 ret_prov: 0,
                 is_unsafe: false,
                 ret_valid: None,
@@ -1798,7 +1851,9 @@ mod tests {
                     ElementType::F32,
                     vec![crate::syntax::Dim::Static(dim)],
                     None,
+                    Storage::Auto,
                 ),
+                ret_storage: Storage::Auto,
                 ret_prov: 0,
                 is_unsafe: false,
                 ret_valid: None,

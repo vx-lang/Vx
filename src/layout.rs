@@ -171,7 +171,7 @@ pub(crate) fn structural_field_info(ty: &Type) -> Option<(usize, usize, FieldTy)
         | Type::Closure(..) => Some((8, 8, FieldTy::Opaque)),
         // A tensor field is its memref descriptor by value, 8-aligned: two pointers, an
         // offset, and a size and a stride per rank. A generic element has no descriptor yet.
-        Type::Tensor(elem, dims, _) => {
+        Type::Tensor(elem, dims, _, _) => {
             if matches!(elem, ElementType::Generic(_)) {
                 return None;
             }
@@ -540,6 +540,7 @@ impl<'a> LayoutComputer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syntax::Storage;
 
     #[rstest::rstest]
     #[case::size_and_alignment(vec![vec![(12, 4)], vec![(8, 8)]], (24, 8, vec![(8, 16, 8)]))]
@@ -709,6 +710,7 @@ mod tests {
                         ElementType::F32,
                         vec![Dim::Static(source_number(column))],
                         None,
+                        Storage::Auto,
                     ),
                     _ => Type::Pointer(
                         Box::new(Type::Scalar(ElementType::I32)),
@@ -826,6 +828,7 @@ mod tests {
                             crate::syntax::NumberExpr::new(dim, None, Default::default()),
                         ))],
                         placement,
+                        Storage::Auto,
                     )
                 };
                 first.variant_payloads[0][0].ty = tensor(ElementType::F32, "4".into(), None);

@@ -28,7 +28,7 @@ impl FnEmit<'_> {
                 .types
                 .get(ins.type_idx.0 as usize)
                 .and_then(|gid| self.ctx.tensors.get(gid))
-                .is_some_and(|(elem, _)| {
+                .is_some_and(|(elem, _, _)| {
                     matches!(
                         elem,
                         ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64

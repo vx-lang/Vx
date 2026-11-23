@@ -63,6 +63,7 @@ pub enum TokenTypeBase<S, C> {
     // Types & Topology
     Topology,
     Memory,
+    Storage,
     Ref,
     Verified,
     Distinct,
@@ -246,6 +247,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Whitespace(s) => write!(f, "{}", s),
             TokenTypeBase::Unknown(c) => write!(f, "{}", c),
             TokenTypeBase::Eof => write!(f, ""),
+            TokenTypeBase::Storage => write!(f, "Storage"),
         }
     }
 }
@@ -305,6 +307,7 @@ impl<S, C> TokenTypeBase<S, C> {
                 | TokenTypeBase::DisjointRanges
                 | TokenTypeBase::Pinned
                 | TokenTypeBase::HardwareState
+                | TokenTypeBase::Storage
         )
     }
 }
@@ -377,6 +380,8 @@ static KEYWORDS: Lazy<
     m.insert("requires", TokenTypeBase::Requires);
     m.insert("ensures", TokenTypeBase::Ensures);
     m.insert("invariant", TokenTypeBase::Invariant);
+    m.insert("Storage", TokenTypeBase::Storage);
+
     m
 });
 
@@ -1034,6 +1039,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Whitespace(s) => {
                 TokenTypeBase::Whitespace(crate::symbol::Symbol::from(s))
             }
+            TokenTypeBase::Storage => TokenTypeBase::Storage,
         };
         OwnedToken {
             kind,
@@ -1153,6 +1159,7 @@ impl OwnedToken {
             TokenTypeBase::Comment(s) => TokenTypeBase::Comment(&**s),
             TokenTypeBase::DocComment(s) => TokenTypeBase::DocComment(&**s),
             TokenTypeBase::Whitespace(s) => TokenTypeBase::Whitespace(&**s),
+            TokenTypeBase::Storage => TokenTypeBase::Storage,
         };
         Token {
             kind,

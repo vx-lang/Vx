@@ -7118,10 +7118,15 @@ static void markLifetime(OpBuilder &b, Location loc, Value buffer) {
 // allocation its start. The stack slot moves to the entry block later, so
 // LLVM can then give two buffers that are not used at the same time one
 // slot. A task stack has a fixed size, so this matters there.
+//
+// A buffer marked `vx.heap` is one the program asked to keep on the heap, so
+// it is never promoted.
 static void promoteOwnedBuffers(Region &region, RewriterBase &rewriter) {
   SmallVector<memref::AllocOp> allocs;
   region.walk([&](memref::AllocOp a) { allocs.push_back(a); });
   for (memref::AllocOp alloc : allocs) {
+    if (alloc->hasAttr("vx.heap"))
+      continue;
     MemRefType type = alloc.getType();
     if (!type.hasStaticShape() || !type.getLayout().isIdentity() ||
         !type.getElementType().isIntOrIndexOrFloat())
@@ -13692,6 +13697,13 @@ struct PromoteBuffersToStackPass
       promoteOwnedBuffers(func.getBody(), rewriter);
       return;
     }
+    // Upstream's pass cannot skip one allocation, so a function with a buffer
+    // the program asked to keep on the heap keeps all its buffers there.
+    bool hasHeapBuffer = false;
+    func.walk(
+        [&](memref::AllocOp a) { hasHeapBuffer |= a->hasAttr("vx.heap"); });
+    if (hasHeapBuffer)
+      return;
     OpPassManager pm(func::FuncOp::getOperationName());
     if (failed(parsePassPipeline(
             "promote-buffers-to-stack{max-alloc-size-in-bytes=4096}", pm))) {

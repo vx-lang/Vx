@@ -205,6 +205,37 @@ Thus `let _ = m.lock();` releases a lock at once, and `let _g = m.lock();` holds
 
 ______________________________________________________________________
 
+### 2.7 Stack and heap tensors
+
+A tensor type can name where its buffer is allocated, with a last argument: `Storage::Stack`,
+`Storage::Heap`, or `Storage::Auto`. `Auto` is the default, and the compiler chooses.
+
+- `Storage::Stack` puts the buffer in the frame of the function that declares it. The shape must
+  be known when the program compiles, so no dimension can be `?`. A placement on a stack tensor is
+  refused unless it names the host's memory: the buffer is in the frame, and no device's memory is
+  that. The written `aligned(N)` sets the slot's alignment.
+- `Storage::Heap` puts the buffer on the heap, whatever its size. The buffer is freed by its drop.
+- A stack tensor cannot leave its function. It cannot be returned unless the function says
+  `Storage::Stack`, passed by value to a call, stored in a struct or enum value, assigned to a
+  place other than a local variable, or used inside a `spawn` block, which a `&` does not rescue.
+  Pass it by reference with `&` to a call instead.
+- A stack tensor of a loop body is one buffer that every pass shares: its slot is hoisted to the
+  function's entry block. So it cannot be assigned to a variable declared outside the loop, and a
+  function's by-value parameter or a struct's field cannot name `Storage::Stack`.
+- A function may return `Storage::Stack`. Its caller then makes the buffer in the caller's stack,
+  and the function writes its result there. The caller uses the result until the caller returns.
+
+```rust
+fn make() -> Tensor<f32, [4], Storage::Stack> {
+  let mut t : Tensor<f32, [4], Storage::Stack> = Tensor<f32, [4], Storage::Stack>::new();
+  t[1] = 2.0;
+  return t;
+}
+```
+
+The storage is part of the type. A tensor of one storage class does not have the type of another.
+The interface file keeps the storage of each tensor type.
+
 ## 3. Typestates and Hardware Fallibility
 
 Because computations map to physical hardware, availability is non-deterministic.

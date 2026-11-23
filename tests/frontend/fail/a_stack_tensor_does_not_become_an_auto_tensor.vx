@@ -1,0 +1,19 @@
+//===- a_stack_tensor_does_not_become_an_auto_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The storage is part of a tensor's type. A stack tensor cannot be given to a name that
+// does not say `Storage::Stack`, since that name would treat the buffer as heap memory.
+
+// CHECK: is declared Tensor<f32, [4]> but its initializer is
+
+fn main() -> i32 {
+  let t : Tensor<f32, [4], Storage::Stack> = Tensor<f32, [4], Storage::Stack>::new();
+  let u : Tensor<f32, [4]> = t;
+  return 0;
+}

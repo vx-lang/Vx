@@ -860,20 +860,60 @@ mod tests {
     fn each_stated_shape_parses_to_its_own_type() {
         assert_eq!(
             parse_type("Tensor<f32, []>"),
-            Type::Tensor(ElementType::F32, vec![], None),
+            Type::Tensor(ElementType::F32, vec![], None, Storage::Auto),
             "an empty dimension list is rank 0"
         );
         assert_eq!(
             parse_type("Tensor<i64, [?, ?]>"),
-            Type::Tensor(ElementType::I64, vec![Dim::Dyn, Dim::Dyn], None),
+            Type::Tensor(
+                ElementType::I64,
+                vec![Dim::Dyn, Dim::Dyn],
+                None,
+                Storage::Auto
+            ),
             "the old spelling reads as a rank-2 tensor with run-time extents"
         );
         let shaped = parse_type("Tensor<f32, [2, 3]>");
-        let Type::Tensor(el, dims, None) = shaped else {
+        let Type::Tensor(el, dims, None, _) = shaped else {
             panic!("expected a shaped tensor, got {shaped:?}");
         };
         assert_eq!(el, ElementType::F32);
         assert_eq!(dims.len(), 2);
+    }
+
+    #[test]
+    fn tensor_storage_parses_after_the_shape_and_placement() {
+        assert!(matches!(
+            parse_type("Tensor<f32, [4], Storage::Stack>"),
+            Type::Tensor(_, _, None, Storage::Stack)
+        ));
+        assert!(matches!(
+            parse_type("Tensor<f32, [?], Memory::CPU_DRAM, Storage::Heap>"),
+            Type::Tensor(_, _, Some(_), Storage::Heap)
+        ));
+        assert!(matches!(
+            parse_type("Tensor<f32, [4], Memory::CPU_DRAM, aligned(64), Storage::Stack>"),
+            Type::Tensor(_, _, Some(_), Storage::Stack)
+        ));
+        assert!(matches!(
+            parse_type("Tensor<f32, [4], Storage::Auto>"),
+            Type::Tensor(_, _, None, Storage::Auto)
+        ));
+    }
+
+    #[test]
+    fn an_unknown_storage_class_is_refused() {
+        let input = "Tensor<f32, [4], Storage::Register>";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let err = parser
+            .parse_type()
+            .expect_err("an unknown storage class must not parse");
+        assert!(
+            format!("{err:?}").contains("Storage::Register"),
+            "unknown storage was refused for the wrong reason: {err:?}"
+        );
     }
 
     #[test]

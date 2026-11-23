@@ -32,7 +32,7 @@ impl FnEmit<'_> {
             {
                 self.agg_of[idx] = Some(agg_gid);
             }
-        } else if let Some((elem, shape)) = self.ctx.tensors.get(&gid) {
+        } else if let Some((elem, shape, _)) = self.ctx.tensors.get(&gid) {
             // The type of the signature, which holds the memory space of a shared tensor.
             self.mem_of[idx] = self
                 .func
@@ -100,7 +100,7 @@ impl FnEmit<'_> {
             ));
             self.names[idx] = n;
             self.pslot_of[idx] = true;
-        } else if let Some((elem, shape)) = self.ctx.tensors.get(&gid) {
+        } else if let Some((elem, shape, _)) = self.ctx.tensors.get(&gid) {
             // A tensor local: a rank-0 memref that holds its memref, as the AST codegen does.
             let mt = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
             let n = format!("%v{idx}");

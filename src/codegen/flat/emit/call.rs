@@ -127,8 +127,15 @@ impl FnEmit<'_> {
             .cloned();
         if let Some(slot_ty) = &ret_slot_ty {
             let slot = format!("%rs{idx}");
-            if crate::codegen::fits_on_the_stack(slot_ty) {
+            // The callee's return type says where the buffer goes. `Stack` always takes a slot in
+            // this frame, `Heap` always takes the heap, and `Auto` keeps the size rule.
+            if callee.ret_storage == Storage::Stack
+                || (callee.ret_storage == Storage::Auto
+                    && crate::codegen::fits_on_the_stack(slot_ty))
+            {
                 self.emit_slot(&format!("  {slot} = memref.alloca() : {slot_ty}\n"));
+            } else if callee.ret_storage == Storage::Heap {
+                self.body += &format!("  {slot} = memref.alloc() {{vx.heap}} : {slot_ty}\n");
             } else {
                 // A large result goes on the heap, as a large local does: 50 MB on the stack
                 // overflowed it. The buffer is made here, not in the entry block, because the drop
@@ -306,7 +313,7 @@ impl FnEmit<'_> {
                 let t = mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string();
                 self.etypes[idx] = Some(e);
                 Some(t)
-            } else if let Some((e, shape)) = self.ctx.tensors.get(&gid) {
+            } else if let Some((e, shape, _)) = self.ctx.tensors.get(&gid) {
                 let t = tensor_memref_ty(e, shape).ok_or(crate::emitter_gap!())?;
                 self.mem_of[idx] = Some(t.clone());
                 Some(t)

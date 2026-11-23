@@ -327,12 +327,28 @@ impl<'a> TypeChecker<'a> {
         let mut inner = t;
         loop {
             match inner {
-                Type::Tensor(elem, dims, top) => return Some((elem, dims, top)),
+                Type::Tensor(elem, dims, top, _) => return Some((elem, dims, top)),
                 Type::Borrow { inner: i, .. }
                 | Type::Pointer(i, _, _)
                 | Type::Pinned(i, _)
                 | Type::Ref(i, _) => inner = i.as_ref(),
                 _ => return None,
+            }
+        }
+    }
+
+    /// The storage of the tensor an operand denotes, seen through the wrappers that do not
+    /// change what it is. `Storage::Auto` for a non-tensor.
+    pub(crate) fn as_tensor_storage(t: &Type) -> Storage {
+        let mut inner = t;
+        loop {
+            match inner {
+                Type::Tensor(_, _, _, storage) => return *storage,
+                Type::Borrow { inner: i, .. }
+                | Type::Pointer(i, _, _)
+                | Type::Pinned(i, _)
+                | Type::Ref(i, _) => inner = i.as_ref(),
+                _ => return Storage::Auto,
             }
         }
     }
@@ -431,7 +447,7 @@ impl<'a> TypeChecker<'a> {
         let mut inner = t;
         loop {
             match inner {
-                Type::Tensor(elem, _, _) => return Some(elem),
+                Type::Tensor(elem, _, _, _) => return Some(elem),
                 Type::Borrow { inner: i, .. }
                 | Type::Pointer(i, _, _)
                 | Type::Pinned(i, _)
@@ -454,7 +470,7 @@ impl<'a> TypeChecker<'a> {
             | Type::Ref(inner, _) => inner.as_ref(),
             other => other,
         };
-        matches!(inner, Type::Tensor(ElementType::F32, dims, _) if dims.len() == 1)
+        matches!(inner, Type::Tensor(ElementType::F32, dims, _, _) if dims.len() == 1)
     }
 
     /// A rank-1 f16/bf16 tensor slice. A reduction over it (`dot`, `sum`, `max`, `min`) gives
@@ -469,7 +485,7 @@ impl<'a> TypeChecker<'a> {
         };
         matches!(
             inner,
-            Type::Tensor(ElementType::F16 | ElementType::BF16, dims, _) if dims.len() == 1
+            Type::Tensor(ElementType::F16 | ElementType::BF16, dims, _, _) if dims.len() == 1
         )
     }
 
@@ -495,11 +511,11 @@ impl<'a> TypeChecker<'a> {
             // they are two spellings of one fact, and a diagnostic that named it for
             // only one of them lost the detail as soon as `transfer` started
             // producing the other.
-            Type::Tensor(e, _, Some(p)) => format!(
+            Type::Tensor(e, _, Some(p), _) => format!(
                 "a tensor of {e:?} placed on Topology::{}",
                 p.topology.display_name()
             ),
-            Type::Tensor(e, _, _) => format!("a tensor of {e:?}"),
+            Type::Tensor(e, _, _, _) => format!("a tensor of {e:?}"),
             Type::Pinned(inner, top) => format!(
                 "{} placed on Topology::{}",
                 Self::short_type_name(inner),
@@ -555,10 +571,10 @@ impl<'a> TypeChecker<'a> {
                 let order = std::iter::once(lead).chain((0..elements.len()).filter(|&i| i != lead));
                 // An annotation such as `Tensor<f64, [2]>` gives the literals their element type.
                 let wanted = match &self.expected_type {
-                    Some(Type::Tensor(e, dims, _)) if nested && dims.len() > 1 => {
-                        Some(Type::Tensor(e.clone(), dims[1..].to_vec(), None))
-                    }
-                    Some(Type::Tensor(e, _, _)) if !nested => Some(Type::Scalar(e.clone())),
+                    Some(Type::Tensor(e, dims, _, _)) if nested && dims.len() > 1 => Some(
+                        Type::Tensor(e.clone(), dims[1..].to_vec(), None, Storage::Auto),
+                    ),
+                    Some(Type::Tensor(e, _, _, _)) if !nested => Some(Type::Scalar(e.clone())),
                     _ => None,
                 };
                 let mut elem_ty = ElementType::F32;
@@ -575,7 +591,7 @@ impl<'a> TypeChecker<'a> {
                             // A nested row reports `Tensor<e, [?, ?]>`; the initializer's element type
                             // is that inner `e`, which is also more accurate than the `f32`
                             // default this arm used to fall through to.
-                            (Type::Tensor(e, _, _), true) => elem_ty = e,
+                            (Type::Tensor(e, _, _, _), true) => elem_ty = e,
                             (other, _) => {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3018,
@@ -662,7 +678,7 @@ impl<'a> TypeChecker<'a> {
                         ))
                     })
                     .collect();
-                Type::Tensor(elem_ty, dims, None)
+                Type::Tensor(elem_ty, dims, None, Storage::Auto)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }

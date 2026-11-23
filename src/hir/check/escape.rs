@@ -32,8 +32,21 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         match stmt {
-            Statement::LetDecl(decl) => self.check_escape_in_calls(&decl.expr),
+            Statement::LetDecl(decl) => {
+                self.check_stack_tensor_escape_in(&decl.expr);
+                self.check_escape_in_calls(&decl.expr)
+            }
             Statement::Assign(AssignStmt { lhs, rhs, .. }) => {
+                self.check_stack_tensor_escape_in(rhs);
+                if self.is_stack_tensor_value(rhs) {
+                    if !matches!(lhs, Expr::Identifier(_)) {
+                        self.report_stack_tensor_escape(
+                            "this stores a stack tensor into a place other than a local variable",
+                            &rhs.span(),
+                        );
+                    }
+                    self.check_stack_tensor_loop_escape(lhs, rhs);
+                }
                 self.check_escape_in_calls(rhs);
                 // The error points at the place written to.
                 let span = lhs.span();
@@ -52,11 +65,158 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Return(ReturnStmt {
                 expr: Some(expr), ..
-            }) => self.check_escape_in_calls(expr),
-            Statement::ExprStmt(ExprStmtStmt { expr, .. }) => self.check_escape_in_calls(expr),
+            }) => {
+                self.check_stack_tensor_escape_in(expr);
+                // A stack tensor can leave only through a caller's stack slot, which is what a
+                // `Storage::Stack` return type means. Any other return would leave a dangling buffer.
+                let returns_stack = matches!(
+                    self.current_return_type,
+                    Some(Type::Tensor(_, _, _, crate::syntax::Storage::Stack))
+                );
+                if self.is_stack_tensor_value(expr) && !returns_stack {
+                    self.report_stack_tensor_escape(
+                        "this returns a stack tensor from a function that does not return `Storage::Stack`",
+                        &expr.span(),
+                    );
+                }
+                self.check_escape_in_calls(expr)
+            }
+            Statement::ExprStmt(ExprStmtStmt { expr, .. }) => {
+                self.check_stack_tensor_escape_in(expr);
+                self.check_escape_in_calls(expr)
+            }
             Statement::ForLoop(floop) => self.check_escape_in_calls(&floop.iterable),
             Statement::Assert(a) => self.check_escape_in_calls(&a.expr),
             _ => {}
+        }
+    }
+
+    /// Whether `e` is a tensor value whose buffer is in this function's frame.
+    fn is_stack_tensor_value(&self, e: &Expr) -> bool {
+        matches!(
+            self.check_expr_type_probe(e),
+            Type::Tensor(_, _, _, crate::syntax::Storage::Stack)
+        )
+    }
+
+    /// `prev = t`, where `t` is a stack tensor and `prev` is a variable of an outer block:
+    /// an assignment points `prev` at the buffer of `t` rather than copying it, and the
+    /// buffer of a value made in a loop body -- a `let` of the body, or the result of a call
+    /// the pass makes -- is one slot that every pass shares (its `memref.alloca` is hoisted
+    /// to the entry block). So `prev` would keep only the last pass's buffer, and the buffer
+    /// of an earlier pass is gone though `prev` still names it.
+    fn check_stack_tensor_loop_escape(&mut self, lhs: &Expr, rhs: &Expr) {
+        let Expr::Identifier(id) = lhs else {
+            return;
+        };
+        // The innermost loop body the assignment sits in, if there is one. An `if` or a
+        // block inside the body is inside the loop for this purpose: its statements are
+        // checked while the loop is on the stack.
+        let Some(loop_scope) = self.invariant_loops.last().map(|lp| lp.scope) else {
+            return;
+        };
+        if self.scope_depth_of(&id.name) >= loop_scope {
+            return;
+        }
+        // A plain name of the loop body names a buffer made in this pass. Anything else --
+        // a call, a literal, an index -- makes its buffer now, which is in this pass too.
+        let made_in_the_loop = match rhs {
+            Expr::Identifier(inner) => self.scope_depth_of(&inner.name) >= loop_scope,
+            _ => true,
+        };
+        if made_in_the_loop {
+            self.report_stack_tensor_escape(
+                "this assigns a stack tensor of a loop body to a variable declared outside \
+                 the loop. The passes share one buffer, so the variable would keep only the \
+                 last pass's. Declare the variable inside the loop, or make it \
+                 `Storage::Heap` or `Storage::Auto`",
+                &rhs.span(),
+            );
+        }
+    }
+
+    fn report_stack_tensor_escape(&mut self, what: &str, span: &crate::syntax::Span) {
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4005,
+            format!(
+                "{what}. A tensor with `Storage::Stack` is freed when its function returns. \
+                 Use `Storage::Heap`, or pass it by reference with `&`"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
+    /// The uses of a stack tensor by value inside `expr` that let it outlive the frame: an
+    /// argument of a call, and a part of a struct or enum literal. A reference (`&t`) is not one.
+    /// A task can run after the code that started it, and it can outlive this frame, so a task body
+    /// may not use a stack tensor. Call this before the body is checked, since checking moves it.
+    /// The walk is strict: a stack tensor declared inside the body is refused as well.
+    pub(crate) fn check_stack_tensor_uses_in_task(
+        &mut self,
+        stmts: &[Statement],
+        ret: Option<&Expr>,
+    ) {
+        let mut uses: Vec<crate::syntax::Span> = Vec::new();
+        crate::syntax::expr::visit_exprs(stmts, &mut |e| {
+            if matches!(e, Expr::Identifier(_)) && self.is_stack_tensor_value(e) {
+                uses.push(e.span());
+            }
+        });
+        if let Some(r) = ret {
+            crate::syntax::expr::visit_expr(r, &mut |e| {
+                if matches!(e, Expr::Identifier(_)) && self.is_stack_tensor_value(e) {
+                    uses.push(e.span());
+                }
+            });
+        }
+        for span in uses {
+            // A `&` does not rescue a task's use, so this message asks for the heap and
+            // not for a reference.
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4005,
+                "this task uses a stack tensor. A task can run after the function that \
+                 started it returns, and a tensor with `Storage::Stack` is the memory of \
+                 that function's frame, which is gone: make the tensor `Storage::Heap` or \
+                 `Storage::Auto`"
+                    .to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+            );
+        }
+    }
+
+    pub(crate) fn check_stack_tensor_escape_in(&mut self, expr: &Expr) {
+        let args: Vec<&Expr> = match expr {
+            // `print` reads its operand where the program is running, so a stack tensor
+            // reaches it in place and is not passed by value.
+            Expr::FunctionCall(c) if c.name.as_ref() == "print" => Vec::new(),
+            Expr::FunctionCall(c) => c.args.iter().collect(),
+            Expr::MethodCall(c) => c.args.iter().collect(),
+            Expr::IndirectCall(c) => c.args.iter().collect(),
+            _ => Vec::new(),
+        };
+        for arg in &args {
+            if self.is_stack_tensor_value(arg) {
+                self.report_stack_tensor_escape(
+                    "this passes a stack tensor by value to a call",
+                    &arg.span(),
+                );
+            }
+        }
+        if matches!(expr, Expr::StructInit(_) | Expr::EnumVariant(_)) {
+            for part in Self::value_parts(expr) {
+                if self.is_stack_tensor_value(part) {
+                    self.report_stack_tensor_escape(
+                        "this stores a stack tensor in a struct or enum value",
+                        &part.span(),
+                    );
+                }
+            }
+        }
+        for arg in args {
+            self.check_stack_tensor_escape_in(arg);
+        }
+        for sub in Self::value_parts(expr) {
+            self.check_stack_tensor_escape_in(sub);
         }
     }
 
@@ -778,9 +938,11 @@ impl<'a> TypeChecker<'a> {
                     other => other,
                 };
                 match base {
-                    Type::Tensor(el, dims, _) if dims.len() <= 1 => Type::Scalar(el),
-                    Type::Tensor(el, dims, top) if !matches!(&*ix.index, Expr::Range(_)) => {
-                        Type::Tensor(el, dims[1..].to_vec(), top)
+                    Type::Tensor(el, dims, _, _) if dims.len() <= 1 => Type::Scalar(el),
+                    Type::Tensor(el, dims, top, storage)
+                        if !matches!(&*ix.index, Expr::Range(_)) =>
+                    {
+                        Type::Tensor(el, dims[1..].to_vec(), top, storage)
                     }
                     _ => Type::Unknown,
                 }

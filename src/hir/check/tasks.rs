@@ -364,6 +364,9 @@ impl TypeChecker<'_> {
         let Expr::TaskBlock(tb) = expr else {
             unreachable!("only a task block reaches here")
         };
+        if tb.kind == TaskBlockKind::Spawn && !self.speculating {
+            self.check_stack_tensor_uses_in_task(&tb.stmts, tb.ret.as_deref());
+        }
         match tb.kind {
             TaskBlockKind::Tasks => self.check_tasks_block(expr, consume),
             TaskBlockKind::Spawn => {

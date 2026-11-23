@@ -233,6 +233,7 @@ impl<'a> TypeChecker<'a> {
                     ElementType::F32,
                     vec![],
                     None,
+                    Storage::Auto,
                 ));
                 self.check_statement(s, &expected_ret, consume);
             }
@@ -588,9 +589,10 @@ impl<'a> TypeChecker<'a> {
     fn located_parts(t: &Type) -> Option<(Type, Topology)> {
         match t {
             Type::Pinned(inner, top) => Some(((**inner).clone(), top.clone())),
-            Type::Tensor(e, d, Some(p)) => {
-                Some((Type::Tensor(e.clone(), d.clone(), None), p.topology.clone()))
-            }
+            Type::Tensor(e, d, Some(p), _) => Some((
+                Type::Tensor(e.clone(), d.clone(), None, Storage::Auto),
+                p.topology.clone(),
+            )),
             _ => None,
         }
     }
@@ -612,8 +614,19 @@ impl<'a> TypeChecker<'a> {
         if let (Some((t_inner, t_top)), Some((s_inner, s_top))) =
             (Self::located_parts(target), Self::located_parts(source))
         {
+            // The storage is part of a tensor's type, and a placement does not lift it: a
+            // stack buffer is the memory of this function's frame, and the place that would
+            // hold it treats it as heap memory. The tensor branch below makes the same
+            // comparison for tensors that name no placement.
+            if let (Type::Tensor(_, _, _, t_sto), Type::Tensor(_, _, _, s_sto)) = (target, source) {
+                if t_sto != s_sto {
+                    return false;
+                }
+            }
             // A tensor fits where a smaller alignment is asked, not a larger one.
-            if let (Type::Tensor(_, _, Some(t)), Type::Tensor(_, _, Some(s))) = (target, source) {
+            if let (Type::Tensor(_, _, Some(t), _), Type::Tensor(_, _, Some(s), _)) =
+                (target, source)
+            {
                 if self.alignment_of(s) < self.alignment_of(t) {
                     return false;
                 }
@@ -696,14 +709,20 @@ impl<'a> TypeChecker<'a> {
         // to move data across memory boundaries.
 
         // Allow numeric coercions for scalar literals (mock behavior for now)
-        if let Type::Tensor(t_target, dims_target, top_target) = target {
-            if let Type::Tensor(t_source, dims_source, top_source) = &source {
+        if let Type::Tensor(t_target, dims_target, top_target, sto_target) = target {
+            if let Type::Tensor(t_source, dims_source, top_source, sto_source) = &source {
                 let mut el_match = false;
                 if *t_target == *t_source {
                     el_match = true;
                 }
 
                 if !el_match {
+                    return false;
+                }
+
+                // The storage is part of a tensor's type. A stack buffer must not reach a place
+                // that expects another storage, since that place would treat it as heap memory.
+                if sto_target != sto_source {
                     return false;
                 }
 
@@ -847,7 +866,7 @@ impl<'a> TypeChecker<'a> {
         // agree on it -- one emitted the allocation and the fill, the other kept the bare
         // constant. `Tensor<T, [..]>::fill(v)` says it instead. The any-to-any arm went with the
         // rest of implicit numeric conversion (#240, Vx#396).
-        if let Type::Tensor(t_target, dims_target, _) = target {
+        if let Type::Tensor(t_target, dims_target, _, _) = target {
             if let Type::Scalar(t_source) = &source {
                 return dims_target.is_empty() && *t_target == *t_source;
             }
@@ -908,11 +927,15 @@ impl<'a> TypeChecker<'a> {
                 // A reference inside `&mut` is invariant: a write through the outer reference
                 // stores it, so the two inner references must fit each other both ways,
                 // lifetimes included. `&mut Tensor<f32, [4]>` still passes as `[?]`.
+                // A borrow of any storage fits a borrow that does not name one: the callee reads
+                // or writes the buffer and does not keep it.
+                let target_inner_ns = without_storage(target_inner);
+                let source_inner_ns = without_storage(source_inner);
                 let inner_is_reference = matches!(**target_inner, Type::Borrow { .. });
-                let inner_fits = self.is_assignable(target_inner, source_inner)
+                let inner_fits = self.is_assignable(&target_inner_ns, &source_inner_ns)
                     && (!*target_mut
                         || !inner_is_reference
-                        || self.is_assignable(source_inner, target_inner));
+                        || self.is_assignable(&source_inner_ns, &target_inner_ns));
                 if target_mem == source_mem && (!*target_mut || *source_mut) && inner_fits {
                     // Hook up 256-bit FastPath Borrow Checker algorithm from src/borrow.rs
                     let id_target = self.lower_to_type_id(target);
@@ -945,7 +968,7 @@ impl<'a> TypeChecker<'a> {
     /// The `(element, dims)` of the tensor at the core of a (possibly wrapped) type, if any.
     pub(crate) fn tensor_of(ty: &Type) -> Option<(&ElementType, &[Dim])> {
         match ty {
-            Type::Tensor(e, d, _) => Some((e, d.as_slice())),
+            Type::Tensor(e, d, _, _) => Some((e, d.as_slice())),
             Type::Ref(inner, _)
             | Type::Pinned(inner, _)
             | Type::Verified(inner)
@@ -953,5 +976,19 @@ impl<'a> TypeChecker<'a> {
             | Type::DisjointRanges(inner) => Self::tensor_of(inner),
             _ => None,
         }
+    }
+}
+
+/// The type with every tensor's storage set to `Auto`, through the wrappers that hold a tensor.
+fn without_storage(ty: &Type) -> Type {
+    match ty {
+        Type::Tensor(e, d, p, _) => Type::Tensor(
+            e.clone(),
+            d.clone(),
+            p.clone(),
+            crate::syntax::Storage::Auto,
+        ),
+        Type::Distinct(inner) => Type::Distinct(Box::new(without_storage(inner))),
+        other => other.clone(),
     }
 }

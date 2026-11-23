@@ -646,9 +646,13 @@ fn run_expect_lines_on_the_ast_code_generator(path: &Path) -> Result<(), String>
     println!("DEBUG: MeliorGenerator::new");
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     println!("DEBUG: codegen.generate");
-    codegen
-        .generate(&monomorphized_program, &module_syntaxes)
-        .unwrap();
+    if let Err(e) = codegen.generate(&monomorphized_program, &module_syntaxes) {
+        return Err(format!(
+            "Code generation failed for {}: {:?}",
+            path.display(),
+            e
+        ));
+    }
     println!("DEBUG: codegen.into_module");
     let mut module = codegen.into_module();
     // `vxc --legacy-codegen` verifies the module before lowering it, and so does this: the

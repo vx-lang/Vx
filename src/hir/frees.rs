@@ -159,7 +159,7 @@ fn pointee(ty: &Type) -> Option<Type> {
 fn element(ty: &Type) -> Option<Type> {
     match ty {
         Type::Pointer(inner, ..) => Some((**inner).clone()),
-        Type::Tensor(e, dims, _) if dims.len() == 1 => Some(Type::Scalar(e.clone())),
+        Type::Tensor(e, dims, _, _) if dims.len() == 1 => Some(Type::Scalar(e.clone())),
         _ => None,
     }
 }

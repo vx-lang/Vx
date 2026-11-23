@@ -1,0 +1,21 @@
+//===- a_struct_field_does_not_name_storage_stack.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A struct value can outlive the function that made it, so no field of it can name
+// `Storage::Stack`, whose buffer is the memory of one function's frame. The refusal is at the
+// declaration, so the field cannot be read or written anywhere.
+
+// CHECK: field 't' of struct 'Holder' holds a `Storage::Stack` tensor
+struct Holder {
+  t : Tensor<f32, [4], Storage::Stack>,
+}
+
+fn main() -> i32 {
+  return 0;
+}

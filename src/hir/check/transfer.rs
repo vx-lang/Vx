@@ -559,11 +559,11 @@ impl<'a> TypeChecker<'a> {
                 // may count or compare them. Its width is the target's, not the program's
                 // choice. A tensor or vector of `usize` is data, and stays checked below.
                 Type::Scalar(ElementType::USize) => {}
-                Type::Scalar(e) | Type::Simd(e, _) | Type::Tensor(e, _, None) => out.push(e),
+                Type::Scalar(e) | Type::Simd(e, _) | Type::Tensor(e, _, None, _) => out.push(e),
                 // These name the device that holds the value, and the placement checks ask
                 // that device. Asking the region's device instead would report against a
                 // machine the value never touches.
-                Type::Tensor(_, _, Some(_)) | Type::Pinned(..) => {}
+                Type::Tensor(_, _, Some(_), _) | Type::Pinned(..) => {}
                 Type::Ref(inner, _)
                 | Type::Verified(inner)
                 | Type::Distinct(inner)
@@ -1484,7 +1484,7 @@ impl<'a> TypeChecker<'a> {
                     self.check_alignments_in(a, context, span);
                 }
             }
-            Type::Tensor(_, _, Some(p)) => {
+            Type::Tensor(_, _, Some(p), _) => {
                 let Some(n) = p.alignment else {
                     return;
                 };
@@ -1543,6 +1543,7 @@ impl<'a> TypeChecker<'a> {
         // A raw pointer, such as the room of a channel, points at tensors that it does not hold.
         let record = record && !matches!(ty, Type::Pointer(..));
         self.report_unheld_placements(ty, context);
+        self.check_stack_storage_with_placement(ty, context, span);
         self.check_alignments_in(ty, context, span);
         for t in self.placed_tensors(ty) {
             self.check_capacity_of(&t.elem, &t.dims, &t.copy, context, span, record, 1);
@@ -1551,6 +1552,36 @@ impl<'a> TypeChecker<'a> {
                 t.device.as_ref(),
                 &t.copy.space,
                 context,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
+    /// A stack buffer is the memory of this function's frame, so it cannot sit in the memory of
+    /// a device: the runtime would allocate a host `memref.alloca` for it and hand the device's
+    /// kernel a host stack pointer. Only the host's own memory can name a placement, since that
+    /// is where the frame is.
+    fn check_stack_storage_with_placement(&mut self, ty: &Type, context: &str, span: &Span) {
+        let mut bad: Vec<String> = Vec::new();
+        ty.for_each_tensor_type(&mut |_, _, place, storage| {
+            if *storage != Storage::Stack {
+                return;
+            }
+            if let Some(p) = place {
+                if p.space != MemorySpace::CPUDRAM {
+                    bad.push(format!("`Memory::{}`", p.space.name()));
+                }
+            }
+        });
+        for space in bad {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3001,
+                format!(
+                    "{context} names both `Storage::Stack` and {space}. A stack buffer is the \
+                     memory of the function's frame, which no device's memory is: write the \
+                     `Storage::Stack` without the placement, or the placement with \
+                     `Storage::Heap` or `Storage::Auto`",
+                ),
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
         }
@@ -2585,19 +2616,19 @@ impl<'a> TypeChecker<'a> {
             // `Tensor<f16, [n, n], Memory::NPU_HBM>` were two different types for the same fact
             // and would not assign to one another. `Pinned` also carries only a topology, so the
             // space the transfer named was not recorded on the value at all.
-            Type::Tensor(el, dims, _) => Type::Tensor(el, dims, Some(placement)),
+            Type::Tensor(el, dims, _, storage) => Type::Tensor(el, dims, Some(placement), storage),
             // A copy has the same values, so it is still `Distinct`.
             Type::Distinct(inner) if matches!(*inner, Type::Tensor(..)) => {
-                let Type::Tensor(el, dims, _) = *inner else {
+                let Type::Tensor(el, dims, _, storage) = *inner else {
                     unreachable!("matched above")
                 };
-                Type::Distinct(Box::new(Type::Tensor(el, dims, Some(placement))))
+                Type::Distinct(Box::new(Type::Tensor(el, dims, Some(placement), storage)))
             }
             Type::DisjointRanges(inner) if matches!(*inner, Type::Tensor(..)) => {
-                let Type::Tensor(el, dims, _) = *inner else {
+                let Type::Tensor(el, dims, _, storage) = *inner else {
                     unreachable!("matched above")
                 };
-                Type::DisjointRanges(Box::new(Type::Tensor(el, dims, Some(placement))))
+                Type::DisjointRanges(Box::new(Type::Tensor(el, dims, Some(placement), storage)))
             }
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
@@ -2720,6 +2751,11 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_spawnon_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
+        if let Expr::SpawnOn(s) = expr {
+            if !self.speculating {
+                self.check_stack_tensor_uses_in_task(&s.stmts, s.ret.as_deref());
+            }
+        }
         match expr {
             Expr::SpawnOn(SpawnOnExpr {
                 top,

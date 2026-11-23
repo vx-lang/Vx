@@ -920,7 +920,7 @@ impl<'a> TypeChecker<'a> {
                     [t] => self.operand_type(t),
                     _ => Type::Unknown,
                 };
-                if let Type::Tensor(_, _, Some(p)) = &ty {
+                if let Type::Tensor(_, _, Some(p), _) = &ty {
                     if p.space != crate::syntax::MemorySpace::CPUDRAM {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3004,
@@ -941,7 +941,7 @@ impl<'a> TypeChecker<'a> {
                 };
                 let checked = match fc.args.as_slice() {
                     [_] => match ty {
-                        Type::Tensor(el, dims, _) if shape_holds(&dims) => match el {
+                        Type::Tensor(el, dims, _, _) if shape_holds(&dims) => match el {
                             ElementType::I32 => Some("i32"),
                             ElementType::I64 => Some("i64"),
                             ElementType::U32 => Some("u32"),
@@ -1114,7 +1114,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 // A number literal given to `Tensor<T, ..>::fill` takes the element type `T`.
                 if resolved_name == "Tensor::fill".into() {
-                    if let (Some(Type::Tensor(elem, _, _)), Some(value)) =
+                    if let (Some(Type::Tensor(elem, _, _, _)), Some(value)) =
                         (explicit_generic_args.first(), args.last_mut())
                     {
                         if crate::hir::expr::numeric_literal_mut(value).is_some() {
@@ -1755,7 +1755,7 @@ impl<'a> TypeChecker<'a> {
             (Type::Borrow { inner: p, .. }, Type::Borrow { inner: a, .. }) => (&**p, &**a),
             pair => pair,
         };
-        let (Type::Tensor(_, _, None), Some(place)) = (param, arg.placement()) else {
+        let (Type::Tensor(_, _, None, _), Some(place)) = (param, arg.placement()) else {
             return;
         };
         let here = self.active_topology.clone();
@@ -2763,7 +2763,7 @@ impl<'a> TypeChecker<'a> {
                     | ElementType::U64
                     | ElementType::U128
             ),
-            Type::Tensor(e, _, _) => matches!(
+            Type::Tensor(e, _, _, _) => matches!(
                 e,
                 ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
             ),
@@ -2881,7 +2881,7 @@ impl<'a> TypeChecker<'a> {
             // takes exactly the arguments the other cannot. `::fill(v)` adds one on top: the
             // value, which no other constructor takes.
             let fills = resolved_name == "Tensor::fill";
-            let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn)));
+            let dynamic = matches!(ty, Type::Tensor(_, dims, _, _) if dims.iter().any(|d| matches!(d, Dim::Dyn)));
             let wanted = usize::from(dynamic) + usize::from(fills);
             if args.len() != wanted {
                 let why = if fills {
@@ -2910,7 +2910,7 @@ impl<'a> TypeChecker<'a> {
             }
             // The fill value has the tensor's element type: a number literal was given it when
             // the arguments were checked, and a typed value needs `as`.
-            if let (true, Type::Tensor(elem, _, _), Some(Type::Scalar(got)), Some(value)) =
+            if let (true, Type::Tensor(elem, _, _, _), Some(Type::Scalar(got)), Some(value)) =
                 (fills, ty, arg_types.last(), args.last())
             {
                 if got != elem {
@@ -2928,7 +2928,7 @@ impl<'a> TypeChecker<'a> {
             // a static extent (Vx#399). Refused rather than quietly answered with a `?`:
             // the type was written down, and handing back a different one is how a shape nobody
             // can read comes to be trusted by a later check. A const generic does evaluate.
-            if let (false, Type::Tensor(_, dims, _)) = (dynamic, ty) {
+            if let (false, Type::Tensor(_, dims, _, _)) = (dynamic, ty) {
                 let mut env = HashMap::new();
                 for scope in &self.consteval.env {
                     for (k, v) in scope {
@@ -2947,7 +2947,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
-            if let Type::Tensor(elem, dims, _) = ty {
+            if let Type::Tensor(elem, dims, _, _) = ty {
                 self.refuse_unrepresentable_shape(elem, dims, &call_span);
             }
             return Some(ty.clone());
@@ -2973,7 +2973,7 @@ impl<'a> TypeChecker<'a> {
                 );
             }
             match arg_types {
-                [ty @ Type::Tensor(elem, dims, _)]
+                [ty @ Type::Tensor(elem, dims, _, _)]
                     if dims.len() == 1 && (elem.is_signed_int() || elem.is_unsigned_int()) =>
                 {
                     Some(Type::Distinct(Box::new(ty.clone())))
@@ -3000,7 +3000,7 @@ impl<'a> TypeChecker<'a> {
                 );
             }
             match arg_types {
-                [ty @ Type::Tensor(elem, dims, _)]
+                [ty @ Type::Tensor(elem, dims, _, _)]
                     if dims.len() == 2
                         && dims[1].literal() == Some("2")
                         && (elem.is_signed_int() || elem.is_unsigned_int()) =>
@@ -3074,7 +3074,7 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect::<Vec<_>>();
             self.refuse_unrepresentable_shape(&el_ty, &dims, &call_span);
-            Some(Type::Tensor(el_ty, dims, None))
+            Some(Type::Tensor(el_ty, dims, None, Storage::Auto))
         } else if resolved_name.starts_with("Math::") {
             if args.len() != 1 {
                 self.errors.push(format!(
@@ -3230,7 +3230,7 @@ impl<'a> TypeChecker<'a> {
                             .collect(),
                         None => vec![Dim::Dyn; rank],
                     };
-                    Some(Type::Tensor(e, dims, place))
+                    Some(Type::Tensor(e, dims, place, Storage::Auto))
                 }
                 None => {
                     if !self.speculating {
@@ -3735,7 +3735,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Borrow { inner, .. } => inner.as_ref(),
                     ty => ty,
                 };
-                if let Type::Tensor(el_ty, _, _) = tensor_ty {
+                if let Type::Tensor(el_ty, _, _, _) = tensor_ty {
                     if _method.as_ref() == "map" && args.len() == 1 {
                         if let Expr::Closure(c) = &mut args[0] {
                             if c.params.len() == 1 && c.params[0].1 == Type::Unknown {
@@ -4225,7 +4225,7 @@ impl<'a> TypeChecker<'a> {
                             Type::Pointer(Box::new(Type::Scalar(el.clone())), place.clone(), is_mut)
                         };
                     match &base_ty {
-                        Type::Tensor(el, _, place) => {
+                        Type::Tensor(el, _, place, _) => {
                             // The tensor can be written through the pointer, so it changes.
                             if is_mut {
                                 self.changed_vars.extend(receiver_root.clone());
@@ -4245,7 +4245,7 @@ impl<'a> TypeChecker<'a> {
                                 );
                             }
                             base_ty = match inner.as_ref() {
-                                Type::Tensor(el, _, place) => element_pointer(is_mut, el, place),
+                                Type::Tensor(el, _, place, _) => element_pointer(is_mut, el, place),
                                 _ => {
                                     let place = mem
                                         .as_ref()
@@ -4461,7 +4461,7 @@ impl<'a> TypeChecker<'a> {
     /// known, and `Unknown` otherwise, so a `let` that names the same shape does not report a
     /// second mismatch.
     fn check_reshape(&mut self, base_ty: &Type, args: &[Expr], span: &crate::syntax::Span) -> Type {
-        let Type::Tensor(el_ty, dims, top) = base_ty else {
+        let Type::Tensor(el_ty, dims, top, _) = base_ty else {
             unreachable!("reshape is only checked on a tensor");
         };
         let error = |s: &mut Self, msg: String| {
@@ -4515,6 +4515,7 @@ impl<'a> TypeChecker<'a> {
             el_ty.clone(),
             new_dims.iter().cloned().map(Dim::Static).collect(),
             top.clone(),
+            Storage::Auto,
         );
 
         let empty_env = HashMap::new();
@@ -4580,7 +4581,7 @@ impl<'a> TypeChecker<'a> {
     /// `t.pad([d0, d1, ..])`: a new tensor of that shape, with `t` at the start of every axis
     /// and zeros after it. Every error here is E3047, like `reshape`'s.
     fn check_pad(&mut self, base_ty: &Type, args: &[Expr], span: &crate::syntax::Span) -> Type {
-        let Type::Tensor(el_ty, dims, top) = base_ty else {
+        let Type::Tensor(el_ty, dims, top, _) = base_ty else {
             unreachable!("pad is only checked on a tensor");
         };
         let error = |s: &mut Self, msg: String| {
@@ -4604,6 +4605,7 @@ impl<'a> TypeChecker<'a> {
             el_ty.clone(),
             new_dims.iter().cloned().map(Dim::Static).collect(),
             top.clone(),
+            Storage::Auto,
         );
         if top.is_some() {
             error(
@@ -4684,7 +4686,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if let Type::Tensor(el_ty, dims, top) = base_ty {
+        if let Type::Tensor(el_ty, dims, top, _) = base_ty {
             if _method == "topology" {
                 if !args.is_empty() {
                     self.errors
@@ -4696,7 +4698,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors.push("clone takes no arguments".to_string());
                 }
                 return Some((
-                    Type::Tensor(el_ty.clone(), dims.clone(), top.clone()),
+                    Type::Tensor(el_ty.clone(), dims.clone(), top.clone(), Storage::Auto),
                     false,
                 ));
             } else if _method == "reshape" {
@@ -4812,7 +4814,10 @@ impl<'a> TypeChecker<'a> {
                             return Some((base_ty.clone(), false));
                         }
                     }
-                    return Some((Type::Tensor(el_ty.clone(), new_dims, top.clone()), false));
+                    return Some((
+                        Type::Tensor(el_ty.clone(), new_dims, top.clone(), Storage::Auto),
+                        false,
+                    ));
                 } else {
                     self.errors
                         .push("transpose requires an array of permutation indices".to_string());

@@ -1069,6 +1069,7 @@ pub fn build_frozen_registry_with(
                         crate::registry::FnSig {
                             gid,
                             params: ext.params.iter().map(|(_, t)| t.clone()).collect(),
+                            ret_storage: ext.return_type.storage(),
                             ret_ty: ext.return_type.clone(),
                             // An `extern` is an opaque foreign symbol with no analysable body, so its
                             // return provenance is unknown: the conservative top (any parameter).
@@ -1130,6 +1131,7 @@ pub fn build_frozen_registry_with(
                             crate::registry::FnSig {
                                 gid,
                                 params: m.params.iter().map(|(_, t)| t.clone()).collect(),
+                                ret_storage: m.return_type.storage(),
                                 ret_ty: m.return_type.clone(),
                                 ret_prov: crate::hir::provenance::encode_return_provenance(
                                     &crate::hir::provenance::compute_return_provenance(m),
@@ -1167,6 +1169,7 @@ pub fn fn_sig_of(module_hash: u64, f: &syntax::Function) -> crate::registry::FnS
             0,
         ),
         params: f.params.iter().map(|(_, t)| t.clone()).collect(),
+        ret_storage: f.return_type.storage(),
         ret_ty: f.return_type.clone(),
         // Precomputed from the AST body while it is present, so a downstream compile that only
         // has this interface can still refine the reborrow decision for a call to `f`.

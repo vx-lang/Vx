@@ -8,7 +8,7 @@
 //! Source-independent keys shared by aggregate layouts and function specializations.
 
 use super::types::Mangle;
-use super::{Expr, Type};
+use super::{Expr, Storage, Type};
 
 /// Tagged nodes and length-delimited atoms keep nested keys unambiguous without escaping child keys.
 #[derive(Default)]
@@ -158,9 +158,18 @@ pub(crate) fn specialization_type_name(ty: &Type) -> Option<String> {
     fn visit(ty: &Type, path: &str, entries: &mut Vec<(String, String)>) -> Option<()> {
         let mut record = |key: String| entries.push((path.to_owned(), key));
         match ty {
-            Type::Tensor(_, _, Some(p)) | Type::Pointer(_, Some(p), _) => {
+            Type::Tensor(_, _, placement, storage) => {
+                if let Some(p) = placement {
+                    record(placement_key(&Some(p.clone()))?);
+                }
+                if *storage != Storage::Auto {
+                    record(format!("storage({storage:?})"));
+                }
+            }
+            Type::Pointer(_, Some(p), _) => {
                 record(placement_key(&Some(p.clone()))?);
             }
+
             Type::Borrow {
                 mem_space: Some(space),
                 ..
@@ -253,6 +262,20 @@ mod tests {
             first, second,
             "nested expression keys must retain the leaf name"
         );
+    }
+
+    #[test]
+    fn tensor_storage_separates_specializations() {
+        use crate::syntax::{Dim, ElementType, Storage, Type};
+
+        let tensor = |storage| Type::Tensor(ElementType::F32, vec![Dim::Dyn], None, storage);
+        let auto = specialization_type_name(&tensor(Storage::Auto)).unwrap();
+        let stack = specialization_type_name(&tensor(Storage::Stack)).unwrap();
+        let heap = specialization_type_name(&tensor(Storage::Heap)).unwrap();
+
+        assert_ne!(auto, stack);
+        assert_ne!(stack, heap);
+        assert_ne!(auto, heap);
     }
 
     #[test]

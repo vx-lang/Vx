@@ -33,7 +33,7 @@ use crate::symbol::Symbol;
 use crate::syntax::scalar_of;
 use crate::syntax::{
     BinaryOp, Dim, ElementType, Expr, Function, LogicalOp, NumberExpr, RelationalOp, Statement,
-    Type, UnaryOp,
+    Storage, Type, UnaryOp,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -50,9 +50,7 @@ pub fn scalar_gid(elem: &ElementType) -> TypeId {
 /// *same* identity in a signature (`pipeline.rs`) and a lowered body — the flat type stream must
 /// agree on identity, exactly as for scalars.
 pub fn tensor_gid(elem: &ElementType, shape: &[String]) -> TypeId {
-    let sym = crate::hash::DefPath::Named(&format!("$tensor::{elem:?}::[{}]", shape.join(",")))
-        .compute_symbol_hash();
-    TypeId::new(0, sym, 0, 0)
+    tensor_gid_with_storage(elem, shape, Storage::Auto)
 }
 
 /// The stable GID of a vector type (`<N x T>`): module 0 (builtin) + a content hash of the element
@@ -183,28 +181,44 @@ pub fn closure_pair_gid() -> TypeId {
 
 /// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
 /// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
+pub fn tensor_gid_with_storage(elem: &ElementType, shape: &[String], storage: Storage) -> TypeId {
+    let storage = match storage {
+        Storage::Auto => "",
+        Storage::Stack => "::stack",
+        Storage::Heap => "::heap",
+    };
+    let sym = crate::hash::DefPath::Named(&format!(
+        "$tensor::{elem:?}::[{}]{storage}",
+        shape.join(",")
+    ))
+    .compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
+/// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
+/// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
 pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
-    let (elem, shape) = tensor_elem_shape(ty)?;
-    Some(tensor_gid(&elem, &shape))
+    let (elem, shape, storage) = tensor_elem_shape(ty)?;
+    Some(tensor_gid_with_storage(&elem, &shape, storage))
 }
 
 /// The element type + canonical shape of a `Type::Tensor`, or `None` if it is unmodelled (generic
 /// element, or a dim that isn't a literal/name). The shape is what the flat lowerer rank-reduces on
 /// indexing.
-fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
+fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>, Storage)> {
     // At run time, a `Distinct` tensor is its tensor.
     let ty = match ty {
         Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.as_ref(),
         ty => ty,
     };
-    let Type::Tensor(elem, dims, _) = ty else {
+    let Type::Tensor(elem, dims, _, storage) = ty else {
         return None;
     };
     if matches!(elem, ElementType::Generic(_)) {
         return None;
     }
     let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
-    Some((elem.clone(), shape))
+    Some((elem.clone(), shape, *storage))
 }
 
 /// A dimension whose extent is a run-time value. Spelled the way MLIR spells it, and distinct from
@@ -370,6 +384,7 @@ enum LoweredTy {
     Tensor {
         elem: ElementType,
         shape: Vec<String>,
+        storage: Storage,
     },
     /// A raw pointer (`!llvm.ptr`): a string value, or a `*const`/`*mut` FFI argument or result. All
     /// pointers share one opaque type (matching MLIR), so no element is carried. Stored in a slot via
@@ -388,7 +403,11 @@ impl LoweredTy {
         match self {
             LoweredTy::Scalar(e) => scalar_gid(e),
             LoweredTy::Aggregate(id) => *id,
-            LoweredTy::Tensor { elem, shape } => tensor_gid(elem, shape),
+            LoweredTy::Tensor {
+                elem,
+                shape,
+                storage,
+            } => tensor_gid_with_storage(elem, shape, *storage),
             LoweredTy::Ptr => ptr_gid(),
             LoweredTy::Vector { elem, lanes } => vector_gid(elem, *lanes),
         }
@@ -511,7 +530,7 @@ struct Lowerer<'r> {
     /// Tensor-type side table `GID -> (element, shape)`, recorded as tensor-typed values are emitted.
     /// Tensor GIDs are content hashes, so codegen recovers a tensor's memref shape from here rather
     /// than by inverting the GID (which is impossible). Committed onto the worker.
-    tensor_types: Vec<(TypeId, ElementType, Vec<String>)>,
+    tensor_types: Vec<(TypeId, ElementType, Vec<String>, Storage)>,
     /// String side table: the bytes for each `PrintStr` emitted, in emission order. A `PrintStr`'s
     /// `imm` indexes here; codegen emits an `llvm.mlir.global` per entry. Committed onto the worker.
     strings: Vec<String>,
@@ -721,9 +740,14 @@ impl<'r> Lowerer<'r> {
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(ty.gid());
         // Record tensor types in the side table so codegen can recover the memref shape by GID.
-        if let LoweredTy::Tensor { elem, shape } = &ty {
+        if let LoweredTy::Tensor {
+            elem,
+            shape,
+            storage,
+        } = &ty
+        {
             self.tensor_types
-                .push((ty.gid(), elem.clone(), shape.clone()));
+                .push((ty.gid(), elem.clone(), shape.clone(), *storage));
             if makes_a_fresh_tensor(opcode) {
                 self.note_temp(Register(self.code.len() as u32));
             }
@@ -919,7 +943,7 @@ impl<'r> Lowerer<'r> {
     fn wrap_scalar_in_rank0_ret(&mut self, v: Val) -> Lowered<Val> {
         let wrap = matches!(
             (self.ret_ty.as_ref(), &v.ty),
-            (Some(LoweredTy::Tensor { elem, shape }), LoweredTy::Scalar(se))
+            (Some(LoweredTy::Tensor { elem, shape, .. }), LoweredTy::Scalar(se))
                 if shape.is_empty() && elem == se
         );
         if !wrap {
@@ -933,6 +957,10 @@ impl<'r> Lowerer<'r> {
                 what: "a rank-0 tensor of this element",
             })?
             .div_ceil(8);
+        let storage = match self.ret_ty.as_ref() {
+            Some(LoweredTy::Tensor { storage, .. }) => *storage,
+            _ => Storage::Auto,
+        };
         let buf = self.emit_typed(
             Opcode::TensorAlloc,
             Register(0),
@@ -940,6 +968,7 @@ impl<'r> Lowerer<'r> {
             LoweredTy::Tensor {
                 elem: se,
                 shape: vec![],
+                storage,
             },
             bytes,
         );
@@ -951,7 +980,7 @@ impl<'r> Lowerer<'r> {
     /// wraps a scalar, and arithmetic/comparisons operate on the value (Vx#396).
     fn read_rank0(&mut self, v: Val) -> Val {
         match &v.ty {
-            LoweredTy::Tensor { elem, shape } if shape.is_empty() => {
+            LoweredTy::Tensor { elem, shape, .. } if shape.is_empty() => {
                 let e = elem.clone();
                 self.emit_typed(
                     Opcode::TensorLoad,
@@ -985,9 +1014,14 @@ impl<'r> Lowerer<'r> {
         }
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(v.ty.gid());
-        if let LoweredTy::Tensor { elem, shape } = &v.ty {
+        if let LoweredTy::Tensor {
+            elem,
+            shape,
+            storage,
+        } = &v.ty
+        {
             self.tensor_types
-                .push((v.ty.gid(), elem.clone(), shape.clone()));
+                .push((v.ty.gid(), elem.clone(), shape.clone(), *storage));
         }
         self.code.push(HirInstruction::new(
             Opcode::Print,
@@ -1580,6 +1614,7 @@ impl<'r> Lowerer<'r> {
                             let ty = LoweredTy::Tensor {
                                 elem: table.elem.clone(),
                                 shape: vec![table.len.to_string()],
+                                storage: Storage::Auto,
                             };
                             return Ok(self.emit_typed(
                                 Opcode::ConstTable,
@@ -1621,9 +1656,11 @@ impl<'r> Lowerer<'r> {
                         LoweredTy::Tensor {
                             elem: ElementType::F16 | ElementType::BF16,
                             shape,
+                            storage,
                         } if mixed && shape.len() == 1 => LoweredTy::Tensor {
                             elem: ElementType::F32,
                             shape: shape.clone(),
+                            storage: *storage,
                         },
                         other => other.clone(),
                     }
@@ -1635,7 +1672,11 @@ impl<'r> Lowerer<'r> {
                 // with a runtime `memref.dim`, and stays the oracle for them.
                 let result_ty = if matches!(b.op, BinaryOp::MatMul) {
                     let (
-                        LoweredTy::Tensor { elem, shape: ls },
+                        LoweredTy::Tensor {
+                            elem,
+                            shape: ls,
+                            storage,
+                        },
                         LoweredTy::Tensor { shape: rs, .. },
                     ) = (&l.ty, &r.ty)
                     else {
@@ -1653,6 +1694,7 @@ impl<'r> Lowerer<'r> {
                     LoweredTy::Tensor {
                         elem: elem.clone(),
                         shape: vec![ls[0].clone(), rs[1].clone()],
+                        storage: *storage,
                     }
                 } else {
                     match (&l.ty, &r.ty) {
@@ -1727,10 +1769,11 @@ impl<'r> Lowerer<'r> {
                     what: "a cast to a non-scalar",
                 })?;
                 // `t as f32` on a tensor in memory: a new tensor of the same shape.
-                if let LoweredTy::Tensor { shape, .. } = &v.ty {
+                if let LoweredTy::Tensor { shape, storage, .. } = &v.ty {
                     let ty = LoweredTy::Tensor {
                         elem: target,
                         shape: shape.clone(),
+                        storage: *storage,
                     };
                     return Ok(self.emit_typed(Opcode::TensorCast, v.reg, Register(0), ty, 0));
                 }
@@ -1774,8 +1817,12 @@ impl<'r> Lowerer<'r> {
                 }
                 let base = self.lower_expr(&ix.base)?;
                 match &base.ty {
-                    LoweredTy::Tensor { elem, shape } => {
-                        let (elem, shape) = (elem.clone(), shape.clone());
+                    LoweredTy::Tensor {
+                        elem,
+                        shape,
+                        storage,
+                    } => {
+                        let (elem, shape, storage) = (elem.clone(), shape.clone(), *storage);
                         if shape.is_empty() {
                             return Err(Decline::TypeNotModelled {
                                 what: "an index of a rank-0 value",
@@ -1783,7 +1830,7 @@ impl<'r> Lowerer<'r> {
                         }
 
                         if let Expr::Range(range) = &*ix.index {
-                            return self.lower_tensor_range(base.reg, elem, shape, range);
+                            return self.lower_tensor_range(base.reg, elem, shape, storage, range);
                         }
 
                         let index = self.lower_expr(&ix.index)?;
@@ -1800,6 +1847,7 @@ impl<'r> Lowerer<'r> {
                             let ty = LoweredTy::Tensor {
                                 elem,
                                 shape: reduced,
+                                storage,
                             };
                             (ty, 0)
                         };
@@ -1850,9 +1898,14 @@ impl<'r> Lowerer<'r> {
                 // A scalar transfers too: the op is an identity at lowering, and the result
                 // restates the operand's type.
                 let result_ty = match &src.ty {
-                    LoweredTy::Tensor { elem, shape } => LoweredTy::Tensor {
+                    LoweredTy::Tensor {
+                        elem,
+                        shape,
+                        storage,
+                    } => LoweredTy::Tensor {
                         elem: elem.clone(),
                         shape: shape.clone(),
+                        storage: *storage,
                     },
                     LoweredTy::Scalar(e) => LoweredTy::Scalar(e.clone()),
                     _ => {
@@ -2484,16 +2537,19 @@ impl<'r> Lowerer<'r> {
             }
             // `t[i]`: as `lower_expr` gives it, one dimension fewer, or the element at rank 1.
             Expr::IndexAccess(ix) => match self.infer_expr_ty(&ix.base)? {
-                LoweredTy::Tensor { elem, shape } if !shape.is_empty() => {
-                    Some(if shape.len() == 1 {
-                        LoweredTy::Scalar(elem)
-                    } else {
-                        LoweredTy::Tensor {
-                            elem,
-                            shape: shape[1..].to_vec(),
-                        }
-                    })
-                }
+                LoweredTy::Tensor {
+                    elem,
+                    shape,
+                    storage,
+                } if !shape.is_empty() => Some(if shape.len() == 1 {
+                    LoweredTy::Scalar(elem)
+                } else {
+                    LoweredTy::Tensor {
+                        elem,
+                        shape: shape[1..].to_vec(),
+                        storage,
+                    }
+                }),
                 _ => None,
             },
             // An inline `mlir!` block's value is its declared result.
@@ -2598,7 +2654,7 @@ impl<'r> Lowerer<'r> {
                 if let (Type::Borrow { .. }, Type::Scalar(_)) = (&base_ty, tensor) {
                     return Some(Type::Pointer(Box::new(tensor.clone()), None, is_mut));
                 }
-                let Type::Tensor(el, _, place) = tensor else {
+                let Type::Tensor(el, _, place, _) = tensor else {
                     return None;
                 };
                 Some(Type::Pointer(
@@ -2609,20 +2665,21 @@ impl<'r> Lowerer<'r> {
             }
             // `transfer(t, Memory::X)`: the same tensor, placed in `X`.
             Expr::Transfer(t) => match self.infer_ast_type(&t.expr)? {
-                Type::Tensor(el, dims, _) => Some(Type::Tensor(
+                Type::Tensor(el, dims, _, storage) => Some(Type::Tensor(
                     el,
                     dims,
                     Some(crate::syntax::Placement::at(t.space.clone())),
+                    storage,
                 )),
                 _ => None,
             },
             // `t[i]` on a tensor: the row, a tensor of the remaining extents, or the element
             // when there is one extent.
             Expr::IndexAccess(ix) => match self.infer_ast_type(&ix.base) {
-                Some(Type::Tensor(el, dims, place)) if dims.len() > 1 => {
-                    Some(Type::Tensor(el, dims[1..].to_vec(), place))
+                Some(Type::Tensor(el, dims, place, storage)) if dims.len() > 1 => {
+                    Some(Type::Tensor(el, dims[1..].to_vec(), place, storage))
                 }
-                Some(Type::Tensor(el, dims, _)) if dims.len() == 1 => Some(Type::Scalar(el)),
+                Some(Type::Tensor(el, dims, _, _)) if dims.len() == 1 => Some(Type::Scalar(el)),
                 // A tensor local has no AST type, but its binding gives the element.
                 None => self.tensor_number_at(ix).map(Type::Scalar),
                 _ => None,
@@ -4174,6 +4231,7 @@ impl<'r> Lowerer<'r> {
         let ty = LoweredTy::Tensor {
             elem: ElementType::U32,
             shape: vec!["?".to_string()],
+            storage: Storage::Auto,
         };
         self.emit_effect(Opcode::Arg, groups.reg, Register(0), 0);
         let host = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty.clone(), 0);
@@ -4528,6 +4586,7 @@ impl<'r> Lowerer<'r> {
             let ty = LoweredTy::Tensor {
                 elem: ElementType::U32,
                 shape: vec!["1".to_string()],
+                storage: Storage::Auto,
             };
             let flag = self.emit_typed(
                 Opcode::TensorAlloc,
@@ -4822,7 +4881,7 @@ impl<'r> Lowerer<'r> {
             Binding::Place { .. } => return None,
         };
         match ty {
-            LoweredTy::Tensor { elem, shape } if shape.len() == indices => Some(elem),
+            LoweredTy::Tensor { elem, shape, .. } if shape.len() == indices => Some(elem),
             _ => None,
         }
     }
@@ -5097,7 +5156,12 @@ impl<'r> Lowerer<'r> {
     /// a store (`place`).
     fn raw_element(&mut self, tile: &Expr, index: &Expr, place: bool) -> Lowered<Val> {
         let (t, dims) = self.raw_tile(tile)?;
-        let LoweredTy::Tensor { elem, shape } = t.ty.clone() else {
+        let LoweredTy::Tensor {
+            elem,
+            shape,
+            storage,
+        } = t.ty.clone()
+        else {
             unreachable!("raw_tile gives a tensor");
         };
         let lin = self.lower_expr(index)?;
@@ -5144,6 +5208,7 @@ impl<'r> Lowerer<'r> {
                 LoweredTy::Tensor {
                     elem: elem.clone(),
                     shape: shape[k + 1..].to_vec(),
+                    storage,
                 }
             };
             cur = self
@@ -5716,7 +5781,7 @@ impl<'r> Lowerer<'r> {
         // `Tensor<T, [d0, d1]>::uninit()` writes the element and shape in the type and takes no
         // arguments, so there is nothing to recover from the call. With a `?` in the type the
         // one argument is the full shape, and the `?` positions take their extents from it.
-        if let crate::syntax::Type::Tensor(el, dims, placement) = written {
+        if let crate::syntax::Type::Tensor(el, dims, placement, storage) = written {
             if matches!(el, ElementType::Generic(_)) {
                 return None;
             }
@@ -5762,6 +5827,7 @@ impl<'r> Lowerer<'r> {
             let ty = LoweredTy::Tensor {
                 elem: el.clone(),
                 shape,
+                storage: *storage,
             };
             for r in extents {
                 self.emit_effect(Opcode::Arg, r, Register(0), 0);
@@ -5795,6 +5861,10 @@ impl<'r> Lowerer<'r> {
             }
             return Some(buf);
         }
+        let storage = match written {
+            crate::syntax::Type::Tensor(_, _, _, storage) => *storage,
+            _ => Storage::Auto,
+        };
         let elem = scalar_of(written)?;
         // An initializer list `Tensor<T>([[..],[..]])`: the nesting is the shape and the leaves
         // are the contents. The checker draws the same line -- `initializer_shape` answers only
@@ -5802,7 +5872,7 @@ impl<'r> Lowerer<'r> {
         if let Some(Expr::Array(arr)) = fc.args.first() {
             if fc.args.len() == 1 {
                 if let Some(shape) = arr.initializer_shape() {
-                    return self.lower_tensor_initializer(&elem, &shape, arr);
+                    return self.lower_tensor_initializer(&elem, &shape, arr, storage);
                 }
             }
         }
@@ -5819,6 +5889,7 @@ impl<'r> Lowerer<'r> {
             let ty = LoweredTy::Tensor {
                 elem,
                 shape: vec![],
+                storage,
             };
             let buf = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes);
             self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
@@ -5842,7 +5913,11 @@ impl<'r> Lowerer<'r> {
         } else {
             0
         };
-        let ty = LoweredTy::Tensor { elem, shape };
+        let ty = LoweredTy::Tensor {
+            elem,
+            shape,
+            storage,
+        };
         for r in extents {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
@@ -5888,7 +5963,11 @@ impl<'r> Lowerer<'r> {
                 shape.push(DYN_DIM.to_string());
             }
         }
-        let ty = LoweredTy::Tensor { elem, shape };
+        let ty = LoweredTy::Tensor {
+            elem,
+            shape,
+            storage: Storage::Auto,
+        };
         for r in extents {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
@@ -5905,7 +5984,12 @@ impl<'r> Lowerer<'r> {
     /// make a new tensor.
     fn lower_tensor_reshape(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
         let src = self.lower_expr(&mc.base)?;
-        let LoweredTy::Tensor { elem, shape } = &src.ty else {
+        let LoweredTy::Tensor {
+            elem,
+            shape,
+            storage,
+        } = &src.ty
+        else {
             return Err(Decline::TypeNotModelled {
                 what: "a reshape of something that is not a tensor",
             });
@@ -5936,7 +6020,7 @@ impl<'r> Lowerer<'r> {
                     })?,
             );
         }
-        let (elem, shape) = (elem.clone(), shape.clone());
+        let (elem, shape, storage) = (elem.clone(), shape.clone(), *storage);
         if mc.method_name.as_ref() == "pad" {
             if vals.len() != shape.len() {
                 return Err(Decline::TypeNotModelled {
@@ -5944,7 +6028,11 @@ impl<'r> Lowerer<'r> {
                 });
             }
             let shape = vals.iter().map(|v| v.to_string()).collect();
-            let ty = LoweredTy::Tensor { elem, shape };
+            let ty = LoweredTy::Tensor {
+                elem,
+                shape,
+                storage,
+            };
             return Ok(self.emit_typed(
                 Opcode::TensorPad,
                 src.reg,
@@ -5955,7 +6043,11 @@ impl<'r> Lowerer<'r> {
         }
         if mc.method_name.as_ref() != "transpose" {
             let shape = vals.iter().map(|v| v.to_string()).collect();
-            let ty = LoweredTy::Tensor { elem, shape };
+            let ty = LoweredTy::Tensor {
+                elem,
+                shape,
+                storage,
+            };
             let op = if mc.is_padding_reshape() {
                 Opcode::TensorPad
             } else {
@@ -5986,6 +6078,7 @@ impl<'r> Lowerer<'r> {
         let ty = LoweredTy::Tensor {
             elem,
             shape: permuted,
+            storage,
         };
         Ok(self.emit_typed(Opcode::TensorTranspose, src.reg, Register(0), ty, imm))
     }
@@ -6171,6 +6264,7 @@ impl<'r> Lowerer<'r> {
         elem: &ElementType,
         shape: &[usize],
         arr: &crate::syntax::ArrayExpr,
+        storage: Storage,
     ) -> Option<Val> {
         let count: usize = shape.iter().product();
         let values = arr.initializer_values();
@@ -6188,6 +6282,7 @@ impl<'r> Lowerer<'r> {
             LoweredTy::Tensor {
                 elem: elem.clone(),
                 shape: shape_s.clone(),
+                storage,
             },
             bytes,
         );
@@ -6216,6 +6311,7 @@ impl<'r> Lowerer<'r> {
                     LoweredTy::Tensor {
                         elem: elem.clone(),
                         shape: shape_s[i + 1..].to_vec(),
+                        storage,
                     }
                 };
                 let step = self.emit_typed(Opcode::TensorIndex, place, idx.reg, ty, last as u64);
@@ -6250,7 +6346,7 @@ impl<'r> Lowerer<'r> {
                 });
             };
             return self
-                .lower_tensor_initializer(&elem, &shape, arr)
+                .lower_tensor_initializer(&elem, &shape, arr, Storage::Auto)
                 .ok_or(Decline::Unsupported {
                     what: "a nested array literal",
                 });
@@ -6278,6 +6374,7 @@ impl<'r> Lowerer<'r> {
             LoweredTy::Tensor {
                 elem: elem.clone(),
                 shape: vec![n.to_string()],
+                storage: Storage::Auto,
             },
             bytes,
         );
@@ -6621,10 +6718,12 @@ impl<'r> Lowerer<'r> {
             LoweredTy::Tensor {
                 elem: want_elem,
                 shape: want_shape,
+                ..
             },
             LoweredTy::Tensor {
                 elem: have_elem,
                 shape: have_shape,
+                ..
             },
         ) = (want, &v.ty)
         else {
@@ -6784,6 +6883,7 @@ impl<'r> Lowerer<'r> {
         base: Register,
         elem: ElementType,
         mut shape: Vec<String>,
+        storage: Storage,
         range: &crate::syntax::expr::RangeExpr,
     ) -> Lowered<Val> {
         let (a, b) = range
@@ -6796,7 +6896,11 @@ impl<'r> Lowerer<'r> {
             Opcode::TensorRange,
             base,
             start.reg,
-            LoweredTy::Tensor { elem, shape },
+            LoweredTy::Tensor {
+                elem,
+                shape,
+                storage,
+            },
             0,
         ))
     }
@@ -6832,8 +6936,12 @@ impl<'r> Lowerer<'r> {
             }
             return Ok(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 1));
         }
-        let (elem, shape) = match &base.ty {
-            LoweredTy::Tensor { elem, shape } => (elem.clone(), shape.clone()),
+        let (elem, shape, storage) = match &base.ty {
+            LoweredTy::Tensor {
+                elem,
+                shape,
+                storage,
+            } => (elem.clone(), shape.clone(), *storage),
             _ => {
                 return Err(Decline::TypeNotModelled {
                     what: "an index base that is not a pointer",
@@ -6847,7 +6955,7 @@ impl<'r> Lowerer<'r> {
         }
         // `q[1..3] = w` writes `w` into the rows of the range.
         if let Expr::Range(range) = &*ix.index {
-            return self.lower_tensor_range(base.reg, elem, shape, range);
+            return self.lower_tensor_range(base.reg, elem, shape, storage, range);
         }
         let index = self.lower_expr(&ix.index)?;
         if !matches!(index.ty, LoweredTy::Scalar(_)) {
@@ -6876,6 +6984,7 @@ impl<'r> Lowerer<'r> {
                 LoweredTy::Tensor {
                     elem,
                     shape: reduced,
+                    storage,
                 },
                 0,
             ))
@@ -7441,7 +7550,7 @@ impl<'r> Lowerer<'r> {
                 // `let t : Tensor<el, [?, ?]> = <scalar>` wraps the value as a rank-0 tensor: materialize
                 // the buffer (alloc + store) so tensor consumers (transfer, spawn) receive a real
                 // tensor. The checker admits identical elements only (Vx#396).
-                if let (Some(Type::Tensor(el, dims, _)), LoweredTy::Scalar(se)) =
+                if let (Some(Type::Tensor(el, dims, _, storage)), LoweredTy::Scalar(se)) =
                     (l.ty_ann.as_ref(), &v.ty)
                 {
                     if dims.is_empty() && el == se {
@@ -7458,6 +7567,7 @@ impl<'r> Lowerer<'r> {
                             LoweredTy::Tensor {
                                 elem: se,
                                 shape: vec![],
+                                storage: *storage,
                             },
                             bytes,
                         );
@@ -8032,8 +8142,12 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     if let Some(elem) = scalar_of(ty) {
         return Some(LoweredTy::Scalar(elem));
     }
-    if let Some((elem, shape)) = tensor_elem_shape(ty) {
-        return Some(LoweredTy::Tensor { elem, shape });
+    if let Some((elem, shape, storage)) = tensor_elem_shape(ty) {
+        return Some(LoweredTy::Tensor {
+            elem,
+            shape,
+            storage,
+        });
     }
     // `<N x T>` is a register value: `vector<NxT>`. Declines on an element with no MLIR spelling
     // (fp8, a generic), the same condition that makes a scalar of it decline.
@@ -8047,8 +8161,12 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     // the memref itself. Reading it as an opaque pointer gave a function body a parameter type its
     // own signature contradicts (Vx#417).
     if let Type::Borrow { inner, .. } = ty {
-        if let Some((elem, shape)) = tensor_elem_shape(inner) {
-            return Some(LoweredTy::Tensor { elem, shape });
+        if let Some((elem, shape, storage)) = tensor_elem_shape(inner) {
+            return Some(LoweredTy::Tensor {
+                elem,
+                shape,
+                storage,
+            });
         }
     }
     // A raw pointer (`*const T`/`*mut T`, `&T`) is an opaque `!llvm.ptr` — the ABI of the string-value
@@ -8102,7 +8220,7 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 /// corpus sweep's histogram measures the gap.
 fn is_dyn_tensor(ty: &Type) -> bool {
     match ty {
-        Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
+        Type::Tensor(_, dims, _, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
         Type::Verified(inner)
         | Type::Distinct(inner)
         | Type::DisjointRanges(inner)
@@ -9026,7 +9144,7 @@ fn sizeof_bytes(ty: &Type) -> Option<u64> {
         Type::Scalar(I16 | U16 | BF16 | F16) => 2,
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => 8,
         // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
-        Type::Tensor(_, dims, _) if !dims.is_empty() => {
+        Type::Tensor(_, dims, _, _) if !dims.is_empty() => {
             crate::layout::tensor_descriptor_bytes(dims.len()) as u64
         }
         _ => return None,

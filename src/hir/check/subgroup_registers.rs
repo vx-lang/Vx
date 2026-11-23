@@ -114,7 +114,7 @@ impl crate::hir::TypeChecker<'_> {
         // Each tile in registers, with its position, and its space and the capacity of that.
         let mut in_registers: HashMap<String, (Span, String, Option<u64>)> = HashMap::new();
         for (name, at, ty) in std::mem::take(&mut self.block_register_tiles) {
-            let Type::Tensor(elem, dims, Some(place)) = ty else {
+            let Type::Tensor(elem, dims, Some(place), _) = ty else {
                 continue;
             };
             let sizes: Option<Vec<u64>> = dims
@@ -662,7 +662,7 @@ impl Walk<'_> {
     /// The element type and the 2 sizes of the tile `e`: from `source`, its type before its `as
     /// f32`, or for a tile `x` or the row `x[i]` of one, from the type of `x`.
     fn tile(&self, e: &Expr, source: Option<&Type>) -> Option<(ElementType, [u64; 2])> {
-        if let Some(Type::Tensor(elem, dims, _)) = source {
+        if let Some(Type::Tensor(elem, dims, _, _)) = source {
             let sizes: Option<Vec<u64>> = dims
                 .iter()
                 .map(|d| d.literal().and_then(|v| v.parse::<u64>().ok()))

@@ -375,7 +375,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
                 other => other,
             };
             match inner {
-                syntax::Type::Tensor(e, d, _) => crate::hir::memory::static_tensor_bytes(&e, &d),
+                syntax::Type::Tensor(e, d, _, _) => crate::hir::memory::static_tensor_bytes(&e, &d),
                 _ => None,
             }
         });
@@ -441,7 +441,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
                 syntax::Type::Pinned(b, _) | syntax::Type::Ref(b, _) => *b,
                 other => other,
             };
-            if let syntax::Type::Tensor(e, dims, _) = inner {
+            if let syntax::Type::Tensor(e, dims, _, _) = inner {
                 let static_dims: Vec<u64> = dims
                     .iter()
                     .filter_map(|d| d.literal().and_then(|v| v.parse().ok()))

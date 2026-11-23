@@ -279,7 +279,7 @@ impl<'a> TypeChecker<'a> {
     /// so is `[R * C]` once a generic instance has put numbers in place of `R` and `C`.
     pub(crate) fn fold_extents(&self, ty: &mut Type) {
         match ty {
-            Type::Tensor(_, dims, _) => {
+            Type::Tensor(_, dims, _, _) => {
                 for dim in dims {
                     if let Dim::Static(e) = dim {
                         if let Some(v) = self.extent_value(e) {
@@ -1114,7 +1114,12 @@ impl<'a> TypeChecker<'a> {
                 } else if member.as_ref() == "$extent" {
                     // The form `t.extent(i)` is rewritten to; no source spells this member. It
                     // is the list of the tensor's extents, indexed by axis.
-                    return Type::Tensor(ElementType::I32, vec![crate::syntax::Dim::Dyn], None);
+                    return Type::Tensor(
+                        ElementType::I32,
+                        vec![crate::syntax::Dim::Dyn],
+                        None,
+                        Storage::Auto,
+                    );
                 } else if member.as_ref() == "shape" && Self::tensor_operand_elem(&obj_ty).is_some()
                 {
                     self.errors.error_with_code(
@@ -1559,6 +1564,7 @@ impl<'a> TypeChecker<'a> {
         el_ty: ElementType,
         dims: &[Dim],
         top: Option<Placement>,
+        storage: Storage,
         range: &RangeExpr,
         span: &crate::syntax::Span,
     ) -> Type {
@@ -1591,7 +1597,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors.error_with_code(code, message, at);
             }
             // Keep the tensor's own type, so one wrong range gives one error.
-            return Type::Tensor(el_ty, dims.to_vec(), top);
+            return Type::Tensor(el_ty, dims.to_vec(), top, storage);
         }
         let (a, b) = range
             .literal_ends()
@@ -1604,7 +1610,7 @@ impl<'a> TypeChecker<'a> {
                 *span,
             )));
         }
-        Type::Tensor(el_ty, new_dims, top)
+        Type::Tensor(el_ty, new_dims, top, storage)
     }
 
     pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
@@ -1830,7 +1836,7 @@ impl<'a> TypeChecker<'a> {
                 // so a Tensor with a static shape gets one E8003, and an index the type
                 // check skips (for example inside a closure) still gets the value check.
                 let mut type_reported = false;
-                if let Type::Tensor(_, dims, placement) = &base {
+                if let Type::Tensor(_, dims, placement, _) = &base {
                     type_reported = self.check_tensor_index_in_range(dims, idx, &ix_span);
                     if self.is_register_space(placement.as_ref()) {
                         self.check_register_index(obj, idx, &ix_span);
@@ -1869,14 +1875,22 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Type::Pointer(inner, _, _) = base {
                     *inner
-                } else if let (Type::Tensor(el_ty, dims, top), Expr::Range(range)) = (&base, &**idx)
+                } else if let (Type::Tensor(el_ty, dims, top, storage), Expr::Range(range)) =
+                    (&base, &**idx)
                 {
-                    self.range_index_type(el_ty.clone(), dims, top.clone(), range, &ix_span)
-                } else if let Type::Tensor(el_ty, dims, top) = base {
+                    self.range_index_type(
+                        el_ty.clone(),
+                        dims,
+                        top.clone(),
+                        *storage,
+                        range,
+                        &ix_span,
+                    )
+                } else if let Type::Tensor(el_ty, dims, top, storage) = base {
                     if dims.len() > 1 {
                         // Partial index (S1): a rank-reduced slice of the remaining dimensions,
                         // e.g. `q[i]` on Tensor<f32,[N,D]> is a Tensor<f32,[D]> row view.
-                        Type::Tensor(el_ty, dims[1..].to_vec(), top)
+                        Type::Tensor(el_ty, dims[1..].to_vec(), top, storage)
                     } else {
                         Type::Scalar(el_ty)
                     }

@@ -853,12 +853,30 @@ pub(crate) fn substitute_memory(
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, Default)]
+pub enum Storage {
+    #[default]
+    Auto,
+    Stack,
+    Heap,
+}
+
+impl std::fmt::Display for Storage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Storage::Auto => write!(f, "Storage::Auto"),
+            Storage::Stack => write!(f, "Storage::Stack"),
+            Storage::Heap => write!(f, "Storage::Heap"),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
     /// A shaped tensor. Its extents are part of the type, so `[2, 3]` and `[4, 5]` are
     /// different types and get different monomorphs (Vx#401); each is a [`Dim`], so a
     /// run-time extent is spelled per position rather than by a different type.
-    Tensor(ElementType, Vec<Dim>, Option<Placement>),
+    Tensor(ElementType, Vec<Dim>, Option<Placement>, Storage),
     Ref(Box<Type>, MemorySpace),
     Borrow {
         inner: Box<Type>,
@@ -962,7 +980,7 @@ impl Type {
     pub fn is_linear(&self) -> bool {
         match self {
             Type::Ref(_, _)
-            | Type::Tensor(_, _, _)
+            | Type::Tensor(_, _, _, _)
             | Type::Verified(_)
             | Type::Distinct(_)
             | Type::DisjointRanges(_)
@@ -1011,7 +1029,7 @@ impl Type {
                 substitute_memory(mem, mapping),
                 *is_mut,
             ),
-            Type::Tensor(el_ty, dims, top) => {
+            Type::Tensor(el_ty, dims, top, s) => {
                 let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
                     if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
                         concrete_el.clone()
@@ -1022,7 +1040,7 @@ impl Type {
                     el_ty.clone()
                 };
                 let new_dims = dims.iter().map(|d| d.substitute(mapping)).collect();
-                Type::Tensor(new_el_ty, new_dims, substitute_memory(top, mapping))
+                Type::Tensor(new_el_ty, new_dims, substitute_memory(top, mapping), *s)
             }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),
@@ -1069,10 +1087,21 @@ impl Type {
     /// Where this value lives, when its type says.
     pub fn placement(&self) -> Option<&Placement> {
         match self {
-            Type::Tensor(_, _, p) => p.as_ref(),
+            Type::Tensor(_, _, p, _) => p.as_ref(),
             // A `Distinct` tensor is the tensor, with a claim about its values.
             Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.placement(),
             _ => None,
+        }
+    }
+
+    /// How this value's buffer is allocated, when its type says. `Auto` lets the compiler
+    /// choose: a local is promoted to the stack when it is small and does not escape.
+    pub fn storage(&self) -> Storage {
+        match self {
+            Type::Tensor(_, _, _, s) => *s,
+            // A `Distinct` tensor is the tensor, with a claim about its values.
+            Type::Distinct(inner) => inner.storage(),
+            _ => Storage::Auto,
         }
     }
 
@@ -1207,6 +1236,34 @@ impl Type {
                     p.for_each_placement(f);
                 }
                 ret.for_each_placement(f);
+            }
+            _ => {}
+        }
+    }
+
+    /// Every tensor type written anywhere inside this type, outermost first, with its
+    /// placement and its storage as written. A check that pairs the two qualifiers of a
+    /// tensor, such as the one that refuses `Storage::Stack` in the memory of a device,
+    /// walks the type with this.
+    pub fn for_each_tensor_type(
+        &self,
+        f: &mut impl FnMut(Option<&ElementType>, Option<&[Dim]>, Option<&Placement>, &Storage),
+    ) {
+        if let Type::Tensor(e, d, p, s) = self {
+            f(Some(e), Some(d), p.as_ref(), s);
+        }
+        match self {
+            Type::Pointer(inner, _, _) => inner.for_each_tensor_type(f),
+            Type::Ref(inner, _)
+            | Type::Borrow { inner, .. }
+            | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::Pinned(inner, _) => inner.for_each_tensor_type(f),
+            Type::GenericInstance(base, args) => {
+                base.for_each_tensor_type(f);
+                for a in args {
+                    a.for_each_tensor_type(f);
+                }
             }
             _ => {}
         }
@@ -1570,7 +1627,7 @@ impl std::fmt::Display for Type {
             // Without this a tensor reached the `{:?}` fallback, so a type error naming one
             // printed the whole dims AST -- `NumberExpr { value: "4", span: .. }` per extent.
             // An empty shape is rank 0 and prints as `[]`: `Tensor<f32>` does not parse.
-            Type::Tensor(el, dims, top) => {
+            Type::Tensor(el, dims, top, sto) => {
                 write!(f, "Tensor<{}, [", el)?;
                 for (i, d) in dims.iter().enumerate() {
                     if i > 0 {
@@ -1594,6 +1651,12 @@ impl std::fmt::Display for Type {
                     if let Some(n) = p.alignment {
                         write!(f, ", aligned({n})")?;
                     }
+                }
+                // `Auto` is the absent qualifier, so it prints nothing. A written storage is
+                // part of the type and has to print, or a diagnostic would name a type the
+                // program never wrote.
+                if *sto != Storage::Auto {
+                    write!(f, ", {sto}")?;
                 }
                 write!(f, ">")
             }
@@ -1665,7 +1728,7 @@ impl Mangle for Type {
             // them. Function specializations add placement separately. A dimension these forms cannot spell
             // contributes `d`, which is why two such dimensions can still share a name. `?` is
             // `_`, a character a symbol may carry.
-            Type::Tensor(el, dims, _) => {
+            Type::Tensor(el, dims, _, storage) => {
                 write!(w, "Tensor$")?;
                 el.mangle_to(w)?;
                 for (i, d) in dims.iter().enumerate() {
@@ -1676,6 +1739,13 @@ impl Mangle for Type {
                         Dim::Static(_) => write!(w, "d")?,
                         Dim::Dyn => write!(w, "_")?,
                     }
+                }
+                // Storage is part of the type's identity: a generic instantiated at a stack
+                // tensor and at a heap tensor needs two symbols. `Auto` keeps the old name.
+                match storage {
+                    Storage::Auto => {}
+                    Storage::Stack => write!(w, "$stack")?,
+                    Storage::Heap => write!(w, "$heap")?,
                 }
                 Ok(())
             }
@@ -1789,6 +1859,7 @@ mod tests {
                     span: Span::default(),
                 }))],
                 None,
+                Storage::Auto,
             )
         };
         let i32_ty = || Type::Scalar(ElementType::I32);
@@ -1866,11 +1937,19 @@ mod tests {
 
     #[test]
     fn test_type_substitute_tensor_element() {
-        let ty = Type::Tensor(ElementType::Generic("T".into()), vec![], None);
+        let ty = Type::Tensor(
+            ElementType::Generic("T".into()),
+            vec![],
+            None,
+            Storage::Auto,
+        );
         let mut mapping = HashMap::new();
         mapping.insert("T".into(), Type::Scalar(ElementType::F32));
         let result = ty.substitute(&mapping);
-        assert_eq!(result, Type::Tensor(ElementType::F32, vec![], None));
+        assert_eq!(
+            result,
+            Type::Tensor(ElementType::F32, vec![], None, Storage::Auto)
+        );
     }
 
     #[test]
@@ -1920,7 +1999,7 @@ mod tests {
 
     #[test]
     fn test_type_is_linear_true_cases() {
-        assert!(Type::Tensor(ElementType::F32, vec![], None).is_linear());
+        assert!(Type::Tensor(ElementType::F32, vec![], None, Storage::Auto).is_linear());
         assert!(Type::Ref(
             Box::new(Type::Scalar(ElementType::I32)),
             MemorySpace::CPUDRAM
@@ -1946,13 +2025,14 @@ mod tests {
             ElementType::F32,
             vec![],
             Some(Placement::on(Topology::gpu(0))),
+            Storage::Auto,
         );
         assert_eq!(ty.topology(), Some(Topology::gpu(0)));
     }
 
     #[test]
     fn test_type_topology_tensor_without_topology() {
-        let ty = Type::Tensor(ElementType::F32, vec![], None);
+        let ty = Type::Tensor(ElementType::F32, vec![], None, Storage::Auto);
         assert_eq!(ty.topology(), None);
     }
 
@@ -2031,6 +2111,7 @@ mod tests {
             ElementType::Generic("T".into()),
             vec![],
             Some(Placement::on(Topology::gpu(0))),
+            Storage::Auto,
         );
         let mut mapping = HashMap::new();
         mapping.insert("T".into(), Type::Scalar(ElementType::F32));
@@ -2040,7 +2121,8 @@ mod tests {
             Type::Tensor(
                 ElementType::F32,
                 vec![],
-                Some(Placement::on(Topology::gpu(0)))
+                Some(Placement::on(Topology::gpu(0))),
+                Storage::Auto,
             )
         );
     }
@@ -2063,8 +2145,9 @@ mod tests {
             ElementType::F32,
             vec![],
             Some(Placement::on(Topology::gpu(0))),
+            Storage::Auto,
         );
-        let ty_without = Type::Tensor(ElementType::F32, vec![], None);
+        let ty_without = Type::Tensor(ElementType::F32, vec![], None, Storage::Auto);
         // Function specializations add placement to this legacy name separately.
         assert_eq!(ty_with.mangle(), ty_without.mangle());
         assert_eq!(ty_with.mangle(), "Tensor$f32");
@@ -2124,13 +2207,62 @@ mod tests {
                 Span::default(),
             )))
         };
-        let a = Type::Tensor(ElementType::F32, vec![num("2"), num("3")], None);
-        let b = Type::Tensor(ElementType::F32, vec![num("4"), num("5")], None);
+        let a = Type::Tensor(
+            ElementType::F32,
+            vec![num("2"), num("3")],
+            None,
+            Storage::Auto,
+        );
+        let b = Type::Tensor(
+            ElementType::F32,
+            vec![num("4"), num("5")],
+            None,
+            Storage::Auto,
+        );
         assert_eq!(a.mangle(), "Tensor$f32$2x3");
         assert_ne!(a.mangle(), b.mangle());
         // A rank-1 [23] must not collide with a rank-2 [2, 3].
-        let c = Type::Tensor(ElementType::F32, vec![num("23")], None);
+        let c = Type::Tensor(ElementType::F32, vec![num("23")], None, Storage::Auto);
         assert_ne!(a.mangle(), c.mangle());
+    }
+
+    /// Storage is part of the type, not a hint: two storage classes are two types, so they
+    /// must not share a symbol, and a written one must print.
+    #[test]
+    fn tensor_storage_is_part_of_identity_and_display() {
+        let auto = Type::Tensor(ElementType::F32, vec![], None, Storage::Auto);
+        let stack = Type::Tensor(ElementType::F32, vec![], None, Storage::Stack);
+        let heap = Type::Tensor(ElementType::F32, vec![], None, Storage::Heap);
+
+        assert_eq!(auto.mangle(), "Tensor$f32");
+        assert_ne!(auto.mangle(), stack.mangle());
+        assert_ne!(stack.mangle(), heap.mangle());
+
+        assert_eq!(auto.to_string(), "Tensor<f32, []>");
+        assert_eq!(stack.to_string(), "Tensor<f32, [], Storage::Stack>");
+        assert_eq!(heap.to_string(), "Tensor<f32, [], Storage::Heap>");
+
+        assert_eq!(stack.storage(), Storage::Stack);
+        assert_eq!(heap.storage(), Storage::Heap);
+        assert_eq!(auto.storage(), Storage::Auto);
+        assert_eq!(Type::Scalar(ElementType::I32).storage(), Storage::Auto);
+    }
+
+    /// Substitution replaces the element and the extents, not the allocation choice.
+    #[test]
+    fn test_type_substitute_preserves_tensor_storage() {
+        let ty = Type::Tensor(
+            ElementType::Generic("T".into()),
+            vec![],
+            None,
+            Storage::Stack,
+        );
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::F32));
+        assert_eq!(
+            ty.substitute(&mapping),
+            Type::Tensor(ElementType::F32, vec![], None, Storage::Stack)
+        );
     }
 
     #[test]

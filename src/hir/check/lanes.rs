@@ -737,7 +737,7 @@ impl crate::hir::TypeChecker<'_> {
         // The size of a borrowed rank-1 tensor of `elem` whose size is a number.
         let size_of = |t: &Type, elem: ElementType| match t {
             Type::Borrow { inner, .. } => match inner.as_ref() {
-                Type::Tensor(e, dims, _) if *e == elem && dims.len() == 1 => {
+                Type::Tensor(e, dims, _, _) if *e == elem && dims.len() == 1 => {
                     crate::hir::memory::static_extent(&dims[0]).filter(|n| *n >= 1)
                 }
                 _ => None,
@@ -819,7 +819,7 @@ impl crate::hir::TypeChecker<'_> {
                 is_mut: true,
                 ..
             } => match inner.as_ref() {
-                Type::Tensor(ElementType::I64, dims, _) if dims.len() == 1 => {
+                Type::Tensor(ElementType::I64, dims, _, _) if dims.len() == 1 => {
                     crate::hir::memory::static_extent(&dims[0])
                         .filter(|n| *n >= 1 && (*n as u64).is_power_of_two())
                 }
@@ -892,7 +892,7 @@ impl crate::hir::TypeChecker<'_> {
                 is_mut: true,
                 ..
             } => match inner.as_ref() {
-                Type::Tensor(e, dims, p)
+                Type::Tensor(e, dims, p, _)
                     if shared(p)
                         && dims.iter().all(|d| {
                             crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
@@ -924,7 +924,7 @@ impl crate::hir::TypeChecker<'_> {
             src = inner;
         }
         let src_ok = !matches!(arg_types[1], Type::Tensor(..))
-            && matches!(src, Type::Tensor(e, dims, _) if *e == elem && dims.len() == rank);
+            && matches!(src, Type::Tensor(e, dims, _, _) if *e == elem && dims.len() == rank);
         if !src_ok {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
@@ -989,7 +989,7 @@ impl crate::hir::TypeChecker<'_> {
                 is_mut: true,
                 ..
             } => match inner.as_ref() {
-                Type::Tensor(e, dims, p)
+                Type::Tensor(e, dims, p, _)
                     if shared(p)
                         && dims.len() == 2
                         && dims.iter().all(|d| {
@@ -1025,7 +1025,7 @@ impl crate::hir::TypeChecker<'_> {
             }
             (!matches!(t, Type::Tensor(..))).then_some(inner.clone())
         };
-        if !matches!(borrowed(&arg_types[1]), Some(Type::Tensor(e, dims, _)) if e == elem && dims.len() == 2)
+        if !matches!(borrowed(&arg_types[1]), Some(Type::Tensor(e, dims, _, _)) if e == elem && dims.len() == 2)
         {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
@@ -1037,7 +1037,7 @@ impl crate::hir::TypeChecker<'_> {
                 span.clone(),
             );
         }
-        if !matches!(borrowed(&arg_types[2]), Some(Type::Tensor(ElementType::I32, dims, _)) if dims.len() == 1)
+        if !matches!(borrowed(&arg_types[2]), Some(Type::Tensor(ElementType::I32, dims, _, _)) if dims.len() == 1)
         {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
@@ -1126,7 +1126,7 @@ impl crate::hir::TypeChecker<'_> {
         // The tensor behind a borrow, and whether the borrow is `&mut`.
         let tensor = |t: &Type| match t {
             Type::Borrow { inner, is_mut, .. } => match inner.as_ref() {
-                Type::Tensor(e, dims, p) => Some((e.clone(), dims.clone(), p.clone(), *is_mut)),
+                Type::Tensor(e, dims, p, _) => Some((e.clone(), dims.clone(), p.clone(), *is_mut)),
                 _ => None,
             },
             _ => None,
@@ -1234,7 +1234,7 @@ impl crate::hir::TypeChecker<'_> {
                 is_mut: true,
                 ..
             } => match inner.as_ref() {
-                Type::Tensor(e, dims, p)
+                Type::Tensor(e, dims, p, _)
                     if self.in_tile_memory(p)
                         && dims.iter().all(|d| {
                             crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
@@ -1306,7 +1306,7 @@ impl crate::hir::TypeChecker<'_> {
             src = inner;
         }
         let rank = match src {
-            Type::Tensor(_, dims, p)
+            Type::Tensor(_, dims, p, _)
                 if !matches!(arg_types[0], Type::Tensor(..)) && !self.in_shared_memory(p) =>
             {
                 dims.len()
@@ -1379,7 +1379,7 @@ impl crate::hir::TypeChecker<'_> {
                 Type::Borrow {
                     inner, is_mut: m, ..
                 } if *m == is_mut => match inner.as_ref() {
-                    Type::Tensor(ElementType::F32, dims, p)
+                    Type::Tensor(ElementType::F32, dims, p, _)
                         if (is_mut && self.in_tile_memory(p)) || self.in_shared_memory(p) =>
                     {
                         dims.iter()
@@ -1456,7 +1456,7 @@ impl crate::hir::TypeChecker<'_> {
             else {
                 return None;
             };
-            let Type::Tensor(e, dims, p) = inner.as_ref() else {
+            let Type::Tensor(e, dims, p, _) = inner.as_ref() else {
                 return None;
             };
             if *m != is_mut || e != elem || dims.len() != 2 || !self.in_shared_memory(p) {

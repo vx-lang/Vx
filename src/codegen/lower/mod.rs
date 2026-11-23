@@ -1375,7 +1375,7 @@ pub(crate) fn lower_print_call<'c>(
     // integers carry no sign, and its runtime printer reads them signed.
     let mut unsigned_tensor = false;
     if let Expr::AsCast(cast) = print_arg {
-        if let syntax::Type::Tensor(e, _, _) = &cast.target_ty {
+        if let syntax::Type::Tensor(e, _, _, _) = &cast.target_ty {
             unsigned_tensor = matches!(
                 e,
                 syntax::types::ElementType::U8
@@ -1748,7 +1748,7 @@ pub(crate) fn lower_raw_primitive<'c>(
         let mut inner = &ty;
         loop {
             match inner {
-                syntax::Type::Tensor(_, dims, _) => {
+                syntax::Type::Tensor(_, dims, _, _) => {
                     let mut out = Vec::new();
                     for d in dims {
                         let Some(n) = d.literal() else {
@@ -1783,7 +1783,7 @@ pub(crate) fn lower_raw_primitive<'c>(
         let mut inner = &ty;
         loop {
             match inner {
-                syntax::Type::Tensor(el, _, _) => {
+                syntax::Type::Tensor(el, _, _, _) => {
                     let s = match el {
                         ElementType::F16 => "f16",
                         ElementType::F32 => "f32",

@@ -13,6 +13,7 @@ use crate::symbol::Symbol;
 use crate::syntax::identity::{
     write_const_key, write_placement_key, write_topology_key, SemanticKey,
 };
+use crate::syntax::Storage;
 use crate::syntax::{Dim, Expr, NumberExpr, Type};
 use rustc_hash::FxHashMap;
 
@@ -220,7 +221,7 @@ impl AggregateIdentities {
                 self.normalize_type(result)?;
             }
             Type::Const(expr) => normalize_constant(expr),
-            Type::Tensor(_, dims, placement) => {
+            Type::Tensor(_, dims, placement, _) => {
                 normalize_placement(placement);
                 for dim in dims {
                     if let Dim::Static(expr) = dim {
@@ -239,7 +240,7 @@ fn aggregate_type_key(ty: &Type, identities: &AggregateIdentities) -> Option<Str
     fn write(ty: &Type, identities: &AggregateIdentities, key: &mut SemanticKey) -> Option<()> {
         use crate::syntax::types::Mangle;
         match ty {
-            Type::Tensor(elem, dims, placement) => {
+            Type::Tensor(elem, dims, placement, storage) => {
                 key.begin("tensor");
                 key.atom("element", format_args!("{elem:?}"));
                 key.begin("dimensions");
@@ -251,6 +252,9 @@ fn aggregate_type_key(ty: &Type, identities: &AggregateIdentities) -> Option<Str
                 }
                 key.end();
                 write_placement_key(placement, key)?;
+                if *storage != Storage::Auto {
+                    key.atom("storage", format_args!("{storage:?}"));
+                }
                 key.end();
             }
             Type::Pointer(inner, placement, mutable) => {
@@ -356,6 +360,27 @@ fn aggregate_type_key(ty: &Type, identities: &AggregateIdentities) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tensor_storage_separates_aggregate_keys() {
+        use crate::syntax::{ElementType, Storage, Type};
+
+        let identities = AggregateIdentities::default();
+        let key = |storage| {
+            identities
+                .type_key(&Type::Tensor(ElementType::F32, vec![], None, storage))
+                .unwrap()
+        };
+        let auto = key(Storage::Auto);
+        let stack = key(Storage::Stack);
+        let heap = key(Storage::Heap);
+
+        assert!(!auto.contains("storage"), "{auto}");
+        assert!(stack.contains("storage"), "{stack}");
+        assert_ne!(auto, stack);
+        assert_ne!(stack, heap);
+        assert_ne!(auto, heap);
+    }
 
     #[rstest::rstest]
     #[case::pointers(false)]

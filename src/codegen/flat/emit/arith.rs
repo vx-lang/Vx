@@ -96,7 +96,7 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             self.vec_of[idx] = Some(vecty);
         } else {
-            let (elem, shape) = self
+            let (elem, shape, _) = self
                 .ctx
                 .tensors
                 .get(&result_gid)
@@ -302,7 +302,7 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let (elem, shape) = self
+        let (elem, shape, _) = self
             .ctx
             .tensors
             .get(&gid)
@@ -547,7 +547,7 @@ impl FnEmit<'_> {
         }
         // A tensor target: the two memref types differ only in which extents are known, so this
         // is `memref.cast` rather than any arithmetic conversion.
-        if let Some((elem, shape)) = self.ctx.tensors.get(&gid).cloned() {
+        if let Some((elem, shape, _)) = self.ctx.tensors.get(&gid).cloned() {
             return self.cast_memref(idx, ins, &elem, &shape);
         }
         let src = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
