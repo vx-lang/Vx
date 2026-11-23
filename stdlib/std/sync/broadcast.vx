@@ -293,7 +293,7 @@ impl<T> WaitSource for BroadcastReceiver<T> {
   }
 
   fn watch(self : &BroadcastReceiver<T>, w : &Waiter) -> void {
-    watch_channel(self.words, w);
+    watch_channel(self.words, self.made, w);
   }
 
   fn unwatch(self : &BroadcastReceiver<T>, w : &Waiter) -> void {

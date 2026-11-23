@@ -27,6 +27,8 @@ import std::vec;
 extern {
   /// Until `vx_unwatch`, `vx_wake_watchers(key)` adds 1 to `waiter` and wakes it.
   fn vx_watch(key : *mut i64, waiter : *mut i64) -> void;
+  /// `vx_watch`, and the deadlock report names the source: its kind, and the line that made it.
+  fn vx_watch_source(key : *mut i64, waiter : *mut i64, kind : i32, made_file : *const i8, made_line : i32) -> void;
   /// Undo one `vx_watch` of the same pair.
   fn vx_unwatch(key : *mut i64, waiter : *mut i64) -> void;
   /// Add 1 to each waiter that watches `key`, and wake it.
@@ -43,6 +45,10 @@ extern {
   /// Undo one `vx_watch_fd` of the same pair.
   fn vx_unwatch_fd(fd : i32, waiter : *mut i64) -> void;
 }
+
+// The kinds of source that the deadlock report names. The key of a channel is its `WAKE` word.
+const SOURCE_CHANNEL : i32 = 1;
+const SOURCE_SEMAPHORE : i32 = 2;
 
 /// The word that one `select` waits on. A source wakes it.
 struct Waiter {
@@ -61,12 +67,15 @@ impl Waiter {
     unsafe { vx_unwatch(key.as_ptr(), self.word.as_ptr()); }
   }
 
-  /// Add 1 to `count`, and then `watch_key(key)`. A source with many waits counts its watchers,
-  /// and calls `wake_watchers(key)` only when `count` is not 0. Its `is_ready` reads its state
-  /// with `SeqCst` after this, so that it sees each change whose wake missed the watch.
-  fn watch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64) -> void {
+  /// Add 1 to `count`, and then watch `key`. A source with many waits counts its watchers, and
+  /// calls `wake_watchers(key)` only when `count` is not 0. Its `is_ready` reads its state with
+  /// `SeqCst` after this, so that it sees each change whose wake missed the watch. The deadlock
+  /// report names the source by `kind` and by the line `made`.
+  fn watch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64, kind : i32, made : Location) -> void {
     count.fetch_add(1, AtomicOrdering::SeqCst);
-    self.watch_key(key);
+    unsafe {
+      vx_watch_source(key.as_ptr(), self.word.as_ptr(), kind, made.file, made.line);
+    }
   }
 
   /// Undo `watch_counted`.
