@@ -825,6 +825,18 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// A `void` pointer has no element type, so `*p` and `p[i]` on it have nothing to read.
+    fn refuse_void_pointer_access(&mut self, inner: &Type, what: &str, span: &Span) {
+        if !matches!(inner, Type::Struct(n, None) if n.as_ref() == "void") {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3067,
+            format!("{what} needs an element type, and a `void` pointer has none"),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// A raw-pointer access needs an unsafe context: nothing here knows the address is valid,
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
@@ -1882,6 +1894,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Type::Pointer(inner, _, _) = &base {
                     self.require_unsafe_raw_access("Indexing a raw pointer", &ix_span);
+                    self.refuse_void_pointer_access(inner, "Indexing a raw pointer", &ix_span);
                     self.check_pointer_target_is_visible(&base, "Indexing a raw pointer", &ix_span);
                     self.refuse_move_through_raw_pointer(inner, consume, &ix_span);
                 }
@@ -2886,6 +2899,7 @@ impl<'a> TypeChecker<'a> {
                             "Dereferencing a raw pointer"
                         };
                         self.require_unsafe_raw_access(verb, &e.span);
+                        self.refuse_void_pointer_access(&t, verb, &e.span);
                         self.check_pointer_target_is_visible(&inner_ty, verb, &e.span);
                         *t
                     }
