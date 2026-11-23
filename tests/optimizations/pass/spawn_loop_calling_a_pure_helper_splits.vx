@@ -1,0 +1,77 @@
+//===- spawn_loop_calling_a_pure_helper_splits.vx -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` loop that calls a helper writes one row per pass. When the compiler can show that
+// the helper writes only its own variables, the loop splits across threads: the helper takes
+// numbers, returns a number, and every call in it is to another such helper. `exp_helper` wraps
+// `math.exp` in an `mlir!` block and takes only `f32`, so the launch splits.
+//
+// A helper that takes a tensor can write what another pass writes, so a loop that calls it stays
+// on one thread. That loop says nothing: a `&mut` argument is memory that another pass may write,
+// which is the shape the program asked for. (A loop that stays serial although every write is its
+// own gets the warning, W1033, which the spawn-on warning test covers.)
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=SPLIT --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=SPLIT --implicit-check-not=Error
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=SERIAL --implicit-check-not=Error
+
+// SPLIT-DAG: func.func @exp_helper{{.*}}(%arg0: f32) -> f32
+// SPLIT-DAG: func.call @exp_helper
+// SPLIT-DAG: } {topology_name = "GPU[0]", vx_parallel_trip = 64 : i64}
+// SPLIT-DAG: func.func @quiet_through_a_helper{{.*}}() -> f32
+
+// SERIAL-LABEL: func.func @fill_through_a_writer
+// SERIAL: vx.spawn topology(500) {
+// SERIAL: func.call @add_through_a_tensor
+// SERIAL: } {topology_name = "GPU[0]"}
+
+fn exp_helper(x : f32) on Topology::Any -> f32 {
+  return mlir!( inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
+    %r = math.exp %a : f32
+    macro.yield %r : f32
+  };
+}
+
+fn add_through_a_tensor(t : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, r : i32) on Topology::Any -> void {
+  t[r][0] = t[r][0] + 1.0;
+  return;
+}
+
+fn fill_with_exp_helper() -> f32 {
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      o[r][0] = exp_helper(o[r][0]);
+    }
+  }
+  return transfer(o, Memory::CPU_DRAM)[0][0];
+}
+
+fn fill_through_a_writer() -> f32 {
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      add_through_a_tensor(&mut o, r);
+    }
+  }
+  return transfer(o, Memory::CPU_DRAM)[0][0];
+}
+
+// `writes_only()` accepts a call to a function that the compiler has shown writes only its own
+// variables, even though that function says nothing about itself.
+fn quiet_through_a_helper() on Topology::Any -> f32
+ensures writes_only()
+{
+  return exp_helper(1.0);
+}
+
+fn main() -> i32 {
+  print(fill_with_exp_helper());
+  print(fill_through_a_writer());
+  print(quiet_through_a_helper());
+  return 0;
+}

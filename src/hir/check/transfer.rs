@@ -2727,6 +2727,7 @@ impl<'a> TypeChecker<'a> {
                 ret,
                 span,
                 arrivals,
+                split: _,
             }) => {
                 let spawn_span = *span;
                 let mut actual_top = top.clone();

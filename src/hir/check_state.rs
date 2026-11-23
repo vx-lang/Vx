@@ -783,6 +783,10 @@ pub struct MonoState {
     /// The return-provenance summary of each checked instance, by its name. In a checked body a
     /// method call is a call by name, so the summary can follow it.
     pub return_provenances: HashMap<Symbol, crate::hir::provenance::ReturnProvenance>,
+    /// The checked instances that write only their own frame, by the name a call site uses. In a
+    /// checked body a method call is a call by name, so a spawn loop that calls one can read
+    /// there what the instance's body proves.
+    pub spawn_pure: HashSet<Symbol>,
     /// The parameters that each checked instance says `!keeps` for, as bits, by its name.
     pub not_kept: HashMap<Symbol, u32>,
     /// The parameters that each checked instance says `!frees` for, or that the walk of its

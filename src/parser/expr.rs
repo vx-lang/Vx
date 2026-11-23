@@ -1519,6 +1519,7 @@ impl<'a> Parser<'a> {
                                 expansion: self.expansion(),
                             },
                             arrivals: None,
+                            split: SpawnSplit::NotOffered,
                         })
                     }
                     TokenType::Unknown('"') => {

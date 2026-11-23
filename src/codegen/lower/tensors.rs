@@ -80,18 +80,28 @@ fn lower_spawn_region<'c>(
             super::seam_cert::emit_seam_certificates(gen, &this.stmts, &this.ret, body_block)?;
     }
 
-    // The same two proofs as the flat code generator, in the same order: one loop whose passes
-    // run on threads or host workers, else a loop of blocks with loops of threads in it. A
-    // region with `across` loops maps its work to lanes itself.
-    let offer = crate::hir::flatten::across::across_block_lanes(&this.stmts).is_none();
-    let one_loop = offer
-        .then(|| crate::hir::check::parallel::parallel_outer_for(&this.stmts))
-        .flatten();
-    let two_level = (offer && one_loop.is_none())
-        .then(|| crate::hir::check::parallel::parallel_two_level(&this.stmts))
-        .flatten();
+    // How the region's loop runs, as the checker decided and recorded on the statement. The
+    // checker is the one authority: reading the record here is what keeps this code generator
+    // and the W1033 warning from disagreeing.
+    let (one_loop, two_level_trip) = match &this.split {
+        syntax::SpawnSplit::Flat { index, trip } => (Some((*index, *trip)), None),
+        syntax::SpawnSplit::TwoLevel {
+            block,
+            threads,
+            trip,
+        } => (
+            None,
+            Some(crate::hir::check::parallel::TwoLevelPlan {
+                block: *block,
+                threads: threads.clone(),
+                trip: *trip,
+            }),
+        ),
+        syntax::SpawnSplit::NotOffered | syntax::SpawnSplit::Serial { .. } => (None, None),
+    };
     let outer_plan = std::mem::take(&mut gen.two_level_plan);
-    let two_level_trip = two_level.map(|(trip, plan)| {
+    let two_level_trip = two_level_trip.map(|plan| {
+        let trip = plan.trip;
         gen.two_level_plan = Some(plan);
         trip
     });

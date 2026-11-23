@@ -14,7 +14,7 @@
 
 use crate::hir::flatten::{is_tensor_alloc_call, tensor_alloc_placement, SPAWN_COOP};
 use crate::syntax::stmt::Statement;
-use crate::syntax::{BinaryOp, Expr, RelationalOp, Span};
+use crate::syntax::{BinaryOp, Expr, RelationalOp, Span, SpawnSplit};
 use std::collections::{HashMap, HashSet};
 
 /// What stops the passes of a `spawn` loop from running at the same time, and where it is.
@@ -42,32 +42,44 @@ enum Verdict {
 }
 
 impl crate::hir::TypeChecker<'_> {
-    /// W1033 for each `spawn` region in `body` whose loop runs on one thread although every pass
-    /// writes only memory of its own. Run on the checked body, which is what the lowering splits,
-    /// so the warning names what keeps the loop serial there.
-    pub(crate) fn warn_serial_spawn_loops(&mut self, body: &[Statement]) {
+    /// Whether `name` is a function the compiler has shown writes only its own frame: no
+    /// parameter can reach memory, the body writes only plain names in that frame, and every
+    /// call in it is to another such function. The scalar intrinsics that the compiler already
+    /// trusts without reading a body count too.
+    pub(crate) fn spawn_pure(&self, name: &str) -> bool {
+        self.mono.spawn_pure.contains(name)
+            || self.env.spawn_pure.contains(name)
+            || parallel_pure_call(name)
+    }
+
+    /// Record, on every `spawn` region of `body`, how its loop runs, and warn (W1033) for a
+    /// region that could have split but did not. Run on the checked body, which is the body both
+    /// code generators lower, so the recorded decision and the warning name the same thing.
+    ///
+    /// This is the one place that decides a split. The two code generators read the decision
+    /// instead of deciding again, so the warning and the program cannot disagree.
+    pub(crate) fn record_spawn_splits(&mut self, body: &mut [Statement]) {
         let mut found = Vec::new();
-        crate::syntax::visit_exprs(body, &mut |e| {
-            // A region with `across` loops maps its work to threads itself.
-            if let Expr::SpawnOn(sp) = e {
-                if sp
-                    .stmts
-                    .iter()
-                    .any(crate::hir::check::across_lanes::holds_across)
-                {
+        {
+            // The purity fact is frozen before any body is checked, so this only reads it.
+            let pure = |name: &str| self.spawn_pure(name);
+            crate::syntax::visit_exprs_mut(body, &mut |e| {
+                let Expr::SpawnOn(sp) = e else {
                     return;
-                }
-                if let Some(b) = serial_loop_blocker(&sp.stmts) {
+                };
+                let split = decide_spawn_split(&sp.stmts, &pure);
+                if let SpawnSplit::Serial { why, span } = &split {
                     // An expression the compiler made may have no position of its own.
-                    let at = if b.span == Span::default() {
+                    let at = if *span == Span::default() {
                         sp.span
                     } else {
-                        b.span
+                        *span
                     };
-                    found.push((b.why, at, contains_barrier(&sp.stmts)));
+                    found.push((why.clone(), at, contains_barrier(&sp.stmts)));
                 }
-            }
-        });
+                sp.split = split;
+            });
+        }
         for (why, at, kernel) in found {
             let msg = if kernel {
                 format!(
@@ -90,21 +102,55 @@ impl crate::hir::TypeChecker<'_> {
     }
 }
 
-/// Why the loop of a `spawn` region runs on one thread, when every pass writes only memory of
-/// its own and something else stops the split. `None` when the loop runs in parallel, and when
-/// it is not a loop meant to be split. A region with a `barrier()` is always meant to be split
-/// into blocks and threads, so for one that runs on one thread this names the first thing that
-/// stopped the split.
-pub(crate) fn serial_loop_blocker(stmts: &[Statement]) -> Option<Blocker> {
-    if contains_barrier(stmts) {
-        if parallel_outer_for(stmts).is_some() {
-            return None;
-        }
-        return two_level(stmts).err();
+/// How one `spawn` region's loop runs, from the same two proofs the lowering applies, in the same
+/// order: one loop whose passes run on threads or host workers, else a loop of blocks with loops
+/// of threads in it, else one thread.
+fn decide_spawn_split(stmts: &[Statement], pure: &dyn Fn(&str) -> bool) -> SpawnSplit {
+    // A region with `across` loops of blocks maps its work to blocks and lanes itself; the
+    // lowering does not offer it to these proofs.
+    if crate::hir::flatten::across::across_block_lanes(stmts).is_some() {
+        return SpawnSplit::NotOffered;
     }
-    match outer_for(stmts, true) {
-        Verdict::Blocked(b) if parallel_two_level(stmts).is_none() => Some(b),
-        _ => None,
+    // A region with `across` loops of its own runs its passes its own way, so a loop that stays
+    // serial there is not one to warn about.
+    let quiet = stmts
+        .iter()
+        .any(crate::hir::check::across_lanes::holds_across);
+    let serial = |why: String, span: Span| {
+        if quiet {
+            SpawnSplit::NotOffered
+        } else {
+            SpawnSplit::Serial { why, span }
+        }
+    };
+    // A region with `barrier()` is meant to be split into blocks and threads, and nothing else:
+    // the flat walk refuses the barrier, because every thread would meet it on its own stripe.
+    if contains_barrier(stmts) {
+        return match two_level(stmts, pure) {
+            Ok(plan) => SpawnSplit::TwoLevel {
+                block: plan.block,
+                threads: plan.threads,
+                trip: plan.trip,
+            },
+            Err(b) => serial(b.why, b.span),
+        };
+    }
+    match outer_for(stmts, false, pure) {
+        Verdict::Parallel(index, trip) => SpawnSplit::Flat { index, trip },
+        Verdict::NotSplittable | Verdict::Blocked(_) => match two_level(stmts, pure) {
+            Ok(plan) => SpawnSplit::TwoLevel {
+                block: plan.block,
+                threads: plan.threads,
+                trip: plan.trip,
+            },
+            // Not a loop of blocks and threads either. Warn when the flat walk refused for a
+            // reason that is not a shared write: a loop whose passes share memory asked for the
+            // shape it got.
+            Err(_) => match outer_for(stmts, true, pure) {
+                Verdict::Blocked(b) => serial(b.why, b.span),
+                Verdict::Parallel(..) | Verdict::NotSplittable => SpawnSplit::NotOffered,
+            },
+        },
     }
 }
 
@@ -154,17 +200,9 @@ fn only_scratch_drops_after(stmts: &[Statement], idx: usize) -> bool {
 /// The declared/used-captured distinction is tracked in program order, so the walker is immune to
 /// shadowing tricks without needing scopes: a declaration is only accepted while its name has
 /// never been read as captured.
-pub(crate) fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
-    match outer_for(stmts, false) {
-        Verdict::Parallel(idx, trip) => Some((idx, trip)),
-        _ => None,
-    }
-}
-
-/// `parallel_outer_for`, and why not. With `explain` the walk goes on past the first thing
-/// that stops the split, to tell a loop that writes shared memory from one stopped by
-/// something else; without it, it stops there, as the lowering needs.
-fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
+/// With `explain` the walk goes on past the first thing that stops the split, to tell a loop
+/// that writes shared memory from one stopped by something else; without it, it stops there.
+fn outer_for(stmts: &[Statement], explain: bool, pure: &dyn Fn(&str) -> bool) -> Verdict {
     use crate::syntax::stmt::Statement as S;
 
     let mut for_idx: Option<usize> = None;
@@ -185,7 +223,7 @@ fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
     let Expr::Range(r) = &*f.iterable else {
         return Verdict::NotSplittable;
     };
-    let mut scan = ParallelScan::fresh(f.iter.clone());
+    let mut scan = ParallelScan::fresh(f.iter.clone(), pure);
     scan.explain = explain;
     // A statement the compiler added, such as a drop, is not the program's to change.
     if !only_scratch_drops_after(stmts, idx) {
@@ -254,11 +292,14 @@ fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
     }
 }
 
-/// What `parallel_two_level` proved: which loop is block-mapped and which are thread-mapped,
-/// addressed by AST node identity (stable for the duration of lowering).
+/// What the two-level proof found: which loop is block-mapped and which are thread-mapped,
+/// named by source position so the plan survives the copies the driver makes of the functions,
+/// and the trip the launch is sized from.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TwoLevelPlan {
-    pub block: usize,
-    pub threads: Vec<usize>,
+    pub block: Span,
+    pub threads: Vec<Span>,
+    pub trip: u64,
 }
 
 /// Is this spawn region a sound two-level (block/thread) kernel (Vx#379)?
@@ -292,13 +333,9 @@ pub(crate) struct TwoLevelPlan {
 /// The degeneracy that keeps every existing guarantee: at a 1x1x1 launch, block and thread
 /// strides are both 1 and offsets both 0, so the kernel IS the serial nest -- the host path and
 /// the launcher's EXPECT check hold by construction, not by re-verification.
-pub(crate) fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
-    two_level(stmts).ok()
-}
-
-/// `parallel_two_level`, and why not: the first thing that stopped the split, with where it is.
+/// The two-level proof, and why not: the first thing that stopped the split, with where it is.
 /// A reason with no position of its own uses the default span.
-fn two_level(stmts: &[Statement]) -> Result<(u64, TwoLevelPlan), Blocker> {
+fn two_level(stmts: &[Statement], pure: &dyn Fn(&str) -> bool) -> Result<TwoLevelPlan, Blocker> {
     use crate::syntax::stmt::Statement as S;
     let no = |why: &str, span: Span| {
         Err(Blocker {
@@ -346,8 +383,8 @@ fn two_level(stmts: &[Statement]) -> Result<(u64, TwoLevelPlan), Blocker> {
 
     // A region with no thread loop or no barrier is not a cooperative kernel; let the flat
     // grid-stride path have it (it maps the same work with less machinery).
-    let mut scan = ParallelScan::fresh(f.iter.clone());
-    let why_not = |scan: ParallelScan, why: &str, span: Span| {
+    let mut scan = ParallelScan::fresh(f.iter.clone(), pure);
+    let why_not = |scan: ParallelScan<'_>, why: &str, span: Span| {
         Err(scan.refusal.unwrap_or(Blocker {
             why: why.to_string(),
             span,
@@ -417,30 +454,28 @@ fn two_level(stmts: &[Statement]) -> Result<(u64, TwoLevelPlan), Blocker> {
     }
     // The walks above ran twice (sequences twice per pass), so the plan vector carries
     // duplicates; membership is all `lower_for` asks of it.
-    walker.threads.sort_unstable();
+    walker
+        .threads
+        .sort_by_key(|s| (s.line, s.column, s.length, s.expansion));
     walker.threads.dedup();
     let coop = if walker.coop_trips.is_empty() {
         0
     } else {
         SPAWN_COOP
     };
-    Ok((
-        (hi - lo) as u64 | (threads << 32) | coop,
-        TwoLevelPlan {
-            // The address of the ForLoopStmt itself, because that is what `lower_for` is
-            // handed -- the enum wrapper's address would never match.
-            block: f as *const crate::syntax::ForLoopStmt as usize,
-            threads: walker.threads,
-        },
-    ))
+    Ok(TwoLevelPlan {
+        block: f.span,
+        threads: walker.threads,
+        trip: (hi - lo) as u64 | (threads << 32) | coop,
+    })
 }
 
-/// The block-body grammar walk behind `parallel_two_level`. Wraps the single-level
+/// The block-body grammar walk behind `two_level`. Wraps the single-level
 /// `ParallelScan` for expression legality and adds the item grammar around it.
-struct TwoLevelWalk {
-    scan: ParallelScan,
+struct TwoLevelWalk<'p> {
+    scan: ParallelScan<'p>,
     block_iv: String,
-    threads: Vec<usize>,
+    threads: Vec<Span>,
     saw_thread_loop: bool,
     /// The widest thread-loop trip: the block shape the launch should use, so a TQ=64 kernel
     /// gets 64 threads instead of 64 working and 64 idling (Vx#379).
@@ -451,7 +486,7 @@ struct TwoLevelWalk {
     coop_trips: Vec<i64>,
 }
 
-impl TwoLevelWalk {
+impl TwoLevelWalk<'_> {
     fn items(&mut self, stmts: &[Statement]) -> bool {
         use crate::syntax::stmt::Statement as S;
         let is_barrier = |s: &Statement| {
@@ -601,11 +636,11 @@ impl TwoLevelWalk {
         if ok {
             self.saw_thread_loop = true;
             self.max_thread_trip = self.max_thread_trip.max(hi - lo);
-            let addr = match node {
-                Statement::ForLoop(fl) => fl as *const crate::syntax::ForLoopStmt as usize,
+            let at = match node {
+                Statement::ForLoop(fl) => fl.span,
                 _ => return false,
             };
-            self.threads.push(addr);
+            self.threads.push(at);
         }
         ok
     }
@@ -615,7 +650,7 @@ impl TwoLevelWalk {
     /// accumulator, own-row tile fill, barrier, consume, barrier -- is a single loop body,
     /// and the accumulator lives in registers instead of a shared tensor with per-tile
     /// spills. Soundness needs one fact the plain thread rule does not: every thread must
-    /// meet every barrier the same number of times. `parallel_two_level` pins the launch to
+    /// meet every barrier the same number of times. `two_level` pins the launch to
     /// `threads == trip` (each thread runs the body exactly once), and the scan keeps
     /// barriers out of divergent positions -- conditionals, variable-bound loops, loops a
     /// `break` could leave early.
@@ -660,11 +695,11 @@ impl TwoLevelWalk {
         self.saw_thread_loop = true;
         self.max_thread_trip = self.max_thread_trip.max(trip);
         self.coop_trips.push(trip);
-        let addr = match node {
-            Statement::ForLoop(fl) => fl as *const crate::syntax::ForLoopStmt as usize,
+        let at = match node {
+            Statement::ForLoop(fl) => fl.span,
             _ => return false,
         };
-        self.threads.push(addr);
+        self.threads.push(at);
         true
     }
 }
@@ -771,7 +806,7 @@ fn columns_apart(a: &[Option<i64>], b: &[Option<i64>]) -> bool {
             .any(|(x, y)| matches!((x, y), (Some(x), Some(y)) if x != y))
 }
 
-/// A non-negative integer literal, for `parallel_outer_for`'s bounds.
+/// A non-negative integer literal, for the flat walk's bounds.
 fn parallel_int_literal(e: &Expr) -> Option<i64> {
     let Expr::Number(n) = e else {
         return None;
@@ -779,13 +814,15 @@ fn parallel_int_literal(e: &Expr) -> Option<i64> {
     n.value.parse::<i64>().ok()
 }
 
-/// Scalar math the walk may trust. By the time `parallel_outer_for` runs, the checker has
+/// Scalar math the walk may trust. By the time the flat walk runs, the checker has
 /// rewritten every method call into a mangled free call — `(x).exp()` arrives as
 /// `f32$exp(x)` — so a syntactic walk meets no `MethodCall`, only calls whose names carry the
 /// receiver type. A call written with the type's path, `f32::sqrt(x)` or `f32::from_bits(b)`,
 /// keeps its `::`. These are the stdlib's scalar intrinsics: value in, value out,
 /// nothing written anywhere, which is exactly what the disjointness proof needs from a call.
-/// Anything not on this list rejects the region — a name here is a purity claim.
+/// Anything not on this list rejects the region — a name here is a purity claim, and it is the
+/// half of the purity lookup that holds for a function whose body this compilation does not
+/// have. `crate::hir::purity` proves the other half from the bodies of the functions it can read.
 pub(crate) fn parallel_pure_call(name: &str) -> bool {
     let Some((ty, method)) = name.split_once('$').or_else(|| name.split_once("::")) else {
         return false;
@@ -849,10 +886,10 @@ fn index_key(e: &Expr, iv: &str) -> Option<String> {
     }
 }
 
-/// The disjointness walk behind `parallel_outer_for`: what each iteration writes, and what it reads
+/// The disjointness walk behind `outer_for`: what each iteration writes, and what it reads
 /// of what is written. `declared` and `used_captured` grow in program order; every `false` means
 /// "reject the region", never an error.
-struct ParallelScan {
+struct ParallelScan<'p> {
     iv: String,
     declared: HashSet<String>,
     used_captured: HashSet<String>,
@@ -912,6 +949,9 @@ struct ParallelScan {
     /// For each tensor from outside the region, where a pass first reaches a row another pass
     /// may own: a read of another row, or a second first index (see `row_keys`).
     other_row_at: HashMap<String, Span>,
+    /// Whether a call to this function writes only the callee's own frame. The checker froze
+    /// this fact before any body was checked; see `crate::hir::purity`.
+    pure: &'p dyn Fn(&str) -> bool,
     /// The names of the region that the loop split across threads sees from before it. A thread
     /// runs many passes of that loop with one copy of each such name.
     before_split: HashSet<String>,
@@ -946,8 +986,8 @@ struct Turn {
     written: HashSet<String>,
 }
 
-impl ParallelScan {
-    fn fresh(iv: String) -> Self {
+impl<'p> ParallelScan<'p> {
+    fn fresh(iv: String, pure: &'p dyn Fn(&str) -> bool) -> Self {
         ParallelScan {
             iv,
             declared: HashSet::new(),
@@ -977,6 +1017,7 @@ impl ParallelScan {
             turns: Vec::new(),
             pending_element: None,
             branch_depth: 0,
+            pure,
         }
     }
 
@@ -1588,7 +1629,7 @@ impl ParallelScan {
     }
 
     /// The two-level widening of the first-index rule (Vx#379): `block_iv * K + iv` in either
-    /// operand order, with `K` exactly the thread loop's trip -- see `parallel_two_level` for why
+    /// operand order, with `K` exactly the thread loop's trip -- see `two_level` for why
     /// the multiplier must equal the trip.
     fn affine_first(&self, e: &Expr) -> bool {
         let Some((bq, k)) = &self.affine else {
@@ -1707,8 +1748,7 @@ impl ParallelScan {
             // pass; any other call could write through an argument and rejects the region. A
             // `Borrow` shows up when such an intrinsic takes `&self` — harmless only immutably.
             Expr::FunctionCall(fc) => {
-                let pure =
-                    parallel_pure_call(&fc.name) || self.refuse(&call_blocker(&fc.name), fc.span);
+                let pure = (self.pure)(&fc.name) || self.refuse(&call_blocker(&fc.name), fc.span);
                 pure && fc.args.iter().all(|a| self.expr(a))
             }
             // A `&mut` borrow may be written through, anywhere.

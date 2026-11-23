@@ -23,7 +23,7 @@
 // CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:104:{{.*}}the block says `atomic(t)`, but `%v = memref.load %t[%k] : memref<?xi32>` reads or writes `%t` without an atomic operation
 // CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:112:{{.*}}`memref.store %i, %u[%k] : memref<?xi32>` writes `%u`, which the clauses of the block do not name
 // CHECK: Error[E6032] at {{.*}}atomic_contracts_that_do_not_hold.vx:124:{{.*}}the passes of this block loop change `count` with atomic operations, so every access to it in the loop must be one
-// CHECK: Error[E6032] at {{.*}}atomic_contracts_that_do_not_hold.vx:135:{{.*}}the call to `add_one_plain` may write through an argument
+// CHECK: Error[E6032] at {{.*}}atomic_contracts_that_do_not_hold.vx:135:{{.*}}the call to `add_one_plain` writes memory that another pass can see
 
 // A correct contract, for the kernels below.
 fn add_one(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32

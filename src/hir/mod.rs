@@ -25,6 +25,7 @@ pub mod memory;
 pub mod places;
 pub mod provenance;
 pub mod prover;
+pub mod purity;
 pub mod seam;
 pub mod solver;
 pub mod stmt;

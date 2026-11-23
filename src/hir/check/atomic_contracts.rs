@@ -689,13 +689,13 @@ impl crate::hir::TypeChecker<'_> {
                 m.span,
             )),
             Expr::FunctionCall(fc)
-                if !callees.contains(fc.name.as_ref())
-                    && !crate::hir::check::parallel::parallel_pure_call(&fc.name) =>
+                if !callees.contains(fc.name.as_ref()) && !self.spawn_pure(&fc.name) =>
             {
                 bad.push((
                     format!(
                         "`{shown}` says `writes_only()`, so it may call only a function that says \
-                         it too, but `{}` does not",
+                         it too or that the compiler has shown writes only its own variables, \
+                         but `{}` is neither",
                         fc.name
                     ),
                     fc.span,

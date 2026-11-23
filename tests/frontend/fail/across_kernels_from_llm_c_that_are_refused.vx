@@ -12,7 +12,7 @@
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
 // CHECK: Error[E6032] at {{.*}}across_kernels_from_llm_c_that_are_refused.vx:27:{{.*}}two passes of this block loop may write the same element of `dwte`: an index of the write
-// CHECK: Error[E6032] at {{.*}}across_kernels_from_llm_c_that_are_refused.vx:66:{{.*}}the call to `f32$rsqrt` may write through an argument, and the checker does not read its
+// CHECK: Error[E6032] at {{.*}}across_kernels_from_llm_c_that_are_refused.vx:66:{{.*}}the call to `f32$rsqrt` writes memory that another pass can see, or the compiler cannot show that it writes only its own variables
 // CHECK: Error[E6032] at {{.*}}across_kernels_from_llm_c_that_are_refused.vx:86:{{.*}}two passes of this block loop may write the same element of `dbias`: an index of the
 // CHECK: Error[E6032] at {{.*}}across_kernels_from_llm_c_that_are_refused.vx:105:{{.*}}this lane loop reads `mean`, which only lane 0 has: lane 0 alone runs the code that sets
 

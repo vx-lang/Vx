@@ -128,6 +128,32 @@ impl StringLiteralExpr {
     }
 }
 
+/// How the loop of a `spawn` region runs, decided once by the checker and recorded on the
+/// statement. Both code generators read this instead of deciding again, so the W1033 warning
+/// and the program cannot disagree.
+#[derive(Debug, PartialEq, Clone, Default)]
+pub enum SpawnSplit {
+    /// The region is not one loop that the compiler offers to the split proofs: it has no single
+    /// loop over a known range, it maps its own work with `across` loops, or its passes write
+    /// memory that another pass may write too. It runs on one thread, and there is nothing to
+    /// warn about: the program asked for that shape.
+    #[default]
+    NotOffered,
+    /// The loop at statement `index` runs its `trip` passes on threads or host workers.
+    Flat { index: usize, trip: u64 },
+    /// The region is a loop of blocks, at `block`, that holds loops of threads, at `threads`.
+    /// `trip` packs the block count, the thread count and the barrier flag as the lowering
+    /// encodes them.
+    TwoLevel {
+        block: Span,
+        threads: Vec<Span>,
+        trip: u64,
+    },
+    /// Every pass writes only memory of its own, and something else stops the split. The loop
+    /// runs on one thread, and W1033 says why.
+    Serial { why: String, span: Span },
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct SpawnOnExpr {
     pub top: Topology,
@@ -141,6 +167,9 @@ pub struct SpawnOnExpr {
         crate::syntax::MemorySpace,
         Option<crate::syntax::MemorySpace>,
     )>,
+    /// How the region's loop runs, set by the checker. Both code generators read it, and neither
+    /// decides again: one authority, so the W1033 warning and the emitted code agree.
+    pub split: SpawnSplit,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -150,6 +179,7 @@ impl SpawnOnExpr {
             ret,
             span,
             arrivals: None,
+            split: SpawnSplit::NotOffered,
         }
     }
 }
@@ -1994,6 +2024,7 @@ impl Expr {
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
                 arrivals: e.arrivals.clone(),
+                split: e.split.clone(),
             }),
             Expr::TaskBlock(e) => Expr::TaskBlock(TaskBlockExpr {
                 kind: e.kind,

@@ -25,11 +25,16 @@ One global fact can still appear inside a body: a **new generic instantiation**.
 exception has its own machinery (deferred identity, in
 [`parallel_compiler_architecture.md`](parallel_compiler_architecture.md)).
 
-The compiler reads one fact about a return type from the body: **where a returned reference may
-point**, by parameter (`src/hir/provenance.rs`). Vx signatures have no lifetimes to say it. The
-compiler reads it from the syntax of every body before it checks any body, and freezes it with
-the rest, so it still checks bodies in parallel. The cost is that a change to a body can change
-which callers compile.
+Two facts come from bodies. The compiler reads them from the syntax of every body before it
+checks any body, and freezes them with the rest, so it still checks bodies in parallel. The cost
+is that a change to a body can change which callers compile.
+
+- **Where a returned reference may point**, by parameter (`src/hir/provenance.rs`). Vx
+  signatures have no lifetimes to say it.
+- **Whether a function writes only plain variables in its own frame** (`src/hir/purity.rs`). No
+  parameter may reach memory, every write in the body must name a plain local, and every call
+  must be to another function with the same property. A `spawn` loop may run its passes at once
+  when every call in it is to such a function, and a `writes_only()` function may call one.
 
 ## What breaking them costs
 

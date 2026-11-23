@@ -308,18 +308,18 @@ pub(super) struct LoopMarks {
     step: &'static str,
 }
 
-/// The marks the `spawn` region's proofs give this loop, if any. Taken, so that the loops in
-/// its body do not get them too.
+/// The marks the `spawn` region's recorded split gives this loop, if any. Taken, so that the
+/// loops in its body do not get them too. The plan names its loops by source position, which
+/// survives the checker's run and the copies the driver makes of the functions.
 fn loop_marks(for_loop: &ForLoopStmt, gen: &mut MeliorGenerator<'_>) -> Option<LoopMarks> {
     let one_loop = std::mem::take(&mut gen.mark_next_for);
-    let at = for_loop as *const ForLoopStmt as usize;
     match &gen.two_level_plan {
-        Some(plan) if plan.block == at => Some(LoopMarks {
+        Some(plan) if plan.block == for_loop.span => Some(LoopMarks {
             init: "vx.parallel_binit",
             bound: Some("vx.parallel_bbound"),
             step: "vx.parallel_bstep",
         }),
-        Some(plan) if plan.threads.contains(&at) => Some(LoopMarks {
+        Some(plan) if plan.threads.contains(&for_loop.span) => Some(LoopMarks {
             init: "vx.parallel_tinit",
             bound: None,
             step: "vx.parallel_tstep",

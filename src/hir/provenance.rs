@@ -238,6 +238,31 @@ impl<'d> Decls<'d> {
         }
     }
 
+    /// Whether a value of type `ty` reaches memory. A tensor, a reference or a pointer always
+    /// does; a struct does when a field of it does. A type the walk cannot look into, such as a
+    /// type parameter or an unknown name, counts as one that reaches memory.
+    pub(crate) fn reaches_memory(&self, ty: &Type, depth: usize) -> bool {
+        if depth > 8 {
+            return true;
+        }
+        match ty {
+            Type::Tensor(..)
+            | Type::Borrow { .. }
+            | Type::Pointer(..)
+            | Type::Ref(..)
+            | Type::Pinned(..)
+            | Type::Function(..)
+            | Type::Closure(..) => true,
+            Type::Scalar(e) => matches!(e, ElementType::Generic(_)),
+            Type::Verified(inner) => self.reaches_memory(inner, depth + 1),
+            Type::Struct(name, _) if name.as_ref() == "void" => false,
+            Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => self
+                .parts(ty)
+                .is_none_or(|parts| parts.iter().any(|t| self.reaches_memory(t, depth + 1))),
+            _ => true,
+        }
+    }
+
     /// Whether a value of type `ty` can free memory when the program gives it to a call: it
     /// holds a raw pointer or a type with a drop, at any depth, through fields, references and
     /// pointers.

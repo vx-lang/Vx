@@ -219,7 +219,10 @@ spawn on(Topology::Gpu) {
   call gets. That holds when `i` is the same in every pass, and only such calls change `count` in
   the loop.
 - A call to a function that says `ensures writes_only()` accesses no memory, so it races with
-  nothing. `scoped_fence(order, FenceScope::Device)` is one.
+  nothing. `scoped_fence(order, FenceScope::Device)` is one. So does a call to a function that
+  the compiler has shown writes only plain variables in its own frame: no parameter of it can
+  reach memory, and every call in it is to another such function (`src/hir/purity.rs`). A loop
+  that calls one is a loop whose passes the compiler splits across threads.
 - A call to a function that says `ensures reads_only(t)`, or an `mlir!` block with
   `ensures : [reads_only(t)]`, reads all of `t` and writes none of it. It races with no other
   read. The function may only read elements of `t`, ask for its length, or pass it to code that
