@@ -35,9 +35,9 @@ import std::sync::wait;
 import std::time;
 
 // The three words of the lock.
-const BROADCAST_LOCK : i64 = 8;
+const BROADCAST_LOCK : i64 = 9;
 // The number of slot 0, then its count of readers. The other slots follow.
-const BROADCAST_SLOTS : i64 = 11;
+const BROADCAST_SLOTS : i64 = 12;
 
 /// The end of a broadcast channel that sends. Clone it to send from many tasks.
 struct BroadcastSender<T> {

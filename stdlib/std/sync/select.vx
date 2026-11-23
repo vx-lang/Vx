@@ -1,0 +1,542 @@
+//===- select.vx - Vx Standard Library ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `select2` to `select6` and `select_list` wait until the first of several sources is ready, and
+// give its index. The caller then does the operation, for example `try_recv`. A source of any
+// type implements `WaitSource`. The design is
+// docs/discussions/select_on_channels_sockets_timers_and_tokens.md.
+//
+// A `select` waits on one word of its own, the waiter. Each source that can get ready wakes the
+// waiter: it adds 1 to the word and calls `wake_all`. So the task waits once, on one word.
+//
+// One call: search the sources once. If none is ready, read the waiter, watch each source, and
+// search again. A source that got ready before its watch shows in the second search. A source
+// that gets ready after its watch changes the waiter, so the wait returns at once.
+//===----------------------------------------------------------------------===//
+import core::result;
+import core::sync::atomic;
+import core::time;
+import std::sync::wait;
+import std::time;
+import std::vec;
+
+extern {
+  /// Until `vx_unwatch`, `vx_wake_watchers(key)` adds 1 to `waiter` and wakes it.
+  fn vx_watch(key : *mut i64, waiter : *mut i64) -> void;
+  /// Undo one `vx_watch` of the same pair.
+  fn vx_unwatch(key : *mut i64, waiter : *mut i64) -> void;
+  /// Add 1 to each waiter that watches `key`, and wake it.
+  fn vx_wake_watchers(key : *mut i64) -> void;
+  /// The index after the last choice of a `select` in this task.
+  fn vx_select_turn() -> i64;
+  /// A `select` of this task chose the index `next - 1`.
+  fn vx_select_chose(next : i64) -> void;
+  /// For a test: sleep for `VX_TEST_SELECT_PAUSE_MS`, when it is set.
+  fn vx_test_select_pause() -> void;
+}
+
+/// The word that one `select` waits on. A source wakes it.
+struct Waiter {
+  word : AtomicI64,
+}
+
+impl Waiter {
+  /// Until `unwatch_key`, each `wake_watchers(key)` wakes this waiter. A source calls it in
+  /// `watch`, with a word that it owns as `key`.
+  fn watch_key(self : &Waiter, key : &AtomicI64) -> void {
+    unsafe { vx_watch(key.as_ptr(), self.word.as_ptr()); }
+  }
+
+  /// Undo one `watch_key`. After it, `wake_watchers(key)` does not touch this waiter.
+  fn unwatch_key(self : &Waiter, key : &AtomicI64) -> void {
+    unsafe { vx_unwatch(key.as_ptr(), self.word.as_ptr()); }
+  }
+}
+
+/// Wake each waiter that watches `key`. A source calls it after each change that can make it
+/// ready.
+fn wake_watchers(key : &AtomicI64) -> void {
+  unsafe { vx_wake_watchers(key.as_ptr()); }
+}
+
+/// Something that a task can wait on in a `select`.
+trait WaitSource {
+  /// True when the operation of the source can go on now with no wait. It must not wait, and it
+  /// must not take a value from the source.
+  fn is_ready(self : &Self) -> bool;
+  /// Wake `w` at each later change that can make the source ready.
+  fn watch(self : &Self, w : &Waiter) -> void;
+  /// Undo `watch`. After it returns, the source does not touch `w` again.
+  fn unwatch(self : &Self, w : &Waiter) -> void;
+  /// The time at which the source gets ready with no event, or `Instant::never()`.
+  fn deadline(self : &Self) -> Instant {
+    return Instant::never();
+  }
+}
+
+/// Why a `select` gave no index.
+enum SelectError {
+  // The `tasks` block of this task was cancelled, or the time limit of `within` ran out.
+  Cancelled,
+}
+
+/// The sources of one `select`, by index.
+trait WaitSources {
+  fn count(self : &Self) -> i32;
+  fn is_ready_at(self : &Self, i : i32) -> bool;
+  fn watch_all(self : &Self, w : &Waiter) -> void;
+  fn unwatch_all(self : &Self, w : &Waiter) -> void;
+  /// The earliest deadline of the sources.
+  fn deadline(self : &Self) -> Instant;
+}
+
+/// The earlier of two times.
+fn earlier(a : Instant, b : Instant) -> Instant {
+  if a < b {
+    return a;
+  }
+  return b;
+}
+
+/// The index of a ready source, or -1. The search starts after the last choice of this task
+/// (round robin), so a source that stays ready gets picked within `n` calls.
+fn first_ready<S : WaitSources>(sources : &S) -> i32 {
+  let n = sources.count() as i64;
+  if n == 0 {
+    return -1;
+  }
+  let start = unsafe { vx_select_turn() } % n;
+  for j in 0..n {
+    let i = (start + j) % n;
+    if sources.is_ready_at(i as i32) {
+      unsafe { vx_select_chose(i + 1); }
+      return i as i32;
+    }
+  }
+  return -1;
+}
+
+/// The index of the first source of `sources` that is ready. Wait while none is ready. Give
+/// `Cancelled` when the `tasks` block of this task was cancelled, or at the time limit of
+/// `within`.
+fn select_from<S : WaitSources>(sources : &S, at : Caller) -> Result<i32, SelectError> {
+  let w = Waiter {
+    word : AtomicI64::new(0)
+  };
+  while !cancelled_at(at) {
+    let mut i = first_ready(sources);
+    if i >= 0 {
+      return Result<i32, SelectError>::Ok(i);
+    }
+    unsafe { vx_test_select_pause(); }
+    let seen = w.word.load(AtomicOrdering::SeqCst);
+    sources.watch_all(&w);
+    i = first_ready(sources);
+    if i < 0 {
+      waiting_in_select(at);
+      wait_while_until(&w.word, seen, sources.deadline(), true);
+    }
+    sources.unwatch_all(&w);
+    if i >= 0 {
+      return Result<i32, SelectError>::Ok(i);
+    }
+  }
+  return Result<i32, SelectError>::Err(SelectError::Cancelled);
+}
+
+/// The sources of `select2`.
+struct Sources2<A, B> {
+  a : &A,
+  b : &B,
+}
+
+impl<A : WaitSource, B : WaitSource> WaitSources for Sources2<A, B> {
+  fn count(self : &Sources2<A, B>) -> i32 {
+    return 2;
+  }
+
+  fn is_ready_at(self : &Sources2<A, B>, i : i32) -> bool {
+    if i == 0 {
+      return self.a.is_ready();
+    }
+    return self.b.is_ready();
+  }
+
+  fn watch_all(self : &Sources2<A, B>, w : &Waiter) -> void {
+    self.a.watch(w);
+    self.b.watch(w);
+  }
+
+  fn unwatch_all(self : &Sources2<A, B>, w : &Waiter) -> void {
+    self.a.unwatch(w);
+    self.b.unwatch(w);
+  }
+
+  fn deadline(self : &Sources2<A, B>) -> Instant {
+    return earlier(self.a.deadline(), self.b.deadline());
+  }
+}
+
+/// The sources of `select3`.
+struct Sources3<A, B, C> {
+  a : &A,
+  b : &B,
+  c : &C,
+}
+
+impl<A : WaitSource, B : WaitSource, C : WaitSource> WaitSources for Sources3<A, B, C> {
+  fn count(self : &Sources3<A, B, C>) -> i32 {
+    return 3;
+  }
+
+  fn is_ready_at(self : &Sources3<A, B, C>, i : i32) -> bool {
+    if i == 0 {
+      return self.a.is_ready();
+    }
+    if i == 1 {
+      return self.b.is_ready();
+    }
+    return self.c.is_ready();
+  }
+
+  fn watch_all(self : &Sources3<A, B, C>, w : &Waiter) -> void {
+    self.a.watch(w);
+    self.b.watch(w);
+    self.c.watch(w);
+  }
+
+  fn unwatch_all(self : &Sources3<A, B, C>, w : &Waiter) -> void {
+    self.a.unwatch(w);
+    self.b.unwatch(w);
+    self.c.unwatch(w);
+  }
+
+  fn deadline(self : &Sources3<A, B, C>) -> Instant {
+    return earlier(earlier(self.a.deadline(), self.b.deadline()), self.c.deadline());
+  }
+}
+
+/// The sources of `select4`.
+struct Sources4<A, B, C, D> {
+  a : &A,
+  b : &B,
+  c : &C,
+  d : &D,
+}
+
+impl<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource> WaitSources for Sources4<A, B, C, D> {
+  fn count(self : &Sources4<A, B, C, D>) -> i32 {
+    return 4;
+  }
+
+  fn is_ready_at(self : &Sources4<A, B, C, D>, i : i32) -> bool {
+    if i == 0 {
+      return self.a.is_ready();
+    }
+    if i == 1 {
+      return self.b.is_ready();
+    }
+    if i == 2 {
+      return self.c.is_ready();
+    }
+    return self.d.is_ready();
+  }
+
+  fn watch_all(self : &Sources4<A, B, C, D>, w : &Waiter) -> void {
+    self.a.watch(w);
+    self.b.watch(w);
+    self.c.watch(w);
+    self.d.watch(w);
+  }
+
+  fn unwatch_all(self : &Sources4<A, B, C, D>, w : &Waiter) -> void {
+    self.a.unwatch(w);
+    self.b.unwatch(w);
+    self.c.unwatch(w);
+    self.d.unwatch(w);
+  }
+
+  fn deadline(self : &Sources4<A, B, C, D>) -> Instant {
+    let first = earlier(self.a.deadline(), self.b.deadline());
+    return earlier(first, earlier(self.c.deadline(), self.d.deadline()));
+  }
+}
+
+/// The sources of `select5`.
+struct Sources5<A, B, C, D, E> {
+  a : &A,
+  b : &B,
+  c : &C,
+  d : &D,
+  e : &E,
+}
+
+impl<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource> WaitSources for Sources5<A, B, C, D, E> {
+  fn count(self : &Sources5<A, B, C, D, E>) -> i32 {
+    return 5;
+  }
+
+  fn is_ready_at(self : &Sources5<A, B, C, D, E>, i : i32) -> bool {
+    if i == 0 {
+      return self.a.is_ready();
+    }
+    if i == 1 {
+      return self.b.is_ready();
+    }
+    if i == 2 {
+      return self.c.is_ready();
+    }
+    if i == 3 {
+      return self.d.is_ready();
+    }
+    return self.e.is_ready();
+  }
+
+  fn watch_all(self : &Sources5<A, B, C, D, E>, w : &Waiter) -> void {
+    self.a.watch(w);
+    self.b.watch(w);
+    self.c.watch(w);
+    self.d.watch(w);
+    self.e.watch(w);
+  }
+
+  fn unwatch_all(self : &Sources5<A, B, C, D, E>, w : &Waiter) -> void {
+    self.a.unwatch(w);
+    self.b.unwatch(w);
+    self.c.unwatch(w);
+    self.d.unwatch(w);
+    self.e.unwatch(w);
+  }
+
+  fn deadline(self : &Sources5<A, B, C, D, E>) -> Instant {
+    let first = earlier(self.a.deadline(), self.b.deadline());
+    let second = earlier(self.c.deadline(), self.d.deadline());
+    return earlier(earlier(first, second), self.e.deadline());
+  }
+}
+
+/// The sources of `select6`.
+struct Sources6<A, B, C, D, E, F> {
+  a : &A,
+  b : &B,
+  c : &C,
+  d : &D,
+  e : &E,
+  f : &F,
+}
+
+impl<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource, F : WaitSource> WaitSources for Sources6<A, B, C, D, E, F> {
+  fn count(self : &Sources6<A, B, C, D, E, F>) -> i32 {
+    return 6;
+  }
+
+  fn is_ready_at(self : &Sources6<A, B, C, D, E, F>, i : i32) -> bool {
+    if i == 0 {
+      return self.a.is_ready();
+    }
+    if i == 1 {
+      return self.b.is_ready();
+    }
+    if i == 2 {
+      return self.c.is_ready();
+    }
+    if i == 3 {
+      return self.d.is_ready();
+    }
+    if i == 4 {
+      return self.e.is_ready();
+    }
+    return self.f.is_ready();
+  }
+
+  fn watch_all(self : &Sources6<A, B, C, D, E, F>, w : &Waiter) -> void {
+    self.a.watch(w);
+    self.b.watch(w);
+    self.c.watch(w);
+    self.d.watch(w);
+    self.e.watch(w);
+    self.f.watch(w);
+  }
+
+  fn unwatch_all(self : &Sources6<A, B, C, D, E, F>, w : &Waiter) -> void {
+    self.a.unwatch(w);
+    self.b.unwatch(w);
+    self.c.unwatch(w);
+    self.d.unwatch(w);
+    self.e.unwatch(w);
+    self.f.unwatch(w);
+  }
+
+  fn deadline(self : &Sources6<A, B, C, D, E, F>) -> Instant {
+    let first = earlier(self.a.deadline(), self.b.deadline());
+    let second = earlier(self.c.deadline(), self.d.deadline());
+    return earlier(earlier(first, second), earlier(self.e.deadline(), self.f.deadline()));
+  }
+}
+
+/// The sources of `select_list`.
+struct SourceList<A> {
+  list : &Vec<A>,
+}
+
+impl<A : WaitSource> WaitSources for SourceList<A> {
+  fn count(self : &SourceList<A>) -> i32 {
+    return self.list.len();
+  }
+
+  fn is_ready_at(self : &SourceList<A>, i : i32) -> bool {
+    return self.list.get_ref(i).is_ready();
+  }
+
+  fn watch_all(self : &SourceList<A>, w : &Waiter) -> void {
+    for i in 0..self.list.len() {
+      self.list.get_ref(i).watch(w);
+    }
+  }
+
+  fn unwatch_all(self : &SourceList<A>, w : &Waiter) -> void {
+    for i in 0..self.list.len() {
+      self.list.get_ref(i).unwatch(w);
+    }
+  }
+
+  fn deadline(self : &SourceList<A>) -> Instant {
+    let mut first = Instant::never();
+    for i in 0..self.list.len() {
+      first = earlier(first, self.list.get_ref(i).deadline());
+    }
+    return first;
+  }
+}
+
+/// The index of the first of `a` and `b` that is ready: 0 for `a`, 1 for `b`. Wait while neither
+/// is ready. Give `Cancelled` when the `tasks` block of this task was cancelled, or at the time
+/// limit of `within`.
+fn select2<A : WaitSource, B : WaitSource>(a : &A, b : &B, at : Caller) -> Result<i32, SelectError> {
+  let sources = Sources2<A, B> {
+    a : a, b : b
+  };
+  return select_from(&sources, at);
+}
+
+/// `select2` with three sources.
+fn select3<A : WaitSource, B : WaitSource, C : WaitSource>(a : &A, b : &B, c : &C, at : Caller) -> Result<i32, SelectError> {
+  let sources = Sources3<A, B, C> {
+    a : a, b : b, c : c
+  };
+  return select_from(&sources, at);
+}
+
+/// `select2` with four sources.
+fn select4<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource>(a : &A, b : &B, c : &C, d : &D, at : Caller) -> Result<i32, SelectError> {
+  let sources = Sources4<A, B, C, D> {
+    a : a, b : b, c : c, d : d
+  };
+  return select_from(&sources, at);
+}
+
+/// `select2` with five sources.
+fn select5<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource>(a : &A, b : &B, c : &C, d : &D, e : &E, at : Caller) -> Result<i32, SelectError> {
+  let sources = Sources5<A, B, C, D, E> {
+    a : a, b : b, c : c, d : d, e : e
+  };
+  return select_from(&sources, at);
+}
+
+/// `select2` with six sources. For more, give some of them to a task that sends on a channel.
+fn select6<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource, F : WaitSource>(a : &A, b : &B, c : &C, d : &D, e : &E, f : &F, at : Caller) -> Result<i32, SelectError> {
+  let sources = Sources6<A, B, C, D, E, F> {
+    a : a, b : b, c : c, d : d, e : e, f : f
+  };
+  return select_from(&sources, at);
+}
+
+/// `select2` with the sources of a list, all of one type. The index is the index in the list. A
+/// `select_list` of an empty list waits for a cancel.
+fn select_list<A : WaitSource>(sources : &Vec<A>, at : Caller) -> Result<i32, SelectError> {
+  let list = SourceList<A> {
+    list : sources
+  };
+  return select_from(&list, at);
+}
+
+/// A source that is ready only when `active` is true and `source` is ready. Use it to turn off
+/// one source of a `select`, for example a closed channel.
+struct When<A> {
+  active : bool,
+  source : &A,
+}
+
+/// `source` when `active` is true, and a source that is never ready when it is false.
+fn when<A : WaitSource>(active : bool, source : &A) -> When<A> {
+  return When<A> {
+    active : active, source : source
+  };
+}
+
+impl<A : WaitSource> WaitSource for When<A> {
+  fn is_ready(self : &When<A>) -> bool {
+    return self.active && self.source.is_ready();
+  }
+
+  fn watch(self : &When<A>, w : &Waiter) -> void {
+    if self.active {
+      self.source.watch(w);
+    }
+  }
+
+  fn unwatch(self : &When<A>, w : &Waiter) -> void {
+    if self.active {
+      self.source.unwatch(w);
+    }
+  }
+
+  fn deadline(self : &When<A>) -> Instant {
+    if self.active {
+      return self.source.deadline();
+    }
+    return Instant::never();
+  }
+}
+
+/// A source that gets ready at a time. Give one to a `select` to wait for a limited time.
+struct Deadline {
+  at : Instant,
+}
+
+impl Copy for Deadline {}
+
+impl Deadline {
+  /// A source that gets ready `d` from now.
+  fn after(d : Duration) -> Deadline {
+    return Deadline {
+      at : deadline_after(d)
+    };
+  }
+
+  /// A source that gets ready when the clock reaches `t`.
+  fn until(t : Instant) -> Deadline {
+    return Deadline {
+      at : t
+    };
+  }
+}
+
+impl WaitSource for Deadline {
+  fn is_ready(self : &Deadline) -> bool {
+    return past_deadline(self.at);
+  }
+
+  // The `select` waits until the earliest deadline, so a deadline needs no watch.
+  fn watch(self : &Deadline, _w : &Waiter) -> void {}
+
+  fn unwatch(self : &Deadline, _w : &Waiter) -> void {}
+
+  fn deadline(self : &Deadline) -> Instant {
+    return self.at;
+  }
+}

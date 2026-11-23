@@ -67,7 +67,7 @@ the same in each run.
 | Values from many tasks | a channel |
 | A counter or a flag that tasks share | an atomic |
 | A change to more than one value at a time | a `Mutex` |
-| Values from more than one channel | a `Selector` |
+| Values from more than one channel, or a channel and a time limit | `select2` to `select6`, or a `Selector` |
 | A value that lives longer than its `tasks` block | an `Arc` |
 | At most `n` tasks that do one thing at the same time | a `Semaphore` |
 
@@ -163,7 +163,7 @@ of each kernel, and the result must be the same as on the GPU.
 | a multi-thread tokio runtime | `VX_TASK_RUNTIME=shared`, with no change to the program |
 | `async fn` and `.await` | a normal function: `recv()`, `join()` and `lock()` wait in place |
 | `tokio::sync::mpsc` | `std::sync::channel` |
-| `tokio::select!` | `Selector` |
+| `tokio::select!` | `select2` to `select6` from `std::sync::select` |
 | `tokio::sync::Semaphore` | `std::sync::semaphore::Semaphore` |
 | `AtomicU64` with `Ordering::Relaxed` | `AtomicU64` with `AtomicOrdering::Relaxed` |
 

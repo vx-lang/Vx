@@ -27,10 +27,10 @@ import std::sync::wait;
 import std::time;
 
 // The three words of the lock.
-const WATCH_LOCK : i64 = 8;
+const WATCH_LOCK : i64 = 9;
 // The version of the value.
-const WATCH_VERSION : i64 = 11;
-const WATCH_WORDS : i64 = 12;
+const WATCH_VERSION : i64 = 12;
+const WATCH_WORDS : i64 = 13;
 
 /// The end of a watch channel that sends. A watch channel has one.
 struct WatchSender<T> {

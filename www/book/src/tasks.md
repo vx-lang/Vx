@@ -228,6 +228,25 @@ So for `n` channels, if one channel has a value at each of `n` calls in a row, o
 takes a value from it. [What Vx guarantees about concurrency](guarantees.md) lists this promise
 and the others about tasks, and says how we check each one.
 
+### Sources of different types
+
+`select2` to `select6` from `std::sync::select` wait on sources of different types: a `Receiver`
+of any element type, and a `Deadline`. Each gives the index of the first source that is ready, and
+starts its search after the last choice of the task. The caller then takes the value, for example
+with `try_recv`. A `select` takes no value itself, so a source that loses keeps its value.
+
+A closed channel is ready, and its `try_recv` gives `Closed`. `when(false, &source)` turns a source
+off. `select_list` waits on a `Vec` of sources of one type. A cancel of the `tasks` block and the
+limit of `within` end the wait with `SelectError::Cancelled`. This program takes jobs and notes
+until both channels are closed, and gives up when nothing comes for five seconds
+(`book_select_on_two_kinds_of_channel_and_a_deadline.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_select_on_two_kinds_of_channel_and_a_deadline.vx:program}}
+```
+
+It prints `3 jobs and 2 notes`.
+
 ## Other kinds of channel
 
 `std::sync` has four more kinds of channel. Each one is a library on the atomics and the waits
@@ -395,5 +414,5 @@ a TCP server and a client as two tasks.
 | A task that fails | Its `join` leaves the block | `join` gives a `Result` | Each program writes it |
 | Cancel the other tasks | When the block leaves or a task fails | Each program writes it | `context`, by hand |
 | Functions that wait | Normal functions | `async fn`, or a blocked thread | Normal functions |
-| Wait on many channels | `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
+| Wait on many channels | `select2` to `select6`, or `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
 | Kinds of channel | `channel`, oneshot, work queue, broadcast, watch | The same in tokio | One kind, `chan` |
