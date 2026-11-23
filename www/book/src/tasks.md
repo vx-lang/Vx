@@ -231,7 +231,8 @@ and the others about tasks, and says how we check each one.
 ### Sources of different types
 
 `select2` to `select6` from `std::sync::select` wait on sources of different types: a `Receiver`
-of any element type, and a `Deadline`. Each gives the index of the first source that is ready, and
+of any element type, a `Deadline`, and a `TcpListener`, `TcpStream` or `UdpSocket` from
+`std::net`. A socket is ready when its `accept`, `read` or `recv` does not wait. Each `select` gives the index of the first source that is ready, and
 starts its search after the last choice of the task. The caller then takes the value, for example
 with `try_recv`. A `select` takes no value itself, so a source that loses keeps its value.
 

@@ -13,7 +13,8 @@
 // until the socket is ready, and then tries the call again. The caller puts its socket on the
 // list of one poller thread, and waits on a word of its stack (wait.rs): a fiber parks, and a
 // thread sleeps. The poller calls poll(2) on the sockets of the list. When one is ready, it
-// sets the word and wakes the caller. A connect starts on a non-blocking socket, and waits
+// adds 1 to the word and wakes the caller. A `select` puts each of its sockets on the list with
+// the word of its waiter. A connect starts on a non-blocking socket, and waits
 // until the socket is ready to write.
 //
 // A cancel stops the wait (F4). The caller takes its socket off the list before it returns,
@@ -108,7 +109,7 @@ fn wait_ready(fd: RawFd, write: bool) -> bool {
     let events = if write { libc::POLLOUT } else { libc::POLLIN };
     let ready = AtomicI64::new(0);
     let p = poller();
-    p.add(fd, events, &ready);
+    p.add(fd, events, ready.as_ptr() as usize);
     while ready.load(Ordering::SeqCst) == 0 {
         if crate::ffi::tasks::vx_cancelled() != 0 && p.remove(&ready) {
             return false;
@@ -235,8 +236,8 @@ impl Poller {
         self.waiting.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn add(&self, fd: RawFd, events: i16, word: &AtomicI64) {
-        self.waiting().push((fd, events, word.as_ptr() as usize));
+    fn add(&self, fd: RawFd, events: i16, word: usize) {
+        self.waiting().push((fd, events, word));
         // A full pipe already wakes the poller, so a write that fails loses nothing.
         let byte = 1u8;
         unsafe { libc::write(self.wake_write, (&raw const byte).cast(), 1) };
@@ -250,6 +251,43 @@ impl Poller {
         waiting.retain(|&(_, _, w)| w != word.as_ptr() as usize);
         waiting.len() < before
     }
+
+    /// Takes one entry of `fd` and `word` off the list, if the poller did not take it first.
+    fn remove_one(&self, fd: RawFd, word: usize) {
+        let mut waiting = self.waiting();
+        if let Some(i) = waiting.iter().position(|&(f, _, w)| f == fd && w == word) {
+            waiting.swap_remove(i);
+        }
+    }
+}
+
+/// 1 when a read of `fd` does not wait: bytes or a connection arrived, or the peer closed the
+/// socket, or it has an error. Else 0.
+#[no_mangle]
+pub extern "C" fn vx_fd_can_read(fd: i32) -> i32 {
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    (unsafe { libc::poll(&mut p, 1, 0) } > 0 && p.revents != 0) as i32
+}
+
+/// Until `vx_unwatch_fd`, the poller adds 1 to `waiter` and wakes it when a read of `fd` does
+/// not wait. The poller then takes the entry off its list.
+///
+/// # Safety
+/// `waiter` must stay valid until `vx_unwatch_fd` of the same pair returns.
+#[no_mangle]
+pub unsafe extern "C" fn vx_watch_fd(fd: i32, waiter: *mut i64) {
+    poller().add(fd, libc::POLLIN, waiter as usize);
+}
+
+/// Undo one `vx_watch_fd` of the same pair. After it returns, the poller does not touch
+/// `waiter`.
+#[no_mangle]
+pub extern "C" fn vx_unwatch_fd(fd: i32, waiter: *mut i64) {
+    poller().remove_one(fd, waiter as usize);
 }
 
 /// Runs `call`. A fiber runs it on a helper thread, and parks until it ends, so that its worker
@@ -406,23 +444,24 @@ fn run(p: &'static Poller, wake_read: RawFd) {
             let mut bytes = [0u8; 64];
             while unsafe { libc::read(wake_read, bytes.as_mut_ptr().cast(), bytes.len()) } > 0 {}
         }
-        let fired: Vec<usize> = (0..words.len())
+        let fired: Vec<(RawFd, usize)> = (0..words.len())
             .filter(|&i| fds[i + 1].revents != 0)
-            .map(|i| words[i])
+            .map(|i| (fds[i + 1].fd, words[i]))
             .collect();
         if fired.is_empty() {
             continue;
         }
         // A cancelled caller can take its entry off the list during the poll, and then its
         // word is gone. So only an entry that is still on the list gets its word set, under
-        // the lock. A new entry at the same address gets a spurious wake, and tries again.
+        // the lock. A new entry at the same address gets a spurious wake, and tries again. A
+        // `select` has one entry for each socket, all with one word, so the poller adds 1.
         let mut woken = Vec::new();
         let mut waiting = p.waiting();
-        waiting.retain(|&(_, _, word)| {
-            if !fired.contains(&word) {
+        waiting.retain(|&(fd, _, word)| {
+            if !fired.contains(&(fd, word)) {
                 return true;
             }
-            unsafe { (*(word as *const AtomicI64)).store(1, Ordering::SeqCst) };
+            unsafe { (*(word as *const AtomicI64)).fetch_add(1, Ordering::SeqCst) };
             woken.push(word);
             false
         });
@@ -698,6 +737,61 @@ mod tests {
     #[test]
     fn a_cancel_stops_a_task_thread_that_waits_for_a_socket() {
         a_cancel_stops_a_read("a_cancel_stops_a_task_thread_that_waits_for_a_socket", None);
+    }
+
+    /// A connected pair of sockets: the client, and the non-blocking server end.
+    fn socket_pair() -> (std::net::TcpStream, std::net::TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let server = listener.accept().unwrap().0;
+        server.set_nonblocking(true).unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn a_select_that_watches_two_sockets_gets_1_added_for_the_one_that_is_ready() {
+        use super::{vx_fd_can_read, vx_unwatch_fd, vx_watch_fd};
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        let _watchdog = Watchdog::new(
+            "a_select_that_watches_two_sockets_gets_1_added_for_the_one_that_is_ready",
+        );
+        let (mut client_a, server_a) = socket_pair();
+        let (_client_b, server_b) = socket_pair();
+        let (a, b) = (server_a.as_raw_fd(), server_b.as_raw_fd());
+        let waiter = AtomicI64::new(5);
+        assert_eq!(vx_fd_can_read(a), 0, "a socket with no bytes is ready");
+        unsafe {
+            vx_watch_fd(a, waiter.as_ptr());
+            vx_watch_fd(b, waiter.as_ptr());
+        }
+        assert!(
+            waits_for(a) && waits_for(b),
+            "the poller does not watch both sockets"
+        );
+        client_a.write_all(&[7]).unwrap();
+        let end = Instant::now() + Duration::from_secs(5);
+        while waiter.load(Ordering::SeqCst) == 5 {
+            assert!(Instant::now() < end, "the poller did not wake the waiter");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            waits_for(b),
+            "the poller forgot the socket that did not get ready"
+        );
+        assert_eq!(
+            waiter.load(Ordering::SeqCst),
+            6,
+            "the poller did not add 1 to the waiter"
+        );
+        assert_eq!(vx_fd_can_read(a), 1, "a socket with a byte is not ready");
+        assert!(
+            !waits_for(a),
+            "the poller still watches the socket that got ready"
+        );
+        vx_unwatch_fd(a, waiter.as_ptr());
+        vx_unwatch_fd(b, waiter.as_ptr());
+        assert!(!waits_for(b), "the unwatch left the socket on the list");
     }
 
     #[cfg(target_os = "linux")]

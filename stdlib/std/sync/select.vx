@@ -37,6 +37,11 @@ extern {
   fn vx_select_chose(next : i64) -> void;
   /// For a test: sleep for `VX_TEST_SELECT_PAUSE_MS`, when it is set.
   fn vx_test_select_pause() -> void;
+  /// Until `vx_unwatch_fd`, the I/O poller adds 1 to `waiter` and wakes it when a read of `fd`
+  /// does not wait.
+  fn vx_watch_fd(fd : i32, waiter : *mut i64) -> void;
+  /// Undo one `vx_watch_fd` of the same pair.
+  fn vx_unwatch_fd(fd : i32, waiter : *mut i64) -> void;
 }
 
 /// The word that one `select` waits on. A source wakes it.
@@ -54,6 +59,17 @@ impl Waiter {
   /// Undo one `watch_key`. After it, `wake_watchers(key)` does not touch this waiter.
   fn unwatch_key(self : &Waiter, key : &AtomicI64) -> void {
     unsafe { vx_unwatch(key.as_ptr(), self.word.as_ptr()); }
+  }
+
+  /// Until `unwatch_fd`, the I/O poller wakes this waiter when a read of the file descriptor
+  /// `fd` does not wait. A socket calls it in `watch`.
+  fn watch_fd(self : &Waiter, fd : i32) -> void {
+    unsafe { vx_watch_fd(fd, self.word.as_ptr()); }
+  }
+
+  /// Undo one `watch_fd`. After it, the poller does not touch this waiter.
+  fn unwatch_fd(self : &Waiter, fd : i32) -> void {
+    unsafe { vx_unwatch_fd(fd, self.word.as_ptr()); }
   }
 }
 
