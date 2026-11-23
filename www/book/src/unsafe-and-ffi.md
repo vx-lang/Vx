@@ -250,6 +250,10 @@ It also lists each use of trusted code, which the compiler does not check: each 
 can build. For `core` and `std`, a last line gives only the counts. `vxc --audit-library` lists
 their uses too.
 
+To keep trusted code out of a package, give `--no-trusted-code NAME` with `--package NAME=DIR`.
+Each use of trusted code in the package is then an error (E5003). The program that uses the package
+gives the flag, so a new version of the package cannot add trusted code without an error.
+
 Each line starts with the file, the line and the column, and the lines are in that order. So a
 review can compare the audit of two versions of a program.
 

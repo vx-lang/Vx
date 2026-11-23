@@ -65,6 +65,7 @@ fn test_ak_module_add_function() -> Result<(), String> {
         memories: vec![],
         transfer_impls: Vec::new(),
         macro_call_sites: Vec::new(),
+        no_trusted_code: None,
     };
 
     // The 'pub' keyword is automatically stripped by our From<&str> implementation

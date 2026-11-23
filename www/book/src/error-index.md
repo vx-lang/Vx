@@ -21,7 +21,7 @@ the test suite has one, a program that triggers it.
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3066` (65 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
-- [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
+- [Safety Errors](#safety-errors) — `E5001`–`E5003` (3 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
@@ -199,6 +199,7 @@ Raised where an operation needs an `unsafe` context and does not have one.
 | --- | --- |
 | [`E5001`](/errors/E5001/) | Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements hold whatever the memory held, so the program says with `unsafe` that it writes each one before reading it. |
 | [`E5002`](/errors/E5002/) | Unsafe memory operation outside unsafe block |
+| [`E5003`](/errors/E5003/) | Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`. The program that uses the package gives the flag, so a new version of the package cannot add trusted code without an error. `vxc --audit` lists the trusted code of a program. |
 
 ## Topology/Hardware Errors
 
@@ -283,4 +284,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-192 diagnostics.
+193 diagnostics.

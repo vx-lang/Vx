@@ -74,6 +74,10 @@ flag once for each package.
 vxc --package textkit=../textkit main.vx
 ```
 
+`--no-trusted-code textkit` makes each use of `unsafe`, `mlir!`, `extern`, `extern impl` and
+`unsafe impl` in `textkit` an error (E5003), so the package cannot add code that the compiler does
+not check.
+
 ## Separate compilation
 
 `--emit-interface` writes a `.vxlib`: the module's frozen registry and portable flat-HIR bodies.

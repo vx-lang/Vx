@@ -202,6 +202,55 @@ pub fn library_count_line(
     ))
 }
 
+/// E5003 for each use of trusted code in `program`, when `vxc --no-trusted-code` names its
+/// package. Runs after macro expansion, so the code that a macro writes counts too.
+pub fn refused_trusted_code(program: &Program) -> Vec<crate::diagnostic::Diagnostic> {
+    let Some(package) = &program.no_trusted_code else {
+        return Vec::new();
+    };
+    let mut found = trusted_code(program);
+    found.sort_by(|a, b| a.1.cmp(&b.1));
+    found
+        .into_iter()
+        .map(|(_, t)| {
+            let what = t.what.strip_prefix("trusted code: ").unwrap_or(&t.what);
+            let mut d = crate::diagnostic::Diagnostic::error(format!(
+                "`--no-trusted-code {package}` refuses trusted code in the package `{package}`, \
+                 and this is {what}"
+            ));
+            d.code = Some(crate::diagnostic::DiagnosticCode::E5003);
+            d.file = program.file.clone();
+            d.source_span = Some(crate::diagnostic::SourceSpan::new(t.line, t.column, 1));
+            d
+        })
+        .collect()
+}
+
+/// Mark each module of a package that `vxc --no-trusted-code` names. A name that is not a
+/// package of the compile is an error.
+pub fn mark_refused_packages(
+    programs: &mut [Program],
+    refused: &[String],
+    packages: &[(String, std::path::PathBuf)],
+) -> Result<(), String> {
+    for name in refused {
+        if !packages.iter().any(|(p, _)| p == name) {
+            return Err(format!(
+                "`--no-trusted-code {name}` names no package. Give the package with \
+                 `--package {name}=DIR`"
+            ));
+        }
+    }
+    for p in programs {
+        let path = p.module_path.to_string();
+        let package = refused
+            .iter()
+            .find(|name| path == **name || path.starts_with(&format!("{name}::")));
+        p.no_trusted_code = package.map(|n| n.as_str().into());
+    }
+    Ok(())
+}
+
 /// Whether `program` is a module of `core` or `std`.
 pub fn is_library(program: &Program) -> bool {
     let path = program.module_path.as_ref();
