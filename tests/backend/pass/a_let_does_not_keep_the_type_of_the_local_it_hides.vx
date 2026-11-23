@@ -1,0 +1,104 @@
+//===- a_let_does_not_keep_the_type_of_the_local_it_hides.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each code generator keeps the Vx type of each local in a table. A `let` in an inner block
+// hides an outer local of the same name. When the code generator cannot find the type of the
+// new local, it must not use the type of the old one.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+enum Maybe<T> {
+  Some(T),
+  Nothing,
+}
+
+enum Narrow {
+  Has(i32),
+  Empty,
+}
+
+enum Wide {
+  Has(i64),
+  Empty,
+}
+
+fn wide(x : i64) -> Maybe<i64> {
+  return Maybe<i64>::Some(x);
+}
+
+// The AST code generator does not find the type of a call through a function pointer. With the
+// type of the outer `m`, the payload `x` of the inner `m` was an `i32`.
+fn call_through_a_pointer(k : i32) -> void {
+  let m = Maybe<i32>::Some(3);
+  if k == 0 {
+    let make = wide;
+    let m = make(5000000000);
+    let inner = match m {
+      Maybe::Some(x) => {
+        x
+      }
+      Maybe::Nothing => {
+        0
+      }
+    };
+    println!("call_through_a_pointer inner {}", inner);
+  }
+  let outer = match m {
+    Maybe::Some(x) => {
+      x
+    }
+    Maybe::Nothing => {
+      0
+    }
+  };
+  println!("call_through_a_pointer outer {}", outer);
+}
+
+// The default code generator does not find the type of the value of a `match`. With the type of
+// the outer `m`, the payload `x` of the inner `m` was an `i32`.
+fn value_of_a_match(k : i32) -> void {
+  let m = Narrow::Has(3);
+  if k == 0 {
+    let m = match k {
+      0 => {
+        Wide::Has(5000000000)
+      }
+      _ => {
+        Wide::Empty
+      }
+    };
+    let inner = match m {
+      Wide::Has(x) => {
+        x
+      }
+      Wide::Empty => {
+        0
+      }
+    };
+    println!("value_of_a_match inner {}", inner);
+  }
+  let outer = match m {
+    Narrow::Has(x) => {
+      x
+    }
+    Narrow::Empty => {
+      0
+    }
+  };
+  println!("value_of_a_match outer {}", outer);
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}call_through_a_pointer inner 5000000000{{$}}
+  // CHECK-NEXT: {{^}}call_through_a_pointer outer 3{{$}}
+  call_through_a_pointer(0);
+  // CHECK-NEXT: {{^}}value_of_a_match inner 5000000000{{$}}
+  // CHECK-NEXT: {{^}}value_of_a_match outer 3{{$}}
+  value_of_a_match(0);
+  return 0;
+}

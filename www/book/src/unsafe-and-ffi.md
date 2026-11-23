@@ -21,7 +21,8 @@ fn main() -> i32 {
 ```
 
 Reading through a raw pointer — `*p` — is the operation that needs the block. So does indexing
-through one, or reading a field through one.
+through one, reading a field through one, or calling a method through one. `p.get()` gives the
+method a reference to `*p`, and the compiler cannot know that `*p` is still there.
 
 ## Raw pointers
 
@@ -243,6 +244,16 @@ result can be read. A clause that does not hold is undefined behavior, as a wron
 - each pointer clause that a call in `unsafe` code trusts, because the compiler cannot prove it
 - each `ensures` of an `extern` function
 - each pointer `requires` of a `pub fn`, because a call from C proves nothing
+
+It also lists each use of trusted code, which the compiler does not check: each `unsafe` block and
+`unsafe fn` that the program writes, each `mlir!` block, each `extern` function, and each
+`extern impl` and `unsafe impl`. Code with none of these cannot forge a value that only one module
+can build. For `core` and `std`, a last line gives only the counts. `vxc --audit-library` lists
+their uses too.
+
+To keep trusted code out of a package, give `--no-trusted-code NAME` with `--package NAME=DIR`.
+Each use of trusted code in the package is then an error (E5003). The program that uses the package
+gives the flag, so a new version of the package cannot add trusted code without an error.
 
 Each line starts with the file, the line and the column, and the lines are in that order. So a
 review can compare the audit of two versions of a program.

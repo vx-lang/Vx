@@ -1,0 +1,49 @@
+//===- an_assert_that_passes.vx -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A region with an `assert` that holds, beside one that has no assert. On a
+// device, a kernel with an assert takes one more parameter than the dispatch
+// carries: a pointer to a 4-byte integer that a failed assert sets, because
+// Level Zero has no `abort` that stops a kernel. The payload says
+// `assert_flag=1` and this checks that a kernel whose asserts all hold runs and
+// prints the same numbers as the CPU backend.
+//
+// The first region also calls `clamp`, which had an assert of its own before it
+// became a compiler fold; the second region has none, so the two images differ
+// in whether they take the flag.
+//
+// The runner compares both backends and requires the Arc run to load an image.
+
+import core::num;
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [8]>::uninit() };
+  let mut lo = unsafe { Tensor<f32, [8]>::uninit() };
+  for i in 0..8 {
+    a[i] = i as f32;
+    lo[i] = 2.0;
+  }
+  let ga = transfer(a, Memory::HBM);
+  let gl = transfer(lo, Memory::HBM);
+  let mut go = transfer(unsafe { Tensor<f32, [8]>::uninit() }, Memory::HBM);
+  let mut gs = transfer(unsafe { Tensor<f32, [8]>::uninit() }, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..8 {
+      assert(ga[i] >= 0.0, "a negative input");
+      go[i] = ga[i].clamp(gl[i], gl[i] + 1.0);
+    }
+  }
+  spawn on(Topology::Device) {
+    for i in 0..8 {
+      gs[i] = ga[i] - 2.0;
+    }
+  }
+  let o = transfer(go, Memory::CPU_DRAM);
+  let s = transfer(gs, Memory::CPU_DRAM);
+  println!("{} {} {}", o[0], o[7], s[3]);
+  return 0;
+}

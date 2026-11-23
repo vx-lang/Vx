@@ -1,0 +1,38 @@
+//===- no_trusted_code_in_a_package.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc -j 4 --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc --package tests=tests %s 2>&1 | FileCheck %s --check-prefix=ALLOWED
+// RUN: not vxc --package tests=tests --no-trusted-code test %s 2>&1 | FileCheck %s --check-prefix=NAME
+//
+// `vxc --no-trusted-code tests` makes each use of trusted code in the package `tests` an error:
+// an `unsafe impl`, an `extern impl`, an `extern` function, an `unsafe fn`, an `unsafe` block,
+// one that a macro writes too, and an `mlir!` block. This file is not in the package, so its
+// own `unsafe` block is not an error. Without the flag, the program runs.
+import tests::modules::a_package_with_trusted_code;
+
+fn main() -> i32 {
+  let n = 4i64;
+  let p = &n as *const i64;
+  let own = unsafe { p[0] };
+  print(checked_value() + own);
+  return 0;
+}
+
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:19:8: `--no-trusted-code tests` refuses trusted code in the package `tests`, and this is `unsafe impl Send for Handle`, a claim that the compiler does not check
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:21:8: {{.*}}and this is `extern impl Size for i64`, an impl outside the file of its type
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:28:3: {{.*}}and this is the `extern` function `abs`, which runs C code
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:31:11: {{.*}}and this is `unsafe fn first`
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:32:10: {{.*}}and this is an `unsafe` block
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:37:5: {{.*}}and this is an `unsafe` block
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:42:16: {{.*}}and this is an `mlir!` block
+// CHECK: Semantic check failed on '{{.*}}no_trusted_code_in_a_package.vx': 7 error(s) emitted
+
+// ALLOWED: {{^}}17{{$}}
+
+// NAME: `--no-trusted-code test` names no package. Give the package with `--package test=DIR`

@@ -1,0 +1,42 @@
+//===- a_file_that_declares_a_macro_twice.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// This file declares the macro `label` two times, so the call `label!` can mean either one.
+
+struct Here {
+  x : i64,
+}
+
+macro_rules label {
+  ($t : ident) => {
+    impl $t {
+      fn label(self : &Self) -> i64 {
+        return 1i64;
+      }
+    }
+  };
+}
+
+macro_rules label {
+  ($t : ident) => {
+    impl $t {
+      fn label(self : &Self) -> i64 {
+        return 2i64;
+      }
+    }
+  };
+}
+
+label!(Here);
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: `a_file_that_declares_a_macro_twice.vx` can call more than one macro `label`: `a_file_that_declares_a_macro_twice.vx` defines it 2 times. Give each macro its own name.

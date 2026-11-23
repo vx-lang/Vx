@@ -11,7 +11,7 @@
 // RUN: env MTL_DEBUG_LAYER=1 VX_DISPATCH_VERBOSE=1 not vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s
 //
 // CHECK-NOT: waited for
-// CHECK: [Vx Metal] FATAL: kernel {{vx_npu_kernel_[0-9]+}}: a value of scale_below is not below the limit
+// CHECK: [Vx Metal] FATAL: kernel {{vx_npu_kernel_[0-9]+}} (from scale_below at {{.*}}a_failed_assert_after_many_apple_gpu_launches_names_its_assert.vx:[[@LINE+18]]): a value of scale_below is not below the limit
 // CHECK-NEXT: at {{.*}}a_failed_assert_after_many_apple_gpu_launches_names_its_assert.vx:{{[0-9]+}}
 // CHECK-NOT: not printed
 

@@ -9,7 +9,6 @@
 // against its body. An impl that keeps the clause compiles, and so does the default `second`,
 // which keeps it because each `next` does.
 //
-// REQUIRES: flat-codegen
 // Only because the older code generator cannot lower a struct that holds a reference.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error

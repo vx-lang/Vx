@@ -189,11 +189,11 @@ impl<T : Float> Tensor<T, [?, ?]> {
   /// Lowered through `linalg`, with a separate path chosen at compile time for AVX-512.
   fn fill(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
     mlir!(
-    inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+    inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
     clobbers: [self],
     dialects: ["linalg"]
     ) {
-      linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+      linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
       macro.yield
     };
   }
@@ -206,30 +206,30 @@ impl<T : Float> Tensor<T, [?, ?]> {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       mlir!(
-      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
         macro.yield
       };
     } else if comptime
     Topology::Current == Topology::ANE {
       mlir!(
-      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
         macro.yield
       };
     } else {
       mlir!(
-      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
         macro.yield
       };
     };
@@ -241,30 +241,30 @@ impl<T : Float> Tensor<T, [?, ?]> {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       mlir!(
-      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
         macro.yield
       };
     } else if comptime
     Topology::Current == Topology::ANE {
       mlir!(
-      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
         macro.yield
       };
     } else {
       mlir!(
-      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
         macro.yield
       };
     };
@@ -278,7 +278,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       mlir!(
-      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
       clobbers: [],
       returns: bool,
       dialects: ["linalg", "arith", "memref", "func"]
@@ -293,9 +293,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
             affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
-          ^bb0(%a: f32, %b: f32, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : f32
+        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+          ^bb0(%a: T, %b: T, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : T
           %and = arith.andi %out, %cmp : i1
           linalg.yield %and : i1
         }
@@ -305,7 +305,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
     } else if comptime
     Topology::Current == Topology::ANE {
       mlir!(
-      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
       clobbers: [],
       returns: bool,
       dialects: ["linalg", "arith", "memref", "func"]
@@ -320,9 +320,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
             affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
-          ^bb0(%a: f32, %b: f32, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : f32
+        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+          ^bb0(%a: T, %b: T, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : T
           %and = arith.andi %out, %cmp : i1
           linalg.yield %and : i1
         }
@@ -331,7 +331,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
       }
     } else {
       mlir!(
-      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
       clobbers: [],
       returns: bool,
       dialects: ["linalg", "arith", "memref", "func"]
@@ -346,9 +346,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
             affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
-          ^bb0(%a: f32, %b: f32, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : f32
+        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+          ^bb0(%a: T, %b: T, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : T
           %and = arith.andi %out, %cmp : i1
           linalg.yield %and : i1
         }
@@ -365,24 +365,14 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   ///
   /// The shape is known at compile time here, so the emitted loop has constant bounds.
   fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void {
-    if comptime
-    Topology::Current == Topology::CPU_AVX512 {
-      // Demonstrate optimized code path for AVX512 (fallback to standard
-      // Linalg for demonstration)
-      mlir!(inputs : (% arg_t = self : memref<N x M x f32>,
-      % arg_v = val : f32),
-      clobbers : [self], dialects : ["linalg"]) {
-        linalg
-        .fill ins(% arg_v : f32) outs(% arg_t : memref<N x M x f32>)
-        macro.yield};
-    } else {
-      mlir!(
-      inputs : (% arg_t = self : memref<N x M x f32>, % arg_v = val : f32),
-      clobbers : [self], dialects : ["linalg"]) {
-        linalg
-        .fill ins(% arg_v : f32) outs(% arg_t : memref<N x M x f32>)
-        macro.yield};
-    }
+    mlir!(
+    inputs: (%arg_t = self: memref<N x M x T>, %arg_v = val: T),
+    clobbers: [self],
+    dialects: ["linalg"]
+    ) {
+      linalg.fill ins(%arg_v : T) outs(%arg_t : memref<N x M x T>)
+      macro.yield
+    };
   }
 }
 

@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// REQUIRES: flat-codegen
 // RUN: VX_FLAT_DBG=1 vxc %s 2>&1 | FileCheck %s --check-prefixes=CHECK,FLAT
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
 //

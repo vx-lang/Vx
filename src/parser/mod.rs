@@ -4,7 +4,7 @@ pub mod macro_expand;
 pub mod stmt;
 mod tuple_match;
 pub mod types;
-pub use macro_expand::MacroExpander;
+pub use macro_expand::{MacroExpander, MacroTable};
 
 //===- parser.rs - Vx Compiler ---------------------------------*- Rust -*-===//
 //
@@ -87,8 +87,8 @@ pub struct Parser<'a> {
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
     uses_tuples: bool,
-    /// Set once `Distinct::check` is seen: the module then imports `core::distinct`, where the
-    /// check is.
+    /// Set once `Distinct::check` or `DisjointRanges::check` is seen: the module then imports
+    /// `core::distinct`, where the checks are.
     uses_distinct_check: bool,
     /// The names that a `let` without `mut` binds to a string literal. `==` on such a name
     /// compares text, so it needs `core::c_str` as a literal does.
@@ -106,6 +106,9 @@ pub struct Parser<'a> {
     match_is_statement: bool,
     /// Inside an impl block, the type the impl is for: what `Self` means there.
     impl_self: Option<crate::syntax::Type>,
+    /// The first token of an expression that a block follows, such as the condition of an `if`.
+    /// Outside brackets there, a name and `{` are the name and the block, not a struct literal.
+    block_follows: Option<usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -134,7 +137,34 @@ impl<'a> Parser<'a> {
             prefix_stmts: Vec::new(),
             match_is_statement: false,
             impl_self: None,
+            block_follows: None,
         }
+    }
+
+    /// Parse an expression that a block follows, such as the condition of an `if` or a `while`.
+    /// As in Rust, a struct literal there must be inside parentheses.
+    pub(crate) fn parse_expr_before_block(&mut self) -> ParseResult<'a, crate::syntax::Expr> {
+        let outer = self.block_follows.replace(self.pos);
+        let expr = self.parse_expr();
+        self.block_follows = outer;
+        expr
+    }
+
+    /// Whether the parser is at the top of an expression that a block follows: not inside a
+    /// `(`, a `[` or a `{` that the expression opened.
+    pub(crate) fn block_follows_here(&self) -> bool {
+        let Some(start) = self.block_follows else {
+            return false;
+        };
+        let depth: i64 = self.tokens[start..self.pos]
+            .iter()
+            .map(|t| match t.kind {
+                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => 1,
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => -1,
+                _ => 0,
+            })
+            .sum();
+        depth == 0
     }
 
     /// The largest tuple, as the number of `core::tuple`'s last struct, `Tuple6`.

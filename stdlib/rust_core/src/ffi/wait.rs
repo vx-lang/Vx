@@ -73,6 +73,8 @@ enum What {
     /// A `lock`, with the address of the holder word of its `Mutex`, or 0 when it is not known.
     Lock(usize),
     Select,
+    /// An `acquire` on a `Semaphore`.
+    Acquire,
     /// The join of the task with this site, or of a task with no site.
     Join(Option<crate::ffi::tasks::Site>),
 }
@@ -276,8 +278,8 @@ thread_local! {
     static WHAT: std::cell::RefCell<Waiting> = const { std::cell::RefCell::new(NOT_SAID) };
 }
 
-/// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv` and 4 for a
-/// `select`. The deadlock report prints it, with the line of the wait at `at_file:at_line`, and
+/// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv`, 4 for a
+/// `select` and 8 for an `acquire`. The deadlock report prints it, with the line of the wait at `at_file:at_line`, and
 /// the line that made the channel at `made_file:made_line`. A null file means that the line is
 /// not known. For a `send` and a `recv`, `channel` is the words of the channel, and the report
 /// counts the ends of the channel there. A `lock` uses `vx_waiting_for_lock`.
@@ -299,6 +301,7 @@ pub unsafe extern "C" fn vx_waiting_for(
         1 => What::Send(channel as usize),
         2 => What::Recv(channel as usize),
         4 => What::Select,
+        8 => What::Acquire,
         _ => What::Word,
     };
     let waiting = Waiting {
@@ -854,7 +857,7 @@ fn report() -> String {
             _ => None,
         })
         .collect();
-    let (mut channels, mut locks) = (Vec::new(), Vec::new());
+    let (mut channels, mut locks, mut semaphores) = (Vec::new(), Vec::new(), Vec::new());
     let number = |list: &mut Vec<usize>, word: usize| match list.iter().position(|&w| w == word) {
         Some(i) => i + 1,
         None => {
@@ -897,6 +900,10 @@ fn report() -> String {
                 )
             }
             What::Select => format!("waits in `select`{at}"),
+            What::Acquire => format!(
+                "waits in `acquire`{at} on semaphore {}{made}",
+                number(&mut semaphores, *word)
+            ),
             What::Join(Some(task)) => format!(
                 "waits for the end of the task from the `spawn` at {}",
                 crate::ffi::tasks::spawn_line(task)
@@ -1168,14 +1175,96 @@ mod deadlock {
 
 pub(crate) use deadlock::{thread_ended, thread_started};
 
-/// Two words for `select`, which waits on several channels at once. Each channel event adds 1 to
-/// the first word, and the second word counts the threads in a `select` that sleep on it.
-static ANY_CHANNEL: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+/// The watch list of `select` (docs/discussions/select_on_channels_sockets_timers_and_tokens.md,
+/// section 5): for each key, the waiter words of the `select` calls that watch it. A key is the
+/// address of a word that a source owns. A waiter changes only under the lock of its shard, so
+/// after `vx_unwatch` returns, no wake writes to the waiter.
+static WATCHES: [Mutex<Vec<(usize, usize)>>; BUCKETS] = [const { Mutex::new(Vec::new()) }; BUCKETS];
 
-/// The address of the two words for `select`.
+fn watches(key: *const i64) -> std::sync::MutexGuard<'static, Vec<(usize, usize)>> {
+    WATCHES[(key as usize >> 3) % BUCKETS]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Until `vx_unwatch` with the same pair, `vx_wake_watchers(key)` adds 1 to `waiter` and wakes it.
+/// A `select` can watch one key twice, when it has one source twice.
+///
+/// # Safety
+///
+/// `waiter` points to a live `i64` until the `vx_unwatch` of the pair.
 #[no_mangle]
-pub extern "C" fn vx_any_channel_words() -> *mut i64 {
-    ANY_CHANNEL.as_ptr() as *mut i64
+pub unsafe extern "C" fn vx_watch(key: *const i64, waiter: *mut i64) {
+    watches(key).push((key as usize, waiter as usize));
+}
+
+/// Undoes one `vx_watch(key, waiter)`.
+#[no_mangle]
+pub extern "C" fn vx_unwatch(key: *const i64, waiter: *mut i64) {
+    let mut w = watches(key);
+    let i = (w.iter().position(|&e| e == (key as usize, waiter as usize)))
+        .expect("an unwatch of a waiter that does not watch the key");
+    w.swap_remove(i);
+}
+
+/// Adds 1 to each waiter that watches `key`, and wakes it. The wake comes after the lock, when a
+/// waiter can be gone, but `vx_wake_all` does not read its word.
+#[no_mangle]
+pub extern "C" fn vx_wake_watchers(key: *const i64) {
+    let woken: Vec<usize> = {
+        let w = watches(key);
+        (w.iter().filter(|e| e.0 == key as usize))
+            .map(|&(_, waiter)| {
+                unsafe { &*(waiter as *const AtomicI64) }.fetch_add(1, Ordering::SeqCst);
+                waiter
+            })
+            .collect()
+    };
+    for waiter in woken {
+        unsafe { vx_wake_all(waiter as *const i64) };
+    }
+}
+
+/// For a test: VX_TEST_SELECT_PAUSE_MS holds a `select` between its first search and its watch,
+/// so that a send can come in between. The thread sleeps, so on the shared runtime the worker
+/// stops too.
+#[no_mangle]
+pub extern "C" fn vx_test_select_pause() {
+    static PAUSE: OnceLock<Option<Duration>> = OnceLock::new();
+    let pause = *PAUSE.get_or_init(|| {
+        let ms = std::env::var("VX_TEST_SELECT_PAUSE_MS").ok()?;
+        let Ok(ms) = ms.parse::<u64>() else {
+            eprintln!("vx: VX_TEST_SELECT_PAUSE_MS must be a number, not '{ms}'");
+            std::process::abort();
+        };
+        Some(Duration::from_millis(ms))
+    });
+    if let Some(pause) = pause {
+        std::thread::sleep(pause);
+    }
+}
+
+thread_local! {
+    /// Where the next `select` of the task that this thread runs starts its search: the index
+    /// after its last choice.
+    static SELECT_TURN: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+}
+
+/// The index after the last choice of a `select` in this task.
+#[no_mangle]
+pub extern "C" fn vx_select_turn() -> i64 {
+    SELECT_TURN.with(|t| t.get())
+}
+
+/// A `select` of this task chose the index `next - 1`.
+#[no_mangle]
+pub extern "C" fn vx_select_chose(next: i64) {
+    SELECT_TURN.with(|t| t.set(next));
+}
+
+/// Swaps the turn of a task that does not run now with the turn of this thread.
+pub(crate) fn swap_select_turn(turn: &mut i64) {
+    SELECT_TURN.with(|t| *turn = t.replace(*turn));
 }
 
 /// The send numbers that a cancelled `send` left without a value, with the address of the words
@@ -1480,6 +1569,50 @@ mod tests {
             [16],
             "after a wake of a word, the notes are not those of the fibers that stay parked"
         );
+    }
+
+    /// A wake of a key adds 1 to each waiter that watches it, once for each watch, and to no other
+    /// waiter. After the unwatch, a wake does not touch the waiter.
+    #[test]
+    fn a_wake_of_a_key_adds_1_to_each_waiter_that_watches_it() {
+        let keys: [AtomicI64; 2] = std::array::from_fn(|_| AtomicI64::new(0));
+        let waiters: [AtomicI64; 3] = std::array::from_fn(|_| AtomicI64::new(0));
+        let (a, b) = (keys[0].as_ptr(), keys[1].as_ptr());
+        let w = |i: usize| waiters[i].as_ptr();
+        let counts = || {
+            waiters
+                .iter()
+                .map(|w| w.load(Ordering::SeqCst))
+                .collect::<Vec<_>>()
+        };
+        unsafe {
+            vx_watch(a, w(0));
+            vx_watch(a, w(1));
+            vx_watch(a, w(1));
+            vx_watch(b, w(2));
+        }
+        vx_wake_watchers(a);
+        assert_eq!(
+            counts(),
+            [1, 2, 0],
+            "a wake of a key did not add 1 for each watch of it"
+        );
+        vx_unwatch(a, w(1));
+        vx_wake_watchers(a);
+        assert_eq!(
+            counts(),
+            [2, 3, 0],
+            "an unwatch took more than one watch of a waiter"
+        );
+        vx_unwatch(a, w(0));
+        vx_unwatch(a, w(1));
+        vx_wake_watchers(a);
+        assert_eq!(
+            counts(),
+            [2, 3, 0],
+            "a wake touched a waiter after its unwatch"
+        );
+        vx_unwatch(b, w(2));
     }
 
     struct Gate {

@@ -1,0 +1,166 @@
+//===- lane_matmuls_of_a_tile_in_hbm_give_the_sums.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A matmul in the code of a subgroup loop can multiply a tile in HBM by a tile in shared memory.
+// The product goes to the memory that its target names. In `a_in_hbm` the first tile is in HBM,
+// and in `b_in_hbm` the second one is. Both add to `acc`, which is in shared memory and starts at 1.
+// The tiles hold the `f8e4m3` values of `lane_matmuls_of_fp8_tiles_give_the_sums_of_a_loop.vx`, so
+// both print the values of that test. `into_hbm` writes the product straight to `c` in HBM, with
+// no `acc`, so each value is 1 less. With no GPU, the kernels run on the CPU.
+//
+// On the GPU, the lanes load the fragments of a tile in HBM from HBM into the registers of the
+// tensor cores, with no copy in shared memory: two `ld.global.nc.v2.b32` give the four registers
+// of the first tile, and bytes from `ld.global.nc.b8` give the second tile. `into_hbm` stores the
+// result registers to HBM.
+//
+// RUN: vxc %s --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h200.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=PTX --implicit-check-not=local_depot < %t.ptx
+// RUN: env -u VX_GPU_CHIP vxc %s --legacy-codegen --host default --machine fleet/h200.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s --check-prefix=PTX --implicit-check-not=local_depot < %t.ast.ptx
+// CHECK: {{^}}a in HBM: -3 -3 7 sum of all 1020{{$}}
+// CHECK: {{^}}b in HBM: -3 -3 7 sum of all 1020{{$}}
+// CHECK: {{^}}into HBM: -4 -4 6 sum of all -4{{$}}
+// PTX-LABEL: .entry a_in_hbm(
+// PTX: ld.global.nc.v2.b32 {%r[[A0:[0-9]+]], %r[[A2:[0-9]+]]}, [%rd[[ROW:[0-9]+]]];
+// PTX-NEXT: ld.global.nc.v2.b32 {%r[[A1:[0-9]+]], %r[[A3:[0-9]+]]}, [%rd[[ROW]]+256];
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[A0]], %r[[A1]], %r[[A2]], %r[[A3]]},
+// PTX-LABEL: .entry b_in_hbm(
+// PTX: ld.global.nc.b8
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-LABEL: .entry into_hbm(
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {%r[[C0:[0-9]+]], %r[[C1:[0-9]+]],
+// PTX: st.global.v2.b32 [{{.*}}], {%r[[C0]], %r[[C1]]}
+
+fn a_in_hbm(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, a : &Tensor<f8e4m3, [2, 32, 32], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sb = unsafe {
+        Tensor<f8e4m3, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          for j in 0..16 {
+            acc[w][i][j] = 1.0;
+            sb[w][i][j] = ((i * 2 + j) % 5 - 2) as f8e4m3;
+          }
+        }
+        acc[w] = acc[w] + (a[w] as f32) @ (sb[w] as f32);
+        for i in 0..32 across lanes {
+          for j in 0..16 {
+            c[w][i][j] = acc[w][i][j];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn b_in_hbm(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, b : &Tensor<f8e4m3, [32, 16], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<f8e4m3, [2, 32, 32], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          for k in 0..32 {
+            sa[w][i][k] = (((w * 32 + i) * 3 + k * 5) % 7 - 3) as f8e4m3;
+          }
+          for j in 0..16 {
+            acc[w][i][j] = 1.0;
+          }
+        }
+        acc[w] = acc[w] + (sa[w] as f32) @ (b as f32);
+        for i in 0..32 across lanes {
+          for j in 0..16 {
+            c[w][i][j] = acc[w][i][j];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn into_hbm(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, b : &Tensor<f8e4m3, [32, 16], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<f8e4m3, [2, 32, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          for k in 0..32 {
+            sa[w][i][k] = (((w * 32 + i) * 3 + k * 5) % 7 - 3) as f8e4m3;
+          }
+        }
+        c[w] = (sa[w] as f32) @ (b as f32);
+      }
+    }
+  }
+  return;
+}
+
+fn say(h : &Tensor<f32, [2, 32, 16]>) -> void {
+  let mut all = 0.0;
+  for w in 0..2 {
+    for i in 0..32 {
+      for j in 0..16 {
+        all = all + h[w][i][j];
+      }
+    }
+  }
+  println!("{} {} {} sum of all {}", h[0][0][0], h[1][31][15], h[1][20][5], all);
+  return;
+}
+
+fn main() -> i32 {
+  let mut ha = Tensor<f8e4m3, [2, 32, 32]>::fill(0.0);
+  for w in 0..2 {
+    for i in 0..32 {
+      for k in 0..32 {
+        ha[w][i][k] = (((w * 32 + i) * 3 + k * 5) % 7 - 3) as f8e4m3;
+      }
+    }
+  }
+  let mut hb = Tensor<f8e4m3, [32, 16]>::fill(0.0);
+  for i in 0..32 {
+    for j in 0..16 {
+      hb[i][j] = ((i * 2 + j) % 5 - 2) as f8e4m3;
+    }
+  }
+  let a = transfer(ha, Memory::HBM);
+  let b = transfer(hb, Memory::HBM);
+  let mut c = transfer(Tensor<f32, [2, 32, 16]>::fill(0.0), Memory::HBM);
+  a_in_hbm(&mut c, &a);
+  let hc = transfer(c, Memory::CPU_DRAM);
+  print!("a in HBM: ");
+  say(&hc);
+  let mut d = transfer(Tensor<f32, [2, 32, 16]>::fill(0.0), Memory::HBM);
+  b_in_hbm(&mut d, &b);
+  let hd = transfer(d, Memory::CPU_DRAM);
+  print!("b in HBM: ");
+  say(&hd);
+  let mut e = transfer(Tensor<f32, [2, 32, 16]>::fill(0.0), Memory::HBM);
+  into_hbm(&mut e, &b);
+  let he = transfer(e, Memory::CPU_DRAM);
+  print!("into HBM: ");
+  say(&he);
+  return 0;
+}

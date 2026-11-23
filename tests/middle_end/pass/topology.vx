@@ -14,7 +14,7 @@
 // FLAT-NOT: llvm.mlir.global
 // FLAT-LABEL: func.func @process(
 // FLAT: "vx.transfer"(%arg0) <{target_topology = 100 : i32}> {space = "NPU_HBM"}
-// FLAT: } {topology_name = "NPU[0]"}
+// FLAT: } {topology_name = "NPU[0]", vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64}
 
 fn main() -> i32 {
   return 0;

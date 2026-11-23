@@ -1,0 +1,72 @@
+//===- lanes_write_rows_in_two_loops_one_after_another.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Lane `l` writes row `l / 4` of a 16 x 16 tile, and the row 8 below it, at columns `2 * (l % 4)`
+// and one more, plus 8. Each row has its own `if` and its own `for j in 0..2`. The column must
+// fix `l % 4` in both loops, so the compiler must see that the two `j` have the same range.
+// Each element gets `100 * l + 10 * j + q`, where `q` counts the four values of a lane in a pair
+// of columns. No element may keep its -1.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// CHECK: row 0: 0 1 100 101 200 201 300 301 10 11 110 111 210 211 310 311
+// CHECK-NEXT: row 8: 2 3 102 103 202 203 302 303 12 13 112 113 212 213 312 313
+// CHECK-NEXT: row 15: 2802 2803 2902 2903 3002 3003 3102 3103 2812 2813 2912 2913 3012 3013 3112 3113
+// CHECK-NEXT: elements left at -1: 0
+
+fn two_loops(out : &mut Tensor<i32, [?, ?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes(32) {
+        let lo = l / 4;
+        let col = 2 * (l % 4);
+        if lo < rows {
+          for j in 0..2 {
+            out[lo][col + 8 * j] = 100 * l + 10 * j;
+            out[lo][col + 8 * j + 1] = 100 * l + 10 * j + 1;
+          }
+        }
+        if lo + 8 < rows {
+          for j in 0..2 {
+            out[lo + 8][col + 8 * j] = 100 * l + 10 * j + 2;
+            out[lo + 8][col + 8 * j + 1] = 100 * l + 10 * j + 3;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn say_row(h : &Tensor<i32, [16, 16]>, r : i32) -> void {
+  print!("row {}:", r);
+  for k in 0..16 {
+    print!(" {}", h[r][k]);
+  }
+  println!("");
+  return;
+}
+
+fn main() -> i32 {
+  let mut a = transfer(Tensor<i32, [16, 16]>::fill(-1), Memory::HBM);
+  two_loops(&mut a, 16);
+  let h = transfer(a, Memory::CPU_DRAM);
+  say_row(&h, 0);
+  say_row(&h, 8);
+  say_row(&h, 15);
+  let mut left = 0;
+  for r in 0..16 {
+    for k in 0..16 {
+      if h[r][k] == -1 {
+        left = left + 1;
+      }
+    }
+  }
+  println!("elements left at -1: {}", left);
+  return 0;
+}

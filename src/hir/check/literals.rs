@@ -494,7 +494,9 @@ impl<'a> TypeChecker<'a> {
     fn is_located_tensor_payload(t: &Type) -> bool {
         match t {
             Type::Pinned(inner, _) | Type::Ref(inner, _) => matches!(**inner, Type::Tensor(..)),
-            Type::Verified(inner) | Type::Distinct(inner) => Self::is_located_tensor_payload(inner),
+            Type::Verified(inner) | Type::Distinct(inner) | Type::DisjointRanges(inner) => {
+                Self::is_located_tensor_payload(inner)
+            }
             _ => false,
         }
     }

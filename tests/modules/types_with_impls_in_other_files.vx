@@ -1,0 +1,20 @@
+//===- types_with_impls_in_other_files.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares a trait and two structs, for tests of impls that other files write.
+
+trait Show {
+  fn show(self : &Self) -> i64;
+}
+
+struct Ticket {
+  number : i64,
+}
+
+struct Handle {
+  place : *mut i64,
+}

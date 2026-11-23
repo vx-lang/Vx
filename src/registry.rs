@@ -724,9 +724,10 @@ impl ImmutableGlobalRegistry {
         assert!(depth < 64, "holds_shared_cell: {ty:?} nests too deep");
         let (base, args): (&Type, &[Type]) = match ty {
             Type::GenericInstance(base, args) => (base, args),
-            Type::Verified(inner) | Type::Distinct(inner) | Type::Pinned(inner, _) => {
-                return self.holds_shared_cell_at(inner, depth + 1)
-            }
+            Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
+            | Type::Pinned(inner, _) => return self.holds_shared_cell_at(inner, depth + 1),
             _ => (ty, &[]),
         };
         let subst = |fty: &Type, generics: &[crate::symbol::Symbol]| {

@@ -25,6 +25,7 @@ pub(crate) fn projections_in(ty: &Type, out: &mut Vec<crate::symbol::Symbol>) {
         | Type::Pointer(t, _, _)
         | Type::Verified(t)
         | Type::Distinct(t)
+        | Type::DisjointRanges(t)
         | Type::Pinned(t, _) => projections_in(t, out),
         Type::GenericInstance(base, args) => {
             projections_in(base, out);

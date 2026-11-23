@@ -23,11 +23,6 @@
 // method just returned declines on the flat path as "a borrow of something that is not a
 // tensor", and this file has to stay on the flat path to mean anything.
 //
-// Flat path only, for the reason `core_num_unsigned.vx` is: the legacy code generator
-// chooses its arithmetic from the printed MLIR type, which carries no sign, so `<` and `>`
-// on an unsigned operand take the signed op there. It answers 0 to the first line below.
-//
-// REQUIRES: flat-codegen
 // EXPECT: 1 1 0 1 | 1 1 0 40000 | 1 1 0 5 | 1 1 0 1 | 1 1 0 1 0
 import core::cmp;
 

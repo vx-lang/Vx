@@ -799,8 +799,12 @@ impl<'a> TypeChecker<'a> {
                 placement: ty.placement().cloned(),
             }],
             // The same value as the type inside, with a proof attached.
-            Type::Verified(inner) | Type::Distinct(inner) => self.drops_glue_at(inner, depth),
+            Type::Verified(inner) | Type::Distinct(inner) | Type::DisjointRanges(inner) => {
+                self.drops_glue_at(inner, depth)
+            }
             // A tensor pinned to a device is in that device's memory, so its plugin frees it.
+            // A struct field is not a transfer's result, so the pin on its type is all the drop
+            // has to go on. A part with a `call` frees through its own `Drop` impl instead.
             Type::Pinned(inner, topology) => {
                 let mut glue = self.drops_glue_at(inner, depth);
                 for part in glue.iter_mut().filter(|p| p.call.is_none()) {
@@ -1377,9 +1381,10 @@ impl<'a> TypeChecker<'a> {
     /// number lives in a register, and a tensor's buffer has lifetime markers of its own.
     fn lives_in_a_stack_slot(ty: &Type) -> bool {
         match ty {
-            Type::Verified(inner) | Type::Distinct(inner) | Type::Pinned(inner, _) => {
-                Self::lives_in_a_stack_slot(inner)
-            }
+            Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
+            | Type::Pinned(inner, _) => Self::lives_in_a_stack_slot(inner),
             // A closure's environment holds borrows of what it captured. A `void` holds nothing.
             Type::Struct(name, _) => {
                 !name.starts_with("Closure_") && !crate::syntax::is_void_ty(ty)
@@ -1394,9 +1399,10 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn is_raw_pointer(ty: &Type) -> bool {
         match ty {
-            Type::Verified(inner) | Type::Distinct(inner) | Type::Pinned(inner, _) => {
-                Self::is_raw_pointer(inner)
-            }
+            Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
+            | Type::Pinned(inner, _) => Self::is_raw_pointer(inner),
             Type::Pointer(..) => true,
             _ => false,
         }
@@ -1626,6 +1632,7 @@ impl<'a> TypeChecker<'a> {
             Type::Pointer(inner, ..)
             | Type::Verified(inner)
             | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => {
                 return self.drop_reads_a_reference_in(inner, seen);
             }
@@ -2332,6 +2339,13 @@ impl<'a> TypeChecker<'a> {
                     self.drops_scan_temps(arg, false, scan);
                 }
                 self.drops_return_type(&fc.name)
+            }
+            // A `tasks` block that can fail gives its failure when it fails, also when nothing
+            // uses its value. So it is dropped as a call result is.
+            Expr::UnsafeBlock(u)
+                if u.task == Some(crate::syntax::TaskBlockKind::Tasks) && u.fails_as.is_some() =>
+            {
+                u.fails_as.clone()
             }
             Expr::StructInit(si) => {
                 for (_, field) in si.fields.iter_mut() {

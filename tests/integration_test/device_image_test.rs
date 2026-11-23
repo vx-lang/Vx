@@ -937,17 +937,13 @@ fn a_kernel_that_calls_the_runtime_says_it_runs_on_the_host() {
     );
 }
 
-/// A `spirv64` region that yields a value gets no `format=spirv` image, and
-/// says why: the value is handed back through a host stack slot, which a device
-/// cannot address (#1137).
-///
-/// The legacy path's refusal has a test of its own. This is its sibling on the
-/// flat path, and it is the one the compiler has to make for a value-yielding
-/// kernel rather than a loop the AST code generator wrote. The message names
-/// the host stack slot so the author can tell this refusal from the others.
+/// A `spirv64` region that ends in a number gets a `format=spirv` image. The
+/// kernel stores the number in a buffer in device memory, so the region no
+/// longer hands it back through a host stack slot, and the compiler does not
+/// warn about one.
 #[test]
-fn a_yielding_spirv_region_says_it_runs_on_the_host() {
-    let path = corpus("spirv_device_image_result_slot.vx");
+fn a_spirv_region_that_ends_in_a_number_gets_an_image() {
+    let path = corpus("spirv_region_that_ends_in_a_number_gets_an_image.vx");
     let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .arg(&path)
         .arg("--emit-llvm")
@@ -960,21 +956,20 @@ fn a_yielding_spirv_region_says_it_runs_on_the_host() {
     );
     let ir = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !ir.contains("format=spirv"),
-        "a kernel that yields a host-stack value must have no SPIR-V image \
-         rather than one that is wrong"
+        ir.contains("format=spirv"),
+        "a region that ends in a number must get a SPIR-V image"
     );
-
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("host stack slot") && stderr.contains("run on the host"),
-        "the compiler dropped this kernel's device copy without saying why, so \
-         the author believes it runs on the card; stderr was:\n{stderr}"
+        !stderr.contains("host stack slot"),
+        "a region that ends in a number does not use a host stack slot; stderr \
+         was:\n{stderr}"
     );
 }
 
-/// A `spirv64` kernel that keeps a scratch array or a shared tile of its own
-/// gets no image, and the compile still succeeds: the region runs on the host.
+/// A `spirv64` kernel that keeps a scratch array of its own, or copies a tensor
+/// into a shared tile, gets no image, and the compile still succeeds: the
+/// region runs on the host.
 ///
 /// Both of these used to stop the compile with "cannot compile this device
 /// kernel", which turned programs that run on the host into programs that do
@@ -989,7 +984,7 @@ fn a_kernel_the_spirv_path_cannot_image_still_compiles() {
         ),
         (
             "spirv_device_image_shared_tile.vx",
-            "it keeps a tile in shared memory",
+            "it hands a tensor to `memref.copy`",
         ),
     ] {
         let path = corpus(name);
@@ -1015,42 +1010,6 @@ fn a_kernel_the_spirv_path_cannot_image_still_compiles() {
              home; stderr was:\n{stderr}"
         );
     }
-}
-
-/// The host-stack-slot warning belongs to the SPIR-V path alone.
-///
-/// A `spirv64` machine file is where an author expects a device image, so a
-/// kernel that cannot have one is news. The NVPTX path has never imaged a
-/// kernel that yields a value and has never said so, and one pipeline's
-/// warning must not arrive for the other pipeline's kernels.
-#[test]
-fn the_host_stack_slot_warning_is_spirv_only() {
-    let stderr_of = |name: &str| {
-        let path = corpus(name);
-        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
-            .arg(&path)
-            .arg("--emit-llvm")
-            .output()
-            .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
-        assert!(
-            out.status.success(),
-            "vxc failed on {name}:\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stderr).into_owned()
-    };
-    let spirv = stderr_of("spirv_device_image_result_slot.vx");
-    assert!(
-        spirv.contains("host stack slot"),
-        "a `spirv64` region that yields a value must say why it stays at \
-         home; stderr was:\n{spirv}"
-    );
-
-    let nvptx = stderr_of("nvptx_device_image_result_slot.vx");
-    assert!(
-        !nvptx.contains("host stack slot"),
-        "a `nvptx64` region was told about a SPIR-V refusal; stderr was:\n{nvptx}"
-    );
 }
 
 /// A `--legacy-codegen` compile of the same `spirv64` topology still gets no

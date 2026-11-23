@@ -1,0 +1,118 @@
+//===- select_takes_turns_and_a_source_that_loses_keeps_its_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two channels each hold three values, so both are ready at each call. `select2` starts its
+// search after its last choice, so it gives 0 and 1 in turn. A `select` only says which source
+// is ready, so the channel that loses keeps its value for a later `try_recv`.
+//
+// `when(false, ..)` turns a source off: the `select` never gives it, though it is ready.
+// `select_list` gives the index in its list, and takes turns in the same way.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}select2 gave 0, the value 10{{$}}
+// CHECK-NEXT: {{^}}select2 gave 1, the value 20{{$}}
+// CHECK-NEXT: {{^}}select2 gave 0, the value 11{{$}}
+// CHECK-NEXT: {{^}}select2 gave 1, the value 21{{$}}
+// CHECK-NEXT: {{^}}select2 gave 0, the value 12{{$}}
+// CHECK-NEXT: {{^}}select2 gave 1, the value 22{{$}}
+// CHECK-NEXT: {{^}}with the first turned off, select2 gave 1, the value 30{{$}}
+// CHECK-NEXT: {{^}}with the first turned off, select2 gave 1, the value 31{{$}}
+// CHECK-NEXT: {{^}}the first still has the value 40{{$}}
+// CHECK-NEXT: {{^}}select_list gave 1, the value 51{{$}}
+// CHECK-NEXT: {{^}}select_list gave 2, the value 52{{$}}
+// CHECK-NEXT: {{^}}select_list gave 0, the value 50{{$}}
+
+import std::sync::channel;
+import std::sync::select;
+import std::vec;
+
+fn take(what : *const i8, i : i32, rx : &Receiver<i64>) -> void {
+  match rx.try_recv() {
+    Result<i64, TryRecvError>::Ok(v) => {
+      println!("{} gave {}, the value {}", what, i, v);
+    }
+    Result<i64, TryRecvError>::Err(_) => {
+      println!("{} gave {}, with no value", what, i);
+    }
+  }
+}
+
+fn fill(tx : &Sender<i64>, first : i64, count : i64) -> void {
+  for k in 0..count {
+    let _sent = tx.send(first + k);
+  }
+}
+
+fn main() -> i32 {
+  let (tx_a, a) = channel<i64>(3);
+  let (tx_b, b) = channel<i64>(3);
+  fill(&tx_a, 10, 3);
+  fill(&tx_b, 20, 3);
+  for _round in 0..6 {
+    match select2(&a, &b) {
+      Result<i32, SelectError>::Ok(i) => {
+        if i == 0 {
+          take("select2", i, &a);
+        } else {
+          take("select2", i, &b);
+        }
+      }
+      Result<i32, SelectError>::Err(_) => {
+        println!("cancelled");
+      }
+    }
+  }
+
+  fill(&tx_a, 40, 1);
+  fill(&tx_b, 30, 2);
+  for _round in 0..2 {
+    match select2(&when(false, &a), &b) {
+      Result<i32, SelectError>::Ok(i) => {
+        take("with the first turned off, select2", i, &b);
+      }
+      Result<i32, SelectError>::Err(_) => {
+        println!("cancelled");
+      }
+    }
+  }
+  match a.try_recv() {
+    Result<i64, TryRecvError>::Ok(v) => {
+      println!("the first still has the value {}", v);
+    }
+    Result<i64, TryRecvError>::Err(_) => {
+      println!("the first lost its value");
+    }
+  }
+
+  // The last choice above was index 1, so the search of `select_list` starts at index 2. Only
+  // index 1 is ready first.
+  let mut senders = Vec<Sender<i64>>::new();
+  let mut list = Vec<Receiver<i64>>::new();
+  for _i in 0..3 {
+    let (tx, rx) = channel<i64>(1);
+    senders.push(tx);
+    list.push(rx);
+  }
+  fill(senders.get_ref(1), 51, 1);
+  for _round in 0..3 {
+    match select_list(&list) {
+      Result<i32, SelectError>::Ok(i) => {
+        take("select_list", i, list.get_ref(i));
+        if i == 1 {
+          fill(senders.get_ref(0), 50, 1);
+          fill(senders.get_ref(2), 52, 1);
+        }
+      }
+      Result<i32, SelectError>::Err(_) => {
+        println!("cancelled");
+      }
+    }
+  }
+  return 0;
+}
