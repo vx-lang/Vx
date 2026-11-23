@@ -22,7 +22,9 @@ extern {
 fn main() -> i32 {
   let path = unsafe { vx_get_temp_file("structured_file_errors") };
   unsafe { remove(path); }
-  let missing = (unsafe { File::open_raw(path) }).unwrap_err();
+  let missing_result = unsafe { File::open_raw(path) };
+  assert(missing_result.is_err(), "opening a missing file did not give an error");
+  let missing = missing_result.unwrap_err();
   let missing_category = match missing.kind() {
     ErrorKind::NotFound() => {
       true
@@ -53,7 +55,8 @@ fn main() -> i32 {
     }
   };
   assert(unknown_category, "unknown native category");
-  assert(unknown.raw_os_error().unwrap() == 12345, "unknown native code");
+  assert(unknown.raw_os_error().is_some(), "an unknown OS code was lost");
+  assert(unknown.raw_os_error().unwrap() == 12345, "an unknown OS code changed");
   let invalid = IoError::from_kind(ErrorKind::InvalidInput()).with_operation(Operation::Seek());
   let invalid_category = match invalid.kind() {
     ErrorKind::InvalidInput() => {
@@ -76,10 +79,16 @@ fn main() -> i32 {
   assert(invalid.raw_os_error().is_none(), "Vx error has no native code");
 
   let byte : u8 = 65;
-  let mut writer = (unsafe { File::create_raw(path) }).unwrap();
-  assert((unsafe { writer.write_raw((&byte) as *const u8, 1) }).unwrap() == 1, "write count");
+  let created = unsafe { File::create_raw(path) };
+  assert(created.is_ok(), "create_raw failed");
+  let mut writer = created.unwrap();
+  let written = unsafe { writer.write_raw((&byte) as *const u8, 1) };
+  assert(written.is_ok(), "the write to the new file failed");
+  assert(written.unwrap() == 1, "the write to the new file did not take one byte");
   let output = unsafe { malloc(2) };
-  let read_error = (unsafe { writer.read_raw(output, 1) }).unwrap_err();
+  let read_result = unsafe { writer.read_raw(output, 1) };
+  assert(read_result.is_err(), "a read from a file open only for writing did not give an error");
+  let read_error = read_result.unwrap_err();
   let read_operation = match read_error.operation() {
     Operation::Read() => {
       true
@@ -92,13 +101,25 @@ fn main() -> i32 {
   assert(read_error.raw_os_error().is_some(), "read error native code");
   drop(writer);
 
-  let mut reader = (unsafe { File::open_raw(path) }).unwrap();
-  assert((unsafe { reader.read_raw(output, 2) }).unwrap() == 1, "short read count");
+  let opened = unsafe { File::open_raw(path) };
+  assert(opened.is_ok(), "open_raw of the file failed");
+  let mut reader = opened.unwrap();
+  let short = unsafe { reader.read_raw(output, 2) };
+  assert(short.is_ok(), "a read of two bytes from a one-byte file failed");
+  assert(short.unwrap() == 1, "a read of two bytes from a one-byte file did not get one byte");
   assert(unsafe { *output } == 65u8, "read byte");
-  assert((unsafe { reader.read_raw(output, 1) }).unwrap() == 0, "EOF count");
-  assert((unsafe { reader.read_raw(output, 0) }).unwrap() == 0, "empty read count");
-  assert((unsafe { reader.write_raw(output as *const u8, 0) }).unwrap() == 0, "empty write count");
-  let write_error = (unsafe { reader.write_raw((&byte) as *const u8, 1) }).unwrap_err();
+  let at_end = unsafe { reader.read_raw(output, 1) };
+  assert(at_end.is_ok(), "a read at the end of the file failed");
+  assert(at_end.unwrap() == 0, "a read at the end of the file did not return 0");
+  let empty_read = unsafe { reader.read_raw(output, 0) };
+  assert(empty_read.is_ok(), "a read of 0 bytes failed");
+  assert(empty_read.unwrap() == 0, "a read of 0 bytes did not return 0");
+  let empty_write = unsafe { reader.write_raw(output as *const u8, 0) };
+  assert(empty_write.is_ok(), "a write of 0 bytes failed");
+  assert(empty_write.unwrap() == 0, "a write of 0 bytes did not return 0");
+  let write_result = unsafe { reader.write_raw((&byte) as *const u8, 1) };
+  assert(write_result.is_err(), "a write to a file open only for reading did not give an error");
+  let write_error = write_result.unwrap_err();
   let write_operation = match write_error.operation() {
     Operation::Write() => {
       true

@@ -1,9 +1,13 @@
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // EXPECT: file options and typed seeking preserve their contracts
+// Each `OpenOptions` choice opens the file as its doc says, and `seek_to` moves to the right
+// position. Bad options and a seek before the start of the file give an error.
 import core::mem;
 import core::result;
+import core::option;
 import std::fs;
 import std::io;
 
@@ -17,85 +21,151 @@ fn position<S : Seek>(source : &mut S) -> Result<u64, IoError> {
   return source.stream_position();
 }
 
-fn main() -> i32 {
-  let path = unsafe { vx_get_temp_file("file_options_seek") };
-  unsafe { remove(path); }
-  let empty_options = OpenOptions::new();
-  let invalid = (unsafe { empty_options.open_raw(path) }).unwrap_err();
-  let invalid_kind = match invalid.kind() {
+fn is_invalid_input(error : &IoError) -> bool {
+  return match error.kind() {
     ErrorKind::InvalidInput() => {
       true
     }, _ => {
       false
     }
   };
-  assert(invalid_kind, "an empty configuration is invalid");
+}
+
+fn main() -> i32 {
+  let path = unsafe { vx_get_temp_file("file_options_seek") };
+  unsafe { remove(path); }
+  let empty_options = OpenOptions::new();
+  let empty = unsafe { empty_options.open_raw(path) };
+  assert(empty.is_err(), "options with no choice on did not give an error");
+  assert(is_invalid_input(&empty.unwrap_err()), "options with no choice on did not give InvalidInput");
+
+  // Bit 64 is no choice. The runtime refuses it before it calls the operating system.
+  let unknown_bit = OpenOptions {
+    flags : 64
+  };
+  let unknown = unsafe { unknown_bit.open_raw(path) };
+  assert(unknown.is_err(), "an unknown option bit did not give an error");
+  let unknown_error = unknown.unwrap_err();
+  assert(is_invalid_input(&unknown_error), "an unknown option bit did not give InvalidInput");
+  assert(unknown_error.raw_os_error().is_none(), "an unknown option bit has an OS error code");
+  let unknown_operation = match unknown_error.operation() {
+    Operation::Open() => {
+      true
+    }, _ => {
+      false
+    }
+  };
+  assert(unknown_operation, "an unknown option bit did not give the operation Open");
 
   let byte : u8 = 65;
-  let mut file = (unsafe { File::create_new_raw(path) }).unwrap();
-  assert((unsafe { file.write_raw((&byte) as *const u8, 1) }).unwrap() == 1, "create_new write count");
-  assert(position(&mut file).unwrap() == 1, "generic Seek current position");
-  assert(file.seek_to(SeekFrom::Current(-1)).unwrap() == 0, "signed relative seek");
-  assert(file.seek_to(SeekFrom::End(0)).unwrap() == 1, "seek from end");
-  assert(file.seek_to(SeekFrom::Start(0)).unwrap() == 0, "seek to start");
-  assert(file.stream_position().unwrap() == 0, "position after seek to start");
+  let created = unsafe { File::create_new_raw(path) };
+  assert(created.is_ok(), "create_new_raw of a new path failed");
+  let mut file = created.unwrap();
+  let written = unsafe { file.write_raw((&byte) as *const u8, 1) };
+  assert(written.is_ok(), "the write after create_new_raw failed");
+  assert(written.unwrap() == 1, "the write after create_new_raw did not take one byte");
+
+  let generic = position(&mut file);
+  assert(generic.is_ok(), "stream_position through the Seek trait failed");
+  assert(generic.unwrap() == 1, "stream_position through the Seek trait is not 1");
+  let back = file.seek_to(SeekFrom::Current(-1));
+  assert(back.is_ok(), "a seek of -1 from the current position failed");
+  assert(back.unwrap() == 0, "a seek of -1 from the current position did not go to 0");
+  let end = file.seek_to(SeekFrom::End(0));
+  assert(end.is_ok(), "a seek to the end failed");
+  assert(end.unwrap() == 1, "a seek to the end did not go to 1");
+  let start = file.seek_to(SeekFrom::Start(0));
+  assert(start.is_ok(), "a seek to the start failed");
+  assert(start.unwrap() == 0, "a seek to the start did not go to 0");
+  let here = file.stream_position();
+  assert(here.is_ok(), "stream_position after the seek to the start failed");
+  assert(here.unwrap() == 0, "stream_position after the seek to the start is not 0");
+
   let mut read_back : u8 = 0;
-  assert((unsafe { file.read_raw((&mut read_back) as *mut u8, 1) }).unwrap() == 1, "create_new also opens for reading");
-  assert(read_back == byte, "create_new reads the byte it wrote");
-  assert(file.seek_to(SeekFrom::Start(0)).unwrap() == 0, "seek to start after the read");
-  let seek_error = file.seek_to(SeekFrom::Current(-1)).unwrap_err();
-  let seek_operation = match seek_error.operation() {
+  let read = unsafe { file.read_raw((&mut read_back) as *mut u8, 1) };
+  assert(read.is_ok(), "a read from a file that create_new_raw opened failed");
+  assert(read.unwrap() == 1, "a read from a file that create_new_raw opened did not get one byte");
+  assert(read_back == byte, "the read did not get the byte that the write took");
+  let rewind = file.seek_to(SeekFrom::Start(0));
+  assert(rewind.is_ok(), "a seek to the start after the read failed");
+  assert(rewind.unwrap() == 0, "a seek to the start after the read did not go to 0");
+  let seek_result = file.seek_to(SeekFrom::Current(-1));
+  assert(seek_result.is_err(), "a seek before the start of the file did not give an error");
+  let seek_operation = match seek_result.unwrap_err().operation() {
     Operation::Seek() => {
       true
     }, _ => {
       false
     }
   };
-  assert(seek_operation, "seek error operation");
+  assert(seek_operation, "a seek before the start did not give the operation Seek");
   drop(file);
 
-  let duplicate = (unsafe { File::create_new_raw(path) }).unwrap_err();
-  let exists = match duplicate.kind() {
+  let duplicate = unsafe { File::create_new_raw(path) };
+  assert(duplicate.is_err(), "create_new_raw of a path that exists did not give an error");
+  let exists = match duplicate.unwrap_err().kind() {
     ErrorKind::AlreadyExists() => {
       true
     }, _ => {
       false
     }
   };
-  assert(exists, "exclusive creation reports an existing file");
+  assert(exists, "create_new_raw of a path that exists did not give AlreadyExists");
 
   let options = OpenOptions::new().write(true);
-  let mut preserved = (unsafe { options.open_raw(path) }).unwrap();
-  assert(preserved.seek_to(SeekFrom::End(0)).unwrap() == 1, "write access preserves contents");
+  let opened = unsafe { options.open_raw(path) };
+  assert(opened.is_ok(), "opening with write only failed");
+  let mut preserved = opened.unwrap();
+  let size = preserved.seek_to(SeekFrom::End(0));
+  assert(size.is_ok(), "a seek to the end after write only failed");
+  assert(size.unwrap() == 1, "write only did not keep the byte in the file");
   drop(preserved);
+
   let append_options = OpenOptions::new().append(true);
-  let mut appended = (unsafe { append_options.open_raw(path) }).unwrap();
-  appended.seek_to(SeekFrom::Start(0)).unwrap();
-  assert((unsafe { appended.write_raw((&byte) as *const u8, 1) }).unwrap() == 1, "append write count");
-  assert(appended.stream_position().unwrap() == 2, "append ignores the seek position for writes");
+  let appending = unsafe { append_options.open_raw(path) };
+  assert(appending.is_ok(), "opening with append failed");
+  let mut appended = appending.unwrap();
+  assert(appended.seek_to(SeekFrom::Start(0)).is_ok(), "a seek to the start with append failed");
+  let added = unsafe { appended.write_raw((&byte) as *const u8, 1) };
+  assert(added.is_ok(), "the write with append failed");
+  assert(added.unwrap() == 1, "the write with append did not take one byte");
+  let after_append = appended.stream_position();
+  assert(after_append.is_ok(), "stream_position after the append failed");
+  assert(after_append.unwrap() == 2, "the append did not write at the end of the file");
   drop(appended);
 
   let disabled = OpenOptions::new().write(true).truncate(true).truncate(false).read(true);
-  let mut preserved_reader = (unsafe { disabled.open_raw(path) }).unwrap();
-  assert(preserved_reader.seek_to(SeekFrom::End(0)).unwrap() == 2, "disabled truncate preserves contents");
+  let kept = unsafe { disabled.open_raw(path) };
+  assert(kept.is_ok(), "opening with truncate turned off failed");
+  let mut preserved_reader = kept.unwrap();
+  let kept_size = preserved_reader.seek_to(SeekFrom::End(0));
+  assert(kept_size.is_ok(), "a seek to the end after truncate turned off failed");
+  assert(kept_size.unwrap() == 2, "truncate turned off did not keep the two bytes");
   drop(preserved_reader);
+
   let read_only = OpenOptions::new().read(true).write(true).write(false);
-  let mut reader = (unsafe { read_only.open_raw(path) }).unwrap();
+  let reading = unsafe { read_only.open_raw(path) };
+  assert(reading.is_ok(), "opening with write turned off failed");
+  let mut reader = reading.unwrap();
   let denied_result = unsafe { reader.write_raw((&byte) as *const u8, 1) };
-  assert(denied_result.is_err(), "disabled write removes write access");
-  let denied = denied_result.unwrap_err();
-  let denied_operation = match denied.operation() {
+  assert(denied_result.is_err(), "a write with write turned off did not give an error");
+  let denied_operation = match denied_result.unwrap_err().operation() {
     Operation::Write() => {
       true
     }, _ => {
       false
     }
   };
-  assert(denied_operation, "disabled write reports its operation");
-  assert(reader.seek_to(SeekFrom::Start(18446744073709551615u64)).is_err(), "start offsets do not wrap into relative seeks");
+  assert(denied_operation, "a write with write turned off did not give the operation Write");
+  assert(reader.seek_to(SeekFrom::Start(18446744073709551615u64)).is_err(), "a start offset above i64 did not give an error");
   drop(reader);
-  let mut truncated = (unsafe { File::create_raw(path) }).unwrap();
-  assert(truncated.seek_to(SeekFrom::End(0)).unwrap() == 0, "create truncates existing contents");
+
+  let truncating = unsafe { File::create_raw(path) };
+  assert(truncating.is_ok(), "create_raw of a path that exists failed");
+  let mut truncated = truncating.unwrap();
+  let truncated_size = truncated.seek_to(SeekFrom::End(0));
+  assert(truncated_size.is_ok(), "a seek to the end after create_raw failed");
+  assert(truncated_size.unwrap() == 0, "create_raw did not make the file empty");
   drop(truncated);
   unsafe { remove(path); vx_free_temp_file(path); }
   println!("file options and typed seeking preserve their contracts");

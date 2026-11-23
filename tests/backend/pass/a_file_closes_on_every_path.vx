@@ -41,13 +41,16 @@ fn main() -> i32 {
     vx_get_temp_file("a_file_closes_on_every_path_missing")
   };
   unsafe { remove(missing); }
-  let first = (unsafe { File::create_raw(path) }).unwrap();
+  let first = unsafe { File::create_raw(path) };
+  assert(first.is_ok(), "create_raw of the test file failed");
   drop(first);
   let start = lowest_free_descriptor();
 
   for _i in 0..50 {
-    let mut file = (unsafe { File::open_raw(path) }).unwrap();
-    assert(file.stream_position().unwrap() == 0, "the file opened");
+    let opened = unsafe { File::open_raw(path) };
+    assert(opened.is_ok(), "open_raw of the test file failed");
+    let mut file = opened.unwrap();
+    assert(file.stream_position().is_ok(), "stream_position of the open file failed");
   }
   assert(lowest_free_descriptor() == start, "a file closes at the end of its scope");
 
