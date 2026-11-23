@@ -94,9 +94,12 @@ fn file_error(status : i32, native_code : i32) -> FileError {
   return FileError::Os(native_code);
 }
 
-/// A NUL-terminated copy of a path, for the Rust core. A drop releases it.
+/// A NUL-terminated copy of a path, for the Rust core. A drop releases it. The invariant lets
+/// only this file make a `CPath` or change its pointer.
 struct CPath {
   ptr : *const i8,
+
+  invariant true,
 }
 
 impl CPath {

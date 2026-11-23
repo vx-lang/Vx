@@ -12,7 +12,9 @@
 // - copy a `Files` with an `impl Copy` (E3066),
 // - make a `Files` with a struct literal (E8014),
 // - get the file right of the program without `unsafe` (E5001),
-// - open a file without a `&Files` (E3010).
+// - open a file without a `&Files` (E3010),
+// - make a `CPath`, the copy of a path that `File::open` gives to the Rust core. A drop of a
+//   forged one would free memory that it does not own (E8014).
 import std::fs;
 import std::string;
 
@@ -35,7 +37,15 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E3066] at {{.*}}.vx:19:1: `impl Copy for Files` is in `the_file_right_cannot_be_forged.vx`, and `fs.vx` declares `Files`
-// CHECK: Error[E8014] at {{.*}}.vx:22:10: this struct literal builds a `Files`. `Files` has an invariant, so only code in `fs.vx` can build it
-// CHECK: Error[E5001] at {{.*}}.vx:26:10: Call to unsafe function 'files_of_the_program' is unsafe
-// CHECK: Error[E3010] at {{.*}}.vx:30:15: Function 'File::open' expects 3 arguments, got 2
+fn forged_path(path : &String) -> i32 {
+  let _c = CPath {
+    ptr : path.ptr as *const i8
+  };
+  return 0;
+}
+
+// CHECK: Error[E3066] at {{.*}}.vx:21:1: `impl Copy for Files` is in `the_file_right_cannot_be_forged.vx`, and `fs.vx` declares `Files`
+// CHECK: Error[E8014] at {{.*}}.vx:24:10: this struct literal builds a `Files`. `Files` has an invariant, so only code in `fs.vx` can build it
+// CHECK: Error[E5001] at {{.*}}.vx:28:10: Call to unsafe function 'files_of_the_program' is unsafe
+// CHECK: Error[E3010] at {{.*}}.vx:32:15: Function 'File::open' expects 3 arguments, got 2
+// CHECK: Error[E8014] at {{.*}}.vx:41:12: this struct literal builds a `CPath`. `CPath` has an invariant, so only code in `fs.vx` can build it
