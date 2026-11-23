@@ -22,7 +22,7 @@
 //
 // REQUIRES: macos
 // RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
-// RUN: grep -e "Vx Metal" -e "Falling back" %t.gpu | grep -v -e "bytes of GPU memory" -e "bytes for a batch" -e "a barrier" | FileCheck %s --check-prefix=GPU
+// RUN: grep -e "Vx Metal" -e "Falling back" %t.gpu | grep -v -e "bytes of GPU memory" -e "bytes for a batch" -e "a barrier" -e "the sentinel ended" | FileCheck %s --check-prefix=GPU
 // RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
 //
 // w = position, and the last position is 65535.
@@ -41,30 +41,30 @@
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: Falling back to CPU libffi dispatch
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 2 kernels,
+// GPU-NEXT: [Vx Metal] waited for 2 kernels,
 //
 // Part 2.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 1 kernel,
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
 // GPU-NEXT: Falling back to CPU libffi dispatch
 //
 // Part 3.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 1 kernel,
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 1 kernel,
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
 //
 // Part 4.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 2 kernels,
-// GPU: [Vx Metal] waited for 1 kernel,
+// GPU-NEXT: [Vx Metal] waited for 2 kernels,
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
 //
 // Part 5.
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 2 kernels,{{.*}}
+// GPU-NEXT: [Vx Metal] waited for 2 kernels,{{.*}}
 // GPU-NOT: {{.}}
 
 // dst = position

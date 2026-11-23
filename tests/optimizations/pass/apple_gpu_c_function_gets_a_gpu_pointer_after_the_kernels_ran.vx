@@ -13,7 +13,7 @@
 //
 // REQUIRES: macos
 // RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
-// RUN: grep -e "Vx Metal" %t.gpu | grep -v -e "bytes of GPU memory" -e "bytes for a batch" | FileCheck %s --check-prefix=GPU
+// RUN: grep -e "Vx Metal" %t.gpu | grep -v -e "bytes of GPU memory" -e "bytes for a batch" -e "the sentinel ended" | FileCheck %s --check-prefix=GPU
 // RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
 // RUN: vxc %s --host default --machine fleet/m4-uma.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=APPLE
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=CUDA
@@ -23,7 +23,7 @@
 //
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 2 kernels,{{.*}}
+// GPU-NEXT: [Vx Metal] waited for 2 kernels,{{.*}}
 // GPU-NOT: {{.}}
 //
 // APPLE-LABEL: llvm.func @main(

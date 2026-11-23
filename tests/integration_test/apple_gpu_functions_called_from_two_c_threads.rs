@@ -161,7 +161,10 @@ fn metal_lines(log: &str, part: &str) -> Vec<String> {
         .lines()
         .filter_map(|l| {
             let l = l.strip_prefix("[Vx Metal] ")?;
-            if l.starts_with("made a buffer") || l.starts_with("freed ") {
+            if l.starts_with("made a buffer")
+                || l.starts_with("freed ")
+                || l.starts_with("the sentinel ended")
+            {
                 return None;
             }
             Some(if l.contains(": grid ") {
