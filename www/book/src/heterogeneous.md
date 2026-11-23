@@ -103,6 +103,10 @@ The copy takes its data from host memory before `transfer_async` returns, so the
 change or free that memory after the call. On other devices the copy ends before `transfer_async`
 returns.
 
+To wait for the copy and for other events at once, give `t.copy_end()` to a `select` from
+`std::sync::select` (see [Tasks and channels](tasks.md)). It is ready when the copy of the token
+`t` ended. It borrows the token, so `t.wait()` still comes after it.
+
 A `spawn on` can also be in a task. So a `tasks` block can give work to several devices, one task
 for each device (see [Tasks and channels](tasks.md)).
 

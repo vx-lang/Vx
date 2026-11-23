@@ -234,8 +234,9 @@ and the others about tasks, and says how we check each one.
 of any element type, a `Deadline`, and a `TcpListener`, `TcpStream`, `UdpSocket` or `TcpBufReader`
 from `std::net`. A socket is ready when its `accept`, `read` or `recv` does not wait. The receivers
 of the channels in the next section, a `Semaphore` and an `Interval` from `std::time` are sources
-too. Each `select` gives the index of the first source that is ready, and
-starts its search after the last choice of the task. The caller then takes the value, for example
+too. So is `t.copy_end()` for the token `t` of a `transfer_async`: it is ready when the copy ended
+(see [Topologies and memory](heterogeneous.md)). Each `select` gives the index of the first source
+that is ready, and starts its search after the last choice of the task. The caller then takes the value, for example
 with `try_recv`. A `select` takes no value itself, so a source that loses keeps its value.
 
 A closed channel is ready, and its `try_recv` gives `Closed`. `when(false, &source)` turns a source
