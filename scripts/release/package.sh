@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a redistributable Vx toolchain tarball for the host platform.
 #
-#   ./scripts/release/package.sh v0.0.4
+#   ./scripts/release/package.sh v0.0.5
 #
 # Produces  dist/vx-<version>-<target>.tar.gz  and its .sha256.
 #
@@ -30,7 +30,7 @@ set -euo pipefail
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
-    echo "usage: $0 <version>        e.g. $0 v0.0.4" >&2
+    echo "usage: $0 <version>        e.g. $0 v0.0.5" >&2
     exit 1
 fi
 
@@ -176,11 +176,12 @@ echo "$VERSION" > "$STAGE/VERSION"
 # With VX_BUNDLE_LLVM set to the install from scripts/provision/build_llvm.sh, the toolchain
 # carries the part of LLVM that vxc runs, in llvm/, and the user needs no LLVM of their own. The
 # compiler itself already has MLIR and LLVM linked in; these are the tools it shells out to, the
-# libraries a compiled program loads, and Enzyme.
+# symbolizer that the crash report of a program runs, the libraries a compiled program loads, and
+# Enzyme.
 if [ -n "${VX_BUNDLE_LLVM:-}" ]; then
     echo "==> Staging LLVM from $VX_BUNDLE_LLVM"
     mkdir -p "$STAGE/llvm/bin" "$STAGE/llvm/lib"
-    for tool in llvm-config mlir-translate opt llc clang-22 clang; do
+    for tool in llvm-config mlir-translate opt llc llvm-symbolizer clang-22 clang; do
         [ -e "$VX_BUNDLE_LLVM/bin/$tool" ] || {
             echo "error: $VX_BUNDLE_LLVM/bin/$tool is missing." >&2
             exit 1

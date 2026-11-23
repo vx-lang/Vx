@@ -13,11 +13,11 @@
 
 // CHECK: structs 1/2
 // CHECK: skipped structs 'Span': it has an invariant, and an interface cannot carry one yet{{$}}
-struct Span
-invariant self.lo <= self.hi
-{
+struct Span {
   lo : i32,
   hi : i32,
+
+  invariant lo <= hi,
 }
 
 struct Point {

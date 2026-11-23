@@ -688,6 +688,8 @@ pub enum ElementType {
     /// OCP fp4 (E2M1). Blackwell-class tensor cores have it; Hopper does not,
     /// which is the boundary a machine file needs to be able to state.
     F4E2M1,
+    /// OCP E8M0: a power of two from 2^-127 to 2^127, or NaN. It holds the block scales of MXFP4.
+    F8E8M0,
     I4,
     U4,
     I8,
@@ -872,6 +874,12 @@ pub enum Type {
     Struct(Symbol, Option<crate::gid::TypeId>),
     Enum(Symbol, Option<crate::gid::TypeId>),
     Verified(Box<Type>),
+    /// A tensor whose elements are all different. It is read only, so the claim holds while it
+    /// lives.
+    Distinct(Box<Type>),
+    /// A table of `[start, end)` ranges, one in each row, that do not overlap. It is read only, so
+    /// the claim holds while it lives.
+    DisjointRanges(Box<Type>),
     Pinned(Box<Type>, Topology),
     Generic(Symbol, Option<crate::gid::TypeId>), // e.g. T
     GenericInstance(Box<Type>, Vec<Type>),       // e.g. Config<f32>
@@ -956,6 +964,8 @@ impl Type {
             Type::Ref(_, _)
             | Type::Tensor(_, _, _)
             | Type::Verified(_)
+            | Type::Distinct(_)
+            | Type::DisjointRanges(_)
             | Type::Pinned(_, _)
             | Type::Enum(_, _) => true,
             // `void` is spelled as a struct, but there is nothing in it to move.
@@ -1016,6 +1026,10 @@ impl Type {
             }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),
+            Type::Distinct(inner) => Type::Distinct(Box::new(inner.substitute(mapping))),
+            Type::DisjointRanges(inner) => {
+                Type::DisjointRanges(Box::new(inner.substitute(mapping)))
+            }
             Type::Pinned(inner, top) => {
                 Type::Pinned(Box::new(inner.substitute(mapping)), top.clone())
             }
@@ -1056,6 +1070,8 @@ impl Type {
     pub fn placement(&self) -> Option<&Placement> {
         match self {
             Type::Tensor(_, _, p) => p.as_ref(),
+            // A `Distinct` tensor is the tensor, with a claim about its values.
+            Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.placement(),
             _ => None,
         }
     }
@@ -1077,6 +1093,8 @@ impl Type {
             | Type::Ref(inner, _)
             | Type::Pointer(inner, ..)
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => inner.has_generic_params(),
             Type::Function(params, ret, _) | Type::Closure(params, ret) => {
                 params.iter().any(Type::has_generic_params) || ret.has_generic_params()
@@ -1092,6 +1110,8 @@ impl Type {
             | Type::Borrow { inner, .. }
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => inner.mentions_tensor(),
             Type::GenericInstance(base, args) => {
                 base.mentions_tensor() || args.iter().any(Type::mentions_tensor)
@@ -1120,6 +1140,8 @@ impl Type {
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => inner.states_a_location(),
             Type::GenericInstance(base, args) => {
                 base.states_a_location() || args.iter().any(Type::states_a_location)
@@ -1171,6 +1193,8 @@ impl Type {
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => inner.for_each_placement(f),
             Type::GenericInstance(base, args) => {
                 base.for_each_placement(f);
@@ -1288,7 +1312,13 @@ impl ElementType {
                 | ElementType::F8E4M3
                 | ElementType::F8E5M2
                 | ElementType::F4E2M1
+                | ElementType::F8E8M0
         )
+    }
+
+    /// Whether this is a 16-bit float type (`f16` or `bf16`).
+    pub fn is_half(&self) -> bool {
+        matches!(self, ElementType::F16 | ElementType::BF16)
     }
 
     /// Storage width in bits — the single source of truth for element widths, from which
@@ -1301,7 +1331,7 @@ impl ElementType {
     pub fn is_narrow_float(&self) -> bool {
         matches!(
             self,
-            ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1
+            ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1 | ElementType::F8E8M0
         )
     }
 
@@ -1310,6 +1340,9 @@ impl ElementType {
     /// of the `vx-expand-narrow-floats` pass, for a constant that never reaches it: MLIR would
     /// fold a literal too large for `f8e4m3` to NaN. `None` for any other type.
     pub fn nearest_narrow_value(&self, x: f64) -> Option<f64> {
+        if *self == ElementType::F8E8M0 {
+            return Some(power_of_two_below(x));
+        }
         let (mant_bits, bias, max_finite): (i32, i32, u32) = match self {
             ElementType::F8E4M3 => (3, 7, 0x7E),
             ElementType::F8E5M2 => (2, 15, 0x7B),
@@ -1345,7 +1378,11 @@ impl ElementType {
         Some(match self {
             ElementType::Bool => 1,
             ElementType::I4 | ElementType::U4 | ElementType::F4E2M1 => 4,
-            ElementType::I8 | ElementType::U8 | ElementType::F8E4M3 | ElementType::F8E5M2 => 8,
+            ElementType::I8
+            | ElementType::U8
+            | ElementType::F8E4M3
+            | ElementType::F8E5M2
+            | ElementType::F8E8M0 => 8,
             ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 16,
             ElementType::F32 | ElementType::I32 | ElementType::U32 => 32,
             ElementType::F64 | ElementType::I64 | ElementType::U64 | ElementType::USize => 64,
@@ -1399,6 +1436,27 @@ impl ElementType {
     }
 }
 
+/// `x as f8e8m0`: the largest power of two that is at most `x`. A value below 2^-127, 0 included,
+/// gives 2^-127, and a value above 2^127 gives 2^127. A value below 0 gives NaN. These are the
+/// rules of the `vx-expand-narrow-floats` pass.
+fn power_of_two_below(x: f64) -> f64 {
+    if x < 0.0 || x.is_nan() {
+        return f64::NAN;
+    }
+    if x >= 2f64.powi(127) {
+        return 2f64.powi(127);
+    }
+    if x <= 2f64.powi(-127) {
+        return 2f64.powi(-127);
+    }
+    let mut p = 2f64.powi(x.log2().floor() as i32);
+    // `log2` can round up to the next whole number for a value just below a power of two.
+    if p > x {
+        p /= 2.0;
+    }
+    p
+}
+
 impl std::fmt::Display for ElementType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1409,6 +1467,7 @@ impl std::fmt::Display for ElementType {
             ElementType::F8E4M3 => write!(f, "f8e4m3"),
             ElementType::F8E5M2 => write!(f, "f8e5m2"),
             ElementType::F4E2M1 => write!(f, "f4e2m1"),
+            ElementType::F8E8M0 => write!(f, "f8e8m0"),
             ElementType::I4 => write!(f, "i4"),
             ElementType::U4 => write!(f, "u4"),
             ElementType::I8 => write!(f, "i8"),
@@ -1448,6 +1507,7 @@ impl std::str::FromStr for ElementType {
             "f8e4m3" => Ok(ElementType::F8E4M3),
             "f8e5m2" => Ok(ElementType::F8E5M2),
             "f4e2m1" => Ok(ElementType::F4E2M1),
+            "f8e8m0" => Ok(ElementType::F8E8M0),
             "i4" => Ok(ElementType::I4),
             "u4" => Ok(ElementType::U4),
             "i8" => Ok(ElementType::I8),
@@ -1563,6 +1623,8 @@ impl std::fmt::Display for Type {
                 write!(f, "| -> {}", ret)
             }
             Type::Verified(inner) => write!(f, "Verified<{inner}>"),
+            Type::Distinct(inner) => write!(f, "Distinct<{inner}>"),
+            Type::DisjointRanges(inner) => write!(f, "DisjointRanges<{inner}>"),
             Type::Ref(inner, space) => write!(f, "Ref<{inner}, Memory::{}>", space.name()),
             Type::Pinned(inner, topo) => write!(f, "Pinned<{inner}, {topo}>"),
             Type::Module(path, _) => write!(f, "module {path}"),
@@ -1632,6 +1694,14 @@ impl Mangle for Type {
             Type::Closure(_, _) => write!(w, "closure"),
             Type::Verified(inner) => {
                 write!(w, "Verified$")?;
+                inner.mangle_to(w)
+            }
+            Type::Distinct(inner) => {
+                write!(w, "Distinct$")?;
+                inner.mangle_to(w)
+            }
+            Type::DisjointRanges(inner) => {
+                write!(w, "DisjointRanges$")?;
                 inner.mangle_to(w)
             }
             Type::Pinned(inner, _) => {

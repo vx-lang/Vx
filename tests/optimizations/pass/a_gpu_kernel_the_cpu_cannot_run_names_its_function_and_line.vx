@@ -1,0 +1,44 @@
+//===- a_gpu_kernel_the_cpu_cannot_run_names_its_function_and_line.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// This kernel has a `barrier()` inside its loop over threads. All the threads of a block must
+// reach the barrier together, so the CPU cannot run the kernel one thread after another. With no
+// GPU, the runtime stops the program. The error names the kernel, the Vx function and the line of
+// the `spawn`. CUDA_VISIBLE_DEVICES hides the GPUs of a machine that has them.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %s --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --implicit-check-not=total
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --implicit-check-not=total
+
+fn sum_tiles() -> i32 {
+  let k = transfer(Tensor<f32, [6]>::fill(1.0), Memory::HBM);
+  let mut o = transfer(Tensor<f32, [8]>::fill(0.0), Memory::HBM);
+  // CHECK: FATAL: {{vx_npu_kernel_[0-9]+}} (from sum_tiles at {{.*}}a_gpu_kernel_the_cpu_cannot_run_names_its_function_and_line.vx:[[@LINE+1]]) is a cooperative kernel
+  spawn on(Topology::Device) {
+    let mut kt = unsafe { Tensor<f32, [2], Memory::SMEM>::uninit() };
+    for bq in 0..4 {
+      for qi in 0..2 {
+        let mut acc : f32 = 0.0;
+        for t in 0..3 {
+          kt[qi] = k[t * 2 + qi];
+          barrier();
+          for jj in 0..2 {
+            acc = acc + kt[jj];
+          }
+          barrier();
+        }
+        o[bq * 2 + qi] = acc;
+      }
+    }
+  }
+  let u = transfer(o, Memory::CPU_DRAM);
+  println!("total {}", u[0]);
+  return 0;
+}
+
+fn main() -> i32 {
+  return sum_tiles();
+}

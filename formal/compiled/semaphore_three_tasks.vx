@@ -1,0 +1,44 @@
+// Three tasks take the one permit of a `Semaphore` and add 1 to a plain value that no lock
+// guards. GenMC checks every order of the tasks: the permit orders the writes, so there is no
+// data race on the value; two tasks can sleep in `acquire`, so a drop that loses a wake leaves
+// one asleep forever; and the final value is 3.
+
+import core::mem;
+import std::sync::semaphore;
+
+/// A plain value that the tasks write. The permit is what makes the writes take turns.
+struct Shared {
+  p : *mut i64,
+}
+
+unsafe impl Sync for Shared {}
+
+fn add_one(s : &Semaphore, shared : &Shared) -> void {
+  let permit = s.acquire();
+  let p = shared.p;
+  unsafe { p[0] = p[0] + 1; }
+  drop(permit);
+}
+
+fn main() -> i32 {
+  let s = Semaphore::new(1);
+  let mut value : i64 = 0;
+  let shared = Shared {
+    p : (&mut value) as *mut i64
+  };
+  tasks {
+    spawn {
+      add_one(&s, &shared);
+    };
+    spawn {
+      add_one(&s, &shared);
+    };
+    spawn {
+      add_one(&s, &shared);
+    };
+  };
+  if value != 3 {
+    panic("the count is wrong");
+  }
+  return 0;
+}

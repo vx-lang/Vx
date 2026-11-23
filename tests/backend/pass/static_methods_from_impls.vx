@@ -45,19 +45,19 @@ impl Default for Point {
   }
 }
 
-impl Default for i32 {
+extern impl Default for i32 {
   fn default() -> i32 {
     return 0;
   }
 }
 
-impl u64 {
+extern impl u64 {
   fn doubled(v : u64) -> u64 {
     return v * 2;
   }
 }
 
-impl<T> Default for Option<T> {
+extern impl<T> Default for Option<T> {
   fn default() -> Option<T> {
     return Option<T>::None();
   }

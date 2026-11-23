@@ -1,0 +1,26 @@
+//===- distinct_check_of_a_tensor_it_cannot_read.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Distinct::check(t)` reads the integers of a tensor with one dimension, on the CPU. Each call
+// here gives it a tensor that it cannot check.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::option;
+
+fn main() -> i32 {
+  // Floats.
+  // CHECK: Error[E3004] at {{.*}}:[[#@LINE+1]]:17: `Distinct::check(t)` takes one tensor with one dimension of `i32`, `i64`, `u32` or `u64`, by value
+  let _floats = Distinct::check(Tensor<f32, [3]>::fill(0.0));
+  // Two dimensions.
+  // CHECK: Error[E3004] at {{.*}}:[[#@LINE+1]]:16: `Distinct::check(t)` takes one tensor with one dimension
+  let _pairs = Distinct::check(Tensor<i32, [2, 2]>::fill(0));
+  // GPU memory, which the CPU cannot read.
+  // CHECK: Error[E3004] at {{.*}}:[[#@LINE+1]]:17: `Distinct::check(t)` reads the values of `t` on the CPU, but `t` is in HBM. Check the tensor before the transfer, and transfer the `Distinct` tensor
+  let _on_gpu = Distinct::check(transfer(Tensor<i32, [3]>::fill(0), Memory::HBM));
+  return 0;
+}

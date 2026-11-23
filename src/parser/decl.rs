@@ -203,12 +203,12 @@ impl<'a> Parser<'a> {
 
         let mut requires = Vec::new();
         while self.match_token(&TokenType::Requires) {
-            requires.push(self.parse_expr()?);
+            requires.push(self.parse_expr_before_block()?);
         }
 
         let mut ensures = Vec::new();
         while self.match_token(&TokenType::Ensures) {
-            ensures.push(self.parse_expr()?);
+            ensures.push(self.parse_expr_before_block()?);
         }
 
         // `where Reachable<A, B> [, Reachable<C, D>]*` -- topology transfer constraints.
@@ -1122,24 +1122,52 @@ impl<'a> Parser<'a> {
 
         let generics = self.parse_generic_params()?;
 
-        let mut invariants = Vec::new();
-        while self.match_token(&TokenType::Invariant) {
-            invariants.push(self.parse_expr()?);
+        if self.check(&TokenType::Invariant) {
+            return Err(self.error(&format!(
+                "an invariant of a struct comes after its last field, inside the braces. Move \
+                 this invariant into the braces of `{name}`."
+            )));
         }
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut fields: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
+        let mut invariants = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            let f_name = self.expect_identifier("Expected field name")?;
-            self.consume(&TokenType::Colon, "Expected ':'")?;
-            let f_type = self.parse_type()?;
-            fields.push((f_name.into(), f_type));
+            if self.match_token(&TokenType::Invariant) {
+                let start = self.pos;
+                invariants.push(self.parse_expr()?);
+                self.refuse_self_in_invariant(start, &name)?;
+            } else {
+                if !invariants.is_empty() {
+                    return Err(self.error(&format!(
+                        "a field cannot come after an invariant. Put each field of `{name}` \
+                         before its first invariant."
+                    )));
+                }
+                let f_name = self.expect_identifier("Expected field name")?;
+                self.consume(&TokenType::Colon, "Expected ':'")?;
+                let f_type = self.parse_type()?;
+                fields.push((f_name.into(), f_type));
+            }
 
             if !self.match_token(&TokenType::Comma) {
                 break;
             }
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        // The checker reads a field of an invariant as `self.<field>`.
+        for invariant in &mut invariants {
+            crate::syntax::visit_expr_mut(invariant, &mut |e| {
+                if let Expr::Identifier(id) = e {
+                    if fields.iter().any(|(field, _)| *field == id.name) {
+                        let this = Expr::Identifier(IdentifierExpr::new("self".into(), id.span));
+                        let member =
+                            MemberAccessExpr::new(Box::new(this), id.name.clone(), id.span);
+                        *e = Expr::MemberAccess(member);
+                    }
+                }
+            });
+        }
 
         // Remove generic params from scope
         for _ in 0..generics.len() {
@@ -1157,6 +1185,36 @@ impl<'a> Parser<'a> {
             invariants,
             doc_comment: None,
         })
+    }
+
+    /// An invariant names the fields of its struct, so a written `self` is an error. `start` is
+    /// the position of the first token of the invariant.
+    fn refuse_self_in_invariant(&self, start: usize, struct_name: &str) -> ParseResult<'a, ()> {
+        let tokens = &self.tokens[start..self.pos];
+        for (i, token) in tokens.iter().enumerate() {
+            if token.kind != TokenType::Identifier("self") {
+                continue;
+            }
+            let field = match (tokens.get(i + 1), tokens.get(i + 2)) {
+                (Some(dot), Some(next)) if dot.kind == TokenType::Dot => match &next.kind {
+                    TokenType::Identifier(field) => Some(*field),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let message = match field {
+                Some(field) => format!(
+                    "an invariant names a field without `self`. Write `{field}`, not \
+                     `self.{field}`."
+                ),
+                None => format!(
+                    "an invariant cannot name `self`. It can name only the fields of \
+                     `{struct_name}`."
+                ),
+            };
+            return Err(self.error_at(token, &message));
+        }
+        Ok(())
     }
 
     pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<'a, EnumDecl> {
@@ -1299,6 +1357,7 @@ impl<'a> Parser<'a> {
                     length: 0,
                     expansion: self.expansion(),
                 },
+                file: None,
                 doc_comment,
             });
         }
@@ -1367,7 +1426,7 @@ impl<'a> Parser<'a> {
             let return_type = self.parse_return_type()?;
             let mut ensures = Vec::new();
             while self.match_token(&TokenType::Ensures) {
-                ensures.push(self.parse_expr()?);
+                ensures.push(self.parse_expr_before_block()?);
             }
             // A trait method is either a requirement, ending in `;`, or a default, whose body
             // an impl inherits unless it writes its own.
@@ -1451,9 +1510,11 @@ impl<'a> Parser<'a> {
         // if we see `Identifier` followed by `for`, it's a trait. Otherwise it's a type.
         // Note: parse_type handles `Struct(name)`, which is an identifier!
         // We can just peek ahead.
+        let mut target_token = self.peek().clone();
         let parsed_type = self.parse_type()?;
         let target_type = if self.check(&TokenType::For) {
             self.advance(); // consume 'for'
+            target_token = self.peek().clone();
             if let Type::Struct(name, _) = parsed_type {
                 trait_name = Some(name);
             } else if let Type::GenericInstance(inner, args) = parsed_type {
@@ -1470,6 +1531,22 @@ impl<'a> Parser<'a> {
         } else {
             parsed_type
         };
+        // No method call finds a method of an impl for `&T` or `*mut T`.
+        if let Type::Borrow { inner, .. } | Type::Ref(inner, _) | Type::Pointer(inner, ..) =
+            &target_type
+        {
+            let header = match &trait_name {
+                Some(t) => format!("impl {t} for {inner}"),
+                None => format!("impl {inner}"),
+            };
+            return Err(self.error_at(
+                &target_token,
+                &format!(
+                    "an impl is for a type, not for a reference or a raw pointer to it. Write \
+                     `{header}`"
+                ),
+            ));
+        }
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
         let outer_self = self.impl_self.replace(target_type.clone());
@@ -1546,6 +1623,7 @@ impl<'a> Parser<'a> {
             assoc_bindings,
             copied_defaults: Vec::new(),
             is_unsafe: false,
+            is_extern: false,
         })
     }
 
@@ -1636,6 +1714,7 @@ impl<'a> Parser<'a> {
     /// an unparsed token tree -- because what it expands to is decided by the macro's rules,
     /// not by this parser.
     fn parse_item_macro_call(&mut self) -> ParseResult<'a, crate::syntax::stmt::MacroCallStmt> {
+        let span = self.next_span();
         let name = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             other => {
@@ -1654,7 +1733,7 @@ impl<'a> Parser<'a> {
             token_tree,
             block_tree,
             has_semi,
-            span: Span::default(),
+            span,
         })
     }
 
@@ -1732,6 +1811,18 @@ impl<'a> Parser<'a> {
                 imports.push(self.parse_import_decl()?);
             } else if self.check(&TokenType::MacroRules) {
                 macros.push(self.parse_macro_def()?);
+            } else if self.check(&TokenType::Extern)
+                && matches!(self.peek_n(1).kind, TokenType::Unsafe)
+                && matches!(self.peek_n(2).kind, TokenType::Impl)
+            {
+                return Err(self.error("write `unsafe extern impl`, not `extern unsafe impl`"));
+            } else if self.check(&TokenType::Extern)
+                && matches!(self.peek_n(1).kind, TokenType::Impl)
+            {
+                self.advance();
+                let mut ib = self.parse_impl_block()?;
+                ib.is_extern = true;
+                impls.push(ib);
             } else if self.check(&TokenType::Extern) {
                 let mut at = self.peek().clone();
                 let block = self.parse_extern_block()?;
@@ -1757,6 +1848,16 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let mut ib = self.parse_impl_block()?;
                 ib.is_unsafe = true;
+                impls.push(ib);
+            } else if self.check(&TokenType::Unsafe)
+                && matches!(self.peek_n(1).kind, TokenType::Extern)
+                && matches!(self.peek_n(2).kind, TokenType::Impl)
+            {
+                self.advance();
+                self.advance();
+                let mut ib = self.parse_impl_block()?;
+                ib.is_unsafe = true;
+                ib.is_extern = true;
                 impls.push(ib);
             } else if self.check(&TokenType::Impl) {
                 // `impl Transfer<Memory::A, Memory::B> for Topology::X { ... }` is a transfer
@@ -1856,13 +1957,25 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "tuple".into()],
             });
         }
+        // `Distinct::check(t)` and `DisjointRanges::check(t)` call functions in `core::distinct`.
+        if self.uses_distinct_check
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "distinct"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "distinct".into()],
+            });
+        }
         // `==` with a string literal is a call of `core::c_str`'s `c_str_equals`, so it brings
         // that module with it. The module itself compares no literals, so it does not import
         // itself.
         let compares_text = functions
             .iter()
             .chain(impls.iter().flat_map(|i: &ImplBlock| i.methods.iter()))
-            .any(|f: &Function| crate::syntax::compares_with_a_string_literal(&f.body));
+            .any(|f: &Function| {
+                crate::syntax::compares_with_a_string_literal(&f.body, &self.string_literal_names)
+            });
         if compares_text
             && !imports.iter().any(|i: &ImportDecl| {
                 i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "c_str"
@@ -1888,6 +2001,8 @@ impl<'a> Parser<'a> {
             topologies,
             memories,
             transfer_impls,
+            macro_call_sites: Vec::new(),
+            no_trusted_code: None,
         })
     }
 
@@ -2115,13 +2230,9 @@ impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         let mut program = parser.parse().unwrap();
-        // Mirror the driver: collect rules into the name-keyed map the expander takes.
-        let mut rules = std::collections::HashMap::new();
-        for mac in &program.macros {
-            rules.insert(mac.name.clone(), mac.rules.clone());
-        }
+        let macros = crate::parser::MacroTable::new(std::iter::once(&program));
         let defaults = crate::resolver::collect_trait_defaults(std::iter::once(&program));
-        let expander = crate::parser::MacroExpander::new(&rules, &defaults);
+        let expander = crate::parser::MacroExpander::new(&macros, &defaults);
         expander.expand_module(&mut program).unwrap();
         let body = format!("{:?}", program.transfer_impls[0].methods[0].body);
         assert!(
@@ -2440,7 +2551,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 panic!("Expected Range expression for iterable");
             }
             assert_eq!(body.len(), 1);
-            if let Statement::Assign(AssignStmt { lhs, rhs, span: _ }) = &body[0] {
+            if let Statement::Assign(AssignStmt { lhs, rhs, .. }) = &body[0] {
                 if let Expr::Identifier(id) = lhs {
                     assert_eq!(id.name.as_ref(), "x");
                 } else {

@@ -153,6 +153,18 @@ pub(crate) fn passed_tensor(e: &Expr) -> Option<&str> {
     }
 }
 
+/// The tensor that an input of an `mlir!` block passes for a `writes_only` clause: `t`, `&t` or
+/// `&mut t`. A tensor that the pass makes is passed `&mut t`, so the block does not move it.
+pub(crate) fn written_tensor(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Borrow(b) if b.is_mut => match &*b.expr {
+            Expr::Identifier(id) => Some(id.name.as_ref()),
+            _ => None,
+        },
+        _ => passed_tensor(e),
+    }
+}
+
 /// Whether `ty` is a type that an atomic clause can name: a `&` tensor of a type that has
 /// atomic operations.
 fn atomic_tensor(ty: &Type) -> bool {
@@ -195,8 +207,72 @@ const WRITES: &[&str] = &[
     "memref.atomic_rmw",
     "memref.generic_atomic_rmw",
     "vector.store",
+    "vector.maskedstore",
+    "vector.scatter",
+    "vector.compressstore",
     "vector.transfer_write",
+    "gpu.subgroup_mma_store_matrix",
 ];
+
+/// The MLIR operations whose result is a view of the memref that they take.
+const VIEWS: &[&str] = &[
+    "memref.subview",
+    "memref.cast",
+    "memref.reinterpret_cast",
+    "memref.view",
+    "memref.collapse_shape",
+    "memref.expand_shape",
+    "memref.memory_space_cast",
+    "memref.transpose",
+];
+
+/// `%name` and each view of it that the block makes, such as `%v = memref.subview %name[..]`.
+fn views_of(block: &str, name: &str) -> Vec<String> {
+    let mut names = vec![name.to_string()];
+    for line in block.lines() {
+        let Some((result, _)) = line.split_once('=') else {
+            continue;
+        };
+        let result = result.trim();
+        if result.starts_with('%')
+            && !names.iter().any(|n| n == result)
+            && names.iter().any(|n| line_uses(line, VIEWS, n))
+        {
+            names.push(result.to_string());
+        }
+    }
+    names
+}
+
+/// The first line of `block` that uses `%name`, or a view of it, as an operand of one of `ops`.
+fn line_using<'b>(block: &'b str, ops: &[&str], name: &str) -> Option<&'b str> {
+    let names = views_of(block, name);
+    block
+        .lines()
+        .find(|l| names.iter().any(|n| line_uses(l, ops, n)))
+}
+
+/// The tensor and the indices that a `writes_only(t)` or `writes_only(t[i][j])` clause names.
+/// No indices for the whole tensor. `None` for another clause.
+pub(crate) fn writes_only_target(e: &Expr) -> Option<(&str, Vec<&Expr>)> {
+    let Expr::FunctionCall(fc) = e else {
+        return None;
+    };
+    if fc.name.as_ref() != "writes_only" || fc.args.len() != 1 {
+        return None;
+    }
+    let mut indices = Vec::new();
+    let mut at = &fc.args[0];
+    while let Expr::IndexAccess(ix) = at {
+        indices.push(&*ix.index);
+        at = &ix.base;
+    }
+    indices.reverse();
+    match at {
+        Expr::Identifier(id) => Some((id.name.as_ref(), indices)),
+        _ => None,
+    }
+}
 
 /// Whether a line of MLIR uses `%name` as an operand of one of `ops`.
 fn line_uses(line: &str, ops: &[&str], name: &str) -> bool {
@@ -328,7 +404,7 @@ impl crate::hir::TypeChecker<'_> {
                     );
                     continue;
                 };
-                if let Some(line) = m.block_str.lines().find(|l| line_uses(l, WRITES, &sym)) {
+                if let Some(line) = line_using(&m.block_str, WRITES, &sym) {
                     self.atomic_error(
                         format!(
                             "the block says `reads_only({name})`, but `{}` writes `{sym}`",
@@ -340,6 +416,25 @@ impl crate::hir::TypeChecker<'_> {
                 read_only.insert(sym);
                 continue;
             }
+            if let Some((name, _)) = writes_only_target(clause) {
+                let input = m
+                    .inputs
+                    .iter()
+                    .find(|(_, e, ty)| written_tensor(e) == Some(name) && ty.starts_with("memref"));
+                match input {
+                    Some((sym, _, _)) => {
+                        named.insert(sym.as_ref().to_string());
+                    }
+                    None => self.atomic_error(
+                        "a `writes_only` clause of an `mlir!` block names one of its inputs, a \
+                         tensor passed by name, such as `writes_only(t)` or `writes_only(t[i])` \
+                         for `%t = t : memref<?xi32>`"
+                            .to_string(),
+                        clause.span(),
+                    ),
+                }
+                continue;
+            }
             if is_writes_only(clause) {
                 let memory = m
                     .inputs
@@ -347,8 +442,8 @@ impl crate::hir::TypeChecker<'_> {
                     .find(|(_, _, ty)| ty.starts_with("memref") || ty.contains("!llvm.ptr"));
                 if !is_writes_nothing(clause) {
                     self.atomic_error(
-                        "`writes_only` takes no arguments here: `writes_only()` says that the \
-                         block writes no memory"
+                        "`writes_only` takes `()`, a tensor input `t`, or its elements \
+                         `t[i][j]`"
                             .to_string(),
                         clause.span(),
                     );
@@ -372,11 +467,7 @@ impl crate::hir::TypeChecker<'_> {
             match input {
                 Some((name, sym)) => {
                     named.insert(sym.clone());
-                    if let Some(line) = m
-                        .block_str
-                        .lines()
-                        .find(|l| line_uses(l, PLAIN_ACCESSES, &sym))
-                    {
+                    if let Some(line) = line_using(&m.block_str, PLAIN_ACCESSES, &sym) {
                         self.atomic_error(
                             format!(
                                 "the block says `atomic({name})`, but `{}` reads or writes `{sym}` \
@@ -400,7 +491,7 @@ impl crate::hir::TypeChecker<'_> {
             if !ty.starts_with("memref") || named.contains(sym) || read_only.contains(sym) {
                 continue;
             }
-            if let Some(line) = m.block_str.lines().find(|l| line_uses(l, WRITES, sym)) {
+            if let Some(line) = line_using(&m.block_str, WRITES, sym) {
                 self.atomic_error(
                     format!(
                         "`{}` writes `{sym}`, which the clauses of the block do not name",

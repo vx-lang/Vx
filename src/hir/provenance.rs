@@ -222,7 +222,10 @@ impl<'d> Decls<'d> {
             | Type::Function(..)
             | Type::Simd(..)
             | Type::Const(_) => false,
-            Type::Verified(inner) | Type::Pinned(inner, _) => self.has_drop(inner, depth + 1),
+            Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
+            | Type::Pinned(inner, _) => self.has_drop(inner, depth + 1),
             Type::Struct(name, _) if name.as_ref() == "void" => false,
             Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
                 let name = Self::type_name(ty).map(|n| n.split('<').next().unwrap_or(n));

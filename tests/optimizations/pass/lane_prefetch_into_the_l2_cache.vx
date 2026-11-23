@@ -1,0 +1,120 @@
+//===- lane_prefetch_into_the_l2_cache.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::prefetch(&x, [i, j], [rows, cols])` asks for the part of `x` at `[i, j]` with that
+// shape to come into the L2 cache. It reads no value, so the sums do not change.
+//
+// - On the CPU (`CUDA_VISIBLE_DEVICES=`), a prefetch does nothing. `row_sums` prefetches the row
+//   of each block, and each subgroup of `half_sums` prefetches its half of the row.
+// - On an H100, each row of the part is one `cp.async.bulk.prefetch.L2`. Its address is rounded
+//   down to 16 bytes (the `and` with 0x1ffffffffffffff0, on the offset from the 16-byte aligned
+//   tensor), and its size up to 16 bytes. With `VX_GPU_PDL=1`, the wait comes after the
+//   prefetch: the prefetch loop ends at the wait, and so does the branch of the lanes with no row.
+// - On an A100, the lanes share the 128-byte lines of the part, with one `prefetch.L2` for each
+//   line that starts before the end of its row.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=CPU --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=CPU --implicit-check-not=Error
+// RUN: env -u VX_GPU_CHIP VX_GPU_PDL=1 vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=H100 < %t.ptx
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/a100-40.vx --emit-ptx -o %t.a100.ptx
+// RUN: FileCheck %s --check-prefix=A100 < %t.a100.ptx
+
+// CPU: row 0: 2016
+// CPU-NEXT: row 3: 21216
+// CPU-NEXT: halves of row 1: 3696 4720
+
+// H100-LABEL: .entry half_sums(
+// H100: cp.async.bulk.prefetch.L2.global
+// H100-LABEL: .entry row_sums(
+// H100-NOT: griddepcontrol
+// H100: setp.le.u64 [[NOROW:%p[0-9]+]], {{%rd[0-9]+}}, {{%rd[0-9]+}};
+// H100-NEXT: @[[NOROW]] bra $L__BB[[F:[0-9]+]]_[[WAIT:[0-9]+]];
+// H100-NOT: griddepcontrol
+// H100: sub.s32 [[BYTES:%r[0-9]+]], {{%r[0-9]+}}, {{%r[0-9]+}};
+// H100-NEXT: and.b64 [[OFFSET:%rd[0-9]+]], {{%rd[0-9]+}}, 2305843009213693936;
+// H100-NEXT: add.s64 [[GENERIC:%rd[0-9]+]], [[OFFSET]], {{%rd[0-9]+}};
+// H100-NEXT: cvta.to.global.u64 [[ADDRESS:%rd[0-9]+]], [[GENERIC]];
+// H100-NEXT: and.b32 [[SIZE:%r[0-9]+]], [[BYTES]], -16;
+// H100-NEXT: mov.b64 {{%rd[0-9]+}}, 0;
+// H100-NEXT: cp.async.bulk.prefetch.L2.global {{\[}}[[ADDRESS]]{{\]}}, [[SIZE]];
+// H100-NOT: griddepcontrol
+// H100: @{{%p[0-9]+}} bra $L__BB[[F]]_{{[0-9]+}};
+// H100-NEXT: $L__BB[[F]]_[[WAIT]]:
+// H100-NEXT: // begin inline asm
+// H100-NEXT: griddepcontrol.wait;
+
+// A100-LABEL: .entry half_sums(
+// A100: prefetch.L2
+// A100-LABEL: .entry row_sums(
+// A100: and.b64 [[START:%rd[0-9]+]], {{%rd[0-9]+}}, -128;
+// A100-NEXT: shl.b64 [[K:%rd[0-9]+]], {{%rd[0-9]+}}, 7;
+// A100-NEXT: add.s64 [[LINE:%rd[0-9]+]], [[START]], [[K]];
+// A100-NEXT: setp.ge.u64 [[PAST:%p[0-9]+]], [[LINE]], {{%rd[0-9]+}};
+// A100-NEXT: @[[PAST]] bra
+// A100-NEXT: // begin inline asm
+// A100-NEXT: prefetch.L2 {{\[}}[[LINE]]{{\]}};
+
+pub fn row_sums(y : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>,
+rows : i32, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      lanes::prefetch(&x, [b, 0], [1, cols]);
+      let mut part = unsafe { Tensor<f32, [32], Memory::SMEM>::uninit() };
+      for l in 0..32 across lanes {
+        let mut s : f32 = 0.0;
+        for c in 0..cols / 32 {
+          s = s + x[b][32 * c + l];
+        }
+        part[l] = s;
+      }
+      let total = lanes::sum(&part, 32);
+      y[b] = total;
+    }
+  }
+  return;
+}
+
+pub fn half_sums(y : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>,
+rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [2, 32], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        lanes::prefetch(&x, [b, 32 * w], [1, 32]);
+        for l in 0..32 across lanes(32) {
+          part[w][l] = x[b][32 * w + l];
+        }
+        let half = lanes::sum(&part[w], 32);
+        for l in 0..1 across lanes(32) {
+          y[2 * b + w] = half;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut src = Tensor<f32, [4, 64]>::fill(0.0);
+  for r in 0..4 {
+    for c in 0..64 {
+      src[r][c] = (100 * r + c) as f32;
+    }
+  }
+  let x = transfer(src, Memory::HBM);
+  let mut sums = transfer(Tensor<f32, [4]>::fill(-1.0), Memory::HBM);
+  let mut halves = transfer(Tensor<f32, [8]>::fill(-1.0), Memory::HBM);
+  row_sums(&mut sums, &x, 4, 64);
+  half_sums(&mut halves, &x, 4);
+  let s = transfer(sums, Memory::CPU_DRAM);
+  println!("row 0: {}", s[0]);
+  println!("row 3: {}", s[3]);
+  let h = transfer(halves, Memory::CPU_DRAM);
+  println!("halves of row 1: {} {}", h[2], h[3]);
+  return 0;
+}

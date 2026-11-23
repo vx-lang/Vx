@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>An escape hatch the size of one fact</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="A GPU kernel that scatters to rows from a runtime index tensor cannot be proved race-free statically. Vx's Distinct type internalizes injectivity as a single-fact witness in the signature while keeping affine race checking and borrow rules intact.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="An escape hatch the size of one fact">
+<meta property="og:description" content="Vx's Distinct type internalizes index injectivity into the type system and keeps every other race and borrow check active. C's restrict cannot state that fact, and C's loop pragmas state it only as part of a claim about the whole loop.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-17T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/an-escape-hatch-the-size-of-one-fact.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-an-escape-hatch-the-size-of-one-fact.png">
+<meta property="og:image:alt" content="An escape hatch the size of one fact: Distinct tells the race checker that no two indices are equal.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-an-escape-hatch-the-size-of-one-fact.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>An escape hatch the size of one fact</h1>
+<p class="post-meta">Aditya Kumar &middot; 17 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — A GPU scatter kernel that writes to
+<code>y[idx[b]]</code> cannot be proved race-free by any static analysis, because the elements of
+<code>idx</code> are runtime data. Vx's <code>Distinct&lt;..&gt;</code> type lets the programmer
+supply exactly that one missing invariant—injectivity, <code>idx[a] == idx[b] &rArr; a == b</code>—either
+via a runtime check on the host or an isolated <code>unsafe</code> construction. Unlike C loop
+pragmas (<code>ivdep</code>, <code>assume_safety</code>, <code>omp</code>) that disable
+dependence checking across an entire loop, <code>Distinct</code> narrows the trust boundary to one
+immutable 1D tensor while leaving every other race and borrow check active. C's
+<code>restrict</code> cannot express value-level distinctness at all.</blockquote>
+
+<p class="lede">In a mixture-of-experts layer, a router assigns each token to a subset of experts.
+Each expert runs its compute and scatters results back into the rows of the tokens it owns. That
+scatter is a single line of code, and the Vx race checker refused to compile it.</p>
+
+<h2 id="the-kernel"><a href="#the-kernel">The kernel that did not compile</a></h2>
+
+<p>Here is the scatter kernel in its natural form: block <code>b</code> accumulates row
+<code>b</code> of <code>x</code> into token row <code>idx[b]</code> of <code>y</code>:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">add_to_rows</span>(y : &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?, ?], Memory::HBM&gt;, idx : &amp;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?], Memory::HBM&gt;,
+               x : &amp;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?, ?], Memory::HBM&gt;) -&gt; <span class="t">void</span> {
+  <span class="k">spawn on</span>(Topology::Device) {
+    <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..idx.<span class="f">len</span>() <span class="k">across blocks</span> {
+      <span class="k">for</span> l <span class="k">in</span> <span class="n">0</span>..<span class="n">64</span> <span class="k">across lanes</span>(<span class="n">64</span>) {
+        y[idx[b]][l] += x[b][l];
+      }
+    }
+  }
+  <span class="k">return</span>;
+}</code></pre>
+
+<pre class="diag"><code>Error[E6032] at add_to_rows.vx:5:9: two passes of this block loop may write the same element of `y`: an index of the write must fix `b`</code></pre>
+
+<p>Because the iterations of an <code>across blocks</code> loop execute concurrently in an
+unspecified order, Vx requires a static proof that no two distinct iterations write to the same
+memory location (or that every access to that tensor is atomic). Here, if <code>idx</code> contained row <code>7</code> twice, two blocks would perform a
+non-atomic read-modify-write on <code>y[7][l]</code> simultaneously and lose an update. The
+compiler is right to reject it.</p>
+
+<p>Yet the domain invariant holds: the router sends each token to a given expert at most once, so
+within one expert's dispatch list <code>idx</code> has no duplicates. Earlier, the Qwen MoE
+implementation in Vx (<code>vx-lang/qwen-vx#16</code>) had to work around <code>E6032</code> by
+copying expert IDs back to the host per token chunk, sorting the tokens by expert on the CPU, and padding each
+expert to a multiple of 16 rows so block <code>b</code> wrote contiguous rows <code>16b</code>
+through <code>16b + 15</code>—a linear index that trivially fixes <code>b</code>. That workaround
+imposed a host-device synchronization wait on every layer: 48 waits per chunk on the 30B
+model.</p>
+
+<h2 id="what-the-checker-proves"><a href="#what-the-checker-proves">What a static race checker proves</a></h2>
+
+<p>In polyhedral compilation, loop-level race checking and dependence analysis are formulated over
+<em>iteration domains</em>. Each dynamic instance of a loop nest is an integer tuple constrained by
+a system of linear inequalities:</p>
+
+<pre><code>{ (b, l) : 0 &lt;= b &lt; n, 0 &lt;= l &lt; 64 }</code></pre>
+
+<p>Each array reference defines an access relation mapping iteration points to element coordinates.
+For a direct write <code>y[b][l]</code>, the map is the identity <code>(b, l) &rarr; (b, l)</code>.
+Disjointness across <code>b</code> asks whether the existential query is satisfiable:</p>
+
+<pre><code>exists (b1, l1), (b2, l2) in the domain:  b1 != b2  and  (b1, l1) == (b2, l2)</code></pre>
+
+<p>When loop bounds and subscript expressions are affine, this query lives in Presburger
+arithmetic, which is decidable. Frameworks such as <code>isl</code>, Pluto, LLVM's Polly, and
+MLIR's affine/Presburger library answer queries of this shape to certify parallelization, tiling,
+and loop fusion without altering sequential semantics.</p>
+
+<p>Vx's current frontend checker (<code>src/hir/check/across_proof.rs</code>) proves a structural
+subset of these queries with pattern rules over mixed-radix affine forms, without an ILP solver.
+An access fixes a loop variable <code>b</code> when its subscript terms form a mixed-radix
+representation—for example, <code>b * 64 + l</code> with <code>0 &lt;= l &lt; 64</code>, where each
+coefficient strictly bounds the maximum sum of lower-order terms. An open design
+(<a href="https://github.com/vx-lang/Vx/issues/3561">#3561</a>) plans to replace these pattern
+rules with explicit iteration domains and one query to Z3.</p>
+
+<h2 id="where-it-stops"><a href="#where-it-stops">Where static analysis stops</a></h2>
+
+<p>Affine dependence models are complete within their fragment, and the boundaries of that fragment
+are well known:</p>
+
+<ul>
+<li><strong>Non-linear expressions.</strong> Subscripts and bounds must be affine combinations of loop
+variables and region-uniform constants. Products like <code>i * j</code>, or <code>b * n</code> where
+<code>n</code> is read from memory, fall outside Presburger arithmetic.</li>
+<li><strong>Data-dependent control flow.</strong> A branch condition loaded from memory cannot be
+encoded as an affine constraint on the iteration vector, forcing a sound checker to approximate
+both branches conservatively.</li>
+<li><strong>Aliasing across distinct names.</strong> Polyhedral models typically assume disjoint array
+spaces per symbol. In languages with raw pointers like C, two parameters may alias the same backing
+buffer unless proved disjoint or annotated with <code>restrict</code>.</li>
+<li><strong>Solver complexity.</strong> These existential queries are integer linear programs, and
+integer linear programming is NP-complete, so a production compiler must bound solver time.</li>
+<li><strong>Indirect subscripting (<code>y[idx[b]]</code>).</strong> An access through a runtime array
+introduces a data-dependent mapping from <code>b</code> to row indices. Because the array's values
+do not exist at compile time, any sound static analyzer must assume <code>idx[b1] == idx[b2]</code>
+is possible for <code>b1 != b2</code> and reject parallelization.</li>
+</ul>
+
+<p>No better solver removes that fifth limit, because the invariant is
+<strong>absent</strong> from the kernel's source code.</p>
+
+<p>Compiler research offers two classic approaches. An <em>inspector-executor</em> scans
+<code>idx</code> at runtime immediately before the loop and dispatches to either a parallel or
+sequential executor, paying an <code>O(n)</code> inspection pass on every launch. The <em>sparse
+polyhedral framework</em> models <code>idx</code> as an uninterpreted function symbol and augments
+the dependence test with domain-specific axioms such as injectivity
+(<a href="https://doi.org/10.1109/JPROC.2018.2857721">Strout, Hall, and Olschanowsky</a>,
+Proceedings of the IEEE, 2018), allowing the compiler to simplify dependence predicates or emit
+cheaper inspectors
+(<a href="https://pldi19.sigplan.org/details/pldi-2019-papers/11/Sparse-Computation-Data-Dependence-Simplification-for-Efficient-Compiler-Generated-In">Mohammadi
+et al.</a>, PLDI 2019). The framework still requires a trusted source for those axioms.</p>
+
+<h2 id="distinct"><a href="#distinct">Distinct: reifying injectivity in the type system</a></h2>
+
+<p>Vx reifies that missing axiom as a type constructor in the function signature. Changing one
+parameter type in <code>add_to_rows</code> makes the kernel compile:</p>
+
+<pre><code>idx : &amp;<span class="t">Distinct</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?], Memory::HBM&gt;&gt;</code></pre>
+
+<p>A caller constructs a <code>Distinct</code> value in one of two ways. In safe code,
+<code>Distinct::check</code> sorts a copy of the tensor on the CPU to verify uniqueness, returning
+<code>Option::None</code> if any duplicate exists:</p>
+
+<pre><code><span class="k">match</span> <span class="t">Distinct</span>::<span class="f">check</span>(tokens) {
+  <span class="t">Option</span>&lt;<span class="t">Distinct</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?]&gt;&gt;&gt;::<span class="f">Some</span>(rows) =&gt; {
+    <span class="k">let</span> on_gpu = <span class="f">transfer</span>(rows, Memory::HBM);
+    <span class="f">add_to_rows</span>(&amp;<span class="k">mut</span> y, &amp;on_gpu, &amp;x);
+  }
+  <span class="t">Option</span>&lt;<span class="t">Distinct</span>&lt;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?]&gt;&gt;&gt;::<span class="f">None</span> =&gt; {
+    <span class="f">println!</span>(<span class="n">"a token is in the list twice"</span>);
+  }
+}</code></pre>
+
+<p>This is the inspector-executor pattern lifted into the type system: the type persists the
+verification witness across function boundaries. The program pays for uniqueness checking once at
+construction, and every subsequent kernel launch takes <code>&amp;Distinct&lt;..&gt;</code> at zero
+runtime cost. Alternatively, when an algorithm guarantees uniqueness by construction, the producer
+can wrap the tensor with <code>unsafe { Distinct(tokens) }</code>.</p>
+
+<p>In <code>std::nn</code>, for example, <code>nn_moe_group</code> groups token-expert pairs on the
+GPU via a counting sort and returns the grouped order wrapped in <code>Distinct</code>. The
+single <code>unsafe { Distinct(order) }</code> lives inside the library routine, eliminating both
+the host-side check and any CPU-GPU round-trip in the caller.</p>
+
+<p><strong>How the race checker consumes <code>Distinct</code>.</strong> Semantically,
+<code>Distinct&lt;T&gt;</code> contributes one axiom: <code>idx[a] == idx[b] &rArr; a == b</code>.
+In <code>src/hir/check/across_proof.rs</code>, every read <code>idx[e]</code> of a
+<code>Distinct</code> parameter becomes an affine basis variable keyed by the tensor and the
+affine form of <code>e</code>, so two reads at the same index share one variable. That synthetic variable inherits whichever loop
+variables <code>e</code> fixes (since two iterations can observe the same element value only if
+they evaluate the same index <code>e</code>), and then participates normally in the mixed-radix
+disjointness rules. Consequently, <code>(idx[b] as i64) * 4 + (l as i64)</code> with
+<code>0 &lt;= l &lt; 4</code> fixes <code>b</code> just as <code>b * 4 + l</code> does.</p>
+
+<p>Under the SMT formulation planned in #3561, <code>idx</code> would be modeled as an
+uninterpreted function <code>idx : Int &rarr; Int</code>. Because the race condition only compares
+two concrete iterations <code>b1</code> and <code>b2</code>, the query would add the single ground
+instance <code>idx(b1) == idx(b2) &rArr; b1 == b2</code> with no quantifiers. The resulting query
+stays within <strong>QF_UFLIA</strong> (quantifier-free linear integer arithmetic with
+uninterpreted functions), a decidable fragment that Z3 supports.</p>
+
+<p>Currently, only the HIR race checker reads the <code>Distinct</code> invariant; both code
+generators erase <code>Distinct&lt;T&gt;</code> to its underlying tensor, and MLIR optimization
+passes do not yet exploit it.</p>
+
+<h2 id="bounded"><a href="#bounded">Why the escape hatch stays bounded</a></h2>
+
+<p>Many escape hatches have a coarse blast radius. A C loop pragma such as <code>ivdep</code>
+vouches for every access in the loop, as the section on C shows below. In Vx, an
+<code>unsafe</code> block does not turn off the race check at all. <code>Distinct</code> isolates an unchecked (or dynamically checked) assumption to a single
+predicate over a single value, while every surrounding static check remains enforced:</p>
+
+<ul>
+<li><strong>Move-only, type-restricted construction.</strong> <code>Distinct::check(t)</code>
+validates uniqueness; <code>Distinct(t)</code> bypasses the check and fails with
+<code>E5001</code> outside <code>unsafe</code>. Both accept only 1D integer tensors
+(<code>E3004</code>) and <em>move</em> <code>t</code>, preventing mutation through any prior
+alias.</li>
+<li><strong>Immutable after construction.</strong> Writing to an element of a <code>Distinct</code>
+tensor triggers <code>E4006</code>, preserving injectivity across its entire lifetime.</li>
+<li><strong>Contracted at the function boundary.</strong> Because the invariant sits in the
+parameter type, callers discharge it and callees rely on it without inspecting each other's
+bodies—preserving Vx's rule that signatures are self-contained contracts for parallel
+per-function compilation.</li>
+<li><strong>Parameter-scoped in the race proof.</strong> Today, a read through a
+<code>Distinct</code> local, a struct field, or a parameter that the body binds again does not fix
+<code>b</code>.</li>
+<li><strong>All other accesses remain checked.</strong> Each of the following still fails with
+<code>E6032</code> even when <code>idx</code> is <code>Distinct</code>:</li>
+</ul>
+
+<pre><code>y[idx[b]][<span class="n">0</span>] = y[b][<span class="n">0</span>] + <span class="n">1.0</span>;      <span class="c">// another pass may write row b</span>
+y[idx[b / <span class="n">2</span>]][<span class="n">0</span>] = <span class="n">1.0</span>;                <span class="c">// passes 0 and 1 write row idx[0]</span>
+y[idx[b]][<span class="n">0</span>] = y[idx[b + <span class="n">1</span>]][<span class="n">0</span>];      <span class="c">// pass b + 1 writes that row</span></code></pre>
+
+<p><strong>A subtle interaction with modular arithmetic.</strong> One edge case surprised us: with <code>i64</code> elements in <code>idx</code>, the write
+<code>out[idx[b] * 4 + l]</code> is still rejected with <code>E6032</code>. Injectivity over
+64-bit integers does not imply injectivity modulo 2<sup>64</sup> after multiplication by 4, because
+two distinct <code>i64</code> indices can collide under wrapping. Widening <code>i32</code> elements
+via <code>idx[b] as i64</code> eliminates wraparound in <code>* 4</code>, so the write compiles.
+<code>Distinct</code> witnesses element uniqueness, not overflow freedom.</p>
+
+<p>After <code>Distinct::check</code>, safe code cannot break injectivity. With
+<code>unsafe { Distinct(t) }</code>, a duplicate element violates the soundness precondition and
+produces a data race with undefined results—that is the exact contract of <code>unsafe</code>. The
+engineering payoff is audit locality: the trust boundary is a single line at construction time,
+while the kernel itself contains zero <code>unsafe</code> blocks.</p>
+
+<p>We considered and rejected three alternative designs:</p>
+
+<ul>
+<li><strong>A launch-site precondition (<code>requires idx.distinct()</code>).</strong> Checking
+distinctness at every kernel launch forces an <code>O(n)</code> scan per call and does not flow
+across helper boundaries, whereas <code>Distinct</code> checks once and propagates the witness
+in the type.</li>
+<li><strong>Per-write <code>unsafe</code> blocks that turn off the race check.</strong> This
+would suppress the check at each such write, including any real race there, and it documents
+nothing about <code>idx</code> in the signature.</li>
+<li><strong>Interprocedural inference from callers.</strong> Because <code>idx</code> comes from
+runtime router outputs, caller bodies do not statically possess the invariant anyway—and peeking into
+callers violates modular parallel compilation.</li>
+</ul>
+
+<h2 id="restrict"><a href="#restrict">What C's <code>restrict</code> and loop pragmas cannot express</a></h2>
+
+<p>Since C99, C's primary mechanism for communicating memory-disjointness facts to the compiler has
+been <code>restrict</code>. A <code>restrict</code>-qualified pointer promises that, during its
+lifetime, any object modified through that pointer is accessed exclusively through pointers derived
+from it. That is a statement about <em>pointers</em>—saying that the memory reached through
+<code>y</code>, <code>idx</code>, and <code>x</code> does not overlap. Consider
+the same scatter-add in C with every parameter marked <code>__restrict</code>:</p>
+
+<pre><code><span class="t">void</span> <span class="f">scatter_add</span>(<span class="t">float</span> *<span class="k">__restrict</span> y, <span class="k">const</span> <span class="t">int</span> *<span class="k">__restrict</span> idx,
+                 <span class="k">const</span> <span class="t">float</span> *<span class="k">__restrict</span> x, <span class="t">int</span> n) {
+  <span class="k">for</span> (<span class="t">int</span> i = <span class="n">0</span>; i &lt; n; i++)
+    y[idx[i]] += x[i];
+}</code></pre>
+
+<p>Compiled with <code>clang 22</code> at <code>-O3 -march=x86-64-v4</code>, the loop fails to
+vectorize:</p>
+
+<pre class="diag"><code>scatter.c:4:15: remark: loop not vectorized: unsafe dependent memory operations in loop</code></pre>
+
+<p>Clang's analysis is sound: <code>restrict</code> speaks only about aliasing between distinct
+<code>restrict</code> pointers. It has no vocabulary to constrain the <em>data values</em> read through
+<code>idx</code>, so <code>y[idx[i]]</code> and <code>y[idx[j]]</code>—loaded via the same
+pointer <code>y</code>—must be treated as potentially aliasing.</p>
+
+<p>To force vectorization or parallelization in C/C++, a programmer must turn off dependence checking
+for the entire loop via pragmas such as <code>#pragma clang loop vectorize(assume_safety)</code>,
+<code>#pragma GCC ivdep</code>, <code>#pragma omp simd</code>, or
+<code>#pragma omp parallel for</code>. With <code>assume_safety</code>, Clang emits an 8-wide
+SIMD gather-add-scatter loop. Running both binaries on 16 elements cycling over 4 rows (each row
+appearing 4 times, each iteration adding 1.0) shows the cost of a false loop-wide assertion:</p>
+
+<pre class="diag"><code>plain:          4 4 4 4
+assume_safety:  2 2 2 2</code></pre>
+
+<p>This input breaks the pragma's promise, so the compiler owes no particular answer, and nothing
+warned. The pragmas are compiler and OpenMP extensions outside the C standard. The deeper
+contrast is granularity: loop pragmas assert non-interference globally across every load and store
+in the loop body with zero compiler verification. <code>Distinct</code> asserts a single property of
+a single index tensor, and the compiler verifies every remaining access and arithmetic step against
+it.</p>
+
+<p>Three structural limitations further restrict C's <code>restrict</code>:</p>
+
+<ul>
+<li><strong>Erased from function types.</strong> Under C11 &sect;6.7.6.3, top-level qualifiers
+on parameter types are stripped when checking function-type compatibility, so
+<code>void f(int *restrict p)</code> and <code>void f(int *p)</code> have identical types and
+signatures propagate no contract to callers.</li>
+<li><strong>Absent from standard C++.</strong> <code>__restrict</code> remains a non-standard
+vendor extension.</li>
+<li><strong>Unchecked UB.</strong> Misusing <code>restrict</code> (specified in C11
+&sect;6.7.3.1, notoriously subtle and typically lowered only partially via LLVM's
+<code>noalias</code> parameter attribute) is undefined behavior, with no diagnostic.</li>
+</ul>
+
+<div class="table-scroll">
+<table>
+<tr><th></th><th><code>restrict</code></th><th><code>assume_safety</code>, <code>ivdep</code>, <code>omp</code></th><th><code>Distinct</code></th></tr>
+<tr><td>Logical claim</td><td>Two pointers do not alias</td><td>No two iterations conflict</td><td><code>idx[a] == idx[b] &rArr; a == b</code></td></tr>
+<tr><td>Domain of claim</td><td>Pointer objects</td><td>Every memory access in a loop</td><td>Values in one 1D integer tensor</td></tr>
+<tr><td>Surface location</td><td>Parameter qualifier, erased from function type</td><td>Loop pragma</td><td>Type constructor, preserved in signature</td></tr>
+<tr><td>Static/runtime checks</td><td>None</td><td>None</td><td>Every access checked statically; elements checked by <code>Distinct::check</code> or trusted via <code>unsafe</code></td></tr>
+<tr><td>Expresses injective <code>idx</code></td><td>No</td><td>Only implicitly as part of a loop-wide safety assertion</td><td>Yes</td></tr>
+</table>
+</div>
+
+<h2 id="what-is-left"><a href="#what-is-left">What is left</a></h2>
+
+<ul>
+<li><strong>Performance tuning of <code>nn_moe_group</code>.</strong> The GPU counting sort ran
+correctly on an H200, and its throughput is still being tuned.</li>
+<li><strong>Propagating injectivity to MLIR (#3561).</strong> The plan marks each store through a
+<code>Distinct</code> index with an attribute that Vx's MLIR passes read, so loop tiling and fusion
+can use the same axiom.</li>
+<li><strong>The MoE combine pass.</strong> Combining outputs from multiple experts per token is a
+scatter-add with <em>intentional</em> collisions, which still requires atomic updates or a dedicated
+reduction pass.</li>
+</ul>
+
+<p class="post-foot"><a href="/docs/gpu.html#rows-from-a-tensor-of-indices">Rows from a tensor of
+indices</a> in the Vx book covers the rules and includes a runnable program. Vx is Apache 2.0 with
+the LLVM exception &mdash; <a href="/docs/getting-started.html">install it</a>, or read
+<a href="/docs/gpu.html">Parallel code on a GPU</a> for the rest of the race checker.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

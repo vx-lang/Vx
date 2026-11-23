@@ -4,7 +4,8 @@ A program often needs text, files, the clock or the network. This chapter shows 
 standard library for these jobs: `std::string`, `std::fs`, `std::io`, `std::time` and `std::net`.
 
 Many of these functions take a raw pointer, such as a string literal or a buffer. The compiler
-cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block.
+cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block. The
+network types also have safe methods, which take a `String` and a `Vec<u8>`.
 [Unsafe and FFI](unsafe-and-ffi.md) explains raw pointers.
 
 Each complete program in this chapter is also a test of the compiler. You can find it under
@@ -111,7 +112,35 @@ When `vxc program.vx` runs a program, the program gets no standard input
 
 `std::time` measures time. `Instant::now()` reads a clock that never goes back. `elapsed()` gives
 the time since a reading, as a `Duration`. The difference `later - earlier` of two readings is a
-`Duration` too. `sleep(d)` stops the thread for at least the `Duration` `d`.
+`Duration` too. `sleep(d)` pauses the task for at least the `Duration` `d`. It is a wait, as a
+`recv` is: in the shared runtime, other tasks run on the thread of the task while it sleeps. A
+cancel of the `tasks` block, or the limit of `within`, ends the sleep early
+([Cancellation](tasks.md#cancellation)). `sleep` gives `true` when the whole time passed, and
+`false` when it ended early. `sleep_until(at)` sleeps until the `Instant` `at`.
+
+For periodic work, use an `Interval`. `Interval::new(period)` makes one, and each `tick()` waits
+for the next tick. Tick `k` is due `k` periods after `Interval::new`. So a late tick does not move
+the ticks after it, and the ticks do not drift. `tick()` gives the time when the tick was due, or
+`None` after a cancel:
+
+```rust
+let mut every_second = Interval::new(Duration::from_secs(1));
+loop {
+  match every_second.tick() {
+    Option<Instant>::Some(_due) => {
+      // The periodic work.
+    }
+    Option<Instant>::None => {
+      break;
+    }
+  }
+}
+```
+
+When the work takes longer than a period, the program misses ticks. The next `tick()` then comes
+at once, and `Interval` skips the missed ticks: the ticks after it are due on time again. `Interval` does not
+give the missed ticks in a burst, because a burst gives more work to a program that is already
+late. Go's `time.Ticker` also skips missed ticks.
 
 `Duration` comes from `core::time`. `Duration::from_secs`, `from_millis`, `from_micros` and
 `from_nanos` make one. `as_secs`, `as_millis` and `as_nanos` give its length, and `subsec_millis`
@@ -138,18 +167,29 @@ The program does not print the time that it slept, because that time is differen
 connection. `UdpSocket` sends and receives UDP datagrams, which are single messages. Each address
 is a text of the form `host:port`, for example `"127.0.0.1:7878"`.
 
+The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
+The length of the vector is the size of the buffer. Each type also has methods that take raw
+pointers. Their names end in `_c_str` or `_raw`.
+
+A string literal is a raw pointer to its bytes. `String::from_c_str("..")` makes a `String` from
+it. That call is `unsafe`, because nothing checks that the pointer ends in a NUL byte. A literal
+always does, but Vx has no safe way yet to make a `String` or a `Vec<u8>` from a literal. So the
+examples below use `unsafe` only for that.
+
 Each call that can fail gives a `Result`. Its `Err` holds a `NetError`, which says why the call
 failed:
 
-- `BadAddress`: the address is not `host:port`, or the host has no address.
+- `BadAddress`: the address is not `host:port`, holds a NUL byte, or names a host that has no
+  address.
 - `Refused`: nothing listens at the address.
-- `Reset`: the other end closed the connection.
+- `Reset`: the other end reset the connection, or closed it while a write waited.
+- `Closed`: the other end closed the connection before `read_exact` got all its bytes.
 - `InUse`: another socket uses the address.
 - `Cancelled`: the program cancelled the `tasks` block of the task while the call waited.
 - `Os(code)`: another failure, with the error number of the system.
 
-This program makes two calls. The address of the first has no port. Port 0 in the second asks the
-system for any free port (`book_io_network_errors.vx`):
+The address of the first call in this program has no port. Port 0 in the second asks the system
+for any free port (`book_io_network_errors.vx`):
 
 ```rust
 {{#include ../../../tests/backend/pass/book_io_network_errors.vx:program}}
@@ -165,19 +205,56 @@ bound a UDP socket
 The sockets close at the end of their scope, as a `File` does.
 
 A server calls `accept()` on a `TcpListener`. `accept` waits until a client connects, and gives a
-`TcpStream`. `read` and `write` on the stream work as they do on a `File`. This function sends one
-byte back to the client. `?` gives the `Err` to the caller:
+`TcpStream`. `read(&mut buffer)` reads up to `buffer.len()` bytes and gives the count. 0 means that
+the other end closed the connection. `write(&buffer)` writes bytes and gives the count. This
+function sends one byte back to the client. `?` gives the `Err` to the caller:
 
 ```vx
 fn echo_one_byte(listener : TcpListener) -> Result<u64, NetError> {
   let mut server = listener;
   let mut client = server.accept()?;
-  let mut byte : u8 = 0;
-  let got = unsafe { client.read((&mut byte) as *mut u8, 1) };
-  let _count = got?;
-  return unsafe { client.write((&byte) as *const u8, 1) };
+  let mut buffer = Vec<u8>::new();
+  buffer.push(0u8);
+  let _count = client.read(&mut buffer)?;
+  return client.write(&buffer);
 }
 ```
 
 TCP is a stream of bytes. A message can arrive in parts, so a `read` can give fewer bytes than the
-other end wrote. To get a whole message, read in a loop until you have all of its bytes.
+other end wrote, and a `write` can take fewer bytes than you gave. `read_exact` reads until the
+buffer is full, and `write_all` writes all bytes of the buffer. When the connection closes before
+the buffer is full, `read_exact` gives `Closed`.
+
+`TcpBufReader` and `TcpBufWriter` hold a `TcpStream` and a buffer of 4096 bytes. `read_line(&mut
+line)` on a `TcpBufReader` adds the next line, with its newline, to the end of `line`, and gives the
+count of bytes. 0 means that the connection closed. A line has no length limit, so a client that
+never sends a newline makes `line` grow until the memory runs out. After `read_line`, the reader can
+hold the start of the next data, for example the body after a header. So read it with `read` or
+`read_exact` on the reader, not on its `TcpStream`.
+
+`write` on a `TcpBufWriter` adds bytes to the buffer, and `flush()` sends them in one write. A
+`TcpBufWriter` flushes at the end of its scope too, but then it cannot report an error. In a
+cancelled `tasks` block, that flush gives `Cancelled`, and the bytes are lost. `get_mut()` on either
+type gives the `TcpStream`, for example to write a reply.
+
+In this program, a client task sends two lines, and the server reads them
+(`book_io_network_lines.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_io_network_lines.vx:program}}
+```
+
+It prints:
+
+```text
+line 1 has 11 bytes
+line 2 has 12 bytes
+the client closed the connection
+```
+
+Each wait in `accept`, `read_line` or `flush` is a normal call. On the shared runtime, it parks
+only the task that waits, so the other task runs on the same OS thread
+([Tasks](tasks.md#why-vx-has-no-async)).
+
+A `UdpSocket` has `recv(&mut buffer)`, which waits for one datagram and gives its length, and
+`send_to(&buffer, &addr)`, which sends one datagram.

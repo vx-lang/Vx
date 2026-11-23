@@ -1,0 +1,79 @@
+//===- weights_in_a_struct_reach_the_gpu_with_no_copy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A model on the M4 keeps the weights of each layer in a struct, as views of memory from a
+// `*const` pointer, such as a mapped weight file. Each use transfers a weight to the GPU. The CPU
+// and the GPU share one memory (`CPU_DRAM -> HBM : shared` in m4-uma.vx), and the kernel only reads
+// the weight, so the transfer makes no copy: `forward` gives the kernel the view itself. The
+// caller can change the memory after `forward` returns, so `forward` waits for the GPU before it
+// returns (`vx_plugin_control` 5).
+//
+// The AST code generator copies a transfer whose copy goes to a call, and warns. Both give the
+// same answer. On a computer with no GPU, the kernel runs its CPU copy.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not="copies a tensor" --implicit-check-not="copies the tensor"
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=IR
+// CHECK: tripled: 0 3 297
+//
+// IR-LABEL: llvm.func hidden @forward(
+// IR: %[[FIVE:[0-9]+]] = llvm.mlir.constant(5 : i32) : i32
+// IR-NOT: vx_plugin_alloc_and_transfer
+// IR: llvm.call @triple(
+// IR-NOT: vx_plugin_alloc_and_transfer
+// IR: llvm.call @vx_plugin_control(%[[FIVE]],
+// IR-NEXT: llvm.return
+
+import core::convert;
+
+extern "C" {
+  fn calloc(count : i64, size : i64) -> *mut u32;
+}
+
+struct Layer {
+  codes : &Tensor<u32, [?]>,
+}
+
+fn triple(y : &mut Tensor<u32, [?], Memory::HBM>, w : &Tensor<u32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 31) / 32 across blocks {
+      for l in 0..32 across lanes {
+        let i = b * 32 + l;
+        if i < n {
+          y[i] = w[i] * 3;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn forward(layer : &Layer, y : &mut Tensor<u32, [?], Memory::HBM>, n : i32) -> void {
+  let w = transfer(layer.codes, Memory::HBM);
+  triple(y, &w, n);
+  return;
+}
+
+fn main() -> i32 {
+  let n = 100;
+  // The weights: calloc memory, written once through a `*mut` view, then read through a
+  // `*const` view, as a mapped file would be.
+  let p : *mut u32 = unsafe { calloc(i64::from(n), 4) };
+  let mut fill = unsafe { tensor_view_1d(p, n) };
+  for i in 0..n {
+    fill[i] = i as u32;
+  }
+  let codes = unsafe { tensor_view_1d(p as *const u32, n) };
+  let layer = Layer {
+    codes: &codes
+  };
+  let mut y = transfer(Tensor<u32>([n]), Memory::HBM);
+  forward(&layer, &mut y, n);
+  let r = transfer(y, Memory::CPU_DRAM);
+  println!("tripled: {} {} {}", r[0], r[1], r[99]);
+  return 0;
+}

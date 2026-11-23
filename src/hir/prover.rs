@@ -207,6 +207,13 @@ impl SmtProver {
     ) -> Result<String, String> {
         match expr {
             Expr::Number(n) => {
+                // A float number has no integer value. A comparison with one may not know its
+                // operand type, as in a condition the prover is asked to prove.
+                if n.ty.as_ref().is_some_and(|t| t.is_float())
+                    || (n.value.parse::<u128>().is_err() && n.value.parse::<f64>().is_ok())
+                {
+                    return Err("a float number".to_string());
+                }
                 expect(want, Sort::Int)?;
                 Ok(n.value.to_string())
             }
@@ -293,6 +300,11 @@ impl SmtProver {
                     .clone()
                     .or_else(|| arithmetic_context_type(&r.lhs, type_of))
                     .or_else(|| arithmetic_context_type(&r.rhs, type_of));
+                // The facts are of integers. A float name would become an integer, and the facts
+                // of an integer are wrong for a float: `!(x > y)` does not give `x <= y` for NaN.
+                if side.as_ref().is_some_and(|t| t.is_float()) {
+                    return Err("a comparison of floats".to_string());
+                }
                 expect(want, Sort::Bool)?;
                 let equality = matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq);
                 // The sides of `==` have one sort, which either side can tell. An order needs numbers.
@@ -804,6 +816,16 @@ pub fn substitute_names(
             let mut c = c.clone();
             c.expr = sub(&c.expr);
             Expr::AsCast(c)
+        }
+        Expr::FunctionCall(c) => {
+            let mut c = c.clone();
+            c.args = c.args.iter().map(|a| *sub(a)).collect();
+            Expr::FunctionCall(c)
+        }
+        Expr::Borrow(b) => {
+            let mut b = b.clone();
+            b.expr = sub(&b.expr);
+            Expr::Borrow(b)
         }
         _ => e.clone(),
     }

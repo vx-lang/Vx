@@ -8,7 +8,11 @@ image. This walks it the way `tests/integration_test/device_image_test.rs`
 does and writes the section to a file.
 
 Usage:
-    vx_spirv_extract.py <ir.ll> <kernel_name> <out.spv>
+    vx_spirv_extract.py <ir.ll> <kernel_name> <out.spv> [payload_out]
+
+`out.spv` receives the image section. `payload_out`, when given, receives the
+whole payload -- the bytes a dispatch library is handed -- so a caller can run
+the image through the library instead of loading it itself.
 
 Prints the payload's text entries and the image's size, so the caller can
 check that the payload really says `format=spirv` and see what it loaded.
@@ -96,7 +100,7 @@ def entries_of(payload):
 
 
 def main(argv):
-    if len(argv) != 4:
+    if len(argv) not in (4, 5):
         raise SystemExit(__doc__)
     ir_path, kernel, out_path = argv[1], argv[2], argv[3]
     with open(ir_path, "r") as f:
@@ -110,6 +114,10 @@ def main(argv):
     print("  image: %d bytes -> %s" % (len(section), out_path))
     if section[:4] != bytes((0x03, 0x02, 0x23, 0x07)):
         raise SystemExit("the section does not start with SPIR-V's magic number")
+    if len(argv) == 5:
+        with open(argv[4], "wb") as f:
+            f.write(payload)
+        print("  payload: %d bytes -> %s" % (len(payload), argv[4]))
 
 
 if __name__ == "__main__":

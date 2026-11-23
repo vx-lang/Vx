@@ -1,0 +1,45 @@
+//===- lane_own_tensors_borrowed_as_mut_in_across_loops.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each pass of the lane loop declares its own tensor `part` in registers, and an `mlir!` block
+// writes it through a `&mut` borrow. No other pass can reach `part`, so the race check accepts the
+// borrow. Each of the 128 passes writes its own element of `out`.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: sum 16256
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<f32, [128]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let n = b * 32 + l;
+        let mut part = unsafe { Tensor<f32, [2], Memory::REG>::uninit() };
+        part[1] = 0.0;
+        let p = &mut part;
+        let x : f32 = n as f32;
+        let _done : i32 = unsafe { mlir!( inputs : (%p = p : memref<2xf32>, %x = x : f32), returns : i32,
+          dialects : ["memref", "arith"], ensures : [writes_only(p)]) {
+            %c0 = arith.constant 0 : index
+            %two = arith.constant 2.0 : f32
+            %y = arith.mulf %x, %two : f32
+            memref.store %y, %p[%c0] : memref<2xf32>
+            %z = arith.constant 0 : i32
+            macro.yield %z : i32
+          } };
+        out[n] = part[0] + part[1];
+      }
+    }
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  let mut sum = 0.0;
+  for i in 0..128 {
+    sum = sum + o[i];
+  }
+  println!("sum {}", sum);
+  return 0;
+}

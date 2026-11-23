@@ -1,0 +1,45 @@
+//===- a_return_in_the_last_value_of_a_task_that_runs_in_place.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Nothing uses the value of the `tasks` block in `in_place`, so the AST code generator runs its
+// task at the `spawn`, in place. A `return` or a `?` in the last value of the task leaves the
+// task, not the function.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}in_place 1 14 0{{$}}
+
+import core::result;
+
+fn half(x : i32) -> Result<i32, i32> {
+  if x % 2 == 0 {
+    return Result<i32, i32>::Ok(x / 2);
+  }
+  return Result<i32, i32>::Err(x);
+}
+
+fn in_place(x : i32, leave : bool) -> i32 {
+  let mut seen = 0;
+  tasks {
+    let h = spawn {
+      if leave {
+        return Result<i32, i32>::Ok(1);
+      } else {
+        Result<i32, i32>::Ok(half(x)? + 10)
+      }
+    };
+    let v = h.join();
+    seen = v;
+    Result<i32, i32>::Ok(v)
+  };
+  return seen;
+}
+
+fn main() -> i32 {
+  println!("in_place {} {} {}", in_place(8, true), in_place(8, false), in_place(7, false));
+  return 0;
+}

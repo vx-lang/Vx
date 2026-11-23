@@ -4,7 +4,6 @@
 //
 // Empty fields share the pointer's offset. Matching must read the pointer field.
 // Another enum holds two empty values and a number at the same offset. Its number survives returns.
-// REQUIRES: flat-codegen
 // EXPECT: -2 11 42 31 -13 47
 
 struct First {}

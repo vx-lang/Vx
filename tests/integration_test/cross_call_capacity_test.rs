@@ -31,7 +31,7 @@ Topology Dev {
 "#;
 
 fn compile(name: &str, body: &str) -> Result<(), String> {
-    let dir = std::env::temp_dir().join("vx_cross_call_capacity");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx_cross_call_capacity");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     fs::write(&path, format!("{HEADER}{body}")).unwrap();

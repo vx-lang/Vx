@@ -1,0 +1,63 @@
+//===- placed_kernel_copies_into_a_shared_tile_on_explicit_memory.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two placed regions use tensors in `managed: explicit` memory. The second
+// region copies a tensor into a shared tile with a `transfer`. A SPIR-V image
+// cannot hold that copy yet, and the host cannot read that memory either, so
+// the program does not compile. There is one error, for the second region. The
+// first region makes no copy, so it gets no error.
+//
+// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s # flat-codegen
+// CHECK-NOT: cannot become
+// CHECK: this region is placed on `Topology::Dev`, but the compiler cannot emit a device kernel for it and its operands are in 'DEV_HBM', declared `managed: explicit`
+// CHECK-NOT: this region is placed on
+// CHECK-NOT: cannot become
+// CHECK-NOT: will run on the host instead
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit, scope: device
+}
+Memory SMEM {
+  within: Memory::DEV_HBM, capacity: 64 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::SMEM
+}
+
+fn main() -> i32 {
+  let mut h = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut o_h = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    h[i] = i as f32;
+    o_h[i] = 0.0;
+  }
+  let d = transfer(h, Memory::DEV_HBM);
+  let mut o = transfer(o_h, Memory::DEV_HBM);
+
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      o[i] = d[i] + 1.0;
+    }
+  }
+
+  spawn on(Topology::Dev) {
+    let tile = transfer(d, Memory::SMEM);
+    for i in 0..4 {
+      o[i] = tile[0] + 1.0;
+    }
+  }
+
+  let back = transfer(o, Memory::CPU_DRAM);
+  print(back);
+  return 0;
+}

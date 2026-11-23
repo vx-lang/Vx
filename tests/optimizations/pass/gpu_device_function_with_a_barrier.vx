@@ -13,11 +13,11 @@
 // CHECK: image={{.*}}.visible .entry vx_npu_kernel_0({{.*}}bar.sync
 
 fn thread_id() on Topology::Device -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
-    %t = gpu.thread_id x
-    %r = "arith.index_cast"(%t) : (index) -> i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+      %t = gpu.thread_id x
+      %r = "arith.index_cast"(%t) : (index) -> i32
+      macro.yield %r : i32
+    } };
 }
 
 fn sync() on Topology::Device -> void {

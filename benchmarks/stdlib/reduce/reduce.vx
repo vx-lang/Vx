@@ -14,7 +14,7 @@ import std::time;
 
 // The sum of the first `m` elements, 64 at a time. `m` must be a multiple of 64.
 fn vector_sum(a : &Tensor<f32, [?]>, m : i32) -> f32 {
-  return mlir!( inputs : (%a = a : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "memref", "scf", "vector"]) {
+  return unsafe { mlir!( inputs : (%a = a : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "memref", "scf", "vector"]) {
     %c0 = arith.constant 0 : index
     %c16 = arith.constant 16 : index
     %c32 = arith.constant 32 : index
@@ -41,13 +41,13 @@ fn vector_sum(a : &Tensor<f32, [?]>, m : i32) -> f32 {
     %p = arith.addf %p0, %p1 : vector<16xf32>
     %t = vector.reduction <add>, %p fastmath<reassoc> : vector<16xf32> into f32
     macro.yield %t : f32
-  };
+  } };
 }
 
 // The dot product of the first `m` elements, 64 at a time, with a fused multiply-add per
 // lane. `m` must be a multiple of 64.
 fn vector_dot(a : &Tensor<f32, [?]>, b : &Tensor<f32, [?]>, m : i32) -> f32 {
-  return mlir!( inputs : (%a = a : memref<?xf32>, %b = b : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "memref", "scf", "vector"]) {
+  return unsafe { mlir!( inputs : (%a = a : memref<?xf32>, %b = b : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "memref", "scf", "vector"]) {
     %c0 = arith.constant 0 : index
     %c16 = arith.constant 16 : index
     %c32 = arith.constant 32 : index
@@ -78,13 +78,13 @@ fn vector_dot(a : &Tensor<f32, [?]>, b : &Tensor<f32, [?]>, m : i32) -> f32 {
     %p = arith.addf %p0, %p1 : vector<16xf32>
     %t = vector.reduction <add>, %p fastmath<reassoc> : vector<16xf32> into f32
     macro.yield %t : f32
-  };
+  } };
 }
 
 // The sum of the first `m` elements as one `linalg.generic` reduction, lowered by the compiler.
 // Each addition waits for the one before it, as in `loop_sum`.
 fn linalg_sum(a : &Tensor<f32, [?]>, m : i32) -> f32 {
-  return mlir!( inputs : (%a = a : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "linalg", "memref"]) {
+  return unsafe { mlir!( inputs : (%a = a : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "linalg", "memref"]) {
     %n = arith.index_cast %m : i32 to index
     %v = memref.subview %a[0] [%n] [1] : memref<?xf32> to memref<?xf32, strided<[1]>>
     %acc = memref.alloca() : memref<f32>
@@ -99,13 +99,13 @@ fn linalg_sum(a : &Tensor<f32, [?]>, m : i32) -> f32 {
     }
     %t = memref.load %acc[] : memref<f32>
     macro.yield %t : f32
-  };
+  } };
 }
 
 // The sum of the first `m` elements as one `linalg.generic` reduction, lowered by the compiler.
 // `fastmath<reassoc>` lets the additions happen in any order, so the compiler may vectorize.
 fn linalg_sum_reassoc(a : &Tensor<f32, [?]>, m : i32) -> f32 {
-  return mlir!( inputs : (%a = a : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "linalg", "memref"]) {
+  return unsafe { mlir!( inputs : (%a = a : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "linalg", "memref"]) {
     %n = arith.index_cast %m : i32 to index
     %v = memref.subview %a[0] [%n] [1] : memref<?xf32> to memref<?xf32, strided<[1]>>
     %acc = memref.alloca() : memref<f32>
@@ -120,12 +120,12 @@ fn linalg_sum_reassoc(a : &Tensor<f32, [?]>, m : i32) -> f32 {
     }
     %t = memref.load %acc[] : memref<f32>
     macro.yield %t : f32
-  };
+  } };
 }
 
 // The dot product of the first `m` elements as one `linalg.generic` reduction.
 fn linalg_dot(a : &Tensor<f32, [?]>, b : &Tensor<f32, [?]>, m : i32) -> f32 {
-  return mlir!( inputs : (%a = a : memref<?xf32>, %b = b : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "linalg", "memref"]) {
+  return unsafe { mlir!( inputs : (%a = a : memref<?xf32>, %b = b : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "linalg", "memref"]) {
     %n = arith.index_cast %m : i32 to index
     %va = memref.subview %a[0] [%n] [1] : memref<?xf32> to memref<?xf32, strided<[1]>>
     %vb = memref.subview %b[0] [%n] [1] : memref<?xf32> to memref<?xf32, strided<[1]>>
@@ -142,12 +142,12 @@ fn linalg_dot(a : &Tensor<f32, [?]>, b : &Tensor<f32, [?]>, m : i32) -> f32 {
     }
     %t = memref.load %acc[] : memref<f32>
     macro.yield %t : f32
-  };
+  } };
 }
 
 // The dot product of the first `m` elements as one `linalg.generic` reduction.
 fn linalg_dot_reassoc(a : &Tensor<f32, [?]>, b : &Tensor<f32, [?]>, m : i32) -> f32 {
-  return mlir!( inputs : (%a = a : memref<?xf32>, %b = b : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "linalg", "memref"]) {
+  return unsafe { mlir!( inputs : (%a = a : memref<?xf32>, %b = b : memref<?xf32>, %m = m : i32), returns : f32, dialects : ["arith", "linalg", "memref"]) {
     %n = arith.index_cast %m : i32 to index
     %va = memref.subview %a[0] [%n] [1] : memref<?xf32> to memref<?xf32, strided<[1]>>
     %vb = memref.subview %b[0] [%n] [1] : memref<?xf32> to memref<?xf32, strided<[1]>>
@@ -164,7 +164,7 @@ fn linalg_dot_reassoc(a : &Tensor<f32, [?]>, b : &Tensor<f32, [?]>, m : i32) -> 
     }
     %t = memref.load %acc[] : memref<f32>
     macro.yield %t : f32
-  };
+  } };
 }
 
 fn loop_sum(a : &Tensor<f32, [?]>, m : i32) -> f32 {

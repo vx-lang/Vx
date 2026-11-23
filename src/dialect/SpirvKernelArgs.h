@@ -27,6 +27,21 @@ namespace vx {
 /// used to run stopped compiling.
 std::optional<std::string> spirvRefusalOf(Operation *op);
 
+/// Inline each function that a kernel in `gpuModule` calls, and erase the
+/// functions that no call uses any more. The flattening below rewrites the
+/// tensors of a kernel, not those of a function it calls, so this runs first.
+/// A call that stays, such as one to an OpenCL built-in, is left as it is.
+LogicalResult inlineSpirvKernelCalls(gpu::GPUModuleOp gpuModule,
+                                     std::string &error);
+
+/// Give each `index` block argument of a kernel in `gpuModule` the type `i64`,
+/// with a cast at each branch to the block and at its start. The gpu ->
+/// llvm-spv conversion turns `index` into `i64` in the ops it rewrites, but not
+/// in a block argument. A loop of a function that a kernel calls counts in
+/// `index`, and its loop becomes such an argument once the image inlines the
+/// call.
+void widenIndexBlockArguments(gpu::GPUModuleOp gpuModule);
+
 /// Rewrite every kernel in `gpuModule` to the flat argument list the launch
 /// ABI already passes, so the SPIR-V pipeline can compile it.
 ///

@@ -4,7 +4,9 @@
 // operations. LLVM has no type for these, so an `arith.extf` or `arith.truncf`
 // on one cannot lower as it is. Upstream `arith-expand` covers f4E2M1FN, but
 // it rounds a tie away from zero. Here every type rounds a tie to even, and a
-// value too large for the type gives its largest finite value.
+// value too large for the type gives its largest finite value. f8E8M0FNU holds
+// only powers of two. A conversion to it rounds down, and gives NaN for a
+// value below 0.
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
@@ -130,6 +132,54 @@ struct Expander {
         loc, negative, b.create<arith::NegFOp>(loc, value), value);
   }
 
+  // The f32 that an f8E8M0FNU `x` holds: 2^(e - 127), or NaN for 0xFF. Code 0
+  // is 2^-127, an f32 subnormal.
+  Value decodeE8M0(Value x) {
+    Value bits = b.create<arith::ExtUIOp>(
+        loc, like(b.getI32Type()),
+        b.create<arith::BitcastOp>(loc, like(b.getI8Type()), x));
+    Value value = b.create<arith::ShLIOp>(loc, bits, intConst(32, 23));
+    Value zero = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, bits,
+                                         intConst(32, 0));
+    value =
+        b.create<arith::SelectOp>(loc, zero, intConst(32, 0x00400000), value);
+    Value nan = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, bits,
+                                        intConst(32, 0xFF));
+    value =
+        b.create<arith::SelectOp>(loc, nan, intConst(32, 0x7FC00000), value);
+    return b.create<arith::BitcastOp>(loc, like(b.getF32Type()), value);
+  }
+
+  // `x`, an f32 or an f64, as an f8E8M0FNU: the largest power of two that is
+  // at most `x`, from 2^-127 to 2^127. NaN and a value below 0 give NaN.
+  Value encodeE8M0(Value x, Type narrow) {
+    auto src = cast<FloatType>(getElementTypeOrSelf(x.getType()));
+    unsigned w = src.getWidth();
+    unsigned m = src.getFPMantissaWidth() - 1;
+    int64_t bias = (int64_t(1) << (w - m - 2)) - 1;
+    Value bits = b.create<arith::BitcastOp>(loc, like(b.getIntegerType(w)), x);
+    uint64_t signBit = uint64_t(1) << (w - 1);
+    Value abs = b.create<arith::AndIOp>(loc, bits, intConst(w, signBit - 1));
+    // The biased exponent of `x` is that of its power of two below.
+    Value code = b.create<arith::AddIOp>(
+        loc, b.create<arith::ShRUIOp>(loc, abs, intConst(w, m)),
+        intConst(w, uint64_t(127 - bias)));
+    code = b.create<arith::MaxSIOp>(loc, code, intConst(w, 0));
+    code = b.create<arith::MinSIOp>(loc, code, intConst(w, 254));
+    Value srcInf = intConst(w, ((uint64_t(1) << (w - m - 1)) - 1) << m);
+    Value isNan =
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ugt, abs, srcInf);
+    Value negative = b.create<arith::AndIOp>(
+        loc, b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne, bits, abs),
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne, abs,
+                                intConst(w, 0)));
+    code = b.create<arith::SelectOp>(
+        loc, b.create<arith::OrIOp>(loc, isNan, negative), intConst(w, 0xFF),
+        code);
+    code = b.create<arith::TruncIOp>(loc, like(b.getI8Type()), code);
+    return b.create<arith::BitcastOp>(loc, like(narrow), code);
+  }
+
   // The narrow value nearest to `x`, an f32 or an f64.
   Value encode(Value x, const Format &f, Type narrow) {
     auto src = cast<FloatType>(getElementTypeOrSelf(x.getType()));
@@ -194,6 +244,8 @@ struct Expander {
       return x;
     if (auto f = narrowFormat(et))
       return decode(x, *f);
+    if (isa<Float8E8M0FNUType>(et))
+      return decodeE8M0(x);
     return b.create<arith::ExtFOp>(loc, like(b.getF32Type()), x);
   }
 
@@ -202,6 +254,8 @@ struct Expander {
     Type et = getElementTypeOrSelf(dst);
     if (auto f = narrowFormat(et))
       return encode(v, *f, et);
+    if (isa<Float8E8M0FNUType>(et))
+      return encodeE8M0(v, et);
     if (et.isF32())
       return v;
     if (cast<FloatType>(et).getWidth() > 32)
@@ -211,7 +265,8 @@ struct Expander {
 };
 
 bool isNarrow(Type t) {
-  return narrowFormat(getElementTypeOrSelf(t)).has_value();
+  Type et = getElementTypeOrSelf(t);
+  return narrowFormat(et).has_value() || isa<Float8E8M0FNUType>(et);
 }
 
 struct ExpandNarrowFloatsPass
@@ -223,8 +278,8 @@ struct ExpandNarrowFloatsPass
   }
 
   llvm::StringRef getDescription() const override {
-    return "Writes conversions to and from f8E4M3FN, f8E5M2 and f4E2M1FN as "
-           "integer operations";
+    return "Writes conversions to and from f8E4M3FN, f8E5M2, f4E2M1FN and "
+           "f8E8M0FNU as integer operations";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -257,8 +312,12 @@ struct ExpandNarrowFloatsPass
           out = ex.fromF32(wide, outTy);
       } else if (isa<arith::SIToFPOp, arith::UIToFPOp>(op)) {
         // Every narrow format's largest value is far below 2^24, so an integer
-        // that f32 rounds is clamped anyway, and the result rounds once.
-        Type f32 = ex.like(b.getF32Type());
+        // that f32 rounds is clamped anyway, and the result rounds once. An
+        // f8E8M0FNU goes up to 2^127, so its integer goes through f64, which
+        // holds every integer of up to 53 bits.
+        Type f32 = ex.like(isa<Float8E8M0FNUType>(getElementTypeOrSelf(outTy))
+                               ? b.getF64Type()
+                               : b.getF32Type());
         Value v =
             isa<arith::SIToFPOp>(op)
                 ? b.create<arith::SIToFPOp>(op->getLoc(), f32, in).getResult()
@@ -281,6 +340,17 @@ struct ExpandNarrowFloatsPass
 
 namespace mlir {
 namespace vx {
+/// `x`, a float scalar of at most 32 bits, as an f32. A narrow value is
+/// decoded with integer operations, as this pass rewrites an `arith.extf` of
+/// one.
+Value floatToF32(OpBuilder &b, Location loc, Value x) {
+  Type t = x.getType();
+  assert(!t.isF64() && "an f64 does not fit in an f32");
+  if (t.isF32())
+    return x;
+  return Expander{b, loc, t}.widenForEncode(x);
+}
+
 std::unique_ptr<Pass> createExpandNarrowFloatsPass() {
   return std::make_unique<ExpandNarrowFloatsPass>();
 }

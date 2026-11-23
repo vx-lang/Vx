@@ -275,7 +275,13 @@ sizes 4 8
 `clamp` has two rules, one for three values and one for two. Its first rule calls `clamp!` again.
 `constant` writes a function with the name that the call gives. `size_of` writes an `impl` for
 the type that the call gives. The standard library uses this kind of macro to write the same `impl`
-for many types: `core::clone` writes `Clone` for each number type with `stamp_clone!`.
+for many types: `core::clone` writes `Clone` for each number type with `stamp_clone!`. An `impl`
+that a macro writes belongs to the file of the call, so `size_of` writes impls only for the structs
+of its file ([Where an impl goes](generics.md#where-an-impl-goes)).
+
+A file can call the macros that it declares and the macros of the files that it imports. When a
+call can mean two macros with the same name, it is an error. Give each macro its own name. An error
+in the code that a macro of another file writes points at the macro call.
 
 The patterns have limits today:
 

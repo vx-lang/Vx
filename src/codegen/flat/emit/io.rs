@@ -60,6 +60,7 @@ impl FnEmit<'_> {
                 ElementType::U16 => Some("print_u16"),
                 ElementType::U32 => Some("print_u32"),
                 ElementType::U64 => Some("print_u64"),
+                ElementType::U128 => Some("print_u128"),
                 _ => None,
             };
             // The narrow *signed* scalars have none, so they widen to one that does -- the same
@@ -73,7 +74,7 @@ impl FnEmit<'_> {
                     self.body += &format!("  {n} = func.call @print_bool({w}) : (i32) -> i32\n");
                     return Ok(());
                 }
-                "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16" => {
+                "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16" => {
                     let w = format!("%pw{idx}");
                     self.body += &format!("  {w} = arith.extf {arg} : {et} to f32\n");
                     (w, "f32")
@@ -92,6 +93,7 @@ impl FnEmit<'_> {
                     "f64" => "print_f64",
                     "i32" => "print_i32",
                     "i64" => "print_i64",
+                    "i128" => "print_i128",
                     _ => {
                         return Err(Decline::TypeNotModelled {
                             what: "a print of an element type with no helper",
@@ -100,6 +102,21 @@ impl FnEmit<'_> {
                 },
             };
             let n = format!("%v{idx}");
+            if et == "i128" {
+                // The helper takes the low and the high 64 bits, as two `i64`s.
+                let (lo, sh, hi) = (
+                    format!("%plo{idx}"),
+                    format!("%psh{idx}"),
+                    format!("%phi{idx}"),
+                );
+                self.body += &format!("  {lo} = arith.trunci {arg} : i128 to i64\n");
+                self.body += &format!("  %p64_{idx} = arith.constant 64 : i128\n");
+                self.body += &format!("  {sh} = arith.shrui {arg}, %p64_{idx} : i128\n");
+                self.body += &format!("  {hi} = arith.trunci {sh} : i128 to i64\n");
+                self.body +=
+                    &format!("  {n} = func.call @{helper}({lo}, {hi}) : (i64, i64) -> i32\n");
+                return Ok(());
+            }
             self.body += &format!("  {n} = func.call @{helper}({arg}) : ({et}) -> i32\n");
         } else if self
             .ptr_of

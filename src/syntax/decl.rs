@@ -186,6 +186,8 @@ pub struct ExternDecl {
     pub ensures: Vec<crate::syntax::Expr>,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.
     pub span: Span,
+    /// The file of the declaration, set as for the other items.
+    pub file: Option<Symbol>,
     /// The `///` lines above the declaration. Six library modules are nothing but an extern
     /// block, so without this they had no way to say what their functions do.
     pub doc_comment: Option<String>,
@@ -241,6 +243,8 @@ pub struct ImplBlock {
     /// `unsafe impl`: the programmer states a fact that the compiler cannot check. Only
     /// `Send` and `Sync` take it.
     pub is_unsafe: bool,
+    /// `extern impl`: an impl in a file that does not declare its type.
+    pub is_extern: bool,
     /// At the `impl` keyword.
     pub place: DeclPlace,
 }
@@ -255,6 +259,7 @@ impl ImplBlock {
             assoc_bindings: self.assoc_bindings.clone(),
             copied_defaults: self.copied_defaults.clone(),
             is_unsafe: self.is_unsafe,
+            is_extern: self.is_extern,
             place: self.place.clone(),
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env
@@ -502,6 +507,13 @@ pub struct Program {
     /// carried; nothing consumes them yet — the checks in docs/custom_transfer_contract.md land
     /// against this field.
     pub transfer_impls: Vec<TransferImplDecl>,
+    /// For each macro expansion in this module, by its id less 1: where to report the code that
+    /// it wrote. It is the macro call when another module declares the macro, because the
+    /// places in that code are in the other file. `None` keeps the places in the code.
+    pub macro_call_sites: Vec<Option<crate::syntax::Span>>,
+    /// The package of this module, when `vxc --no-trusted-code` names it. Trusted code in the
+    /// module is then an error.
+    pub no_trusted_code: Option<Symbol>,
 }
 
 pub type VxModule = Program;
@@ -534,6 +546,9 @@ impl Program {
         let places = places.chain(self.transfer_impls.iter_mut().map(|t| &mut t.place));
         for place in places {
             place.file = file.clone();
+        }
+        for ext in &mut self.externs {
+            ext.file = file.clone();
         }
     }
 
@@ -579,6 +594,8 @@ impl Program {
                     doc_comment: t.doc_comment.clone(),
                 })
                 .collect(),
+            macro_call_sites: self.macro_call_sites.clone(),
+            no_trusted_code: self.no_trusted_code.clone(),
         }
     }
 }

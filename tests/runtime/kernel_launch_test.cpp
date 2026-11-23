@@ -32,6 +32,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -336,6 +339,44 @@ void launch_shapes() {
         "a launch value that is not an i32 is refused");
 }
 
+/// The trip of a grid-strided loop, from `launch=`: a number, `$j` for a loop
+/// whose bounds are known only at run time, or `B,T` for a two-level region.
+void launch_trips() {
+  int32_t rows = 9000;
+  int64_t wide = 9000;
+  float data[4] = {};
+  void *ptr = data;
+  /* One kernel argument, then the launch values. */
+  void *args[3] = {&ptr, &rows, &wide};
+  const int32_t tags[3] = {0, 4, 5};
+  long threads = -7;
+
+  const char number[] = "k\0launch=64\0";
+  check(vx_launch_trip(number, sizeof number, args, tags, 1, &threads) == 64 &&
+            threads == 0,
+        "launch=64 is a trip of 64 with no thread count");
+
+  const char value[] = "k\0launch=$0\0";
+  check(vx_launch_trip(value, sizeof value, args, tags, 1, &threads) == 9000 &&
+            threads == 0,
+        "launch=$0 is launch value 0, the first value after the arguments");
+
+  const char two_level[] = "k\0launch=8,128\0";
+  check(vx_launch_trip(two_level, sizeof two_level, args, tags, 1, &threads) ==
+                8 &&
+            threads == 128,
+        "launch=8,128 is 8 blocks of 128 threads");
+
+  const char none[] = "k\0abi=1\0";
+  check(vx_launch_trip(none, sizeof none, args, tags, 1, &threads) == 0 &&
+            threads == 0,
+        "a payload without launch= has a trip of 0");
+
+  const char not_i32[] = "k\0launch=$1\0";
+  check(vx_launch_trip(not_i32, sizeof not_i32, args, tags, 1, &threads) == -1,
+        "a launch value that is not an i32 gives -1");
+}
+
 /* With a stream set by the host program, a wait covers that stream, and a
    graph recording refuses a wait. Memory from cudaMallocAsync is freed in
    stream order, so a recording can hold its free. */
@@ -360,6 +401,228 @@ void caller_streams() {
         "a recording refuses a free that needs a wait");
 }
 
+/// The words of a NUL-terminated SPIR-V string literal, padded to a whole word,
+/// as `OpName` and `OpEntryPoint` both spell their name.
+static std::vector<uint32_t> name_literal(const std::string &text_in) {
+  std::string text = text_in;
+  text.push_back('\0');
+  while (text.size() % 4 != 0) {
+    text.push_back('\0');
+  }
+  std::vector<uint32_t> words;
+  for (size_t i = 0; i < text.size(); i += 4) {
+    words.push_back((uint32_t)(unsigned char)text[i] |
+                    ((uint32_t)(unsigned char)text[i + 1] << 8) |
+                    ((uint32_t)(unsigned char)text[i + 2] << 16) |
+                    ((uint32_t)(unsigned char)text[i + 3] << 24));
+  }
+  return words;
+}
+
+/// A SPIR-V module built word by word: the header, one `OpEntryPoint`, one
+/// `OpFunction` with `params` `OpFunctionParameter`s, and the end.
+///
+/// Written out here rather than read from a compiled `.spv`, so the test does
+/// not need the compiler: what is under test is the walk over the instruction
+/// stream, and a module whose parameter count is known by construction is a
+/// sharper statement about it than one whose count a comment claims.
+///
+/// `names` chooses which of the two shapes a real module comes in. `OpName` is
+/// the debug name, and with it the module looks like what the compiler emits.
+/// Without it the module is what `spirv-opt --strip-debug` leaves: entry points
+/// and no names -- which is why the reader must not depend on the names.
+///
+/// `named_variable` adds an `OpName` for a different id carrying the same text,
+/// which a real module can hold: a local variable may be called anything.
+std::vector<uint32_t> make_spirv(const std::string &name, uint32_t params,
+                                 uint32_t function_id = 7, bool names = true,
+                                 bool named_variable = false) {
+  std::vector<uint32_t> w;
+  // Magic, version, generator, bound, schema.
+  w.insert(w.end(),
+           {0x07230203u, 0x00010000u, 0u, function_id + params + 8, 0u});
+
+  auto instruction = [&w](uint32_t opcode,
+                          std::initializer_list<uint32_t> words) {
+    w.push_back(((uint32_t)(words.size() + 1) << 16) | opcode);
+    w.insert(w.end(), words);
+  };
+  auto instruction_with_literal = [&w](uint32_t opcode,
+                                       std::initializer_list<uint32_t> words,
+                                       const std::vector<uint32_t> &literal) {
+    w.push_back(((uint32_t)(words.size() + literal.size() + 1) << 16) | opcode);
+    w.insert(w.end(), words);
+    w.insert(w.end(), literal.begin(), literal.end());
+  };
+
+  /* OpEntryPoint: execution model GLCompute, the function it enters, the name
+     the driver creates a kernel from, then the interface (none here). */
+  instruction_with_literal(15u /* OpEntryPoint */,
+                           {5u /* GLCompute */, function_id},
+                           name_literal(name));
+
+  /* Debug names, when this module carries them. OpName names any id, so a
+     variable can carry the kernel's own name. */
+  if (names) {
+    instruction_with_literal(5u /* OpName */, {function_id},
+                             name_literal(name));
+  }
+  if (named_variable) {
+    instruction_with_literal(5u /* OpName */, {function_id + params + 5},
+                             name_literal(name));
+  }
+
+  // OpFunction: result type, result id, control, function type.
+  instruction(54u /* OpFunction */, {1u, function_id, 0u, 2u});
+  for (uint32_t i = 0; i < params; ++i) {
+    instruction(55u /* OpFunctionParameter */, {1u, function_id + 1 + i});
+  }
+  instruction(56u /* OpFunctionEnd */, {});
+  return w;
+}
+
+/// The SPIR-V counterpart of the PTX signature scan, which a binary image
+/// needs because there is no text to read.
+///
+/// The count it returns is compared with what the ABI produces before a launch.
+/// Getting it wrong in the *permissive* direction -- reporting fewer than the
+/// kernel takes -- is the dangerous one: it passes a check that then launches
+/// with arguments the kernel reads past.
+void spirv_parameter_counting() {
+  auto module = make_spirv("vx_npu_kernel_0", 3);
+  check(vx_launch_entry_param_count_spirv(module.data(), module.size() * 4,
+                                          "vx_npu_kernel_0") == 3,
+        "three OpFunctionParameter is three parameters");
+
+  auto twenty_eight = make_spirv("vx_npu_kernel_0", 28);
+  check(vx_launch_entry_param_count_spirv(twenty_eight.data(),
+                                          twenty_eight.size() * 4,
+                                          "vx_npu_kernel_0") == 28,
+        "the four rank-2 operands' 28, as vx_launch_build_params counts them");
+
+  auto none = make_spirv("vx_npu_kernel_0", 0);
+  check(vx_launch_entry_param_count_spirv(none.data(), none.size() * 4,
+                                          "vx_npu_kernel_0") == 0,
+        "a function that takes none is zero, not absent");
+
+  check(vx_launch_entry_param_count_spirv(module.data(), module.size() * 4,
+                                          "vx_npu_kernel_1") == -1,
+        "an entry that is not there is absent");
+
+  /* A prefix must not answer for a longer name, the same trap the PTX scan
+     has: `vx_npu_kernel_1` appears in `vx_npu_kernel_10`'s name. */
+  auto ten = make_spirv("vx_npu_kernel_10", 2);
+  check(vx_launch_entry_param_count_spirv(ten.data(), ten.size() * 4,
+                                          "vx_npu_kernel_1") == -1,
+        "`vx_npu_kernel_1` does not match `vx_npu_kernel_10`");
+  check(vx_launch_entry_param_count_spirv(ten.data(), ten.size() * 4,
+                                          "vx_npu_kernel_10") == 2,
+        "but the full name does");
+
+  /* A truncated module is refused rather than walked off the end. */
+  check(vx_launch_entry_param_count_spirv(module.data(), 12,
+                                          "vx_npu_kernel_0") == -1,
+        "a module shorter than its header is refused");
+  check(vx_launch_entry_param_count_spirv(module.data(), module.size() * 4 - 1,
+                                          "vx_npu_kernel_0") == -1,
+        "so is one whose last word is cut in half");
+
+  /* And something that is not SPIR-V at all: PTX text, which is what the other
+     counter takes. */
+  static const char kPtx[] =
+      ".version 7.6\n.visible .entry vx_npu_kernel_0()\n";
+  check(vx_launch_entry_param_count_spirv(kPtx, sizeof(kPtx) - 1,
+                                          "vx_npu_kernel_0") == -1,
+        "a module without the magic number is refused");
+  check(vx_launch_entry_param_count_spirv(nullptr, 0, "x") == -1,
+        "no image, no count");
+  check(vx_launch_entry_param_count_spirv(module.data(), module.size() * 4,
+                                          nullptr) == -1,
+        "no entry, no count");
+
+  /* The entry point instruction is what the driver creates a kernel from, so
+     it is what the count is read through. Everything below would fail if the
+     count came from the debug names instead. */
+  auto stripped = make_spirv("vx_npu_kernel_0", 3, 7, /*names=*/false);
+  check(vx_launch_entry_param_count_spirv(stripped.data(), stripped.size() * 4,
+                                          "vx_npu_kernel_0") == 3,
+        "a module with no OpName still counts, which is what "
+        "spirv-opt --strip-debug leaves");
+
+  /* A variable may carry the kernel's own name. Reading the name and taking
+     the last match would find the variable's id and then no function, and the
+     launch would be refused as if the entry were absent. */
+  auto variable = make_spirv("vx_npu_kernel_0", 3, 7, /*names=*/true,
+                             /*named_variable=*/true);
+  check(vx_launch_entry_param_count_spirv(variable.data(), variable.size() * 4,
+                                          "vx_npu_kernel_0") == 3,
+        "a variable named like the kernel does not change the count");
+
+  /* Names alone are not an entry point: a module that has them and no
+     OpEntryPoint enters nothing. */
+  {
+    std::vector<uint32_t> no_entrypoint;
+    no_entrypoint.insert(no_entrypoint.end(),
+                         {0x07230203u, 0x00010000u, 0u, 16u, 0u});
+    auto push = [&no_entrypoint](uint32_t opcode,
+                                 std::initializer_list<uint32_t> words) {
+      no_entrypoint.push_back(((uint32_t)(words.size() + 1) << 16) | opcode);
+      no_entrypoint.insert(no_entrypoint.end(), words);
+    };
+    std::vector<uint32_t> literal = name_literal("vx_npu_kernel_0");
+    no_entrypoint.push_back(((uint32_t)(literal.size() + 2) << 16) |
+                            5u /* OpName */);
+    no_entrypoint.push_back(7u);
+    no_entrypoint.insert(no_entrypoint.end(), literal.begin(), literal.end());
+    push(54u /* OpFunction */, {1u, 7u, 0u, 2u});
+    push(55u /* OpFunctionParameter */, {1u, 8u});
+    push(56u /* OpFunctionEnd */, {});
+    check(vx_launch_entry_param_count_spirv(no_entrypoint.data(),
+                                            no_entrypoint.size() * 4,
+                                            "vx_npu_kernel_0") == -1,
+          "a module with a name and no OpEntryPoint has no entry");
+  }
+}
+
+/* A kernel that can fail an assert takes a flag, and its payload says so. */
+void assert_flags() {
+  const char with[] = "k\0abi=1\0assert_flag=1\0format=spirv\0";
+  check(vx_launch_takes_assert_flag(with, sizeof with),
+        "a payload with assert_flag=1 asks for the flag");
+  const char without[] = "k\0abi=1\0format=spirv\0";
+  check(!vx_launch_takes_assert_flag(without, sizeof without),
+        "a payload without assert_flag= does not");
+}
+
+/* An error names the Vx function and the line of the `spawn`, when the
+   payload has them. */
+void kernel_labels() {
+  char out[128];
+  const char both[] =
+      "vx_npu_kernel_3\0abi=1\0function=pdl_chain\0source=chain.vx:18\0";
+  check(strcmp(vx_kernel_label(both, sizeof both, out, sizeof out),
+               "vx_npu_kernel_3 (from pdl_chain at chain.vx:18)") == 0,
+        "a payload with function= and source= names both");
+  const char function_only[] = "vx_npu_kernel_3\0abi=1\0function=pdl_chain\0";
+  check(strcmp(vx_kernel_label(function_only, sizeof function_only, out,
+                               sizeof out),
+               "vx_npu_kernel_3 (from pdl_chain)") == 0,
+        "a payload with function= only names the function");
+  const char source_only[] = "vx_npu_kernel_3\0abi=1\0source=chain.vx:18\0";
+  check(
+      strcmp(vx_kernel_label(source_only, sizeof source_only, out, sizeof out),
+             "vx_npu_kernel_3 (at chain.vx:18)") == 0,
+      "a payload with source= only names the line");
+  const char neither[] = "vx_npu_kernel_3\0abi=1\0format=ptx\0";
+  check(strcmp(vx_kernel_label(neither, sizeof neither, out, sizeof out),
+               "vx_npu_kernel_3") == 0,
+        "a payload without them gives the name of the kernel");
+  char small[8];
+  check(strcmp(vx_kernel_label(both, sizeof both, small, sizeof small),
+               "vx_npu_") == 0,
+        "a label longer than the buffer is cut, and ends with a NUL");
+}
+
 int main() {
   widths();
   the_four_operand_signature();
@@ -367,9 +630,13 @@ int main() {
   scalars_pass_by_address();
   refusals();
   entry_parameter_counting();
+  spirv_parameter_counting();
   aligned_parameters();
   launch_shapes();
+  launch_trips();
   caller_streams();
+  assert_flags();
+  kernel_labels();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);

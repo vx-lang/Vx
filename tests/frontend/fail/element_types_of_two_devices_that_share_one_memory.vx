@@ -1,0 +1,62 @@
+//===- element_types_of_two_devices_that_share_one_memory.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two devices use one memory, as the GPU and the Neural Engine of an M4 do.
+// E6026 checks a value against the `dtypes:` list of the device it is on. An f32
+// value is fine on `Wide` and an error on `Narrow`, in a parameter type, in a
+// `spawn` region and in a `transfer`. An f64 value is an error on `Wide`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, managed: explicit, scope: device
+}
+
+Topology Wide {
+  arch: spirv64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  dtypes: [f32, f16, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+Topology Narrow {
+  arch: spirv64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  dtypes: [f16, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+fn on_wide(_p : Tensor<f32, [4], Topology::Wide>) -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E6026] at {{.*}}.vx:[[@LINE+1]]:4: parameter '_p' of function 'on_narrow' has element type f32, which Narrow cannot represent
+fn on_narrow(_p : Tensor<f32, [4], Topology::Narrow>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  spawn on(Topology::Wide) {
+    let _w : f32 = 1.0;
+    // CHECK: Error[E6026] at {{.*}}.vx:[[@LINE+1]]:5: variable '_d' has element type f64, which Wide cannot represent
+    let _d : f64 = 1.0;
+  }
+  spawn on(Topology::Narrow) {
+    // CHECK: Error[E6026] at {{.*}}.vx:[[@LINE+1]]:5: variable '_n' has element type f32, which Narrow cannot represent
+    let _n : f32 = 1.0;
+  }
+
+  let a = unsafe { Tensor<f32, [8]>::uninit() };
+  let _to_wide = transfer(a, Topology::Wide);
+  let b = unsafe { Tensor<f32, [8]>::uninit() };
+  // CHECK: Error[E6026] at {{.*}}.vx:[[@LINE+1]]:29: transferred tensor has element type f32, which Narrow cannot represent
+  let _to_narrow = transfer(b, Topology::Narrow);
+  return 0;
+}

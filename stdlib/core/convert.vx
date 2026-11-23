@@ -143,7 +143,7 @@ stamp_from!(bool , u64);
 stamp_from!(bool , usize);
 
 /// A value becomes the `Some` that holds it.
-impl<T> From<T> for Option<T> {
+extern impl<T> From<T> for Option<T> {
   /// The value wrapped in `Some`.
   fn from(v : T) -> Option<T> {
     return Option<T>::Some(v);

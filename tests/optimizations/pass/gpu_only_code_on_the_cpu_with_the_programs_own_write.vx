@@ -1,0 +1,120 @@
+// The CPU copy of code that only a GPU can run is a stub. It writes a message to stderr and stops
+// the program. It used to declare libc's `write` and `abort`, which clashed with a program that
+// declares its own. Now it writes through the runtime's `vx_stderr_write` when the program has a
+// `write` of its own, and it traps when the program defines an `abort`.
+// - `own_write`: a function with `gpu.shuffle`, which only a GPU kernel calls.
+// - `own_write_and_abort`: the same, and the program also defines a function `abort`.
+// - `threadgroup_block`: an `mlir!` block with `threads` in a kernel for the Apple GPU.
+//
+// RUN: split-file %s %t
+// RUN: vxc %t/own_write.vx --host default --machine fleet/a100-40.vx --action emit-llvm -o - 2>&1 | FileCheck %s --check-prefix=WRITE
+// RUN: vxc %t/own_write_and_abort.vx --host default --machine fleet/a100-40.vx --action emit-llvm -o - 2>&1 | FileCheck %s --check-prefix=ABORT
+// RUN: vxc %t/threadgroup_block.vx --host default --machine fleet/m4-uma.vx --action emit-llvm -o - 2>&1 | FileCheck %s --check-prefix=WRITE
+//
+// WRITE-NOT: redefinition
+// WRITE: llvm.call @vx_stderr_write(
+// WRITE-NEXT: llvm.call @abort()
+// ABORT-NOT: redefinition
+// ABORT: llvm.call @vx_stderr_write(
+// ABORT-NEXT: llvm.intr.trap
+
+//--- own_write.vx
+extern "C" {
+  fn write(fd : i32, buf : *const i8, n : i64) -> i64;
+}
+
+
+fn shfl_down(v : f32, delta : i32) on Topology::GPU -> f32 {
+  return unsafe { mlir!( inputs : (%v = v : f32, %d = delta : i32), returns : f32, dialects : ["gpu", "arith"]) {
+      %w = "arith.constant"() {
+        value = 32 : i32
+      } : () -> i32
+      %r, %ok = gpu.shuffle down %v, %d, %w : f32
+      macro.yield %r : f32
+    } };
+}
+
+fn main() -> i32 {
+  let msg = "hi\n";
+  let _n = unsafe { write(1, msg, 3) };
+  let mut x_host = Tensor<f32, [32]>::new();
+  for i in 0..32 {
+    x_host[i] = 1.0;
+  }
+  let mut x = transfer(x_host, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..32 {
+      x[i] = shfl_down(x[i], 16);
+    }
+  }
+  let r = transfer(x, Memory::CPU_DRAM);
+  print(r);
+  return 0;
+}
+
+//--- own_write_and_abort.vx
+extern "C" {
+  fn write(fd : i32, buf : *const i8, n : i64) -> i64;
+}
+
+fn abort() -> i32 {
+  return 7;
+}
+
+
+fn shfl_down(v : f32, delta : i32) on Topology::GPU -> f32 {
+  return unsafe { mlir!( inputs : (%v = v : f32, %d = delta : i32), returns : f32, dialects : ["gpu", "arith"]) {
+      %w = "arith.constant"() {
+        value = 32 : i32
+      } : () -> i32
+      %r, %ok = gpu.shuffle down %v, %d, %w : f32
+      macro.yield %r : f32
+    } };
+}
+
+fn main() -> i32 {
+  let msg = "hi\n";
+  let _n = unsafe { write(1, msg, 3) };
+  let mut x_host = Tensor<f32, [32]>::new();
+  for i in 0..32 {
+    x_host[i] = 1.0;
+  }
+  let mut x = transfer(x_host, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..32 {
+      x[i] = shfl_down(x[i], 16);
+    }
+  }
+  let r = transfer(x, Memory::CPU_DRAM);
+  print(r);
+  return 0;
+}
+
+//--- threadgroup_block.vx
+extern "C" {
+  fn write(fd : i32, buf : *const i8, n : i64) -> i64;
+}
+
+pub fn sevens(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      let _d = unsafe { mlir!( threads : 32, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(out[b..b + 1])]) {
+          %k = arith.index_cast %b : i32 to index
+          %c7 = arith.constant 7 : i32
+          memref.store %c7, %o[%k] : memref<?xi32>
+          macro.yield %c7 : i32
+        } };
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let msg = "hi\n";
+  let _n = unsafe { write(1, msg, 3) };
+  let mut out = transfer(Tensor<i32>([2]), Memory::HBM);
+  sevens(&mut out);
+  let h = transfer(&out, Memory::CPU_DRAM);
+  println!("out: {} {}", h[0], h[1]);
+  return 0;
+}

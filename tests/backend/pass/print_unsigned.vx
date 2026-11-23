@@ -18,10 +18,6 @@
 // purpose: those have no helper and still widen to reach `print_i32`, and a zero extension
 // there would turn -5 into 251.
 //
-// Flat path only: the legacy code generator chooses its helper from the printed MLIR type,
-// where the element type is already gone, so it cannot tell these apart.
-//
-// REQUIRES: flat-codegen
 // EXPECT: 18446744073709551615 9223372036854775808 4294967295 2147483648 65535 32768 255 128 -7 -5 -300
 fn main() -> i32 {
   let top : u64 = 18446744073709551615;

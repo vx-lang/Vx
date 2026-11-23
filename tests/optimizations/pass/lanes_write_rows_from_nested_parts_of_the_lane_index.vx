@@ -1,0 +1,136 @@
+//===- lanes_write_rows_from_nested_parts_of_the_lane_index.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The 128 lanes of a block write a 64 x 16 tile in the layout of a tensor core result: lane `l`
+// writes columns `2 * (l % 4)` and one more, plus 8, in row `16 * (l / 32) + (l % 32) / 4`, and in
+// the row 8 below it. The row uses `(l % 32) / 4`, a part of a part of `l`. Together with `l / 32`
+// and `l % 4`, it fixes `l`, so no two lanes write the same element, and the compiler accepts the
+// kernels. `as_quarters` writes the same rows as `l / 4 + 8 * (l / 32)`, and `as_eighths` as
+// `16 * (l / 32) + (l / 4) % 8`. Each element gets `100 * l + 10 * j + q`, where `j` counts the
+// pairs of columns and `q` the four values of a lane in a pair. All three tiles must be equal, and
+// no element may keep its -1. In `one_warp`, the 32 lanes write row `(l % 32) / 4` and column
+// `l % 4`: `l / 32` is always 0, so no index needs to fix it.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// CHECK: row 0: 0 1 100 101 200 201 300 301 10 11 110 111 210 211 310 311
+// CHECK-NEXT: row 8: 2 3 102 103 202 203 302 303 12 13 112 113 212 213 312 313
+// CHECK-NEXT: row 17: 3600 3601 3700 3701 3800 3801 3900 3901 3610 3611 3710 3711 3810 3811 3910 3911
+// CHECK-NEXT: row 63: 12402 12403 12502 12503 12602 12603 12702 12703 12412 12413 12512 12513 12612 12613 12712 12713
+// CHECK-NEXT: elements left at -1: 0
+// CHECK-NEXT: the three tiles are equal: true
+// CHECK-NEXT: one warp: 0 1 2 3 4 5 6 7 28 29 30 31
+
+fn by_parts(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        let lo = 16 * (l / 32) + (l % 32) / 4;
+        let col = 2 * (l % 4);
+        for j in 0..2 {
+          out[lo][col + 8 * j] = 100 * l + 10 * j;
+          out[lo][col + 8 * j + 1] = 100 * l + 10 * j + 1;
+          out[lo + 8][col + 8 * j] = 100 * l + 10 * j + 2;
+          out[lo + 8][col + 8 * j + 1] = 100 * l + 10 * j + 3;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn as_quarters(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        let lo = l / 4 + 8 * (l / 32);
+        let col = 2 * (l % 4);
+        for j in 0..2 {
+          out[lo][col + 8 * j] = 100 * l + 10 * j;
+          out[lo][col + 8 * j + 1] = 100 * l + 10 * j + 1;
+          out[lo + 8][col + 8 * j] = 100 * l + 10 * j + 2;
+          out[lo + 8][col + 8 * j + 1] = 100 * l + 10 * j + 3;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn as_eighths(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        let lo = 16 * (l / 32) + (l / 4) % 8;
+        let col = 2 * (l % 4);
+        for j in 0..2 {
+          out[lo][col + 8 * j] = 100 * l + 10 * j;
+          out[lo][col + 8 * j + 1] = 100 * l + 10 * j + 1;
+          out[lo + 8][col + 8 * j] = 100 * l + 10 * j + 2;
+          out[lo + 8][col + 8 * j + 1] = 100 * l + 10 * j + 3;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn one_warp(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes(32) {
+        out[(l % 32) / 4][l % 4] = l;
+      }
+    }
+  }
+  return;
+}
+
+fn say_row(t : &Tensor<i32, [64, 16]>, r : i64) -> void {
+  print!("row {}:", r);
+  for c in 0..16 {
+    print!(" {}", t[r][c]);
+  }
+  println!("");
+  return;
+}
+
+fn main() -> i32 {
+  let mut a = transfer(Tensor<i32, [64, 16]>::fill(-1), Memory::HBM);
+  let mut b = transfer(Tensor<i32, [64, 16]>::fill(-1), Memory::HBM);
+  let mut c = transfer(Tensor<i32, [64, 16]>::fill(-1), Memory::HBM);
+  by_parts(&mut a);
+  as_quarters(&mut b);
+  as_eighths(&mut c);
+  let ha = transfer(a, Memory::CPU_DRAM);
+  let hb = transfer(b, Memory::CPU_DRAM);
+  let hc = transfer(c, Memory::CPU_DRAM);
+  say_row(&ha, 0);
+  say_row(&ha, 8);
+  say_row(&ha, 17);
+  say_row(&ha, 63);
+  let mut left = 0;
+  let mut equal = true;
+  for r in 0..64 {
+    for k in 0..16 {
+      if ha[r][k] == -1 {
+        left = left + 1;
+      }
+      if ha[r][k] != hb[r][k] || ha[r][k] != hc[r][k] {
+        equal = false;
+      }
+    }
+  }
+  println!("elements left at -1: {}", left);
+  println!("the three tiles are equal: {}", equal);
+  let mut w = transfer(Tensor<i32, [8, 4]>::fill(-1), Memory::HBM);
+  one_warp(&mut w);
+  let hw = transfer(w, Memory::CPU_DRAM);
+  println!("one warp: {} {} {} {} {} {} {} {} {} {} {} {}", hw[0][0], hw[0][1], hw[0][2], hw[0][3], hw[1][0], hw[1][1], hw[1][2], hw[1][3], hw[7][0], hw[7][1], hw[7][2], hw[7][3]);
+  return 0;
+}

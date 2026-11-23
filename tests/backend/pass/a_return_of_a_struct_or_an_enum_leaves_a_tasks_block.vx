@@ -1,0 +1,107 @@
+//===- a_return_of_a_struct_or_an_enum_leaves_a_tasks_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `return` inside a `tasks` block gives a struct, an enum, or a struct that owns a `Vec`. The
+// function returns that value when the block ends. When `early` is false, the block ends with no
+// `return`, and the `return` after it runs.
+// The first run stops if the default code generator declines a function.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}struct 3 4{{$}}
+// CHECK: {{^}}struct 0 0{{$}}
+// CHECK: {{^}}enum 7{{$}}
+// CHECK: {{^}}enum none{{$}}
+// CHECK: {{^}}vec 2 9{{$}}
+// CHECK: {{^}}vec 0{{$}}
+
+import core::option;
+import std::vec;
+
+struct P {
+  a : i64,
+  b : i64,
+}
+
+struct Bag {
+  items : Vec<i64>,
+}
+
+fn a_struct(early : bool) -> P {
+  tasks {
+    let h = spawn {
+      3i64
+    };
+    let a = h.join();
+    if early {
+      return P {
+        a: a, b: 4
+      };
+    }
+  };
+  return P {
+    a: 0, b: 0
+  };
+}
+
+fn an_enum(early : bool) -> Option<i64> {
+  tasks {
+    let h = spawn {
+      7i64
+    };
+    let v = h.join();
+    if early {
+      return Option<i64>::Some(v);
+    }
+  };
+  return Option<i64>::None;
+}
+
+fn a_bag(early : bool) -> Bag {
+  tasks {
+    let h = spawn {
+      9i64
+    };
+    let v = h.join();
+    if early {
+      let mut items = Vec<i64>::new();
+      items.push(1);
+      items.push(v);
+      return Bag {
+        items: items
+      };
+    }
+  };
+  return Bag {
+    items: Vec<i64>::new()
+  };
+}
+
+fn show(o : Option<i64>) -> void {
+  match o {
+    Option<i64>::Some(v) => {
+      println!("enum {}", v);
+    }
+    Option<i64>::None => {
+      println!("enum none");
+    }
+  }
+}
+
+fn main() -> i32 {
+  let p = a_struct(true);
+  println!("struct {} {}", p.a, p.b);
+  let q = a_struct(false);
+  println!("struct {} {}", q.a, q.b);
+  show(an_enum(true));
+  show(an_enum(false));
+  let full = a_bag(true);
+  println!("vec {} {}", full.items.len(), full.items.get(1));
+  let empty = a_bag(false);
+  println!("vec {}", empty.items.len());
+  return 0;
+}
