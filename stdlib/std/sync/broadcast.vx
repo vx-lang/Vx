@@ -31,6 +31,7 @@ import core::sync::atomic;
 import core::time;
 import std::alloc;
 import std::sync::channel;
+import std::sync::select;
 import std::sync::wait;
 import std::time;
 
@@ -119,6 +120,7 @@ fn broadcast_release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> voi
   if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
     return;
   }
+  assert_no_watcher(words);
   for i in 0..cap {
     if broadcast_turn(words, i).load(AtomicOrdering::SeqCst) % 2 == 1 {
       let value : T = unsafe { take_slot(data, i) };
@@ -277,6 +279,25 @@ BroadcastReceiver<T> {
       broadcast_free<T>(words, data, self.cap, k);
     }
     return Result<T, TryRecvError>::Ok(value);
+  }
+}
+
+// A `select` can wait until a value is there for this receiver, or the channel is closed.
+impl<T> WaitSource for BroadcastReceiver<T> {
+  fn is_ready(self : &BroadcastReceiver<T>) -> bool {
+    let words = self.words;
+    let _events = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+    let k = word(self.next, 0).load(AtomicOrdering::Relaxed);
+    return closed || broadcast_turn(words, k % self.cap).load(AtomicOrdering::Acquire) == 2 * k + 1;
+  }
+
+  fn watch(self : &BroadcastReceiver<T>, w : &Waiter) -> void {
+    watch_channel(self.words, w);
+  }
+
+  fn unwatch(self : &BroadcastReceiver<T>, w : &Waiter) -> void {
+    unwatch_channel(self.words, w);
   }
 }
 

@@ -252,11 +252,18 @@ fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : Instant, what :
   word(words, SLEEPERS).fetch_sub(1, AtomicOrdering::SeqCst);
 }
 
+/// A `select` borrows a receiver while it watches the channel, so no `select` watches a channel
+/// that is freed. Each kind of channel checks this before it frees its words.
+fn assert_no_watcher(words : *mut AtomicI64) -> void {
+  assert(word(words, WATCHERS).load(AtomicOrdering::SeqCst) == 0, "the library frees a channel that a select still watches");
+}
+
 /// One end is dropped. The last one drops the values that no `recv` took, and frees the channel.
 fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
   if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
     return;
   }
+  assert_no_watcher(words);
   let mut k = word(words, RECVS).load(AtomicOrdering::SeqCst);
   let end = word(words, SENDS).load(AtomicOrdering::SeqCst);
   while k < end {
@@ -461,14 +468,23 @@ impl<T> WaitSource for Receiver<T> {
   }
 
   fn watch(self : &Receiver<T>, w : &Waiter) -> void {
-    word(self.words, WATCHERS).fetch_add(1, AtomicOrdering::SeqCst);
-    w.watch_key(word(self.words, WAKE));
+    watch_channel(self.words, w);
   }
 
   fn unwatch(self : &Receiver<T>, w : &Waiter) -> void {
-    w.unwatch_key(word(self.words, WAKE));
-    word(self.words, WATCHERS).fetch_sub(1, AtomicOrdering::SeqCst);
+    unwatch_channel(self.words, w);
   }
+}
+
+/// Wake `w` at each later event on the channel with the words `words`. Each kind of channel
+/// calls it in `watch`. Its `is_ready` then reads `WAKE` with `SeqCst` first, as `Receiver` does.
+fn watch_channel(words : *mut AtomicI64, w : &Waiter) -> void {
+  w.watch_counted(word(words, WATCHERS), word(words, WAKE));
+}
+
+/// Undo `watch_channel`.
+fn unwatch_channel(words : *mut AtomicI64, w : &Waiter) -> void {
+  w.unwatch_counted(word(words, WATCHERS), word(words, WAKE));
 }
 
 /// A list of receivers to wait on together. `select` takes a value from any of them.

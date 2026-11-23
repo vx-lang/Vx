@@ -12,8 +12,8 @@
 // `unsafe` methods that end in `_raw` or `_c_str` take raw pointers. `TcpBufReader` reads lines,
 // and `TcpBufWriter` collects small writes into one.
 //
-// `TcpStream`, `TcpListener` and `UdpSocket` are sources of `select`: each is ready when a read,
-// an `accept` or a `recv` does not wait.
+// `TcpStream`, `TcpListener`, `UdpSocket` and `TcpBufReader` are sources of `select`: each is
+// ready when a read, an `accept` or a `recv` does not wait.
 //
 // The Rust core gives a status for each call: 0 when it worked, a number below 0 for each error
 // that `NetError` names, and else the error number of the system. A call that worked writes its
@@ -555,6 +555,21 @@ impl TcpBufReader {
       self.start = stop;
     }
     return Result<u64, NetError>::Ok(count);
+  }
+}
+
+impl WaitSource for TcpBufReader {
+  /// Ready when the buffer holds bytes, or a read of the stream does not wait.
+  fn is_ready(self : &TcpBufReader) -> bool {
+    return self.start < self.end || self.stream.is_ready();
+  }
+
+  fn watch(self : &TcpBufReader, w : &Waiter) -> void {
+    self.stream.watch(w);
+  }
+
+  fn unwatch(self : &TcpBufReader, w : &Waiter) -> void {
+    self.stream.unwatch(w);
   }
 }
 

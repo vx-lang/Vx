@@ -1,0 +1,132 @@
+//===- select_waits_on_oneshot_broadcast_watch_and_work_queue_channels.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The receivers of a oneshot, a broadcast, a watch and a work queue channel are sources of
+// `select`. A task sends one value on each, 0.1 seconds apart, while the main code waits in
+// `select4`. After each `select4`, the main code takes the value with `try_recv`, and turns off
+// a source that gave `Closed`.
+//
+// The oneshot sender is gone after its one `send`, so the oneshot is closed next. After the
+// block, the task ended and dropped the other senders. So the last three calls give `Closed`, in the order of the
+// round robin.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}select4 gave 0: oneshot gave 1{{$}}
+// CHECK-NEXT: {{^}}select4 gave 0: oneshot gave Closed{{$}}
+// CHECK-NEXT: {{^}}select4 gave 1: broadcast gave 2{{$}}
+// CHECK-NEXT: {{^}}select4 gave 2: watch gave 3{{$}}
+// CHECK-NEXT: {{^}}select4 gave 3: work queue gave 4{{$}}
+// CHECK-NEXT: {{^}}select4 gave 1: broadcast gave Closed{{$}}
+// CHECK-NEXT: {{^}}select4 gave 2: watch gave Closed{{$}}
+// CHECK-NEXT: {{^}}select4 gave 3: work queue gave Closed{{$}}
+
+import core::time;
+import std::sync::broadcast;
+import std::sync::oneshot;
+import std::sync::select;
+import std::sync::watch;
+import std::sync::work_queue;
+import std::time;
+
+fn pause() -> void {
+  sleep(Duration::from_millis(100));
+}
+
+fn feed(one : OneshotSender<i64>, all : BroadcastSender<i64>, latest : WatchSender<i64>, work : Sender<i64>) -> void {
+  pause();
+  let _one = one.send(1);
+  pause();
+  let _all = all.send(2);
+  pause();
+  let _latest = latest.send(3);
+  pause();
+  let _work = work.send(4);
+  // The senders stay open until each `select4` of the block took its value.
+  pause();
+}
+
+/// Print what `try_recv` gave, and give false for `Closed`.
+fn took(i : i32, what : *const i8, r : Result<i64, TryRecvError>) -> bool {
+  match r {
+    Result<i64, TryRecvError>::Ok(v) => {
+      println!("select4 gave {}: {} gave {}", i, what, v);
+    }
+    Result<i64, TryRecvError>::Err(e) => {
+      match e {
+        TryRecvError::Closed => {
+          println!("select4 gave {}: {} gave Closed", i, what);
+          return false;
+        }
+        TryRecvError::Empty => {
+          println!("select4 gave {}: {} gave Empty", i, what);
+        }
+      }
+    }
+  }
+  return true;
+}
+
+fn main() -> i32 {
+  let (one_tx, one_rx) = oneshot<i64>();
+  let (all_tx, all_rx) = broadcast<i64>(2);
+  let (latest_tx, latest_rx) = watch<i64>(0);
+  let (work_tx, work_rx) = work_queue<i64>(2);
+  let mut open_one = true;
+  let mut open_all = true;
+  let mut open_latest = true;
+  let mut open_work = true;
+  let mut calls : i32 = 0;
+  tasks {
+    spawn {
+      feed(one_tx, all_tx, latest_tx, work_tx);
+    };
+    while calls < 5 {
+      calls = calls + 1;
+      match select4(&when(open_one, &one_rx), &when(open_all, &all_rx), &when(open_latest, &latest_rx), &when(open_work, &work_rx)) {
+        Result<i32, SelectError>::Ok(i) => {
+          if i == 0 {
+            open_one = took(i, "oneshot", one_rx.try_recv());
+          } else if i == 1 {
+            open_all = took(i, "broadcast", all_rx.try_recv());
+          } else if i == 2 {
+            open_latest = took(i, "watch", latest_rx.try_recv());
+          } else {
+            open_work = took(i, "work queue", work_rx.try_recv());
+          }
+        }
+        Result<i32, SelectError>::Err(_) => {
+          println!("select4 gave Cancelled");
+        }
+      }
+    }
+  };
+  while open_one || open_all || open_latest || open_work {
+    match select4(&when(open_one, &one_rx), &when(open_all, &all_rx), &when(open_latest, &latest_rx), &when(open_work, &work_rx)) {
+      Result<i32, SelectError>::Ok(i) => {
+        if i == 0 {
+          open_one = took(i, "oneshot", one_rx.try_recv());
+        } else if i == 1 {
+          open_all = took(i, "broadcast", all_rx.try_recv());
+        } else if i == 2 {
+          open_latest = took(i, "watch", latest_rx.try_recv());
+        } else {
+          open_work = took(i, "work queue", work_rx.try_recv());
+        }
+      }
+      Result<i32, SelectError>::Err(_) => {
+        println!("select4 gave Cancelled");
+        open_one = false;
+        open_all = false;
+        open_latest = false;
+        open_work = false;
+      }
+    }
+  }
+  return 0;
+}
