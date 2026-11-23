@@ -247,6 +247,22 @@ macro_rules! instantiate_string_ffi {
             c_string.into_raw()
         }
 
+        /// `vx_string_as_c_str`, but null when the string holds a NUL byte, because a C string
+        /// ends at its first NUL. A panic here would stop the whole process.
+        #[no_mangle]
+        pub extern "C" fn vx_string_try_as_c_str(
+            ptr: *mut std::ffi::c_void,
+        ) -> *const std::ffi::c_char {
+            if ptr.is_null() {
+                return std::ptr::null();
+            }
+            let s = unsafe { &*(ptr as *mut String) };
+            match std::ffi::CString::new(s.clone()) {
+                Ok(c_string) => c_string.into_raw(),
+                Err(_) => std::ptr::null(),
+            }
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_string_free_c_str(c_str: *mut std::ffi::c_char) {
             if !c_str.is_null() {

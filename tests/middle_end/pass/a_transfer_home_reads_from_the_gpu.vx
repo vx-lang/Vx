@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 // A transfer to the CPU of a tensor in GPU memory must read it from the GPU. The type of the
-// tensor says where it is, whatever made it: `uninit()`, `new()`, a `spawn` region, a
-// parameter or a `match` arm. The transfer then carries `source_topology = 500` (the GPU), and
-// the program calls `vx_plugin_transfer_device_to_host` for each one. Without the mark it copies with the CPU,
+// tensor says where it is, whatever made it: `uninit()`, `new()`, a `wait` for a
+// `transfer_async`, also in a loop, a `spawn` region, a parameter or a `match` arm. The
+// transfer then carries `source_topology = 500` (the GPU), and the program calls
+// `vx_plugin_transfer_device_to_host` for each one. Without the mark it copies with the CPU,
 // which reads GPU memory and crashes on a machine with a GPU. No GPU is needed to compile it.
 //
 // RUN: env VX_NO_AST_FALLBACK=1 vxc %s --action emit-mlir 2>&1 | FileCheck %s
@@ -20,6 +21,11 @@
 // CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
 // CHECK-LABEL: func.func @from_new(
 // CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
+// CHECK-LABEL: func.func @from_a_wait_in_a_loop(
+// CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
+// CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
+// CHECK-LABEL: func.func @from_a_wait(
+// CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
 // CHECK-LABEL: func.func @from_a_spawn(
 // CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
 // CHECK-LABEL: func.func @from_a_parameter(
@@ -27,7 +33,7 @@
 // CHECK-LABEL: func.func @from_a_match(
 // CHECK: "vx.transfer"({{.*}}source_topology = 500 : i32, space = "CPU_DRAM"
 //
-// CALL-COUNT-5: llvm.call @vx_plugin_transfer_device_to_host(
+// CALL-COUNT-8: llvm.call @vx_plugin_transfer_device_to_host(
 // CALL-NOT: llvm.call @vx_plugin_transfer_device_to_host(
 
 fn from_uninit() -> f32 {
@@ -45,6 +51,29 @@ fn from_new() -> f32 {
   let g = Tensor<f32, [4], Memory::GPU_HBM>::new();
   let h = transfer(g, Memory::CPU_DRAM);
   return h[0];
+}
+
+fn from_a_wait() -> f32 {
+  let token = transfer_async(Tensor<f32, [4]>::new(), Memory::GPU_HBM);
+  let g = token.wait();
+  let h = transfer(g, Memory::CPU_DRAM);
+  return h[0];
+}
+
+// Each pass of the loop sends the next tensor before it waits for the current one.
+fn from_a_wait_in_a_loop() -> f32 {
+  let mut inflight = transfer_async(Tensor<f32, [4]>::new(), Memory::GPU_HBM);
+  let mut sum : f32 = 0.0;
+  for _k in 0..2 {
+    let next = transfer_async(Tensor<f32, [4]>::new(), Memory::GPU_HBM);
+    let g = inflight.wait();
+    let h = transfer(g, Memory::CPU_DRAM);
+    sum = sum + h[0];
+    inflight = next;
+  }
+  let g = inflight.wait();
+  let h = transfer(g, Memory::CPU_DRAM);
+  return sum + h[0];
 }
 
 fn from_a_spawn() -> f32 {
@@ -84,6 +113,7 @@ fn from_a_match(r : Held<Tensor<f32, [4], Memory::GPU_HBM>>) -> f32 {
 fn main() -> i32 {
   let p = Tensor<f32, [4], Memory::GPU_HBM>::new();
   let q = Held<Tensor<f32, [4], Memory::GPU_HBM>>::Full(Tensor<f32, [4], Memory::GPU_HBM>::new());
-  print(from_uninit() + from_new() + from_a_spawn() + from_a_parameter(p) + from_a_match(q));
+  let sum = from_uninit() + from_new() + from_a_spawn() + from_a_parameter(p) + from_a_match(q);
+  print(sum + from_a_wait() + from_a_wait_in_a_loop());
   return 0;
 }

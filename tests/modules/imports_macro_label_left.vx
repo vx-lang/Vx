@@ -1,0 +1,16 @@
+//===- imports_macro_label_left.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Imports macro_label_left.vx, and calls none of its macros.
+import tests::modules::macro_label_left;
+
+fn left_x() -> i64 {
+  let l = Left {
+    x : 5i64
+  };
+  return l.x;
+}

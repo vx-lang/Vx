@@ -32,14 +32,7 @@ pub fn gemm(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<bf16, [?, ?],
           Tensor<f32, [4, 32, 128], Memory::SMEM>::uninit()
         };
         for w in 0..4 across subgroups {
-          for j in 0..32 across lanes {
-            for i in 0..32 {
-              acc[w][i][j] = 0.0;
-              acc[w][i][j + 32] = 0.0;
-              acc[w][i][j + 64] = 0.0;
-              acc[w][i][j + 96] = 0.0;
-            }
-          }
+          lanes::fill(&mut acc[w], 0.0);
         }
         for kt in 0..k / 32 {
           let tb = lanes::copy_async(&mut sb, b, [kt * 32, bn * 128]);
@@ -57,14 +50,7 @@ pub fn gemm(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<bf16, [?, ?],
           }
         }
         for w in 0..4 across subgroups {
-          for j in 0..32 across lanes {
-            for i in 0..32 {
-              c[bm * 128 + w * 32 + i][bn * 128 + j] = acc[w][i][j];
-              c[bm * 128 + w * 32 + i][bn * 128 + j + 32] = acc[w][i][j + 32];
-              c[bm * 128 + w * 32 + i][bn * 128 + j + 64] = acc[w][i][j + 64];
-              c[bm * 128 + w * 32 + i][bn * 128 + j + 96] = acc[w][i][j + 96];
-            }
-          }
+          lanes::copy(c, &acc[w], [bm * 128 + w * 32, bn * 128]);
         }
       }
     }

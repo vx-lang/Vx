@@ -1,10 +1,18 @@
 name: CI
 
+# A pull request merges only after these tests pass, so main does not run them again after each
+# merge. A pull request can restore main's caches but not another pull request's. So main still
+# runs when the LLVM build changes, and once a week, to keep the LLVM and Rust caches current.
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ main ]
+    paths: [ 'scripts/provision/build_llvm.sh', '.github/actions/build-own-llvm/**' ]
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 # `vxc --version` names the commit it was built from. See vx-build-commit/build.rs.
 env:

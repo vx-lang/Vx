@@ -293,6 +293,7 @@ impl<'a> TypeChecker<'a> {
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
             | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => self.fold_extents(inner),
             Type::GenericInstance(base, args) => {
                 self.fold_extents(base);
@@ -781,7 +782,12 @@ impl<'a> TypeChecker<'a> {
     /// `*p` or `p[i]` read by value through a raw pointer: the value stays with its owner, so
     /// moving it out would drop it twice. An `unsafe fn` such as `core::ptr::read` may, for its
     /// caller.
-    fn refuse_move_through_raw_pointer(&mut self, inner: &Type, consume: bool, span: &Span) {
+    pub(crate) fn refuse_move_through_raw_pointer(
+        &mut self,
+        inner: &Type,
+        consume: bool,
+        span: &Span,
+    ) {
         if !consume
             || self.checking_assign_lhs
             || self.speculating
@@ -804,7 +810,7 @@ impl<'a> TypeChecker<'a> {
     /// A raw-pointer access needs an unsafe context: nothing here knows the address is valid,
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
-    fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
+    pub(crate) fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
         if !self.unsafe_is_missing() {
             return;
         }
@@ -1426,6 +1432,18 @@ impl<'a> TypeChecker<'a> {
                 .rev()
                 .find(|c| c.var == *name);
             match candidate {
+                // The row of a subgroup in a tile of sums in registers, `acc[w]`. Only such a
+                // tile may take the variable of an `across` loop, which is never unrolled. The
+                // end of the function decides (check/subgroup_registers.rs).
+                Some(c) if c.across => {
+                    if let Some((root, _)) = crate::hir::places::base_and_path(base) {
+                        self.across_register_indices.push((
+                            root.to_string(),
+                            name.to_string(),
+                            *ix_span,
+                        ));
+                    }
+                }
                 Some(c) => match c.bounds {
                     Some((lo, hi)) if hi - lo <= MAX_UNROLLED_PASSES => c.used = true,
                     Some((lo, hi)) => {
@@ -1700,7 +1718,7 @@ impl<'a> TypeChecker<'a> {
                     other => other,
                 };
                 let read_ty = match read_ty {
-                    Type::Distinct(inner) => inner.as_ref(),
+                    Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.as_ref(),
                     other => other,
                 };
                 let located_on = match read_ty {
@@ -1784,6 +1802,18 @@ impl<'a> TypeChecker<'a> {
                                 crate::diagnostic::DiagnosticCode::E4006,
                                 "a `Distinct` tensor is read only: a write could make two of its \
                                  elements equal"
+                                    .to_string(),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
+                            );
+                        }
+                        *inner
+                    }
+                    Type::DisjointRanges(inner) => {
+                        if self.checking_assign_lhs && !self.speculating {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4006,
+                                "a `DisjointRanges` table is read only: a write could make two of \
+                                 its ranges overlap"
                                     .to_string(),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
                             );
@@ -2533,7 +2563,8 @@ impl<'a> TypeChecker<'a> {
             Type::Pointer(inner, ..)
             | Type::Pinned(inner, _)
             | Type::Verified(inner)
-            | Type::Distinct(inner) => self.type_can_hold_reference_in(inner, seen),
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner) => self.type_can_hold_reference_in(inner, seen),
             _ => false,
         }
     }

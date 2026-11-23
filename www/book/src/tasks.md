@@ -228,6 +228,25 @@ So for `n` channels, if one channel has a value at each of `n` calls in a row, o
 takes a value from it. [What Vx guarantees about concurrency](guarantees.md) lists this promise
 and the others about tasks, and says how we check each one.
 
+### Sources of different types
+
+`select2` to `select6` from `std::sync::select` wait on sources of different types: a `Receiver`
+of any element type, and a `Deadline`. Each gives the index of the first source that is ready, and
+starts its search after the last choice of the task. The caller then takes the value, for example
+with `try_recv`. A `select` takes no value itself, so a source that loses keeps its value.
+
+A closed channel is ready, and its `try_recv` gives `Closed`. `when(false, &source)` turns a source
+off. `select_list` waits on a `Vec` of sources of one type. A cancel of the `tasks` block and the
+limit of `within` end the wait with `SelectError::Cancelled`. This program takes jobs and notes
+until both channels are closed, and gives up when nothing comes for five seconds
+(`book_select_on_two_kinds_of_channel_and_a_deadline.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_select_on_two_kinds_of_channel_and_a_deadline.vx:program}}
+```
+
+It prints `3 jobs and 2 notes`.
+
 ## Other kinds of channel
 
 `std::sync` has four more kinds of channel. Each one is a library on the atomics and the waits
@@ -293,6 +312,37 @@ unlocks the `Mutex` (`book_mutex_guards_a_total.vx`):
 It prints `total 20000`. Use an atomic for one number, and a `Mutex` when a change touches more
 than one number.
 
+## `Semaphore`
+
+A `Semaphore` from `std::sync::semaphore` limits how many tasks do a thing at the same time.
+`Semaphore::new(n)` makes `n` permits. `acquire()` takes a permit, and waits while none is
+free. It gives a `Permit`, and the drop of the `Permit` gives the permit back. In this program,
+at most 2 of 10 tasks "download" at the same time (`book_semaphore_limits_the_tasks_that_download.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_semaphore_limits_the_tasks_that_download.vx:program}}
+```
+
+It prints `10 downloads, at most 2 at once`.
+
+An `acquire` can be cancelled, as a `recv` can. It gives `Cancelled` when the `tasks` block of
+the task was cancelled. `acquire_for(limit)` also gives `TimedOut` after the time limit, and
+`acquire_until(deadline)` at a deadline. `try_acquire()` does not wait: it gives `None` when no
+permit is free. The tasks do not get the permits in the order of their `acquire` calls. So when
+many tasks compete, one waiter can wait without limit.
+
+### Compared with tokio
+
+tokio's `Semaphore` gives the permits in the order of the `acquire` calls, and the Vx
+`Semaphore` does not. tokio's also has `acquire_many`, `add_permits` and `close`, which the Vx
+`Semaphore` does not have yet. Two things differ in the other direction:
+
+- A cancel of the `tasks` block stops a task that waits in `acquire`. The cancel follows the
+  blocks of the program, so it needs no extra code. In tokio, a task stops at its next `.await`
+  when `JoinHandle::abort` or the drop of a `JoinSet` cancels it.
+- When each task waits and nothing can wake one, the runtime stops the program. Its report names
+  each `acquire` that waits, its line, and the line that made the `Semaphore`.
+
 ## `Arc`
 
 A task can borrow the locals of its parent, so most programs need no `Arc`. Use an `Arc<T>` when a
@@ -351,7 +401,8 @@ have that problem. A borrow that lives across a wait is a borrow across a call, 
 checker needs no new rule.
 
 A task that waits holds no OS thread in the shared runtime, so a program can have many waiting
-tasks. The language is the same for both runtimes.
+tasks. The language is the same for both runtimes. [Networks](files-input-time.md#networks) shows
+a TCP server and a client as two tasks.
 
 ## Compared with Rust and Go
 
@@ -363,5 +414,5 @@ tasks. The language is the same for both runtimes.
 | A task that fails | Its `join` leaves the block | `join` gives a `Result` | Each program writes it |
 | Cancel the other tasks | When the block leaves or a task fails | Each program writes it | `context`, by hand |
 | Functions that wait | Normal functions | `async fn`, or a blocked thread | Normal functions |
-| Wait on many channels | `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
+| Wait on many channels | `select2` to `select6`, or `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
 | Kinds of channel | `channel`, oneshot, work queue, broadcast, watch | The same in tokio | One kind, `chan` |

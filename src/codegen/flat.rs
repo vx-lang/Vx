@@ -107,6 +107,8 @@ fn mlir_float_literal(value: f64, elem: &ElementType) -> String {
             }
             ElementType::F32 => format!("0x{:08X}", (value as f32).to_bits()),
             ElementType::F64 => format!("0x{:016X}", value.to_bits()),
+            // `f8e8m0` has no sign and no infinity: 0xFF is its NaN.
+            ElementType::F8E8M0 if value.is_nan() => "0xFF".to_string(),
             other => panic!("mlir_float_literal: non-finite float for unexpected type {other:?}"),
         };
     }
@@ -132,6 +134,7 @@ fn elem_from_mlir_scalar(s: &str) -> Option<ElementType> {
         "f8E4M3FN" => F8E4M3,
         "f8E5M2" => F8E5M2,
         "f4E2M1FN" => F4E2M1,
+        "f8E8M0FNU" => F8E8M0,
         "i1" => Bool,
         "i4" => I4,
         "i8" => I8,
@@ -166,7 +169,7 @@ fn float_bits(e: &ElementType) -> Option<u32> {
     use ElementType::*;
     Some(match e {
         F4E2M1 => 4,
-        F8E4M3 | F8E5M2 => 8,
+        F8E4M3 | F8E5M2 | F8E8M0 => 8,
         F16 | BF16 => 16,
         F32 => 32,
         F64 => 64,
@@ -219,8 +222,8 @@ fn cast_op(src: &ElementType, tgt: &ElementType) -> Option<&'static str> {
 fn elem_of_gid(gid: TypeId) -> Option<ElementType> {
     use ElementType::*;
     [
-        F16, F32, F64, BF16, F8E4M3, F8E5M2, F4E2M1, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64,
-        I128, U128, USize, Bool,
+        F16, F32, F64, BF16, F8E4M3, F8E5M2, F4E2M1, F8E8M0, I4, U4, I8, U8, I16, U16, I32, U32,
+        I64, U64, I128, U128, USize, Bool,
     ]
     .into_iter()
     .find(|e| scalar_gid(e) == gid)
@@ -247,7 +250,9 @@ fn pointee_agg_gid(ty: &Type, ctx: &EmitCtx) -> Option<TypeId> {
 /// down to the runtime type, as the AST codegen's `lower_type` does.
 fn peel_wrappers(ty: &Type) -> &Type {
     match ty {
-        Type::Verified(inner) | Type::Distinct(inner) => peel_wrappers(inner),
+        Type::Verified(inner) | Type::Distinct(inner) | Type::DisjointRanges(inner) => {
+            peel_wrappers(inner)
+        }
         Type::Ref(inner, _) | Type::Pinned(inner, _) => peel_wrappers(inner),
         _ => ty,
     }
@@ -2719,7 +2724,7 @@ impl<'a> FnEmit<'a> {
             Opcode::Barrier => self.op_barrier(idx, ins),
             Opcode::LaunchDim => self.op_launch_dim(idx, ins),
             Opcode::LoopHint => self.op_loop_hint(idx, ins),
-            Opcode::LaneReduce => self.op_lane_reduce(idx, ins),
+            Opcode::LaneCall => self.op_lane_call(idx, ins),
             Opcode::AcrossId => self.op_across_id(idx, ins),
             Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),

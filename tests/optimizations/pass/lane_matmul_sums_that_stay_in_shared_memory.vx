@@ -1,0 +1,155 @@
+//===- lane_matmul_sums_that_stay_in_shared_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On a GPU with tensor cores, the compiler keeps a tile of matmul sums in shared memory in
+// registers when each use takes the row of its subgroup. When it cannot, the tile stays in shared
+// memory, the kernel is slower, and the compiler warns (W1037). Each function below but the last
+// keeps its tile in shared memory, and the warning says why. The last one gets no warning.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=W1037 --implicit-check-not='Error['
+
+// The lanes read an element of `acc`, so the warning is at the read, and a note gives the matmul.
+pub fn read_by_the_lanes(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 16, 64], Memory::SMEM>::uninit()
+      };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..4 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 16, 0]);
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        for l in 0..32 across lanes {
+          // CHECK: Warning[W1037] at {{.*}}.vx:[[@LINE+3]]:28: this use of `acc` keeps the tile of the sums of the matmul on line [[#@LINE-2]] in shared memory, 16384 bytes. For the tile to stay in registers, each use must take the row of its subgroup, `acc[w]`: a `lanes::fill`, a `lanes::scale_rows`, a lane matmul that adds to it, or a `lanes::copy` out of it into a tensor that is not in shared memory
+          // CHECK-NEXT: note: the matmul is here (at [[@LINE-3]]:42)
+          // CHECK-NEXT: note: with `acc` in `Memory::REG`, the compiler keeps the tile in registers or reports an error
+          out[s * 16][l] = acc[s][0][l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Each subgroup takes two passes of the loop, so `acc[s]` is not the row of one subgroup.
+pub fn two_passes_for_each_subgroup(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 16, 64], Memory::SMEM>::uninit()
+      };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..4 across subgroups(2) {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 16, 0]);
+        // CHECK: Warning[W1037] at {{.*}}.vx:[[@LINE+3]]:42: the tile `acc` of the sums of this matmul stays in shared memory, 16384 bytes. The compiler keeps the tile in registers only for `acc[w] = acc[w] + a @ b`, with a row of `acc` for each subgroup. `w` must be the variable of a loop across subgroups that gives each subgroup one pass
+        // CHECK-NEXT: note: with `acc` in `Memory::REG`
+        // CHECK-NOT: note:
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// A matmul with no `+` sets `acc[s]` and does not add to it.
+pub fn no_sum(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 64], Memory::SMEM>::uninit()
+      };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..2 across subgroups {
+        lanes::copy(&mut sa[s], a, [s * 16, 0]);
+        // CHECK: Warning[W1037] at {{.*}}.vx:[[@LINE+1]]:33: the tile `acc` of the sums of this matmul stays in shared memory, 8192 bytes. The compiler keeps the tile in registers only for `acc[w] = acc[w] + a @ b`
+        acc[s] = (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// Each lane would hold 64 x 128 / 32 = 256 sums.
+pub fn more_than_the_compiler_keeps(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 64, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 128], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 64, 128], Memory::SMEM>::uninit()
+      };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..2 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 64, 0]);
+        // CHECK: Warning[W1037] at {{.*}}.vx:[[@LINE+1]]:42: the tile `acc` of the sums of this matmul stays in shared memory, 65536 bytes, because each lane would hold 256 sums. The compiler keeps at most 128 sums of a lane in registers: a 64 x 64 tile for each subgroup
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 64, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// The tensor cores do not multiply a bf16 tile by an f16 tile.
+pub fn tiles_that_the_tensor_cores_do_not_take(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<bf16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [2, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<f16, [16, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 64], Memory::SMEM>::uninit()
+      };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..2 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 16, 0]);
+        // CHECK: Warning[W1037] at {{.*}}.vx:[[@LINE+1]]:42: the tile `acc` of the sums of this matmul stays in shared memory, 8192 bytes. This GPU has no matmul for these tiles that keeps the sums in registers
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// Each use takes the row of its subgroup, so `acc` stays in registers, with no warning.
+pub fn stays_in_registers(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [4, 16, 64], Memory::SMEM>::uninit()
+      };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..4 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 16, 0]);
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

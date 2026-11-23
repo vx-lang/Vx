@@ -10,7 +10,6 @@
 // callee allocated -- which is the allocation #642 still owes a free for, and the reason this
 // case is not simply the same rule (#643).
 //
-// REQUIRES: flat-codegen
 // Not because the convention differs -- the oracle leaves a `?`-shaped return alone too -- but
 // because it cannot build the tensor in the first place: `Tensor<f32>(n)` with a run-time extent
 // lowers to a rank-0 `memref<f32>` there, return or no return, and the declared shape then

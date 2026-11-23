@@ -1,17 +1,17 @@
 /-!
 # The round-robin bound of `select` (M3)
 
-`Selector::select` in `stdlib/std/sync/channel.vx` holds a list of `n` receivers. A call tries
-them in a round, from a start index: `start`, `start + 1`, ... modulo `n`. It returns the first one that
-gives a value. `pick` models this search. Each try sees whether its receiver has a value then
-(`ready`).
+`select_from` in `stdlib/std/sync/select.vx` takes `n` sources. A call tries them in a round,
+from a start index: `start`, `start + 1`, ... modulo `n`. It returns the first one that is ready.
+`pick` models this search. Each try sees whether its source is ready then (`ready`).
 
 M3 asks for a bound: if a receiver is ready at each of `n` calls in a row, one of them chooses
 it. `within_n` shows the bound for each rule of the start that moves the start past the
 receiver that the last call chose, but not past the ready one. Two rules do this:
 
 - `after_last_within_n`: the next call starts after the receiver that this call chose. This is
-  the rule of the code: `Selector` keeps the start in its field `next`.
+  the rule of the code: the runtime keeps the start for each task. So the bound holds for a loop
+  of a task with one `select` in it.
 - `count_within_n`: the rule that `select` used before. The start is the count of channel events
   modulo `n`. Each value that `select` takes is one event. So when no other event comes between
   two calls, the start moves by one.

@@ -11,14 +11,14 @@ trait Sink {
   fn put(self : Self, v : Self::Item) -> i32;
 }
 
-impl Source for i32 {
+extern impl Source for i32 {
   type Item = i64;
   fn get(self : i32) -> i64 {
     return 1;
   }
 }
 
-impl Sink for i32 {
+extern impl Sink for i32 {
   type Item = f32;
   fn put(self : i32, v : f32) -> i32 {
     return 0;

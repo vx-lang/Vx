@@ -152,6 +152,21 @@ fn run_frontend_on(
     timed("macro_expand", || {
         macro_expansion_phase(&mut modules, sched)
     })?;
+    // Trusted code in a package that `--no-trusted-code` names. After expansion, so the code
+    // that a macro writes counts too.
+    let refused: Vec<_> = modules
+        .iter()
+        .flat_map(crate::hir::check::audit::refused_trusted_code)
+        .collect();
+    if !refused.is_empty() {
+        for d in &refused {
+            eprintln!("{d}");
+        }
+        return Err(PipelineError::Failed {
+            count: refused.len(),
+            in_declarations: true,
+        });
+    }
     // Every function names its file, so a diagnostic found while checking it names the file
     // too, wherever the check runs from. A struct names its file, because only that file can
     // change the fields of a type with an invariant. After expansion, which adds functions.
@@ -535,21 +550,16 @@ fn macro_expansion_phase(
     sched: Schedule,
 ) -> Result<(), PipelineError> {
     // Collecting the macro table stays serial: it is one pass over macro *declarations*, which are
-    // few, and it must complete before any expansion since a macro defined in one module is visible
-    // to all.
-    let mut global_macros = std::collections::HashMap::new();
-    for m in parsed_modules.iter() {
-        for mac in &m.macros {
-            global_macros.insert(mac.name.clone(), mac.rules.clone());
-        }
-    }
+    // few, and it must complete before any expansion since a module can call the macros of the
+    // modules it imports.
+    let macros = crate::parser::MacroTable::new(parsed_modules.iter());
     // Expansion is per-module and shares nothing. Each module gets its own expander, because
     // an expander counts the expansions it makes.
     // Collected here for the same reason the macro table is: both have to be complete before
     // any module is expanded, because a trait and an impl of it need not share a module.
     let trait_defaults = crate::resolver::collect_trait_defaults(parsed_modules.iter());
     let expand = |m: &mut VxModule| {
-        MacroExpander::new(&global_macros, &trait_defaults)
+        MacroExpander::new(&macros, &trait_defaults)
             .expand_module(m)
             .map_err(PipelineError::Parse)
     };
@@ -661,6 +671,7 @@ fn emit_type_gid(ty: &syntax::Type, worker: &mut LocalWorkerState) {
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
         | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Pinned(inner, _) => emit_type_gid(inner, worker),
         Type::Function(args, ret, _) | Type::Closure(args, ret) => {
             for a in args {
@@ -689,6 +700,7 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
         | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Pinned(inner, _) => nominal_gid(inner),
         // A *nested* instantiation is identified by its base plus a content digest of its own
         // arguments, computed recursively (#305). It cannot be an arena index: the inner
@@ -1284,9 +1296,10 @@ fn by_value_nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
     use syntax::Type;
     match ty {
         Type::Struct(_, id) | Type::Enum(_, id) => *id,
-        Type::Pinned(inner, _) | Type::Verified(inner) | Type::Distinct(inner) => {
-            by_value_nominal_gid(inner)
-        }
+        Type::Pinned(inner, _)
+        | Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner) => by_value_nominal_gid(inner),
         _ => None,
     }
 }

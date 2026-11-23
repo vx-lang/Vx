@@ -901,7 +901,11 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             let mut inferred_el_ty_str = None;
             // A buffer of tensors holds the descriptor of each one.
             let mut tensor = None;
-            if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref())
+            if let Some(
+                syntax::Type::Pointer(inner, _, _)
+                | syntax::Type::Borrow { inner, .. }
+                | syntax::Type::Ref(inner, _),
+            ) = gen.infer_ast_type(self.base.as_ref())
             {
                 let el = gen.lower_type_str(&inner)?;
                 if let syntax::Type::Tensor(_, dims, _) = &*inner {
@@ -917,10 +921,11 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 base_ty_str[base_ty_str.find('<').unwrap() + 1..base_ty_str.len() - 1].to_string()
             } else if let Some(el_str) = inferred_el_ty_str {
                 el_str
-            } else if let Some(expected) = gen.expected_type {
-                expected.to_string()
             } else {
-                "f32".to_string()
+                return Err(LowerError::from(
+                    "internal compiler error: cannot determine the pointer element type for indexing"
+                        .to_string(),
+                ));
             };
             let inner_ty = Type::parse(gen.context, &inner_ty_str)
                 .unwrap_or_else(|| panic!("Failed to parse inner ptr type: {}", inner_ty_str));
@@ -1209,6 +1214,11 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         gen.expected_type = Some(lhs_ty);
         let (mut rhs_val, mut rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
+        // A borrowed tensor arrives as the slot that holds it, `memref<memref<?x?xf32>>`. `&a @ &b`
+        // and `&a + &b` are the spellings of `a @ b` and `a + b` that do not consume (#335), so
+        // load the descriptor out of the slot.
+        lhs_val = load_tensor_slot(gen, &block, lhs_val, &mut lhs_ty)?;
+        rhs_val = load_tensor_slot(gen, &block, rhs_val, &mut rhs_ty)?;
 
         // Slice elementwise (S3): if either operand is a rank-1 f32 slice/vector, lower to
         // `vector.load`/`vector.broadcast` + `arith.{mulf,addf,subf,divf}` -> `vector<Dxf32>`
@@ -1256,19 +1266,34 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             }
         }
 
-        // A borrowed tensor arrives as the slot holding it --
-        // `memref<memref<?x?xf32>>` -- because a borrow is the address and not
-        // the value. `&a @ &b` is the non-consuming spelling of `a @ b` (#335)
-        // and has to lower to the same operation, so load the descriptor out.
-        //
-        // Without this the operand reached `linalg.matmul` as a memref of
-        // memref. The shape check below reads the type as a string and would
-        // have accepted it -- `memref<memref<?x?xf32>>` still yields three parts
-        // once the wrappers are stripped -- so the mistake surfaced as MLIR
-        // verification failing rather than as a rejected program.
-        if op == &BinaryOp::MatMul {
-            lhs_val = load_tensor_slot(gen, &block, lhs_val, &mut lhs_ty)?;
-            rhs_val = load_tensor_slot(gen, &block, rhs_val, &mut rhs_ty)?;
+        // A tensor and a scalar, or two tensors of different float types.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            let number = |t: Type<'c>| {
+                let s = t.to_string();
+                crate::mlir_ty::float_elem_of_mlir(&s).is_some()
+                    || s.strip_prefix('i')
+                        .is_some_and(|w| w.parse::<u32>().is_ok())
+            };
+            let float = |e: &str| crate::mlir_ty::float_elem_of_mlir(e).is_some();
+            let same_or_floats = |a: &str, b: &str| a == b || float(a) && float(b);
+            let mixed = match (tensor_elem(lhs_ty), tensor_elem(rhs_ty)) {
+                (Some(e), None) => number(rhs_ty) && same_or_floats(&e, &rhs_ty.to_string()),
+                (None, Some(e)) => number(lhs_ty) && same_or_floats(&lhs_ty.to_string(), &e),
+                (Some(a), Some(b)) => a != b && float(&a) && float(&b),
+                (None, None) => false,
+            };
+            if mixed {
+                return lower_mixed_tensor_operation(
+                    gen,
+                    block,
+                    op,
+                    (lhs_val, lhs_ty),
+                    (rhs_val, rhs_ty),
+                );
+            }
         }
 
         let mut final_ty = lhs_ty;
@@ -2182,9 +2207,10 @@ impl TaskBody<'_> {
     }
 }
 
-/// Whether a `return`, or a `?` that leaves the task, is in the body of the task `this`.
+/// Whether a `return`, or a `?` that leaves the task, is in the body of the task `this`, also
+/// in its last value.
 fn task_has_exit(this: &UnsafeBlockExpr) -> bool {
-    leaves_the_block(&this.stmts, true)
+    leaves_the_block(&this.stmts, true) || this.ret.as_deref().is_some_and(|r| expr_leaves(r, true))
 }
 
 /// Whether a `return` or a `?` here leaves a task.
@@ -2890,16 +2916,21 @@ fn lower_task_region<'c>(
             }
         }
     }
+    // A `return` or a `?` in the last value, as in its last `if`, leaves the task too.
+    let last = this.ret.as_ref().filter(|_| reached_end).map(|ret_expr| {
+        let waiting = std::mem::take(&mut gen.queued_drops);
+        let lowered = gen.generate_expr(ret_expr, body);
+        gen.queued_drops.extend(waiting);
+        lowered
+    });
     if task {
         gen.task_bodies.pop();
     }
     let mut result_types = Vec::new();
     let mut yielded = Vec::new();
     {
-        if let Some(ret_expr) = this.ret.as_ref().filter(|_| reached_end) {
-            let waiting = std::mem::take(&mut gen.queued_drops);
-            let (val, ty, cur) = gen.generate_expr(ret_expr, body)?;
-            gen.queued_drops.extend(waiting);
+        if let Some(lowered) = last {
+            let (val, ty, cur) = lowered?;
             body = gen.run_queued_drops(cur)?;
             if this.cancels_on_err.is_some() && wants_value {
                 body = cancel_on_err(gen, body, val)?;
@@ -3070,9 +3101,20 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
             span: _,
         } = self;
         // The field of a reference is in the value that it points to. As a place, a `let mut`
-        // reference would give its own stack slot, so its value is lowered instead.
+        // reference would give its own stack slot, and a field that holds a reference would give
+        // its own address in the struct. So the value of the reference is lowered instead.
         let prev_lvalue = gen.is_lvalue_context;
-        if matches!(&**base, Expr::Identifier(id) if holds_a_reference(gen, &id.name)) {
+        let base_is_a_reference = match &**base {
+            Expr::Identifier(id) => holds_a_reference(gen, &id.name),
+            Expr::MemberAccess(_) => matches!(
+                gen.infer_ast_type(base),
+                Some(
+                    syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..)
+                )
+            ),
+            _ => false,
+        };
+        if base_is_a_reference {
             gen.is_lvalue_context = false;
         }
         let lowered = gen.generate_expr(base, block);
@@ -3979,31 +4021,37 @@ fn to_vector<'c>(
 }
 
 /// The memref type and alignment of a tensor of type `written` when it is a tile that the
-/// threads of a block share: a static shape in a `scope: sm` memory. The alignment is at least
-/// 16 bytes, the `alignment:` of the memory, and the `aligned(N)` of the type.
+/// threads of a block share, a static shape in a `scope: sm` memory, or a tensor in registers, a
+/// static shape in a `scope: thread` memory. The alignment is at least 16 bytes, the `alignment:`
+/// of the memory, and the `aligned(N)` of the type. The bool says that the tile is in registers.
 fn shared_tile(
     gen: &MeliorGenerator<'_>,
     written: Option<&syntax::Type>,
     elem: &str,
-) -> Option<(String, u64)> {
+) -> Option<(String, u64, bool)> {
     let syntax::Type::Tensor(_, dims, Some(p)) = written? else {
         return None;
     };
     let decl = gen.memories.get(&p.space)?;
-    if !matches!(decl.scope, Some(syntax::Scope::Sm)) {
-        return None;
-    }
+    let registers = match decl.scope {
+        Some(syntax::Scope::Sm) => false,
+        Some(syntax::Scope::Thread) => true,
+        _ => return None,
+    };
     let extents: Vec<&str> = dims.iter().map(|d| d.literal()).collect::<Option<_>>()?;
-    let arch = gen.spawn_arches.last().cloned().flatten();
-    let space =
-        crate::arch::address_space_for_arch(arch.as_deref(), crate::arch::AddressSpace::Workgroup);
     let align = decl
         .alignment
         .map_or(0, |a| a.0)
         .max(p.alignment.unwrap_or(0))
         .max(16);
     let shape = extents.iter().map(|e| format!("{e}x")).collect::<String>();
-    Some((format!("memref<{shape}{elem}, {space}>"), align))
+    if registers {
+        return Some((format!("memref<{shape}{elem}>"), align, true));
+    }
+    let arch = gen.spawn_arches.last().cloned().flatten();
+    let space =
+        crate::arch::address_space_for_arch(arch.as_deref(), crate::arch::AddressSpace::Workgroup);
+    Some((format!("memref<{shape}{elem}, {space}>"), align, false))
 }
 
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
@@ -4020,7 +4068,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             type_args,
             span: _,
         } = self;
-        if matches!(name.as_ref(), "Verified" | "Distinct") {
+        if matches!(name.as_ref(), "Verified" | "Distinct" | "DisjointRanges") {
             return gen.generate_expr(&args[0], block);
         }
         // The eight raw:: transfer-lowering primitives (#353). They reach codegen
@@ -4045,8 +4093,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let unit = block.append_operation(unit).result(0)?.into();
             return Ok((unit, gen.none_ty, block));
         }
-        if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(name) {
-            return lower_lane_reduce(gen, block, op, ordered, args);
+        if let Some(routine) = crate::hir::check::lanes::lane_routine(name) {
+            let args: Vec<&Expr> = args.iter().collect();
+            return match lower_lane_call(gen, block, routine, &args)? {
+                (Some((v, ty)), block) => Ok((v, ty, block)),
+                // The value of a routine with no value, which nothing reads.
+                (None, block) => Ok((constant_i32(gen, block, 0)?, gen.i32_ty, block)),
+            };
         }
         // Around the call of a `Drop` impl's `drop` (F6, F6a), with the time limit of the
         // drop in nanoseconds.
@@ -4129,14 +4182,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     return lower_tensor_initializer(gen, Some(&mlir_ty_str), &shape, arr, block);
                 }
             }
-            if let Some((tile_str, align)) = shared_tile(gen, written, &mlir_ty_str) {
+            if let Some((tile_str, align, registers)) = shared_tile(gen, written, &mlir_ty_str) {
                 let tile_ty = Type::parse(gen.context, &tile_str)
                     .ok_or_else(|| LowerError::ParseType(tile_str.clone()))?;
+                let mut attrs = vec![(
+                    Identifier::new(gen.context, "alignment"),
+                    IntegerAttribute::new(gen.i64_ty, align as i64).into(),
+                )];
+                if registers {
+                    attrs.push((
+                        Identifier::new(gen.context, "vx.registers"),
+                        melior::ir::attribute::Attribute::unit(gen.context),
+                    ));
+                }
                 let alloca = OperationBuilder::new("memref.alloca", gen.loc())
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "alignment"),
-                        IntegerAttribute::new(gen.i64_ty, align as i64).into(),
-                    )])
+                    .add_attributes(&attrs)
                     .add_results(&[tile_ty])
                     .build()?;
                 // At the top of the region, so that a tile declared in a loop does not take a
@@ -5331,6 +5391,9 @@ fn payload_binding_type(
     else {
         return None;
     };
+    if arm.body_declares(id.name.as_ref()) {
+        return None;
+    }
     let position = pats
         .iter()
         .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;
@@ -5439,9 +5502,10 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
                     .unwrap_or_else(|| crate::parser::expr::default_number_elem(n.value.as_ref()));
                 gen.lower_type(&syntax::Type::Scalar(elem)).ok()
             }
-            other => gen
-                .infer_ast_type(other)
-                .or_else(|| payload_binding_type(gen, arm, other, scrutinee_ty.as_ref()))
+            // A name that the arm's pattern binds hides any outer local of that name, so the
+            // payload type comes first.
+            other => payload_binding_type(gen, arm, other, scrutinee_ty.as_ref())
+                .or_else(|| gen.infer_ast_type(other))
                 .or_else(|| match other {
                     // `r * 3`: the checker gives the operands' type, which is the result's.
                     Expr::BinaryOp(b) if b.op != syntax::expr::BinaryOp::MatMul => {
@@ -5494,18 +5558,63 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         //
         // The other is a match whose arms each `return`. The parser turns a trailing match into
         // `return match ...`, so the caller is waiting for a value of the function's return
-        // type -- and the merge block it would come from is unreachable, because every arm has
-        // already left. An `i32` placeholder handed back there was coerced to whatever the
-        // caller wanted, which for an aggregate meant an unrealized conversion cast that no
-        // backend can translate. An undef of the awaited type says the same thing and says it
-        // in a type the caller can return: this edge is not taken.
+        // type. Control reaches the merge block only when no arm matches the value, as for a
+        // number with no `_` arm. Then, as with the default code generator, a number gives 0, a
+        // pointer gives null, and any other type stops the program.
         // A `void` function's return type lowers to MLIR's `none`, which is not a value any
         // operation can produce -- and a void caller has nothing to receive anyway, so the
         // placeholder below is the right answer there.
         if let Some(ty) = outer_expected.filter(|t| t.to_string() != "none") {
-            let op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
-                .add_results(&[ty])
-                .build()?;
+            let text = ty.to_string();
+            let is_integer = text
+                .strip_prefix('i')
+                .is_some_and(|bits| bits.parse::<u32>().is_ok());
+            let op = if is_integer {
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(ty, 0).into(),
+                    )])
+                    .build()?
+            } else if crate::codegen::generator::is_float_text(&text) {
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        FloatAttribute::new(gen.context, ty, 0.0).into(),
+                    )])
+                    .build()?
+            } else if text == "!llvm.ptr" {
+                OperationBuilder::new("llvm.mlir.zero", gen.loc())
+                    .add_results(&[ty])
+                    .build()?
+            } else {
+                let never = OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[gen.i1_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(gen.i1_ty, 0).into(),
+                    )])
+                    .build()?;
+                let never = block.append_operation(never).result(0)?.into();
+                block.append_operation(
+                    OperationBuilder::new("cf.assert", gen.loc())
+                        .add_operands(&[never])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "msg"),
+                            StringAttribute::new(
+                                gen.context,
+                                "no arm of the match returned a value",
+                            )
+                            .into(),
+                        )])
+                        .build()?,
+                );
+                OperationBuilder::new("llvm.mlir.undef", gen.loc())
+                    .add_results(&[ty])
+                    .build()?
+            };
             let op_ref = block.append_operation(op);
             return Ok((op_ref.result(0)?.into(), ty, block));
         }
@@ -7085,6 +7194,114 @@ fn each_element<'c>(
     Ok(())
 }
 
+/// The element type of a tensor's memref type: `f16` in `memref<?xf16, strided<[1]>>`. `None` for
+/// a scalar, and for a memref with no dimensions or with memrefs in it.
+fn tensor_elem(ty: Type) -> Option<String> {
+    let s = ty.to_string();
+    let inner = s.strip_prefix("memref<")?.split([',', '>']).next()?;
+    let (dims, elem) = inner.rsplit_once('x')?;
+    (!dims.is_empty() && !elem.is_empty() && !inner.starts_with("memref")).then(|| elem.to_string())
+}
+
+/// `t + s` or `s * t` for a tensor `t` and a scalar `s`, or `a - b` for tensors of two float
+/// types. A `linalg.generic` reads the scalar for each element, and converts each operand to
+/// the element type of the result. One element type stays. Two compute in f32, as in the slice
+/// path of `BinaryOpExpr`.
+fn lower_mixed_tensor_operation<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    op: &BinaryOp,
+    (lhs, lhs_ty): (Value<'c, 'c>, Type<'c>),
+    (rhs, rhs_ty): (Value<'c, 'c>, Type<'c>),
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let elem_of = |t: Type<'c>| tensor_elem(t).unwrap_or_else(|| t.to_string());
+    let (le, re) = (elem_of(lhs_ty), elem_of(rhs_ty));
+    let out_elem = if le == re {
+        le.clone()
+    } else {
+        "f32".to_string()
+    };
+    let (shape, shape_ty) = if tensor_elem(lhs_ty).is_some() {
+        (lhs, lhs_ty)
+    } else {
+        (rhs, rhs_ty)
+    };
+    let (out, out_ty, rank, _) = alloc_like(gen, block, shape, shape_ty, Some(&out_elem))?;
+    let parse =
+        |t: &str| Type::parse(gen.context, t).ok_or_else(|| LowerError::ParseType(t.to_string()));
+    let (l_el, r_el, o_el, f32_ty) = (parse(&le)?, parse(&re)?, parse(&out_elem)?, parse("f32")?);
+    let body = melior::ir::Block::new(&[(l_el, gen.loc()), (r_el, gen.loc()), (o_el, gen.loc())]);
+    let bits = |t: &str| crate::mlir_ty::float_elem_of_mlir(t).and_then(|e| e.bits());
+    let convert = |op: &str, ty: Type<'c>, v: Value<'c, '_>| -> Result<Value<'c, '_>, LowerError> {
+        let op = OperationBuilder::new(op, gen.loc())
+            .add_operands(&[v])
+            .add_results(&[ty])
+            .build()?;
+        Ok(body.append_operation(op).result(0)?.into())
+    };
+    let mut operands = Vec::new();
+    for (k, elem) in [(0, &le), (1, &re)] {
+        let x: Value = body.argument(k)?.into();
+        let x = match (bits(elem), bits(&out_elem)) {
+            _ if *elem == out_elem => x,
+            (Some(from), Some(to)) if from < to => convert("arith.extf", o_el, x)?,
+            (Some(from), Some(to)) if from > to => convert("arith.truncf", o_el, x)?,
+            (Some(_), Some(_)) => convert("arith.truncf", o_el, convert("arith.extf", f32_ty, x)?)?,
+            _ => return Err(format!("a tensor operation on {le} and {re}").into()),
+        };
+        operands.push(x);
+    }
+    let is_float = crate::mlir_ty::float_elem_of_mlir(&out_elem).is_some();
+    let arith = OperationBuilder::new(op.get_op_name(is_float, false), gen.loc())
+        .add_operands(&operands)
+        .add_results(&[o_el])
+        .build()?;
+    let value: Value = body.append_operation(arith).result(0)?.into();
+    body.append_operation(
+        OperationBuilder::new("linalg.yield", gen.loc())
+            .add_operands(&[value])
+            .build()?,
+    );
+    let region = Region::new();
+    region.append_block(body);
+    let dims: Vec<String> = (0..rank).map(|k| format!("d{k}")).collect();
+    let dims = dims.join(", ");
+    let map = |to: &str| {
+        Attribute::parse(gen.context, &format!("affine_map<({dims}) -> ({to})>"))
+            .ok_or_else(|| LowerError::from("an affine map that does not parse".to_string()))
+    };
+    let (each, scalar) = (map(&dims)?, map("")?);
+    let map_of = |t: Type<'c>| {
+        if tensor_elem(t).is_some() {
+            each
+        } else {
+            scalar
+        }
+    };
+    let parallel = Attribute::parse(gen.context, "#linalg.iterator_type<parallel>")
+        .ok_or_else(|| "an iterator type that does not parse".to_string())?;
+    let generic = OperationBuilder::new("linalg.generic", gen.loc())
+        .add_operands(&[lhs, rhs, out])
+        .add_attributes(&[
+            (
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "indexing_maps"),
+                ArrayAttribute::new(gen.context, &[map_of(lhs_ty), map_of(rhs_ty), each]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "iterator_types"),
+                ArrayAttribute::new(gen.context, &vec![parallel; rank]).into(),
+            ),
+        ])
+        .add_regions([region])
+        .build()?;
+    block.append_operation(generic);
+    Ok((out, out_ty, block))
+}
+
 /// `-t` on a tensor: a new tensor of each element negated, by a `linalg.generic`. A float uses
 /// `arith.negf`, which keeps the sign of zero right; an integer is `0 - x`.
 fn lower_tensor_negate<'c>(
@@ -7204,176 +7421,120 @@ fn lane_tensor_operand<'c>(
     Ok((t, block))
 }
 
-/// How a lane routine runs: `serial` in a region whose `across` loops run on one lane, and
-/// otherwise on the lanes of the block, or of the subgroup in the code of a subgroup. The
-/// attributes, and the lanes that the routine shares its work among.
-fn lane_routine_attrs<'c>(
-    gen: &MeliorGenerator<'c>,
-) -> Result<(Vec<(Identifier<'c>, melior::ir::Attribute<'c>)>, u64), LowerError> {
-    let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let subgroup = gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups);
-    let mut attrs = Vec::new();
-    let lanes = match &gen.across_map {
-        None => {
-            attrs.push((Identifier::new(gen.context, "serial"), unit));
-            1
-        }
-        Some(_) if subgroup => super::across::subgroup_lanes(gen)?,
-        Some(m) => m.lanes,
-    };
-    if subgroup {
-        attrs.push((Identifier::new(gen.context, "subgroup"), unit));
-    }
-    Ok((attrs, lanes))
-}
-
-/// `lanes::copy_async(&mut tile, &x, [i, j, ..])` as `vx.lane_copy_async`, and the wait of its
-/// token as `vx.lane_copy_wait`. In a region on one lane, both are `serial`, so the copy ends
-/// where it starts. `lanes::copy(&mut dst, &src, [i, j, ..])` is `vx.lane_copy`, with no token,
-/// `lanes::fill(&mut tile, v)` is `vx.lane_fill`, and `lanes::scale_rows(&mut tile, &scale)` is
-/// `vx.lane_scale_rows`.
-fn lower_lane_copy<'c>(
+/// A call to a lane routine, or a lane matmul, as its op. In a region whose `across` loops run on
+/// one lane, the op is `serial`: both copies of the kernel expand it into the loops of the CPU.
+/// The value is `None` for a routine with no value.
+#[allow(clippy::type_complexity)]
+pub(crate) fn lower_lane_call<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
-    op: crate::hir::check::lanes::LaneOp,
-    args: &[Expr],
+    routine: &'static crate::hir::check::lanes::LaneRoutine,
+    args: &[&Expr],
 ) -> Result<
     (
-        Value<'c, 'c>,
-        melior::ir::Type<'c>,
+        Option<(Value<'c, 'c>, melior::ir::Type<'c>)>,
         melior::ir::BlockRef<'c, 'c>,
     ),
     LowerError,
 > {
-    let (mut attrs, lanes) = lane_routine_attrs(gen)?;
-    // The tile of a fill or a scale is its first argument, and the tile of a copy out is its
-    // second.
-    let tile = match op {
-        crate::hir::check::lanes::LaneOp::Fill | crate::hir::check::lanes::LaneOp::ScaleRows => {
-            args.first()
+    use crate::hir::check::lanes::{LaneArg, LaneAttr, LaneSite};
+    if args.len() != routine.args.len() {
+        return Err(LowerError::ParseType(format!(
+            "the lane routine `{}` takes {} arguments",
+            routine.name,
+            routine.args.len()
+        )));
+    }
+    let mut block = block;
+    let mut operands = Vec::new();
+    for (&arg, &kind) in args.iter().zip(routine.args) {
+        // An integer of the place, or an `i32`, which the op takes as an `i32`.
+        let mut integer = |gen: &mut MeliorGenerator<'c>, e: &Expr| -> Result<(), LowerError> {
+            let (v, v_ty, b) = gen.generate_expr(e, block)?;
+            block = b;
+            operands.push(gen.coerce_type(&block, v, v_ty, gen.i32_ty)?);
+            Ok(())
+        };
+        match kind {
+            LaneArg::Place => {
+                let Expr::Array(place) = arg else {
+                    return Err(LowerError::ParseType(
+                        "the place of a lane copy is a list such as `[r, c]`".to_string(),
+                    ));
+                };
+                for e in &place.elements {
+                    integer(gen, e)?;
+                }
+            }
+            LaneArg::I32 => integer(gen, arg)?,
+            LaneArg::Scalar => {
+                let (v, _, b) = gen.generate_expr(arg, block)?;
+                block = b;
+                operands.push(v);
+            }
+            _ => {
+                let (t, b) = lane_tensor_operand(gen, arg, block)?;
+                block = b;
+                operands.push(t);
+            }
         }
-        crate::hir::check::lanes::LaneOp::Copy => args.get(1),
+    }
+    let subgroup = gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups);
+    let lanes = match (routine.lanes, &gen.across_map) {
+        (false, _) => 0,
+        (true, None) => 1,
+        (true, Some(_)) if subgroup => super::across::subgroup_lanes(gen)?,
+        (true, Some(m)) => m.lanes,
+    };
+    let own_row = match &gen.across_map {
+        Some(m) if routine.own_row && subgroup => {
+            routine.own_row_of(args, |e| m.subgroup_row_number(e))
+        }
         _ => None,
     };
-    let row = matches!(tile, Some(Expr::Borrow(b)) if gen
-        .across_map
-        .as_ref()
-        .is_some_and(|map| map.row_of_subgroup(&b.expr)));
-    if row {
-        let unit = melior::ir::attribute::Attribute::unit(gen.context);
-        attrs.push((Identifier::new(gen.context, "subgroup_row"), unit));
-    }
-    if op == crate::hir::check::lanes::LaneOp::CopyWait {
-        let [token] = args else {
-            return Err(LowerError::ParseType(
-                "a lane copy wait takes its token".to_string(),
-            ));
-        };
-        let (t, t_ty, block) = gen.generate_expr(token, block)?;
-        let t = gen.coerce_type(&block, t, t_ty, gen.i32_ty)?;
-        let wait = OperationBuilder::new("vx.lane_copy_wait", gen.loc())
-            .add_operands(&[t])
-            .add_attributes(&attrs)
-            .build()?;
-        block.append_operation(wait);
-        let v = constant_i32(gen, block, 0)?;
-        return Ok((v, gen.i32_ty, block));
-    }
-    if op == crate::hir::check::lanes::LaneOp::ScaleRows {
-        let [tile, scale] = args else {
-            return Err(LowerError::ParseType(
-                "a lane scale takes a tile and a tile of scales".to_string(),
-            ));
-        };
-        let (tile, block) = lane_tensor_operand(gen, tile, block)?;
-        let (scale, block) = lane_tensor_operand(gen, scale, block)?;
-        let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
-        attrs.push((
-            Identifier::new(gen.context, "lanes"),
-            IntegerAttribute::new(i64_ty, lanes as i64).into(),
-        ));
-        let op = OperationBuilder::new("vx.lane_scale_rows", gen.loc())
-            .add_operands(&[tile, scale])
-            .add_attributes(&attrs)
-            .build()?;
-        block.append_operation(op);
-        let v = constant_i32(gen, block, 0)?;
-        return Ok((v, gen.i32_ty, block));
-    }
-    if op == crate::hir::check::lanes::LaneOp::Fill {
-        let [tile, value] = args else {
-            return Err(LowerError::ParseType(
-                "a lane fill takes a tile and a value".to_string(),
-            ));
-        };
-        let (tile, block) = lane_tensor_operand(gen, tile, block)?;
-        let (v, _, block) = gen.generate_expr(value, block)?;
-        let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
-        attrs.push((
-            Identifier::new(gen.context, "lanes"),
-            IntegerAttribute::new(i64_ty, lanes as i64).into(),
-        ));
-        let fill = OperationBuilder::new("vx.lane_fill", gen.loc())
-            .add_operands(&[tile, v])
-            .add_attributes(&attrs)
-            .build()?;
-        block.append_operation(fill);
-        let v = constant_i32(gen, block, 0)?;
-        return Ok((v, gen.i32_ty, block));
-    }
-    // `lanes::copy_rows_async(&mut tile, &x, &ids, [first, col])` has the ids before the place.
-    let (dst, src, ids, place) = match args {
-        [dst, src, Expr::Array(place)] => (dst, src, None, place),
-        [dst, src, ids, Expr::Array(place)]
-            if op == crate::hir::check::lanes::LaneOp::CopyAsync =>
-        {
-            (dst, src, Some(ids), place)
-        }
-        _ => {
-            return Err(LowerError::ParseType(
-                "a lane copy takes a tile, a tensor and a place".to_string(),
-            ))
-        }
+    let site = LaneSite {
+        serial: gen.across_map.is_none(),
+        subgroup,
+        subgroup_row: routine.row_tile(args).is_some_and(|t| {
+            gen.across_map
+                .as_ref()
+                .is_some_and(|m| m.row_of_subgroup(t))
+        }),
+        own_row,
+        lane_own: own_row.is_some()
+            && gen
+                .across_map
+                .as_ref()
+                .is_some_and(|m| m.subgroup_keeps_its_row()),
+        lanes,
     };
-    let (dst, block) = lane_tensor_operand(gen, dst, block)?;
-    let (src, mut block) = lane_tensor_operand(gen, src, block)?;
-    let mut operands = vec![dst, src];
-    if let Some(ids) = ids {
-        let (ids, b) = lane_tensor_operand(gen, ids, block)?;
-        block = b;
-        operands.push(ids);
-    }
-    for e in &place.elements {
-        let (v, v_ty, b) = gen.generate_expr(e, block)?;
-        block = b;
-        operands.push(gen.coerce_type(&block, v, v_ty, gen.i32_ty)?);
-    }
-    let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
-    attrs.push((
-        Identifier::new(gen.context, "lanes"),
-        IntegerAttribute::new(i64_ty, lanes as i64).into(),
-    ));
-    if op == crate::hir::check::lanes::LaneOp::Copy {
-        let copy = OperationBuilder::new("vx.lane_copy", gen.loc())
-            .add_operands(&operands)
-            .add_attributes(&attrs)
-            .build()?;
-        block.append_operation(copy);
-        let v = constant_i32(gen, block, 0)?;
-        return Ok((v, gen.i32_ty, block));
-    }
-    let name = if ids.is_some() {
-        "vx.lane_copy_rows_async"
-    } else {
-        "vx.lane_copy_async"
-    };
-    let copy = OperationBuilder::new(name, gen.loc())
+    let attrs: Vec<(Identifier<'c>, Attribute<'c>)> = routine
+        .op_attributes(&site)
+        .into_iter()
+        .map(|(name, value)| {
+            let value = match value {
+                LaneAttr::Unit => Attribute::unit(gen.context),
+                LaneAttr::Str(s) => StringAttribute::new(gen.context, s).into(),
+                LaneAttr::I64(n) => IntegerAttribute::new(gen.i64_ty, n as i64).into(),
+            };
+            (Identifier::new(gen.context, name), value)
+        })
+        .collect();
+    let result = routine.result.map(|value| match value {
+        crate::hir::check::lanes::LaneValue::F32 => gen.f32_ty,
+        crate::hir::check::lanes::LaneValue::I32 => gen.i32_ty,
+    });
+    let mut op = OperationBuilder::new(routine.mlir, gen.loc())
         .add_operands(&operands)
-        .add_attributes(&attrs)
-        .add_results(&[gen.i32_ty])
-        .build()?;
-    let v = block.append_operation(copy).result(0)?.into();
-    Ok((v, gen.i32_ty, block))
+        .add_attributes(&attrs);
+    if let Some(ty) = result {
+        op = op.add_results(&[ty]);
+    }
+    let op = block.append_operation(op.build()?);
+    Ok(match result {
+        Some(ty) => (Some((op.result(0)?.into(), ty)), block),
+        None => (None, block),
+    })
 }
 
 /// The value of `vx::cancel_off(..)` and `vx::cancel_on()`, which nothing reads: the constant 0.
@@ -7397,95 +7558,4 @@ fn cancel_call_value<'c>(
         .build()?;
     let v = block.append_operation(zero).result(0)?.into();
     Ok((v, gen.i32_ty, block))
-}
-
-/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce` or `vx.lane_argmax`.
-/// In a region whose `across` loops run on one lane, the op is `serial`: both copies of the
-/// kernel expand it into the loops of the CPU.
-fn lower_lane_reduce<'c>(
-    gen: &mut MeliorGenerator<'c>,
-    block: melior::ir::BlockRef<'c, 'c>,
-    op: crate::hir::check::lanes::LaneOp,
-    ordered: bool,
-    args: &[Expr],
-) -> Result<
-    (
-        Value<'c, 'c>,
-        melior::ir::Type<'c>,
-        melior::ir::BlockRef<'c, 'c>,
-    ),
-    LowerError,
-> {
-    if matches!(
-        op,
-        crate::hir::check::lanes::LaneOp::CopyAsync
-            | crate::hir::check::lanes::LaneOp::CopyWait
-            | crate::hir::check::lanes::LaneOp::Copy
-            | crate::hir::check::lanes::LaneOp::Fill
-            | crate::hir::check::lanes::LaneOp::ScaleRows
-    ) {
-        return lower_lane_copy(gen, block, op, args);
-    }
-    let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
-    let Some((n, tensors)) = args.split_last() else {
-        return Err(LowerError::ParseType(
-            "a lane reduction takes arguments".to_string(),
-        ));
-    };
-    let sort = op.is_sort();
-    let mut block = block;
-    let mut operands = Vec::new();
-    for tensor in tensors {
-        let (t, b) = lane_tensor_operand(gen, tensor, block)?;
-        block = b;
-        operands.push(t);
-    }
-    let (count, count_ty, block) = gen.generate_expr(n, block)?;
-    operands.push(gen.coerce_type(&block, count, count_ty, gen.i32_ty)?);
-    let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let (mut attrs, lanes) = lane_routine_attrs(gen)?;
-    if sort {
-        // `vx.lane_sort`, whose `lanes` only the GPU expansion reads.
-        let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
-        attrs.push((
-            Identifier::new(gen.context, "lanes"),
-            IntegerAttribute::new(i64_ty, lanes as i64).into(),
-        ));
-        if op == crate::hir::check::lanes::LaneOp::SortDescending {
-            attrs.push((Identifier::new(gen.context, "descending"), unit));
-        }
-        let sort = OperationBuilder::new("vx.lane_sort", gen.loc())
-            .add_operands(&operands)
-            .add_attributes(&attrs)
-            .build()?;
-        block.append_operation(sort);
-        let v = constant_i32(gen, block, 0)?;
-        return Ok((v, gen.i32_ty, block));
-    }
-    let kind = match op {
-        crate::hir::check::lanes::LaneOp::Sum => "sum",
-        _ => "max",
-    };
-    if !argmax {
-        attrs.push((
-            Identifier::new(gen.context, "kind"),
-            StringAttribute::new(gen.context, kind).into(),
-        ));
-    }
-    if ordered {
-        attrs.push((Identifier::new(gen.context, "ordered"), unit));
-    }
-    attrs.extend(super::across::own_row_attrs(gen, tensors));
-    let (name, ty) = if argmax {
-        ("vx.lane_argmax", gen.i32_ty)
-    } else {
-        ("vx.lane_reduce", gen.f32_ty)
-    };
-    let reduce = OperationBuilder::new(name, gen.loc())
-        .add_operands(&operands)
-        .add_attributes(&attrs)
-        .add_results(&[ty])
-        .build()?;
-    let v = block.append_operation(reduce).result(0)?.into();
-    Ok((v, ty, block))
 }

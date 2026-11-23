@@ -1,0 +1,40 @@
+//===- nvptx_region_that_ends_in_a_number_gets_an_image.vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `nvptx64` region that ends in a number gets a PTX image. The kernel adds `ad[0][0]` and
+// `ad[1][1]`, the element 12 bytes after it, and stores the sum in global memory.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}format=ptx\00image={{.*}}ld.global.b32 \09{{%r[0-9]+}}, [{{%rd[0-9]+}}+12];{{.*}}add.s32 \09[[SUM:%r[0-9]+]], {{.*}}st.global.b32 \09[{{%rd[0-9]+}}], [[SUM]];
+// EXPECT: 6
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<i32, [2, 2]>::uninit() };
+  for i in 0..2 {
+    for j in 0..2 {
+      a[i][j] = i * 3 + j + 1;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let v = spawn on(Topology::Dev) {
+    ad[0][0] + ad[1][1]
+  };
+  let hv = transfer(v, Memory::CPU_DRAM);
+  print(hv);
+  return 0;
+}

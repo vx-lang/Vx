@@ -197,6 +197,7 @@ fn write_element_type(w: &mut Writer, e: &ElementType) {
         F8E5M2 => 19,
         F4E2M1 => 20,
         USize => 21,
+        F8E8M0 => 22,
     };
     w.u8(tag);
     if let Generic(s) = e {
@@ -229,6 +230,7 @@ fn read_element_type(r: &mut Reader) -> Result<ElementType, String> {
         19 => F8E5M2,
         20 => F4E2M1,
         21 => USize,
+        22 => F8E8M0,
         t => return Err(format!("vxlib: bad ElementType tag {t}")),
     })
 }
@@ -549,6 +551,10 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             w.u8(16);
             write_type(w, inner)?;
         }
+        DisjointRanges(inner) => {
+            w.u8(17);
+            write_type(w, inner)?;
+        }
         GenericInstance(base, args) => {
             w.u8(9);
             write_type(w, base)?;
@@ -692,6 +698,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             Tensor(e, dims, top)
         }
         16 => Distinct(Box::new(read_type(r)?)),
+        17 => DisjointRanges(Box::new(read_type(r)?)),
         t => return Err(format!("vxlib: bad Type tag {t}")),
     })
 }

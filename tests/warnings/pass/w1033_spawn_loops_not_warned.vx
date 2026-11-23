@@ -1,8 +1,8 @@
-// No W1033 for a `spawn` loop that runs in parallel, nor for one whose passes write memory
-// another pass writes too, which is not meant to run in parallel: a scalar every pass adds to,
-// and one row every pass writes, even after a call that alone would be warned about. Also no
-// W1033 for a region with `barrier()` that runs on blocks and threads. The one warning is that
-// `unused` is not used.
+// No W1033 for a `spawn` loop that runs in parallel, also one whose bound is known only at run
+// time, nor for one whose passes write memory another pass writes too, which is not meant to run
+// in parallel: a scalar every pass adds to, and one row every pass writes, even after a call that
+// alone would be warned about. Also no W1033 for a region with `barrier()` that runs on blocks and
+// threads. The one warning is that `unused` is not used.
 // WARN: Unused variable 'unused'
 // NO-WARN: W1033
 
@@ -37,6 +37,17 @@ fn each_pass_writes_its_own_row() -> f32 {
   return back[0][0];
 }
 
+// A bound known only at run time: the launch passes the trip.
+fn bound_known_only_when_running(n : i32) -> f32 {
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..n {
+      o[r][0] = 1.0;
+    }
+  }
+  return transfer(o, Memory::CPU_DRAM)[0][0];
+}
+
 fn every_pass_adds_to_one_scalar() -> f32 {
   let mut sum = 0.0;
   let x = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
@@ -62,7 +73,7 @@ fn every_pass_writes_row_zero() -> f32 {
 
 fn main() -> i32 {
   let unused = 1;
-  print(each_pass_writes_its_own_row() + every_pass_adds_to_one_scalar() + every_pass_writes_row_zero());
+  print(each_pass_writes_its_own_row() + every_pass_adds_to_one_scalar() + every_pass_writes_row_zero() + bound_known_only_when_running(64));
   return 0;
 }
 

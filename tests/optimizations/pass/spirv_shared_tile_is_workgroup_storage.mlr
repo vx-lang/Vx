@@ -1,0 +1,39 @@
+//===- spirv_shared_tile_is_workgroup_storage.mlr ---------------*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tile in shared memory reaches the SPIR-V argument flattening as a
+// `memref.global` in address space 3. The flattening makes it an LLVM global in
+// address space 3, which LLVM's SPIR-V backend gives Workgroup storage: one
+// copy for each block. The kernel reads and writes the tile through the
+// address of that global, at `index * stride` with the strides of the type.
+//
+// RUN: vx-opt %s --pass-pipeline="builtin.module(gpu.module(vx-flatten-spirv-kernel-args))" | FileCheck %s --implicit-check-not=memref.
+// CHECK: llvm.mlir.global internal @tile() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<128 x f32>
+// CHECK-LABEL: gpu.func @reverse(
+// CHECK: %[[TILE:[0-9]+]] = llvm.mlir.addressof @tile : !llvm.ptr<3>
+// CHECK-NEXT: llvm.mlir.constant(2 : i64) : i64
+// CHECK-NEXT: llvm.mlir.constant(64 : i64) : i64
+// CHECK-NEXT: %[[STRIDE:[0-9]+]] = llvm.mlir.constant(64 : i64) : i64
+// CHECK-NEXT: llvm.mlir.constant(1 : i64) : i64
+// CHECK: %[[I:[0-9]+]] = arith.index_cast %arg0 : index to i64
+// CHECK-NEXT: %[[ROW:[0-9]+]] = llvm.mul %[[I]], %[[STRIDE]] : i64
+// CHECK-NEXT: %[[START:[0-9]+]] = llvm.add %{{[0-9]+}}, %[[ROW]] : i64
+// CHECK-NEXT: %[[J:[0-9]+]] = arith.index_cast %arg1 : index to i64
+// CHECK-NEXT: %[[AT:[0-9]+]] = llvm.add %[[START]], %[[J]] : i64
+// CHECK-NEXT: %[[P:[0-9]+]] = llvm.getelementptr inbounds %[[TILE]][%[[AT]]] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, f32
+// CHECK-NEXT: llvm.store %arg2, %[[P]] : f32, !llvm.ptr<3>
+
+module {
+  gpu.module @kernels {
+    memref.global "private" @tile : memref<2x64xf32, 3> {alignment = 16 : i64}
+    gpu.func @reverse(%i: index, %j: index, %v: f32) kernel {
+      %tile = memref.get_global @tile : memref<2x64xf32, 3>
+      memref.store %v, %tile[%i, %j] : memref<2x64xf32, 3>
+      gpu.return
+    }
+  }
+}

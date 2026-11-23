@@ -1,12 +1,8 @@
 name: GenMC
 
-# Checks the LLVM IR that vxc generates for the Mutex, the channel and Arc, with GenMC under
-# RC11. See formal/compiled/README.md.
+# Checks the LLVM IR that vxc generates for the Mutex, the Semaphore, the channel and Arc, with
+# GenMC under RC11. See formal/compiled/README.md.
 on:
-  push:
-    branches: [ main ]
-    paths: [ 'formal/compiled/**', 'stdlib/core/sync/**', 'stdlib/std/sync/**',
-             'src/dialect/VxLowering.cpp', '.github/workflows/genmc.yml' ]
   pull_request:
     branches: [ main ]
     paths: [ 'formal/compiled/**', 'stdlib/core/sync/**', 'stdlib/std/sync/**',

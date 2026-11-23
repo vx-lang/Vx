@@ -194,7 +194,7 @@ pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
 fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
     // At run time, a `Distinct` tensor is its tensor.
     let ty = match ty {
-        Type::Distinct(inner) => inner.as_ref(),
+        Type::Distinct(inner) | Type::DisjointRanges(inner) => inner.as_ref(),
         ty => ty,
     };
     let Type::Tensor(elem, dims, _) = ty else {
@@ -482,6 +482,10 @@ struct Lowerer<'r> {
     code: Vec<HirInstruction>,
     types: Vec<TypeId>,
     scope: HashMap<Symbol, Binding>,
+    /// The slots whose value cannot change, with that value: the slot of a local that is not
+    /// `mut`, such as a parameter whose address is taken. A device region uses the value, because
+    /// it cannot read a stack slot of the host.
+    fixed_slots: HashMap<u32, Val>,
     /// The frozen nominal-type registry — the source of aggregate layouts (size/align/field offsets)
     /// used to size an aggregate's `Alloca` and select field indices.
     registry: &'r ImmutableGlobalRegistry,
@@ -656,6 +660,7 @@ impl<'r> Lowerer<'r> {
             code: Vec::new(),
             types: Vec::new(),
             scope: HashMap::new(),
+            fixed_slots: HashMap::new(),
             registry,
             memory: false,
             next_block: 1,
@@ -1360,7 +1365,9 @@ impl<'r> Lowerer<'r> {
     }
 
     /// `starts_lifetime`: a struct's slot starts its lifetime here, for a `let` the checker ends.
-    fn bind_local(&mut self, name: Symbol, v: Val, starts_lifetime: bool) {
+    /// `may_change`: the local is a `let mut` or a `mut` parameter. The slot of any other local
+    /// keeps the value that it starts with.
+    fn bind_local(&mut self, name: Symbol, v: Val, starts_lifetime: bool, may_change: bool) {
         if matches!(v.ty, LoweredTy::Tensor { .. }) {
             self.tensor_depth.insert(v.reg.0, self.block_frames.len());
         }
@@ -1416,6 +1423,15 @@ impl<'r> Lowerer<'r> {
                 self.start_lifetime(&slot);
             }
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+            // A value that code of lane 0 alone made may not reach the code after it, so the slot
+            // keeps it.
+            let a_value = matches!(
+                v.ty,
+                LoweredTy::Scalar(_) | LoweredTy::Ptr | LoweredTy::Vector { .. }
+            );
+            if a_value && !may_change && !self.across.on_lane0 {
+                self.fixed_slots.insert(slot.reg.0, v.clone());
+            }
             self.scope.insert(
                 name,
                 Binding::Slot {
@@ -1904,8 +1920,19 @@ impl<'r> Lowerer<'r> {
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
-                if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
-                    return self.lower_lane_reduce(fc, op, ordered);
+                if let Some(routine) = crate::hir::check::lanes::lane_routine(&fc.name) {
+                    let args: Vec<&Expr> = fc.args.iter().collect();
+                    return match self.lower_lane_call(routine, &args)? {
+                        Some(v) => Ok(v),
+                        // The value of a routine with no value, which nothing reads.
+                        None => Ok(self.emit_value(
+                            Opcode::Const,
+                            Register(0),
+                            Register(0),
+                            ElementType::I32,
+                            0,
+                        )),
+                    };
                 }
                 // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
                 // runtime, with the time limit of the drop in nanoseconds.
@@ -2124,11 +2151,14 @@ impl<'r> Lowerer<'r> {
             // *local* that lives in a slot (`&v` where `v` is a struct slot, or `&x` where `x` is an
             // address-taken scalar demoted to a slot by the pre-pass, #230) yields the slot's
             // `!llvm.ptr` — the pointer a `&Vec<T>` method receives so `v.len()` lowers (#242), or the
-            // `&i32` a `pick(a : &i32, ..)` argument passes. Only scalars/aggregates are ever slotted,
-            // so the slot register is the pointee's address in both cases.
+            // `&i32` a `pick(a : &i32, ..)` argument passes. A tensor local in a slot is the
+            // exception: the slot holds the tensor, and borrowing a tensor gives the tensor.
             Expr::Borrow(b) => {
                 if let Expr::Identifier(id) = &*b.expr {
-                    if let Some(Binding::Slot { reg, .. }) = self.scope.get(&id.name).cloned() {
+                    if let Some(Binding::Slot { reg, ty }) = self.scope.get(&id.name).cloned() {
+                        if matches!(ty, LoweredTy::Tensor { .. }) {
+                            return Ok(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0));
+                        }
                         return Ok(Val {
                             reg,
                             ty: LoweredTy::Ptr,
@@ -2441,9 +2471,11 @@ impl<'r> Lowerer<'r> {
                     lowered_ty(&sig.ret_ty, self.registry)
                 }
             },
+            // A name that the arm's pattern binds hides any outer local of that name, so the
+            // payload type comes first.
             Expr::Match(m) => m.arms.iter().find_map(|arm| {
-                self.infer_block_ty(&arm.body)
-                    .or_else(|| self.infer_payload_binding_ty(m, arm))
+                self.infer_payload_binding_ty(m, arm)
+                    .or_else(|| self.infer_block_ty(&arm.body))
             }),
             Expr::If(iff) => self.infer_if_ty(iff),
             // `t.extent(k)`, as the checker rewrites it: an `i32`, as `lower_expr` emits it.
@@ -2498,6 +2530,9 @@ impl<'r> Lowerer<'r> {
         let Expr::Identifier(id) = &es.expr else {
             return None;
         };
+        if arm.body_declares(id.name.as_ref()) {
+            return None;
+        }
         let crate::syntax::Pattern::EnumVariant(pattern_en, variant, Some(pats)) = &arm.pattern
         else {
             return None;
@@ -2539,6 +2574,11 @@ impl<'r> Lowerer<'r> {
     fn infer_ast_type(&self, e: &Expr) -> Option<Type> {
         match e {
             Expr::Identifier(id) => self.ast_types.get(&id.name).cloned(),
+            Expr::StringLiteral(_) => Some(Type::Pointer(
+                Box::new(Type::Scalar(ElementType::I8)),
+                None,
+                false,
+            )),
             Expr::EnumVariant(ev) => enum_construct_type(ev),
             // A numeric literal's own scalar type (`let x = 5` -> `i32`), so an unannotated `let`
             // records its type in `ast_types` and a later chain resolves — `&x : &i32`, `&&x : &&i32`,
@@ -3281,7 +3321,7 @@ impl<'r> Lowerer<'r> {
                                 let tensor = matches!(pval.ty, LoweredTy::Tensor { .. });
                                 self.note_shadow(pname);
                                 self.ast_types.insert(pname.clone(), payload_type);
-                                self.bind_local(pname.clone(), pval, false);
+                                self.bind_local(pname.clone(), pval, false, false);
                                 if tensor {
                                     match self.scope.get(pname) {
                                         Some(Binding::Reg(v)) => {
@@ -3954,7 +3994,7 @@ impl<'r> Lowerer<'r> {
         if let [item] = args {
             self.ast_types.insert(f.iter.as_str().into(), item.clone());
         }
-        self.bind_local(f.iter.as_str().into(), x, false);
+        self.bind_local(f.iter.as_str().into(), x, false, false);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
         self.lower_block(&f.body)?;
         self.loop_stack.pop();
@@ -4019,6 +4059,8 @@ impl<'r> Lowerer<'r> {
         let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
         let name = self.strings.len() as u64 + 1;
         self.strings.push(s.top.display_name());
+        // The string after the name is the line of the `spawn`. A runtime error names it.
+        self.strings.push(s.span.line.to_string());
         // The host computes the launch shape before the region starts, from the loops of blocks
         // of a region with `across` loops (#252), whose block has a number of lanes.
         let lanes = across_block_lanes(&s.stmts);
@@ -4218,9 +4260,9 @@ impl<'r> Lowerer<'r> {
             return lowered;
         }
         // The value of a block that can fail is in a slot: its last value, or the failure of a
-        // join that leaves it.
+        // join that leaves it. When nothing uses the value, nothing reads the failure either.
         let value = match (&u.fails_as, &u.ret) {
-            (Some(ty), Some(_)) => {
+            (Some(ty), _) => {
                 let lty = self.lower_ty_synth(ty).ok_or(Decline::TypeNotModelled {
                     what: "the type of a tasks block that can fail",
                 })?;
@@ -4436,9 +4478,7 @@ impl<'r> Lowerer<'r> {
             .tasks_exits
             .last()
             .and_then(|t| t.value.clone())
-            .ok_or(Decline::Unsupported {
-                what: "a failed join in a tasks block whose value is not used",
-            })?;
+            .expect("a tasks block that can fail has a slot for its failure");
         let failure = Expr::EnumVariant(crate::syntax::failure_of(&ty, value.clone(), span));
         let v = self.lower_expr(&failure)?;
         let v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
@@ -4460,6 +4500,25 @@ impl<'r> Lowerer<'r> {
     ) -> Lowered<Option<Val>> {
         let tail_slot = self.region_tail_slot.take();
         let cancels_on_err = self.region_cancels_on_err.take();
+        let on_device = !matches!(
+            imm as u32 as i32,
+            crate::arch::TASK_DISPATCH_ID | crate::arch::TASKS_BLOCK_DISPATCH_ID
+        );
+        // A device cannot read a stack slot of the host. So in the region, a name in a slot whose
+        // value cannot change means that value.
+        let fixed: Vec<_> = if on_device {
+            self.scope
+                .iter()
+                .filter_map(|(name, b)| match b {
+                    Binding::Slot { reg, .. } => {
+                        Some((name.clone(), self.fixed_slots.get(&reg.0)?.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
@@ -4495,11 +4554,11 @@ impl<'r> Lowerer<'r> {
         // ownership. Failing both, the region lowers serially -- rejection is always free.
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
+        for (name, v) in fixed {
+            self.note_shadow(&name);
+            self.scope.insert(name, Binding::Reg(v));
+        }
         self.spawn_depth += 1;
-        let on_device = !matches!(
-            imm as u32 as i32,
-            crate::arch::TASK_DISPATCH_ID | crate::arch::TASKS_BLOCK_DISPATCH_ID
-        );
         self.device_depth += on_device as u32;
         let par = if offer_parallel {
             parallel_outer_for(stmts)
@@ -4517,7 +4576,11 @@ impl<'r> Lowerer<'r> {
                 self.lower_stmt(stmt)?;
             }
             self.stride_next_for = false;
-            par.map(|(_, t)| t).unwrap_or(0)
+            match par {
+                Some((_, crate::hir::check::parallel::RUN_TIME_TRIP)) => SPAWN_RUN_TIME_TRIP,
+                Some((_, trip)) => trip,
+                None => 0,
+            }
         } else if let Some((btrip, plan)) = two_level {
             self.stride_plan = Some(plan);
             for stmt in stmts {
@@ -6596,7 +6659,9 @@ impl<'r> Lowerer<'r> {
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Lowered<Val> {
         // `Verified(x)` is the checker-level wrapper in value position -- the identity at
         // runtime, exactly as the AST path erases it. Lower the wrapped value directly.
-        if matches!(fc.name.as_ref(), "Verified" | "Distinct") && fc.args.len() == 1 {
+        if matches!(fc.name.as_ref(), "Verified" | "Distinct" | "DisjointRanges")
+            && fc.args.len() == 1
+        {
             return self.lower_expr(&fc.args[0]);
         }
         // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
@@ -7260,6 +7325,9 @@ impl<'r> Lowerer<'r> {
                     .or(fn_value_ty)
                 {
                     self.ast_types.insert(l.name.clone(), t);
+                } else {
+                    // The type of an earlier local of this name is not the type of this one.
+                    self.ast_types.remove(&l.name);
                 }
                 // `let r = &<lvalue>` the escape analysis realized as a place (§5): bind `r` to the
                 // borrowed *place expression* itself, so `*r` re-lowers it (a bare local reads directly
@@ -7437,7 +7505,7 @@ impl<'r> Lowerer<'r> {
                     // A task writes its result into the slot while the code goes on, so the
                     // slot's lifetime cannot start after the `spawn`.
                     let from_a_task = matches!(&l.expr, Expr::UnsafeBlock(u) if u.task.is_some());
-                    self.bind_local(l.name.clone(), v, !from_a_task);
+                    self.bind_local(l.name.clone(), v, !from_a_task, l.is_mut);
                 }
                 Ok(())
             }
@@ -7934,7 +8002,8 @@ fn try_lower<'r>(
         {
             lw.scope.insert(name.clone(), Binding::Reg(incoming));
         } else {
-            lw.bind_local(name.clone(), incoming, false);
+            let may_change = func.mut_params.contains(name);
+            lw.bind_local(name.clone(), incoming, false, may_change);
         }
     }
     for (si, stmt) in func.body.iter().enumerate() {
@@ -8024,6 +8093,7 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
         // runtime value is the inner type, exactly as the AST codegen's `lower_type` peels them.
         Type::Verified(inner)
         | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Ref(inner, _)
         | Type::Pinned(inner, _) => lowered_ty(inner, registry),
         _ => None,
@@ -8039,6 +8109,7 @@ fn is_dyn_tensor(ty: &Type) -> bool {
         Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
         Type::Verified(inner)
         | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Ref(inner, _)
         | Type::Pinned(inner, _) => is_dyn_tensor(inner),
         Type::Borrow { inner, .. } => is_dyn_tensor(inner),
@@ -8826,7 +8897,7 @@ fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
         // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
         Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
-        Type::Distinct(inner) => enum_payload_size_align(inner),
+        Type::Distinct(inner) | Type::DisjointRanges(inner) => enum_payload_size_align(inner),
         _ => None,
     }
 }
@@ -9103,8 +9174,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::TensorDim
             // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
             | Opcode::PtrIndex
-            | Opcode::PtrStore
-            | Opcode::LaneReduce => {
+            | Opcode::PtrStore => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
@@ -9191,6 +9261,10 @@ pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 /// whole walk before the next thread stages its rows, which is a different program. The
 /// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
 pub const SPAWN_COOP: u64 = 1 << 61;
+
+/// The `SpawnEnd` imm bit that says "the outermost loop runs in parallel, and its trip count is
+/// known only at run time". The low 32 bits are then 0.
+pub const SPAWN_RUN_TIME_TRIP: u64 = 1 << 60;
 
 pub(crate) mod across;
 mod affine;

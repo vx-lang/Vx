@@ -658,7 +658,7 @@ impl<'a> TypeChecker<'a> {
                 // did not typecheck, and the stdlib `copy` is a copy-*into*
                 // rather than a duplication. That is enough for a test and never
                 // enough for a model, whose weights are read once per token.
-                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, _top_r))) = (
+                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, top_r))) = (
                     Self::as_tensor_operand(&lhs_ty),
                     Self::as_tensor_operand(&rhs_ty),
                 ) {
@@ -709,10 +709,40 @@ impl<'a> TypeChecker<'a> {
                                     return Type::Unknown;
                                 }
                             }
+                            // In a device region, the product goes to the memory that its
+                            // target names, such as registers for sums in `Memory::REG`. Tiles in
+                            // two memories, such as weights in HBM and activations in shared
+                            // memory, need such a target: a default would hide a copy.
+                            let target = self
+                                .expected_type
+                                .as_ref()
+                                .and_then(Self::as_tensor_operand)
+                                .and_then(|(_, _, t)| t.clone())
+                                .filter(|_| self.device_spawn.is_some());
+                            let top = match (top_l, top_r) {
+                                _ if target.is_some() => target,
+                                (Some(l), Some(r))
+                                    if l.space != r.space && self.device_spawn.is_some() =>
+                                {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3004,
+                                        format!(
+                                            "the tiles of this `@` are in {} and in {}, so the \
+                                             product needs a target that names its memory; \
+                                             assign it to a tensor whose type names one",
+                                            l.as_written(),
+                                            r.as_written()
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                    return Type::Unknown;
+                                }
+                                _ => top_l.clone(),
+                            };
                             return Type::Tensor(
                                 el_ty_l.clone(),
                                 vec![dims_l[0].clone(), dims_r[1].clone()],
-                                top_l.clone(),
+                                top,
                             );
                         }
                     }
@@ -766,7 +796,7 @@ impl<'a> TypeChecker<'a> {
                                 return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
                             }
                         }
-                        return shape_side.clone();
+                        return Self::owned_tensor_result(shape_side);
                     }
                 }
 
@@ -813,9 +843,18 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
-                lhs_ty
+                Self::owned_tensor_result(&lhs_ty)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// The type of the result of an elementwise operation whose operand has type `operand`. The
+    /// result is a new tensor, also when the operand is a borrow of one, as in `&a + &a`.
+    fn owned_tensor_result(operand: &Type) -> Type {
+        match operand {
+            Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => (**inner).clone(),
+            other => other.clone(),
         }
     }
 
@@ -912,8 +951,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
-    /// no elementwise lowering and are not defined on every element type. Returns false,
-    /// having reported E3030, when the operands are outside what the operator accepts.
+    /// no elementwise lowering and are not defined on every element type. `+`, `-`, `*`
+    /// and `/` only refuse two bools. Returns false, having reported E3030, when the operands
+    /// are outside what the operator accepts.
     ///
     /// Shared by `a % b` and `a %= b` so the two cannot drift apart. Before this was
     /// shared, the compound form was checked by the plain assignment rule, which does not
@@ -937,6 +977,38 @@ impl<'a> TypeChecker<'a> {
     ) -> bool {
         let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
         let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
+        // The other arithmetic operators take tensors too, so they refuse only two bools.
+        // As 1-bit integers, `true + true` would be `false`.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            let is_bool = |t: &Type| Self::scalar_elem(t) == Some(ElementType::Bool);
+            // One `bool` and one number is a type mismatch, which the caller reports.
+            if !(is_bool(lhs_ty) && is_bool(rhs_ty)) {
+                return true;
+            }
+            // A shaped tensor has no `&`, `|` or `^` either, so the hint is for single values.
+            let hint = if Self::single_value_elem(lhs_ty).is_some()
+                && Self::single_value_elem(rhs_ty).is_some()
+            {
+                ". For bools, use `&` (and), `|` (or) or `^` (xor)"
+            } else {
+                ""
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3030,
+                format!(
+                    "`{}` takes two numbers, got {} and {}{}",
+                    binary_op_symbol(op),
+                    lhs_ty,
+                    rhs_ty,
+                    hint
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+            return false;
+        }
         if *op != BinaryOp::Rem && !bitwise && !shift {
             return true;
         }

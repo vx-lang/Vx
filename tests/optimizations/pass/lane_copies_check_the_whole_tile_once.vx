@@ -21,7 +21,7 @@
 // CHECK-NEXT: for (
 // CHECK-NOT: ?
 // CHECK: float [[X:v[0-9]+]] = p1[p1_o + {{v[0-9]+}} * p1_s0 + {{v[0-9]+}} * p1_s1];
-// CHECK-NEXT: vx_npu_kernel_0_smem_0[{{.*}}] = [[X]];
+// CHECK-NEXT: (vx_npu_kernel_0_smem_0 + {{.*}})[{{[0-9]+}}] = [[X]];
 // CHECK: } else {
 // CHECK: int {{v[0-9]+}} = {{v[0-9]+}} ? {{v[0-9]+}} : {{v[0-9]+}};
 pub fn into_the_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, top : i32) -> void {
@@ -45,7 +45,7 @@ pub fn into_the_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, 
 // CHECK: p0[p0_o + {{v[0-9]+}} * p0_s0 + {{v[0-9]+}} * p0_s1] = {{v[0-9]+}};
 // CHECK: } else {
 // CHECK: if ({{v[0-9]+}}) {
-// CHECK-NEXT: float {{v[0-9]+}} = vx_npu_kernel_1_smem_0[
+// CHECK-NEXT: float {{v[0-9]+}} = (vx_npu_kernel_1_smem_0 +
 pub fn out_of_the_tile(y : &mut Tensor<f32, [?, ?], Memory::HBM>, top : i32) -> void {
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {

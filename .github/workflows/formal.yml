@@ -5,9 +5,6 @@ name: Formal model
 # memalloy needs local patches to build, so formal/memory_model/memalloy is checked by hand.
 # TLC checks the models of the runtime protocols in formal/runtime.
 on:
-  push:
-    branches: [ main ]
-    paths: [ 'formal/**', '.github/workflows/formal.yml' ]
   pull_request:
     branches: [ main ]
     paths: [ 'formal/**', '.github/workflows/formal.yml' ]

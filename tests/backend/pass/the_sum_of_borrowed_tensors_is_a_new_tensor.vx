@@ -1,0 +1,55 @@
+//===- the_sum_of_borrowed_tensors_is_a_new_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `&a + &a` reads `a` and makes a new tensor `d`, not a borrow. So `&d` borrows it again, as for
+// any tensor. `on_the_heap` makes tensors too large for the stack, and the program frees each
+// of them once.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn rank_one() -> f32 {
+  let a = Tensor<f32, [3]>::fill(1.0);
+  let d = &a + &a;
+  let e = &d + &a;
+  return e[0] + d[2];
+}
+
+fn rank_two() -> f32 {
+  let mut a = Tensor<f32, [2, 3]>::new();
+  a[1][2] = 4.0;
+  let d = &a + &a;
+  let e = &d - &a;
+  return e[1][2] + d[1][2];
+}
+
+fn from_parameters(a : &Tensor<f32, [4]>, b : &Tensor<f32, [4]>) -> f32 {
+  let d = a + b;
+  let e = &d * &d;
+  return e[3];
+}
+
+fn on_the_heap() -> f32 {
+  let a = Tensor<f32, [100000]>::fill(1.0);
+  let d = &a + &a;
+  let e = &d + &a;
+  return e[99999];
+}
+
+fn main() -> i32 {
+  let p = Tensor<f32, [4]>::fill(3.0);
+  let q = Tensor<f32, [4]>::fill(4.0);
+  // CHECK: {{^}}5 12 49{{$}}
+  println!("{} {} {}", rank_one(), rank_two(), from_parameters(&p, &q));
+  let mut total : f32 = 0.0;
+  for _i in 0..3 {
+    total = total + on_the_heap();
+  }
+  // CHECK-NEXT: {{^}}heap 9{{$}}
+  println!("heap {}", total);
+  return 0;
+}
