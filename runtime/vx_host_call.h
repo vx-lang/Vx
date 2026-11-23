@@ -90,11 +90,12 @@ static inline ffi_type *vx_abi_ffi_type(int32_t tag) {
 /// this before running an outlined kernel on the host, and a cooperative kernel
 /// dies with its reason instead of lying.
 static inline void vx_host_refuse_coop(const void *payload, size_t payload_size,
-                                       const char *kernel_name,
                                        const char *backend) {
   if (!vx_payload_field(payload, payload_size, "coop=")) {
     return;
   }
+  char kernel_name[512];
+  vx_kernel_label(payload, payload_size, kernel_name, sizeof kernel_name);
   fprintf(stderr,
           "[Vx %s] FATAL: %s is a cooperative kernel -- its barriers are\n"
           "        inside the thread loop, so no serial order of that loop\n"
