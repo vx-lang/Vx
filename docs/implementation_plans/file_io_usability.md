@@ -10,18 +10,18 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 ## Current API and migration
 
-- `File::open_raw(path)` opens a file that exists, for reading. It returns `Result<File, Error>`.
+- `File::open_raw(path)` opens a file that exists, for reading. It returns `Result<File, IoError>`.
 - `File::create_raw(path)` makes a file for writing, or makes an existing file empty.
 - `File::create_new_raw(path)` makes a new file for reading and writing, in one step. It fails if the file exists. This is Rust's `File::create_new`.
 - `OpenOptions::new()` turns every choice off. Its setters `read`, `write`, `append`, `create`, `truncate` and `create_new` take a `bool`.
-- `OpenOptions::open_raw(path)` checks the combination of choices, and returns an `Error` when the open fails.
-- `File::read_raw` and `write_raw` take a raw buffer and a `usize` length. They return `Result<usize, Error>`.
+- `OpenOptions::open_raw(path)` checks the combination of choices, and returns an `IoError` when the open fails.
+- `File::read_raw` and `write_raw` take a raw buffer and a `usize` length. They return `Result<usize, IoError>`.
 - `File` implements `Seek::seek_to`. `SeekFrom::Start(u64)`, `Current(i64)` and `End(i64)` give the position.
 - `Seek::stream_position` returns the position.
 - `File` owns its handle, and `Drop` closes it. A failed open makes no `File`.
 - `File` implements `HostOnly`, so device code cannot use it (E6038). The E6038 message gives the reason for a channel or a lock ("can wait for the host"), which is wrong for a file. Issue #3620 tracks the fix. Until then, `a_file_in_a_device_body.vx` checks only the start of the message.
-- `Error::from_kind` makes an error with no OS code. `from_raw_os_error` keeps the OS code and gets its kind on this host.
-- `Error::with_operation` sets the operation. `message_c_str` returns the name of the kind as a C string, until Vx has text formatting.
+- `IoError::from_kind` makes an error with no OS code. `from_raw_os_error` keeps the OS code and gets its kind on this host.
+- `IoError::with_operation` sets the operation. `message_c_str` returns the name of the kind as a C string, until Vx has text formatting.
 
 A raw path must point to a NUL-terminated string. On Unix, the path can hold bytes that are not UTF-8.
 A read buffer must hold `len` bytes that the program can write. A write buffer must hold `len` bytes with values.
@@ -30,19 +30,19 @@ A short transfer is not an error. A read count of 0 is the end of the file, and 
 On Unix, a read does not clear the buffer first. On macOS, a read asks for at most `i32::MAX - 1` bytes, because macOS refuses a larger request.
 The Rust file bridge still does the work. [The error contract](io_error_contract.md) gives its status codes.
 
-`Error` is `Copy` today. A later message or cause, as in Rust's `io::Error`, cannot be `Copy`. So adding one removes `Copy`, which breaks a program that copies an `Error`. The doc comment of `Error` warns about this. RFC question Q3 decides the shape of the error type, and `Copy` must not decide it first.
+`IoError` is `Copy` today. A later message or cause, as in Rust's `io::Error`, cannot be `Copy`. So adding one removes `Copy`, which breaks a program that copies an `IoError`. The doc comment of `IoError` warns about this. RFC question Q3 decides the shape of the error type, and `Copy` must not decide it first.
 
 ## Deprecated APIs
 
-These APIs are deprecated since 0.0.5. Each doc comment has a `# Stage` section that names the replacement. Vx has no deprecation attribute yet, so the compiler gives no warning.
+These APIs are deprecated. Each doc comment has a `# Stage` section that names the replacement. Vx has no deprecation attribute yet, so the compiler gives no warning.
 
 | Deprecated API | Replacement |
 | --- | --- |
 | `OpenMode` | `OpenOptions` |
 | `File::open(path, OpenMode) -> File` | `File::open_raw`, `create_raw` or `OpenOptions::open_raw` |
-| `File::read(buffer, u64) -> u64` | `File::read_raw(buffer, usize) -> Result<usize, Error>` |
-| `File::write(buffer, u64) -> u64` | `File::write_raw(buffer, usize) -> Result<usize, Error>` |
-| `File::seek(offset, whence) -> i64` | `Seek::seek_to(SeekFrom) -> Result<u64, Error>` |
+| `File::read(buffer, u64) -> u64` | `File::read_raw(buffer, usize) -> Result<usize, IoError>` |
+| `File::write(buffer, u64) -> u64` | `File::write_raw(buffer, usize) -> Result<usize, IoError>` |
+| `File::seek(offset, whence) -> i64` | `Seek::seek_to(SeekFrom) -> Result<u64, IoError>` |
 
 The deprecated APIs hide errors: a failed open gives a `File` with a null handle, and a failed read gives 0.
 They keep their names, signatures and behavior until they are removed. The standard library RFC (section 6) says that a deprecated item stays for at least one release before 1.0.
@@ -64,10 +64,10 @@ Until then, a new safe API needs a new name. The names in the table below are pl
 | Safe text and formatting traits | `Display`, `Debug`, error messages and causes | Format without exposing C pointers or requiring eager allocation. |
 
 Byte counts use `usize`; absolute file offsets use `u64`.
-The intended basic `Read` and `Write` operations return `Result<usize, Error>`.
-`read_exact` and `write_all` return `Result<void, Error>` and retry interrupted calls.
+The intended basic `Read` and `Write` operations return `Result<usize, IoError>`.
+`read_exact` and `write_all` return `Result<void, IoError>` and retry interrupted calls.
 Basic operations report interruption. Exact reads report `UnexpectedEof`, and complete writes report `WriteZero` when progress stops.
-`Seek::rewind` is also deferred until generic `Result<void, Error>::unwrap` works on both code generators.
+`Seek::rewind` is also deferred until generic `Result<void, IoError>::unwrap` works on both code generators.
 This branch does not implement those prerequisites or claim the gated interfaces are usable.
 
 ## Blockers and their issues
@@ -82,10 +82,9 @@ The table lists what makes it long, and what removes each part. "No issue yet" m
 | A string literal is `*const i8`, but `write_raw` takes `*const u8`. A program must copy the text into a `Vec<u8>`. | `str` with `as_bytes()` | #532 |
 | Vx cannot cast `*const i8` to `*const u8`. | A pointer cast between byte types. This is smaller than `str`, and helps before it. | No issue yet |
 | A write needs a loop, because `write_raw` can take fewer bytes. A read of an exact size also needs a loop. | `write_all` and `read_exact` on slices. Before slices, `write_all_raw` and `read_exact_raw` on raw pointers can remove the loop. | No issue yet |
-| An `Error` cannot print itself, so a program calls `message_c_str`. | Text formatting traits, from the core-library plan | No issue yet |
+| An `IoError` cannot print itself, so a program calls `message_c_str`. | Text formatting traits, from the core-library plan | No issue yet |
 | `Vec` lengths are `i32`. | `Vec` with 64-bit lengths | #3271 |
 | Each program imports `core::result`, `std::fs` and `std::io`. | A prelude | #529 |
-| A program cannot test a raw pointer for null. | Null checks on raw pointers | #714 |
 | Device code that uses a `File` gets E6038 with a reason for channels and locks. | A message that is true for each `HostOnly` type | #3620 |
 
 Two compiler bugs made the example in the book chapter harder to write:
@@ -164,7 +163,7 @@ Removing Rust from `Vec` and `String` is separate work: #3271 for `Vec`, and #84
 - [ ] Define the accepted path type and its encoding policy. On Unix, preserve path bytes; reject embedded NUL rather than truncating. Define a separate policy for any future Windows backend.
 - [ ] Add a bounded borrowed byte view or an owned byte buffer with a checked length and capacity. A safe read must take the buffer's capacity from that value, not a caller-supplied raw pointer and unrelated count. Keep a clearly marked unsafe raw entry point for low-level use.
 - [ ] Make allocation failure and growth failure reportable for the owned byte buffer, with checked size conversions and an explicit maximum size. Today's `std::vec::Vec` has an `i32` length, requires manual `free`, and its Rust allocator aborts on allocation failure.
-- [ ] Resolve Vx raw-pointer null checks (Vx#714) where the native backend or native allocator needs them. Test empty buffers and zero-length calls without forming an invalid reference.
+- [x] Resolve Vx raw-pointer null checks (Vx#714). `core::ptr::is_null_mut` works. Test empty buffers and zero-length calls without forming an invalid reference.
 - [ ] If the goal is **no Rust bridge anywhere in this API**, use Vx-owned path and byte storage as well: today's `std::vec::Vec` allocator and `std::string::String` storage call Rust core functions.
 
 ### Make ownership and cleanup enforceable

@@ -80,11 +80,11 @@ fn fallible_file_calls_clear_every_available_output_on_invalid_arguments() -> Re
             // The handle and buffer are valid; non-null outputs are distinct locals.
             if is_write {
                 unsafe {
-                    vx_file_try_write(file, byte.as_ptr(), 1, count, native_code, has_native_code)
+                    _vx_file_try_write(file, byte.as_ptr(), 1, count, native_code, has_native_code)
                 }
             } else {
                 unsafe {
-                    vx_file_try_read(
+                    _vx_file_try_read(
                         file,
                         byte.as_mut_ptr(),
                         1,
@@ -136,7 +136,7 @@ fn fallible_file_calls_reject_null_handles_and_nonempty_null_buffers() -> Result
         let (mut count, mut code, mut has_code) = (99, 99, true);
         let null_handle_status = if is_write {
             unsafe {
-                vx_file_try_write(
+                _vx_file_try_write(
                     std::ptr::null_mut(),
                     byte.as_ptr(),
                     1,
@@ -147,7 +147,7 @@ fn fallible_file_calls_reject_null_handles_and_nonempty_null_buffers() -> Result
             }
         } else {
             unsafe {
-                vx_file_try_read(
+                _vx_file_try_read(
                     std::ptr::null_mut(),
                     byte.as_mut_ptr(),
                     1,
@@ -166,7 +166,7 @@ fn fallible_file_calls_reject_null_handles_and_nonempty_null_buffers() -> Result
         (count, code, has_code) = (99, 99, true);
         let null_buffer_status = if is_write {
             unsafe {
-                vx_file_try_write(
+                _vx_file_try_write(
                     file,
                     std::ptr::null(),
                     1,
@@ -177,7 +177,7 @@ fn fallible_file_calls_reject_null_handles_and_nonempty_null_buffers() -> Result
             }
         } else {
             unsafe {
-                vx_file_try_read(
+                _vx_file_try_read(
                     file,
                     std::ptr::null_mut(),
                     1,
@@ -220,7 +220,7 @@ fn fallible_file_calls_reject_oversized_lengths_before_io() -> Result<(), String
     let oversized = isize::MAX as u64 + 1;
     let (mut count, mut code, mut has_code) = (99, 99, true);
     let read_status = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             byte.as_mut_ptr(),
             oversized,
@@ -237,7 +237,7 @@ fn fallible_file_calls_reject_oversized_lengths_before_io() -> Result<(), String
 
     (count, code, has_code) = (99, 99, true);
     let normal_read = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             byte.as_mut_ptr(),
             1,
@@ -254,7 +254,7 @@ fn fallible_file_calls_reject_oversized_lengths_before_io() -> Result<(), String
 
     (count, code, has_code) = (99, 99, true);
     let write_status = unsafe {
-        vx_file_try_write(
+        _vx_file_try_write(
             file,
             b"X".as_ptr(),
             oversized,
@@ -310,7 +310,7 @@ fn fallible_file_read_classifies_a_real_would_block_failure() -> Result<(), Stri
     let mut code = 99;
     let mut has_code = false;
     let status = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             byte.as_mut_ptr(),
             byte.len() as u64,
@@ -337,7 +337,7 @@ fn fallible_file_transfer_reports_successful_byte_counts() -> Result<(), String>
     let mut code = 99;
     let mut has_code = true;
     let written =
-        unsafe { vx_file_try_write(file, b"R".as_ptr(), 1, &mut count, &mut code, &mut has_code) };
+        unsafe { _vx_file_try_write(file, b"R".as_ptr(), 1, &mut count, &mut code, &mut has_code) };
     if written != 0 || count != 1 || code != 0 || has_code {
         vx_file_drop(file);
         return Err(format!(
@@ -348,7 +348,7 @@ fn fallible_file_transfer_reports_successful_byte_counts() -> Result<(), String>
     let mut byte = [0u8; 1];
     count = 99;
     let read = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             byte.as_mut_ptr(),
             1,
@@ -359,7 +359,9 @@ fn fallible_file_transfer_reports_successful_byte_counts() -> Result<(), String>
     };
     vx_file_drop(file);
     if position != 0 || read != 0 || count != 1 || byte != *b"R" || code != 0 || has_code {
-        return Err(format!("read returned position {position}, status {read}, count {count}, bytes {byte:?}, native code {has_code}"));
+        return Err(format!(
+            "read returned position {position}, status {read}, count {count}, bytes {byte:?}, native code {has_code}"
+        ));
     }
     Ok(())
 }
@@ -375,7 +377,7 @@ fn fallible_file_read_accepts_uninitialized_writable_memory() -> Result<(), Stri
     let mut byte = std::mem::MaybeUninit::<u8>::uninit();
     let (mut count, mut code, mut has_code) = (99, 99, true);
     let status = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             byte.as_mut_ptr(),
             1,
@@ -405,7 +407,7 @@ fn fallible_file_read_reports_a_short_success_before_eof() -> Result<(), String>
     let mut buffer = [0u8; 4];
     let (mut count, mut code, mut has_code) = (99, 99, true);
     let status = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             buffer.as_mut_ptr(),
             buffer.len() as u64,
@@ -423,7 +425,7 @@ fn fallible_file_read_reports_a_short_success_before_eof() -> Result<(), String>
 
     count = 99;
     let eof = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             buffer.as_mut_ptr(),
             buffer.len() as u64,
@@ -460,7 +462,7 @@ fn fallible_file_write_reports_a_short_success() -> Result<(), String> {
         .collect();
     let (mut count, mut code, mut has_code) = (99, 99, true);
     let status = unsafe {
-        vx_file_try_write(
+        _vx_file_try_write(
             file,
             buffer.as_ptr(),
             buffer.len() as u64,
@@ -500,7 +502,7 @@ fn fallible_file_read_separates_eof_from_an_os_error() -> Result<(), String> {
     let mut code = 99;
     let mut has_code = true;
     let eof = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             byte.as_mut_ptr(),
             1,
@@ -517,7 +519,7 @@ fn fallible_file_read_separates_eof_from_an_os_error() -> Result<(), String> {
     }
     count = 99;
     let empty = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             std::ptr::null_mut(),
             0,
@@ -551,7 +553,7 @@ fn fallible_file_read_separates_eof_from_an_os_error() -> Result<(), String> {
     let file = into_ffi_file(file);
     count = 99;
     let failure = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             byte.as_mut_ptr(),
             1,
@@ -563,7 +565,11 @@ fn fallible_file_read_separates_eof_from_an_os_error() -> Result<(), String> {
     vx_file_drop(file);
     // EBADF has no dedicated portable category in the Vx error contract.
     if failure != 12 || count != 0 || !has_code || Some(code) != expected.raw_os_error() {
-        return Err(format!("read failure returned status {failure}, count {count}, native code {code}; expected kind {:?} and code {:?}", expected.kind(), expected.raw_os_error()));
+        return Err(format!(
+            "read failure returned status {failure}, count {count}, native code {code}; expected kind {:?} and code {:?}",
+            expected.kind(),
+            expected.raw_os_error()
+        ));
     }
     Ok(())
 }
@@ -586,14 +592,18 @@ fn fallible_file_write_preserves_the_os_error() -> Result<(), String> {
     let mut code = 99;
     let mut has_code = true;
     let failure =
-        unsafe { vx_file_try_write(file, b"W".as_ptr(), 1, &mut count, &mut code, &mut has_code) };
+        unsafe { _vx_file_try_write(file, b"W".as_ptr(), 1, &mut count, &mut code, &mut has_code) };
     if failure != 12 || count != 0 || !has_code || Some(code) != expected.raw_os_error() {
         vx_file_drop(file);
-        return Err(format!("write failure returned status {failure}, count {count}, native code {code}; expected kind {:?} and code {:?}", expected.kind(), expected.raw_os_error()));
+        return Err(format!(
+            "write failure returned status {failure}, count {count}, native code {code}; expected kind {:?} and code {:?}",
+            expected.kind(),
+            expected.raw_os_error()
+        ));
     }
     count = 99;
     let empty = unsafe {
-        vx_file_try_write(
+        _vx_file_try_write(
             file,
             std::ptr::null(),
             0,
@@ -697,7 +707,7 @@ fn fallible_read_does_not_clear_unused_buffer_bytes() -> Result<(), String> {
     let mut buffer = [0xa5; 8192];
     let (mut count, mut code, mut has_code) = (99, 99, true);
     let status = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             buffer.as_mut_ptr(),
             buffer.len() as u64,
@@ -710,7 +720,7 @@ fn fallible_read_does_not_clear_unused_buffer_bytes() -> Result<(), String> {
     let tail_unchanged = buffer[1..].iter().all(|&byte| byte == 0xa5);
     buffer.fill(0xb6);
     let status = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             buffer.as_mut_ptr(),
             buffer.len() as u64,
@@ -748,7 +758,7 @@ fn options_open_validates_flags_and_preserves_native_errors() -> Result<(), Stri
         let mut out = std::ptr::dangling_mut();
         let (mut code, mut has_code) = (99, true);
         let status = unsafe {
-            vx_file_open_options(path.as_ptr(), flags, &mut out, &mut code, &mut has_code)
+            _vx_file_open_options(path.as_ptr(), flags, &mut out, &mut code, &mut has_code)
         };
         expect_equal(
             (status, code, has_code),
@@ -760,20 +770,20 @@ fn options_open_validates_flags_and_preserves_native_errors() -> Result<(), Stri
     let mut out = std::ptr::null_mut();
     let (mut code, mut has_code) = (99, true);
     let status =
-        unsafe { vx_file_open_options(path.as_ptr(), 0, &mut out, &mut code, &mut has_code) };
+        unsafe { _vx_file_open_options(path.as_ptr(), 0, &mut out, &mut code, &mut has_code) };
     expect_equal(status, 4, "no access mode is InvalidInput")?;
     expect_equal(out.is_null(), true, "invalid combinations return no handle")?;
     let status =
-        unsafe { vx_file_open_options(path.as_ptr(), 1, &mut out, &mut code, &mut has_code) };
+        unsafe { _vx_file_open_options(path.as_ptr(), 1, &mut out, &mut code, &mut has_code) };
     expect_equal(status, 1, "read-only opening does not create")?;
     expect_equal(has_code, true, "open preserves native error presence")?;
     expect_equal(
-        vx_io_error_kind(code),
+        _vx_io_error_kind(code),
         1,
         "native constructor classifies the captured code",
     )?;
     expect_equal(
-        vx_io_error_kind(12345),
+        _vx_io_error_kind(12345),
         12,
         "unrecognized native error is Other",
     )?;
@@ -789,7 +799,7 @@ fn fallible_seek_reports_positions_errors_and_invalid_arguments() -> Result<(), 
     let (mut position, mut code, mut has_code) = (99, 99, true);
     for (offset, whence, expected) in [(0, 0, 0), (1, 1, 1), (0, 2, 1)] {
         let status = unsafe {
-            vx_file_try_seek(
+            _vx_file_try_seek(
                 file,
                 offset,
                 whence,
@@ -809,7 +819,7 @@ fn fallible_seek_reports_positions_errors_and_invalid_arguments() -> Result<(), 
         code = 99;
         has_code = true;
         let status = unsafe {
-            vx_file_try_seek(
+            _vx_file_try_seek(
                 if null_output == 0 {
                     std::ptr::null_mut()
                 } else {
@@ -845,7 +855,7 @@ fn fallible_seek_reports_positions_errors_and_invalid_arguments() -> Result<(), 
             expect_equal(!has_code, true, "clear seek native flag")?;
         }
     }
-    let status = unsafe { vx_file_try_seek(file, -1, 0, &mut position, &mut code, &mut has_code) };
+    let status = unsafe { _vx_file_try_seek(file, -1, 0, &mut position, &mut code, &mut has_code) };
     vx_file_drop(file);
     expect_equal(status > 0, true, "large absolute positions report an error")?;
     expect_equal(position, 0, "failed seek does not return a position")?;
@@ -874,7 +884,7 @@ fn a_read_larger_than_i32_max_is_a_short_read() -> Result<(), String> {
     }
     let (mut count, mut code, mut has_code) = (0u64, 0, false);
     let status = unsafe {
-        vx_file_try_read(
+        _vx_file_try_read(
             file,
             buffer,
             len as u64,

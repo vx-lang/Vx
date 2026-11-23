@@ -10,14 +10,14 @@
 //
 // Layer: the OS layer. Runs on: the host only.
 //
-// Stage: `Error`, `ErrorKind`, `Operation`, `SeekFrom` and `Seek` are incubating, with the
+// Stage: `IoError`, `ErrorKind`, `Operation`, `SeekFrom` and `Seek` are incubating, with the
 // feature name `file_io_errors`.
 //
 // Differences from Rust:
 //
-// - `Error` is a small value that a program can copy. It holds a kind, the operation that
+// - `IoError` is a small value that a program can copy. It holds a kind, the operation that
 //   failed, and the error code of the operating system. It holds no message text.
-// - `Error::message_c_str` returns a C string, because Vx has no text formatting traits yet.
+// - `IoError::message_c_str` returns a C string, because Vx has no text formatting traits yet.
 // - `Seek::seek_to` is Rust's `Seek::seek`.
 //===----------------------------------------------------------------------===//
 import core::ops;
@@ -26,7 +26,7 @@ import core::result;
 
 extern {
   /// Classify a native code for this host using the file bridge category table.
-  fn vx_io_error_kind(code : i32) -> i32;
+  fn _vx_io_error_kind(code : i32) -> i32;
 }
 
 /// A position in a file, for `Seek::seek_to`. `Start` counts from the start of the file, and
@@ -52,7 +52,7 @@ trait Seek {
   /// # Errors
   ///
   /// Each type says which errors it returns. `File` lists its errors.
-  fn seek_to(self : &mut Self, from : SeekFrom) -> Result<u64, Error>;
+  fn seek_to(self : &mut Self, from : SeekFrom) -> Result<u64, IoError>;
 
   /// Return the current position from the start, and do not move it.
   ///
@@ -68,7 +68,7 @@ trait Seek {
   /// (unsafe { file.write_raw((&letter) as *const u8, 1) }).unwrap();
   /// assert(file.stream_position().unwrap() == 1, "one byte after the start");
   /// ```
-  fn stream_position(self : &mut Self) -> Result<u64, Error> {
+  fn stream_position(self : &mut Self) -> Result<u64, IoError> {
     return self.seek_to(SeekFrom::Current(0));
   }
 }
@@ -103,19 +103,19 @@ enum Operation {
 impl Copy for Operation {}
 
 /// An I/O error. It holds a kind, the operation that failed, and the error code of the operating
-/// system when there is one. Making or reading an `Error` does not allocate memory.
+/// system when there is one. Making or reading an `IoError` does not allocate memory.
 ///
 /// # Stage
 ///
-/// Incubating, with the feature name `file_io_errors`. `Error` is `Copy` today. A later message
+/// Incubating, with the feature name `file_io_errors`. `IoError` is `Copy` today. A later message
 /// or cause can make it stop being `Copy`, so code must not depend on it.
 ///
 /// # Example
 ///
-/// One example covers each method of `Error`.
+/// One example covers each method of `IoError`.
 ///
 /// ```vx
-/// let error = Error::from_raw_os_error(2).with_operation(Operation::Open());
+/// let error = IoError::from_raw_os_error(2).with_operation(Operation::Open());
 /// let missing = match error.kind() {
 ///   ErrorKind::NotFound() => { true },
 ///   _ => { false }
@@ -128,58 +128,58 @@ impl Copy for Operation {}
 /// assert(opening, "the operation is Open");
 /// assert(error.raw_os_error().unwrap() == 2, "the error keeps its code");
 ///
-/// let made = Error::from_kind(ErrorKind::InvalidInput());
+/// let made = IoError::from_kind(ErrorKind::InvalidInput());
 /// assert(made.raw_os_error().is_none(), "a Vx error has no code");
 /// let _text = made.message_c_str();
 /// ```
-struct Error {
-  category : ErrorKind,
-  action : Operation,
-  native : Option<i32>,
+struct IoError {
+  kind : ErrorKind,
+  operation : Operation,
+  raw_os_error : Option<i32>,
 }
-impl Copy for Error {}
+impl Copy for IoError {}
 
-impl Error {
+impl IoError {
   /// Make an error of `kind` with no error code. Its operation is `Unspecified`.
-  fn from_kind(kind : ErrorKind) -> Error {
-    return Error {
-      category : kind, action : Operation::Unspecified(), native : Option<i32>::None()
+  fn from_kind(kind : ErrorKind) -> IoError {
+    return IoError {
+      kind : kind, operation : Operation::Unspecified(), raw_os_error : Option<i32>::None()
     };
   }
 
   /// Make an error from the error code of the operating system. The error keeps the exact code,
   /// and gets the kind that the code has on this host. Its operation is `Unspecified`.
-  fn from_raw_os_error(code : i32) -> Error {
-    let status = unsafe { vx_io_error_kind(code) };
-    return io_error_from_bridge(status, Operation::Unspecified(), code, true);
+  fn from_raw_os_error(code : i32) -> IoError {
+    let status = unsafe { _vx_io_error_kind(code) };
+    return _io_error_from_bridge(status, Operation::Unspecified(), code, true);
   }
 
   /// Return the same error with the operation `operation`. The kind and the code do not change.
-  fn with_operation(self : Error, operation : Operation) -> Error {
+  fn with_operation(self : IoError, operation : Operation) -> IoError {
     let mut error = self;
-    error.action = operation;
+    error.operation = operation;
     return error;
   }
 
   /// The kind of the error.
-  fn kind(self : &Error) -> ErrorKind {
-    return self.category;
+  fn kind(self : &IoError) -> ErrorKind {
+    return self.kind;
   }
 
   /// The operation that failed.
-  fn operation(self : &Error) -> Operation {
-    return self.action;
+  fn operation(self : &IoError) -> Operation {
+    return self.operation;
   }
 
   /// The error code of the operating system, or `None` when the error has no code.
-  fn raw_os_error(self : &Error) -> Option<i32> {
-    return self.native;
+  fn raw_os_error(self : &IoError) -> Option<i32> {
+    return self.raw_os_error;
   }
 
   /// A short text that names the kind of the error, as a NUL-terminated C string. The text is
   /// the same on each operating system. The program must not free it.
-  fn message_c_str(self : &Error) -> *const i8 {
-    match self.category {
+  fn message_c_str(self : &IoError) -> *const i8 {
+    match self.kind {
       ErrorKind::NotFound() => {
         return "not found";
       }
@@ -221,7 +221,7 @@ impl Error {
 }
 
 /// Decode the private file bridge status. Unknown statuses violate the bridge contract.
-fn io_error_from_bridge(status : i32, operation : Operation, code : i32, has_code : bool) -> Error {
+fn _io_error_from_bridge(status : i32, operation : Operation, code : i32, has_code : bool) -> IoError {
   assert(status >= -1 && status <= 12 && status != 0, "invalid file error status");
   let mut kind = ErrorKind::Other();
   match status {
@@ -264,11 +264,11 @@ fn io_error_from_bridge(status : i32, operation : Operation, code : i32, has_cod
     _ => {}
   }
   if status != -1 && has_code {
-    return Error {
-      category : kind, action : operation, native : Option<i32>::Some(code)
+    return IoError {
+      kind : kind, operation : operation, raw_os_error : Option<i32>::Some(code)
     };
   }
-  return Error::from_kind(kind).with_operation(operation);
+  return IoError::from_kind(kind).with_operation(operation);
 }
 
 extern {

@@ -13,7 +13,7 @@ extern {
   fn remove(path : *const i8) -> i32;
 }
 
-fn position<S : Seek>(source : &mut S) -> Result<u64, Error> {
+fn position<S : Seek>(source : &mut S) -> Result<u64, IoError> {
   return source.stream_position();
 }
 

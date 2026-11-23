@@ -28,11 +28,11 @@ fn lowest_free_descriptor() -> i32 {
 }
 
 // Opens `path` for reading and writes to it. The write fails, so `?` returns while `file` is open.
-unsafe fn write_to_a_reader(path : *const i8) -> Result<usize, Error> {
+unsafe fn write_to_a_reader(path : *const i8) -> Result<usize, IoError> {
   let mut file = (unsafe { File::open_raw(path) })?;
   let byte : u8 = 65;
   let count = (unsafe { file.write_raw((&byte) as *const u8, 1) })?;
-  return Result<usize, Error>::Ok(count);
+  return Result<usize, IoError>::Ok(count);
 }
 
 fn main() -> i32 {

@@ -305,7 +305,7 @@ macro_rules! instantiate_file_ffi {
         const VX_FILE_ERROR_UNSUPPORTED: i32 = 11;
         const VX_FILE_ERROR_OTHER: i32 = 12;
 
-        // The bits of `vx_file_open_options`. Keep them in sync with `OpenOptions` in
+        // The bits of `_vx_file_open_options`. Keep them in sync with `OpenOptions` in
         // stdlib/std/fs.vx.
         const VX_FILE_OPEN_READ: i32 = 1;
         const VX_FILE_OPEN_WRITE: i32 = 2;
@@ -422,7 +422,7 @@ macro_rules! instantiate_file_ffi {
         /// Compatibility entry point for the original three opening modes.
         ///
         /// # Safety
-        /// The path and outputs follow `vx_file_open_options`'s contract.
+        /// The path and outputs follow `_vx_file_open_options`'s contract.
         #[no_mangle]
         pub unsafe extern "C" fn vx_file_try_open(
             path: *const std::ffi::c_char,
@@ -438,12 +438,12 @@ macro_rules! instantiate_file_ffi {
                 2 => VX_FILE_OPEN_READ | VX_FILE_OPEN_WRITE | VX_FILE_OPEN_CREATE,
                 _ => -1,
             };
-            unsafe { vx_file_open_options(path, options, out, code, has_code) }
+            unsafe { _vx_file_open_options(path, options, out, code, has_code) }
         }
 
         /// Classify a native error without allocating or losing its exact code.
         #[no_mangle]
-        pub extern "C" fn vx_io_error_kind(code: i32) -> i32 {
+        pub extern "C" fn _vx_io_error_kind(code: i32) -> i32 {
             vx_file_error_kind(std::io::Error::from_raw_os_error(code).kind())
         }
 
@@ -455,7 +455,7 @@ macro_rules! instantiate_file_ffi {
         /// must be aligned, writable, and disjoint from the path and all other outputs.
         /// Success transfers one bridge-owned File to `out`, released by `vx_file_drop`.
         #[no_mangle]
-        pub unsafe extern "C" fn vx_file_open_options(
+        pub unsafe extern "C" fn _vx_file_open_options(
             c_path: *const std::ffi::c_char,
             options: i32,
             out: *mut *mut std::ffi::c_void,
@@ -559,7 +559,7 @@ macro_rules! instantiate_file_ffi {
         /// must be aligned and writable, even if another argument is invalid.
         /// The file, buffer, and outputs must not overlap during the call.
         #[no_mangle]
-        pub unsafe extern "C" fn vx_file_try_read(
+        pub unsafe extern "C" fn _vx_file_try_read(
             ptr: *mut std::ffi::c_void,
             buffer: *mut u8,
             len: u64,
@@ -613,14 +613,14 @@ macro_rules! instantiate_file_ffi {
             })
         }
 
-        /// Uses the same status and output contract as `vx_file_try_read`.
+        /// Uses the same status and output contract as `_vx_file_try_read`.
         ///
         /// # Safety
         /// The handle, outputs, null arguments, and non-overlap rules are the same
-        /// as for `vx_file_try_read`. For a valid positive length, `buffer` must
+        /// as for `_vx_file_try_read`. For a valid positive length, `buffer` must
         /// point to `len` initialized, readable bytes instead of writable bytes.
         #[no_mangle]
-        pub unsafe extern "C" fn vx_file_try_write(
+        pub unsafe extern "C" fn _vx_file_try_write(
             ptr: *mut std::ffi::c_void,
             buffer: *const u8,
             len: u64,
@@ -651,7 +651,7 @@ macro_rules! instantiate_file_ffi {
         /// A non-null handle must be a live, exclusively accessed bridge-owned File.
         /// Every non-null output must be aligned, writable, and disjoint from the others and the file.
         #[no_mangle]
-        pub unsafe extern "C" fn vx_file_try_seek(
+        pub unsafe extern "C" fn _vx_file_try_seek(
             ptr: *mut std::ffi::c_void,
             offset: i64,
             whence: i32,

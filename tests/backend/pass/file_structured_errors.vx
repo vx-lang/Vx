@@ -43,7 +43,7 @@ fn main() -> i32 {
   assert(missing_operation, "missing file operation");
   assert(missing.raw_os_error().is_some(), "missing file native code");
 
-  let unknown = Error::from_raw_os_error(12345).with_operation(Operation::Read());
+  let unknown = IoError::from_raw_os_error(12345).with_operation(Operation::Read());
   let unknown_category = match unknown.kind() {
     ErrorKind::Other() => {
       true
@@ -54,7 +54,7 @@ fn main() -> i32 {
   };
   assert(unknown_category, "unknown native category");
   assert(unknown.raw_os_error().unwrap() == 12345, "unknown native code");
-  let invalid = Error::from_kind(ErrorKind::InvalidInput()).with_operation(Operation::Seek());
+  let invalid = IoError::from_kind(ErrorKind::InvalidInput()).with_operation(Operation::Seek());
   let invalid_category = match invalid.kind() {
     ErrorKind::InvalidInput() => {
       true

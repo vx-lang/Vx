@@ -11,8 +11,8 @@
 // Each RUN line cuts one function out of the IR, and keeps each call and each store in it. A
 // sorted list has a fixed order, so the CHECK-NEXT lines must match the whole list:
 //
-// - one call of the runtime (`vx_file_try_read` or `vx_file_try_write`)
-// - `io_error_from_bridge`, which makes the `Error` after a failure
+// - one call of the runtime (`_vx_file_try_read` or `_vx_file_try_write`)
+// - `_io_error_from_bridge`, which makes the `IoError` after a failure
 // - `write` to stderr and `abort`, which report an `assert` that failed
 // - 3 stores, one for each output of the runtime call (count, code and flag)
 //
@@ -23,18 +23,18 @@
 // RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -O3 -S | awk '/^define .*File\$read_raw"\(/,/^}/' | grep -o -E '(call [^@]*@[A-Za-z_]+|store [a-z0-9]+)' | LC_ALL=C sort | FileCheck %s --check-prefix=READ --implicit-check-not='call ' --implicit-check-not='store ' # flat-codegen
 // RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -O3 -S | awk '/^define .*File\$write_raw"\(/,/^}/' | grep -o -E '(call [^@]*@[A-Za-z_]+|store [a-z0-9]+)' | LC_ALL=C sort | FileCheck %s --check-prefix=WRITE --implicit-check-not='call ' --implicit-check-not='store ' # flat-codegen
 
-// READ: call i32 @vx_file_try_read
+// READ: call i32 @_vx_file_try_read
 // READ-NEXT: call i64 @write
 // READ-NEXT: call void @abort
-// READ-NEXT: call {{.*}} @io_error_from_bridge
+// READ-NEXT: call {{.*}} @_io_error_from_bridge
 // READ-NEXT: store i1
 // READ-NEXT: store i32
 // READ-NEXT: store i64
 
-// WRITE: call i32 @vx_file_try_write
+// WRITE: call i32 @_vx_file_try_write
 // WRITE-NEXT: call i64 @write
 // WRITE-NEXT: call void @abort
-// WRITE-NEXT: call {{.*}} @io_error_from_bridge
+// WRITE-NEXT: call {{.*}} @_io_error_from_bridge
 // WRITE-NEXT: store i1
 // WRITE-NEXT: store i32
 // WRITE-NEXT: store i64

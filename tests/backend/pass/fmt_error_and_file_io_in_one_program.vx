@@ -1,0 +1,25 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// EXPECT: Error from core::fmt and IoError from std::io work in one program
+// A program that imports `core::fmt` and `std::fs` can name `Error`. Vx imports are transitive,
+// so the I/O error type must have another name, or the name `Error` is declared twice.
+import core::fmt;
+import core::result;
+import std::fs;
+
+fn format_error() -> Result<i32, Error> {
+  return Result<i32, Error>::Err(Error::Error());
+}
+
+fn file_error() -> Result<i32, IoError> {
+  return Result<i32, IoError>::Err(IoError::from_kind(ErrorKind::NotFound()));
+}
+
+fn main() -> i32 {
+  assert(format_error().is_err(), "the core::fmt Error did not reach the caller");
+  assert(file_error().is_err(), "the std::io IoError did not reach the caller");
+  println!("Error from core::fmt and IoError from std::io work in one program");
+  return 0;
+}

@@ -43,7 +43,7 @@ gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 `File::open_raw(path)` opens a file that exists, for reading. `File::create_raw(path)` makes a
 file for writing. If the file exists, it makes the file empty. `path` is a text that ends with a
 zero byte, such as a string literal. Both functions give a `Result`: `Ok` holds the `File`, and
-`Err` holds an `Error`. [Errors](errors.md) explains `Result`.
+`Err` holds an `IoError`. [Errors](errors.md) explains `Result`.
 
 For other ways to open a file, use `OpenOptions`. Start with `OpenOptions::new()`, and turn on
 each choice that you want: `read`, `write`, `append`, `create`, `truncate` or `create_new`.
