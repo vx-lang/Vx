@@ -1,0 +1,47 @@
+//===- a_method_call_through_a_raw_pointer_needs_unsafe.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A method call through a raw pointer reads or changes the value that the pointer points at,
+// as a field read does. The compiler cannot know that the value is still there, so the call
+// needs an `unsafe` block.
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn get(self : &Self) -> i64 {
+    return self.n;
+  }
+
+  fn add_one(self : &mut Self) -> void {
+    self.n = self.n + 1i64;
+  }
+}
+
+fn gone() -> *const Counter {
+  let c = Counter {
+    n : 7i64
+  };
+  return &c as *const Counter;
+}
+
+fn main() -> i32 {
+  let q = gone();
+  let _old = q.get();
+  let mut c = Counter {
+    n : 1i64
+  };
+  let p = &mut c as *mut Counter;
+  p.add_one();
+  return 0;
+}
+
+// CHECK: Error[E5002] at {{.*}}.vx:37:16: Calling `get` through a raw pointer requires an unsafe block
+// CHECK: Error[E5002] at {{.*}}.vx:42:5: Calling `add_one` through a raw pointer requires an unsafe block

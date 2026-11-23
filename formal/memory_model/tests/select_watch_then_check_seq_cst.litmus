@@ -1,0 +1,13 @@
+LISA select_watch_then_check_seq_cst
+(* A `select` must not miss a `send` that comes during its watch. P0 is the `send`: it fills the
+   slot with release, and its `notify` adds 1 to wake and reads watchers. P1 is the `select`: its
+   watch adds 1 to watchers, and its check reads wake and then the slot. With sc on wake and
+   watchers, P0 sees the watch, or P1 sees the value. So no wake is lost.
+   Expect: never, no data race. *)
+{ slot = 0; wake = 0; watchers = 0; }
+ P0                              | P1                              ;
+ w[rel] slot 1                   | rmw[sc] r8 (add r8 1) watchers  ;
+ rmw[sc] r9 (add r9 1) wake      | r[sc] r2 wake                   ;
+ r[sc] r0 watchers               | r[acq] r1 slot                  ;
+scopes: (system P0 P1)
+exists (0:r0 = 0 /\ 1:r1 = 0)

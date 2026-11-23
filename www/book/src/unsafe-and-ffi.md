@@ -21,7 +21,8 @@ fn main() -> i32 {
 ```
 
 Reading through a raw pointer — `*p` — is the operation that needs the block. So does indexing
-through one, or reading a field through one.
+through one, reading a field through one, or calling a method through one. `p.get()` gives the
+method a reference to `*p`, and the compiler cannot know that `*p` is still there.
 
 ## Raw pointers
 
@@ -250,6 +251,10 @@ It also lists each use of trusted code, which the compiler does not check: each 
 value that only one module can build. For `core` and `std`, a last line gives only the counts. `vxc --audit-library` lists
 their uses too.
 
+To keep trusted code out of a package, give `--no-trusted-code NAME` with `--package NAME=DIR`.
+Each use of trusted code in the package is then an error (E5003). The program that uses the package
+gives the flag, so a new version of the package cannot add trusted code without an error.
+
 Each line starts with the file, the line and the column, and the lines are in that order. So a
 review can compare the audit of two versions of a program.
 
@@ -348,7 +353,7 @@ the list:
   behavior
 - each operation of another dialect, such as `llvm.load`
 
-Any other block must be in an `unsafe` block. If it is not, the error E8015 names the first
+Any other block must be in an `unsafe` block. If it is not, the error E8016 names the first
 operation that the compiler cannot verify:
 
 ```vx

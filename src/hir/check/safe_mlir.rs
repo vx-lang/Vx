@@ -80,7 +80,7 @@ const VERIFIED_OPERATIONS: &[&str] = &[
 ];
 
 /// The reason for a block that does not parse. Its dialects are only `arith` and `math`, so the
-/// MLIR is not valid, and code generation reports the error of MLIR, which says more than E8015.
+/// MLIR is not valid, and code generation reports the error of MLIR, which says more than E8016.
 const NOT_VALID_MLIR: &str = "is not valid MLIR";
 
 thread_local! {
@@ -222,7 +222,7 @@ fn is_number(t: melior::ir::Type) -> bool {
 }
 
 impl TypeChecker<'_> {
-    /// E8015: an `mlir!` block outside `unsafe` that the compiler cannot verify as safe. Inside
+    /// E8016: an `mlir!` block outside `unsafe` that the compiler cannot verify as safe. Inside
     /// `unsafe`, such a block is what the `unsafe` is for (W1010).
     pub(crate) fn check_mlir_is_verified(&mut self, m: &InlineMlirExpr) {
         if self.speculating {
@@ -239,7 +239,7 @@ impl TypeChecker<'_> {
             return;
         }
         self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E8015,
+            crate::diagnostic::DiagnosticCode::E8016,
             format!(
                 "the compiler cannot verify that this `mlir!` block is safe: the block {why}. \
                  Put the block in `unsafe {{ }}`"

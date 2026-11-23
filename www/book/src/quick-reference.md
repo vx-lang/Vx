@@ -17,7 +17,9 @@ when writing Vx with Rust habits.
 - `const N : i64 = 4;` is a value known while compiling. The type is required.
 - `fn add(a : i64, b : i64) -> i64 { .. }`. Parameter and return types are required, and a
   function with no result returns `void`.
-- `struct Point { x : i64, y : i64 }`, built with `Point { x : 1, y : 2 }`.
+- `struct Point { x : i64, y : i64 }`, built with `Point { x : 1, y : 2 }`. Directly before a
+  block, as in the condition of an `if`, put a struct literal in parentheses:
+  `if (Point { x : 1, y : 2 }).x > 0 { .. }`. There, `if ok {}` is a name and an empty block.
 - `enum Shape { Square(i64), Rect(i64, i64) }`, built with `Shape::Square(3)`.
 - `trait Describe { fn size(self : &Self) -> i64; }`. A trait method can have a default body.
 - `impl Point { .. }` and `impl Describe for Shape { .. }`. Each method writes its receiver's
