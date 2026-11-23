@@ -168,7 +168,7 @@ impl WaitSource for Semaphore {
   }
 
   fn watch(self : &Semaphore, w : &Waiter) -> void {
-    w.watch_counted(&self.watchers, &self.permits);
+    w.watch_counted(&self.watchers, &self.permits, SOURCE_SEMAPHORE, self.made);
   }
 
   fn unwatch(self : &Semaphore, w : &Waiter) -> void {

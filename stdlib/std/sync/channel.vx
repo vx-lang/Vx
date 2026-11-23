@@ -468,7 +468,7 @@ impl<T> WaitSource for Receiver<T> {
   }
 
   fn watch(self : &Receiver<T>, w : &Waiter) -> void {
-    watch_channel(self.words, w);
+    watch_channel(self.words, self.made, w);
   }
 
   fn unwatch(self : &Receiver<T>, w : &Waiter) -> void {
@@ -476,10 +476,11 @@ impl<T> WaitSource for Receiver<T> {
   }
 }
 
-/// Wake `w` at each later event on the channel with the words `words`. Each kind of channel
-/// calls it in `watch`. Its `is_ready` then reads `WAKE` with `SeqCst` first, as `Receiver` does.
-fn watch_channel(words : *mut AtomicI64, w : &Waiter) -> void {
-  w.watch_counted(word(words, WATCHERS), word(words, WAKE));
+/// Wake `w` at each later event on the channel with the words `words`, which the line `made`
+/// made. Each kind of channel calls it in `watch`. Its `is_ready` then reads `WAKE` with `SeqCst`
+/// first, as `Receiver` does.
+fn watch_channel(words : *mut AtomicI64, made : Location, w : &Waiter) -> void {
+  w.watch_counted(word(words, WATCHERS), word(words, WAKE), SOURCE_CHANNEL, made);
 }
 
 /// Undo `watch_channel`.

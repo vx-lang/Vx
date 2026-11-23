@@ -152,6 +152,10 @@ void vx_wake_all(atomic_long *word) {
 void vx_watch(atomic_long *key, atomic_long *waiter) {
   assert(0 && "no select runs");
 }
+void vx_watch_source(atomic_long *key, atomic_long *waiter, int kind,
+                     const char *made_file, int made_line) {
+  assert(0 && "no select runs");
+}
 void vx_unwatch(atomic_long *key, atomic_long *waiter) {
   assert(0 && "no select runs");
 }
