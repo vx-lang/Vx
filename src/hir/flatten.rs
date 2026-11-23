@@ -4059,6 +4059,8 @@ impl<'r> Lowerer<'r> {
         let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
         let name = self.strings.len() as u64 + 1;
         self.strings.push(s.top.display_name());
+        // The string after the name is the line of the `spawn`. A runtime error names it.
+        self.strings.push(s.span.line.to_string());
         // The host computes the launch shape before the region starts, from the loops of blocks
         // of a region with `across` loops (#252), whose block has a number of lanes.
         let lanes = across_block_lanes(&s.stmts);

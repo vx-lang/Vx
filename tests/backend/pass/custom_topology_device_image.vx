@@ -24,7 +24,7 @@
 // transfers are no-ops.
 //
 // CHECK: vx.spawn topology({{[0-9]+}}) {
-// CHECK: } {arch = "nvptx64", offload = false, shared_bytes = 233472 : i64, topology_name = "Dev"}
+// CHECK: } {arch = "nvptx64", offload = false, shared_bytes = 233472 : i64, topology_name = "Dev", vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64}
 // EXPECT: [[0,   1],
 // EXPECT: [1,   2]]
 

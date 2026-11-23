@@ -300,6 +300,13 @@ static void wait_for_kernels(const char *why) {
   }
 }
 
+/// The kernel of `payload` for a message, with the Vx function and the line of
+/// its `spawn` when the payload has them.
+static std::string label_of(const void *payload, size_t payload_size) {
+  char text[512];
+  return vx_kernel_label(payload, payload_size, text, sizeof text);
+}
+
 /// After a launch of `name` on the current GPU.
 static void started_kernel(const char *name) {
   int device = 0;
@@ -1413,6 +1420,8 @@ bool run_device_image(const void *payload, size_t payload_size,
     int params;
     /* The `.align` of each parameter, also read once. */
     std::vector<long> align;
+    /* The kernel with its Vx function and line, for messages. */
+    std::string label;
   };
   static std::unordered_map<std::string, Loaded> loaded;
   /* Tasks (#1863) can dispatch from several threads at once. */
@@ -1429,16 +1438,21 @@ bool run_device_image(const void *payload, size_t payload_size,
   CUfunction fn = nullptr;
   int declared = 0;
   std::vector<long> align;
+  /* The entry in `loaded` keeps the text, so the pointer stays valid. */
+  const char *label = nullptr;
   auto found = loaded.find(key);
   if (found != loaded.end()) {
     fn = found->second.fn;
     declared = found->second.params;
     align = found->second.align;
+    label = found->second.label.c_str();
   } else {
+    const std::string first = label_of(payload, payload_size);
+    label = first.c_str();
     if (recording()) {
       char what[256];
       snprintf(what, sizeof what,
-               "The first call of %s loaded its kernel image", kernel_name);
+               "The first call of %s loaded its kernel image", label);
       refuse_in_recording(what, "Call the function once before the recording.");
     }
     /* The driver API needs a current context. The runtime API creates the
@@ -1489,7 +1503,7 @@ bool run_device_image(const void *payload, size_t payload_size,
                 "          is a kernel that uses memory the GPU cannot reach, "
                 "such as a pointer to\n"
                 "          host memory.\n",
-                name ? name : "?", kernel_name);
+                name ? name : "?", label);
         abort();
       }
       fprintf(stderr,
@@ -1497,7 +1511,7 @@ bool run_device_image(const void *payload, size_t payload_size,
               "          It was compiled for %s. A known cause is an "
               "unresolved `__nv_` symbol\n"
               "          (libdevice was not linked -- set VX_LIBDEVICE).\n",
-              kernel_name, name ? name : "?",
+              label, name ? name : "?",
               vx_payload_field(payload, payload_size, "chip=")
                   ? vx_payload_field(payload, payload_size, "chip=")
                   : "sm_80");
@@ -1508,7 +1522,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image loaded but has no entry "
               "named %s.\n",
-              kernel_name);
+              label);
       abort();
     }
     /* Dynamic shared memory over 48 KiB needs the kernel's permission, given
@@ -1526,14 +1540,15 @@ bool run_device_image(const void *payload, size_t payload_size,
         fprintf(stderr,
                 "[Vx CUDA] FATAL: %s needs %u bytes of shared memory, and GPU "
                 "%d gives a block at most %d: %s.\n",
-                kernel_name, shared, device, most, name ? name : "?");
+                label, shared, device, most, name ? name : "?");
         abort();
       }
     }
     declared = vx_launch_entry_param_count(image, kernel_name);
     align.assign(declared > 0 ? declared : 0, 0);
     vx_launch_param_aligns(image, kernel_name, align.data(), (int)align.size());
-    loaded.emplace(key, Loaded{fn, declared, align});
+    found = loaded.emplace(key, Loaded{fn, declared, align, first}).first;
+    label = found->second.label.c_str();
   }
   lock.unlock();
 
@@ -1546,7 +1561,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       fprintf(stderr,
               "[Vx CUDA] %s has an argument this path cannot marshal (a "
               "publication slot); not launching\n",
-              kernel_name);
+              label);
     }
     return false;
   }
@@ -1563,7 +1578,7 @@ bool run_device_image(const void *payload, size_t payload_size,
             "compiler's idea of\n"
             "          this kernel's signature and the runtime's have "
             "diverged (#251).\n",
-            kernel_name, declared, params.count);
+            label, declared, params.count);
     abort();
   }
 
@@ -1587,7 +1602,7 @@ bool run_device_image(const void *payload, size_t payload_size,
             "          multiple of %ld. A tensor view over memory from "
             "elsewhere must start\n"
             "          at a multiple of the alignment of its space.\n",
-            (long long)arg, kernel_name, (void *)at, align[misaligned],
+            (long long)arg, label, (void *)at, align[misaligned],
             align[misaligned]);
     abort();
   }
@@ -1610,7 +1625,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       vx_launch_shape(payload, payload_size, device_args, arg_tags, num_args,
                       shape, &block, why, sizeof why);
   if (set_by_program < 0) {
-    fprintf(stderr, "[Vx CUDA] FATAL: %s: %s\n", kernel_name, why);
+    fprintf(stderr, "[Vx CUDA] FATAL: %s: %s\n", label, why);
     abort();
   }
   if (set_by_program) {
@@ -1623,7 +1638,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       fprintf(stderr,
               "[Vx CUDA] FATAL: %s: `launch=` names a launch value that is "
               "not an i32\n",
-              kernel_name);
+              label);
       abort();
     }
     if (t != 0) {
@@ -1662,7 +1677,7 @@ bool run_device_image(const void *payload, size_t payload_size,
             &resident, fn, (int)block, 0) == CUDA_SUCCESS) {
       fprintf(stderr,
               "[Vx CUDA] %s occupancy: %d block(s) of %u threads per SM\n",
-              kernel_name, resident, block);
+              label, resident, block);
     }
     cudaEventCreate(&t0);
     cudaEventCreate(&t1);
@@ -1700,7 +1715,7 @@ bool run_device_image(const void *payload, size_t payload_size,
                 "[Vx CUDA] VX_CUDA_PDL=1: the driver refused to start %s "
                 "early: %s. From now on, each kernel starts after the kernel "
                 "before it ends.\n",
-                kernel_name, early_error);
+                label, early_error);
       });
     }
   }
@@ -1712,7 +1727,7 @@ bool run_device_image(const void *payload, size_t payload_size,
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
     driver().GetErrorName(rc, &name);
-    fprintf(stderr, "[Vx CUDA] FATAL: launching %s failed: %s\n", kernel_name,
+    fprintf(stderr, "[Vx CUDA] FATAL: launching %s failed: %s\n", label,
             name ? name : "?");
     if (early_error) {
       fprintf(stderr,
@@ -1722,7 +1737,7 @@ bool run_device_image(const void *payload, size_t payload_size,
     }
     abort();
   }
-  started_kernel(kernel_name);
+  started_kernel(label);
 
   if (time_kernel) {
     cudaEventRecord(t1, caller_stream);
@@ -1741,7 +1756,7 @@ bool run_device_image(const void *payload, size_t payload_size,
     fprintf(stderr,
             "[Vx CUDA] %s ran on GPU %d from its own image "
             "(%d params, %ux%u threads)\n",
-            kernel_name, device, params.count, grid, block);
+            label, device, params.count, grid, block);
   }
   return true;
 }
@@ -1750,6 +1765,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                   size_t payload_size, void **device_args,
                                   const int32_t *arg_tags, int64_t num_args) {
   const char *kernel_name = static_cast<const char *>(binary_payload);
+  auto label = [&] { return label_of(binary_payload, payload_size); };
 
   if (vx_routing_try_dispatch(binary_payload, payload_size, device_args,
                               arg_tags, num_args)) {
@@ -1800,7 +1816,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   } else if (verbose()) {
     const char *kind = vx_payload_field(binary_payload, payload_size, "kind=");
     fprintf(stderr, "[Vx CUDA] %s (kind=%s) not routed; running on the host\n",
-            kernel_name, kind ? kind : "<unclassified>");
+            label().c_str(), kind ? kind : "<unclassified>");
   }
 
   // A kernel that is not routed runs here, on the host. That is safe exactly
@@ -1859,7 +1875,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     fprintf(stderr,
             "[Vx CUDA] FATAL: argument %lld of %s has the offset %lld, and "
             "its view does not fit in the address space\n",
-            (long long)view_arg[bad], kernel_name,
+            (long long)view_arg[bad], label().c_str(),
             (long long)vx_memref_offset(views[bad].desc));
     abort();
   }
@@ -1874,7 +1890,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
       fprintf(stderr,
               "[Vx CUDA] FATAL: out of host memory copying %llu bytes "
               "for %s\n",
-              (unsigned long long)span.bytes, kernel_name);
+              (unsigned long long)span.bytes, label().c_str());
       abort();
     }
     if (span.view >= 0) {
@@ -1887,16 +1903,16 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
       fprintf(stderr,
               "[Vx CUDA] %s runs on the host; %llu bytes are copied from "
               "device memory and back\n",
-              kernel_name, (unsigned long long)span.bytes);
+              label().c_str(), (unsigned long long)span.bytes);
     }
   }
   vx_view_copy_point_at(views.data(), (int64_t)views.size(), spans.data());
 
-  vx_host_refuse_coop(binary_payload, payload_size, kernel_name, "CUDA");
+  vx_host_refuse_coop(binary_payload, payload_size, label().c_str(), "CUDA");
   void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     fprintf(stderr, "[Vx CUDA] FATAL: outlined kernel %s not found\n",
-            kernel_name);
+            label().c_str());
     abort();
   }
   if (!vx_host_call_kernel(
@@ -1905,7 +1921,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                    arg_tags, num_args),
           vx_host_flushes_subnormals(binary_payload, payload_size))) {
     fprintf(stderr, "[Vx CUDA] FATAL: could not build a call for %s\n",
-            kernel_name);
+            label().c_str());
     abort();
   }
   for (int64_t s = 0; s < num_spans; ++s) {

@@ -15,7 +15,7 @@
 // CHECK: the region placed on `Topology::Dev` in `main` (kernel `[[FAILED:vx_npu_kernel_[0-9]+]]`) cannot become a `spirv64` device image: it hands a tensor to `memref.copy`
 // CHECK-SAME: It will run on the host instead.
 // CHECK-NOT: in `add_one` (kernel
-// CHECK-DAG: @[[FAILED]]_str("[[FAILED]]\00abi=1\00topo={{[0-9]+}}\00toponame=Dev\00offload=0\00arch=spirv64\00")
+// CHECK-DAG: @[[FAILED]]_str("[[FAILED]]\00abi=1\00topo={{[0-9]+}}\00toponame=Dev\00offload=0\00arch=spirv64\00function=main\00source={{[^\]*}}\00")
 // CHECK-DAG: @[[IMAGED:vx_npu_kernel_[0-9]+]]_str("[[IMAGED]]\00{{[^"]*}}format=spirv\00
 // EXPECT: [2,  3,  4,  5]
 

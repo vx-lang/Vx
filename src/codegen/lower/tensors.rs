@@ -221,6 +221,17 @@ fn lower_spawn_region<'c>(
             (Identifier::new(gen.context, "topology_name"), name_attr),
         ])
         .add_regions([region]);
+    // The line and the file of the `spawn`, which a runtime error names.
+    spawn_builder = spawn_builder.add_attributes(&[(
+        Identifier::new(gen.context, "vx.line"),
+        IntegerAttribute::new(gen.i64_ty, this.span.line as i64).into(),
+    )]);
+    if let Some(file) = &gen.function_file {
+        spawn_builder = spawn_builder.add_attributes(&[(
+            Identifier::new(gen.context, "vx.file"),
+            melior::ir::attribute::StringAttribute::new(gen.context, file).into(),
+        )]);
+    }
 
     // What the proofs found, as the flat code generator writes it: the trip of the loop, and for
     // a loop of blocks, the widest loop of threads and whether a barrier is in a thread loop.
