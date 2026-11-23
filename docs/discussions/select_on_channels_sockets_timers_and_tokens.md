@@ -3,7 +3,8 @@
 Issue #3414, part of #3413. The review took the recommended answer of each question in section 10.
 Stages 1 to 4 of section 9 are done: the core in `stdlib/std/sync/select.vx`, the sockets in
 `stdlib/std/net.vx`, the sources of #3415 to #3418 next to their types, and the deadlock report in
-`ffi/wait.rs`. Stage 5 waits for the background copy of #244.
+`ffi/wait.rs`. Stage 5, tokens, is next: since #3483, the copy of a `transfer_async` to a GPU runs
+in the background.
 
 ## 1. The problem
 
@@ -74,8 +75,9 @@ task.
   `vx-timer` thread to wake the bucket of its word at the deadline.
 - **Cancel and `within`.** A cancel wakes each wait that can be cancelled. In `within` or a `drop`,
   each wait that can be cancelled ends at the earliest deadline around it (F6a).
-- **Tokens.** `transfer_async` gives a `Token<T>`, a type that the compiler knows. Today the copy
-  ends before `transfer_async` returns, so a token is always done.
+- **Tokens.** `transfer_async` gives a `Token<T>`, a type that the compiler knows. On a GPU, the
+  copy runs in the background. On the CPU and the Apple NPU, the copy ends before `transfer_async`
+  returns, so a token is always done.
 - **The deadlock report.** A wait with no time limit leaves a note in its bucket. A program in
   which each thread and task sleeps with no limit, with no timer and no socket pending, stops with
   a report.
@@ -210,7 +212,7 @@ is the rule that the poller already follows.
 | sockets, and #3415 | the buffer has bytes, or `poll` with a time limit of 0 says ready | put `(fd, events, waiter)` on the list of the poller, which adds 1 to the waiter (section 2) |
 | `Deadline`, `Interval` | the clock passed the time | nothing: `select` waits with the earliest `deadline()` |
 | semaphore (#3418) | a permit is free | as a channel |
-| `Token<T>` | the copy ended | today: always ready. With a background copy: the end of the copy calls `vx_wake_watchers` |
+| `Token<T>` | the copy ended | on a GPU, the end of the copy calls `vx_wake_watchers`. On the CPU and the NPU, a token is always ready. |
 
 Before stage 2, the poller stored 1 in the word of a wait. It now adds 1, because the word of a
 `select` can hold 1 already, and a store of 1 would then not change it. The poller takes off only
@@ -307,7 +309,7 @@ Each stage is one PR with its own tests.
 1. **The new sources.** The buffered socket (#3415), the channels (#3416), `Interval` (#3417) and
    the semaphore (#3418). Each one is a small PR after its parent PR and stage 1 merged.
 1. **The deadlock report** lists the sources of a `select`.
-1. **Tokens**, when a background copy exists (#244).
+1. **Tokens.** The background copy to a GPU exists since #3483.
 
 **Tests.** Each Vx fixture in `tests/backend/pass/` runs on the AST code generator, the flat
 code generator, and the shared runtime with one worker, as the `select` tests do today.
