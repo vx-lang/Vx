@@ -10,7 +10,6 @@
 // return value optimization, and it is the half that removes the allocation rather than moving
 // it (#643).
 //
-// REQUIRES: flat-codegen
 // The AST oracle uses the same calling convention but only applies this to an operator it is
 // handed directly, so `built` below still allocates and copies there. That difference is what
 // tests/middle_end/pass/matmul.vx records; this file is about the path that does it.

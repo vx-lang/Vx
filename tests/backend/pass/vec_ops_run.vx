@@ -8,10 +8,6 @@
 // The Vec API, executed: every value is asserted, on the flat path and on
 // the AST oracle. An MLIR check proves a call is emitted; only running it
 // proves the answer.
-//
-// The RUN lines name each path themselves, so the runner must not pin the
-// oracle on both of them.
-// REQUIRES: flat-codegen
 // RUN: vxc %s --action run-jit
 // RUN: vxc %s --action run-jit --legacy-codegen
 import std::vec;

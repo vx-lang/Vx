@@ -1,0 +1,58 @@
+//===- across_loops_on_a_spirv64_topology_get_a_launch_shape.vx --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A kernel with block and lane loops on an Intel GPU (`arch: spirv64`) gets a
+// SPIR-V image and a launch shape: 3 blocks of 64 lanes, from the bounds of the
+// loops. The lane loop has 100 passes, so each lane takes a second pass when
+// its index plus 64 is below 100.
+// tests/integration_test/spirv_images_on_pocl.rs runs the image on the CPU with
+// pocl and compares the output with this one.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
+// PAYLOAD: vx_npu_kernel_0\00abi=1\00{{.*}}arch=spirv64\00grid=3\00block=64\00{{.*}}format=spirv\00
+// OUT: {{^}}rows 1 101 201, last 300{{$}}
+
+Memory CPU_DRAM {}
+
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+
+Topology Simd {
+  arch: spirv64,
+  levels: [blocks(max_lanes: 1024, memory: cta), lanes(memory: thread)],
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn add_one(out : &mut Tensor<f32, [3, 100]>, x : &Tensor<f32, [3, 100]>) -> void {
+  spawn on(Topology::Simd) {
+    for r in 0..3 across blocks {
+      for c in 0..100 across lanes(64) {
+        out[r][c] = x[r][c] + 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut x = Tensor<f32, [3, 100]>::fill(0.0);
+  for r in 0..3 {
+    for c in 0..100 {
+      x[r][c] = (r * 100 + c) as f32;
+    }
+  }
+  let mut o = Tensor<f32, [3, 100]>::fill(0.0);
+  add_one(&mut o, &x);
+  println!("rows {} {} {}, last {}", o[0][0] as i32, o[1][0] as i32, o[2][0] as i32, o[2][99] as i32);
+  return 0;
+}

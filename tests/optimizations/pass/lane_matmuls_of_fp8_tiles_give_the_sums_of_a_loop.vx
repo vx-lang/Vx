@@ -1,0 +1,136 @@
+//===- lane_matmuls_of_fp8_tiles_give_the_sums_of_a_loop.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Four matmuls in the code of a subgroup loop: `f8e4m3` tiles of 32 x 32 by 32 x 16 added to
+// `acc`, which starts at 1, `f8e5m2` tiles of 16 x 64 by 64 x 8 with no `+`, an `f8e4m3` tile by an
+// f16 tile, and an f16 tile by an `f8e5m2` tile. On an NVIDIA GPU from `sm_89` on, all four go to
+// the tensor cores (`lane_matmuls_of_fp8_tiles_on_tensor_cores.vx` checks the PTX). With no GPU,
+// the kernel runs on the CPU. The inputs are small integers, so each sum is exact, and each
+// matmul gives the values that a Python loop gave.
+//
+// RUN: vxc %s --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}e4m3: -3 -3 7 sum of all 1020{{$}}
+// CHECK: {{^}}e5m2: -5 2 5 sum of all -3{{$}}
+// CHECK: {{^}}e4m3 by f16: 30 30 22 sum of all 9{{$}}
+// CHECK: {{^}}f16 by e5m2: 0 -7 -18 sum of all -16{{$}}
+
+fn main() -> i32 {
+  let mut c = transfer(Tensor<f32, [2, 32, 16]>::fill(0.0), Memory::HBM);
+  let mut d = transfer(Tensor<f32, [2, 16, 8]>::fill(0.0), Memory::HBM);
+  let mut e = transfer(Tensor<f32, [2, 32, 8]>::fill(0.0), Memory::HBM);
+  let mut g = transfer(Tensor<f32, [2, 16, 8]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<f8e4m3, [2, 32, 32], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe {
+        Tensor<f8e4m3, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      let mut ea = unsafe {
+        Tensor<f8e5m2, [2, 16, 64], Memory::SMEM>::uninit()
+      };
+      let mut eb = unsafe {
+        Tensor<f8e5m2, [2, 64, 8], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 32, 16], Memory::SMEM>::uninit()
+      };
+      let mut last = unsafe {
+        Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit()
+      };
+      let mut hb = unsafe { Tensor<f16, [2, 32, 8], Memory::SMEM>::uninit() };
+      let mut ha = unsafe { Tensor<f16, [2, 16, 32], Memory::SMEM>::uninit() };
+      let mut gb = unsafe {
+        Tensor<f8e5m2, [2, 32, 8], Memory::SMEM>::uninit()
+      };
+      let mut by_f16 = unsafe {
+        Tensor<f32, [2, 32, 8], Memory::SMEM>::uninit()
+      };
+      let mut f16_by = unsafe {
+        Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          for j in 0..8 {
+            hb[w][i][j] = ((i * 3 + j * 5 + w) % 9 - 4) as f16;
+            gb[w][i][j] = ((i + j * 2 + w) % 7 - 3) as f8e5m2;
+          }
+          for r in 0..16 {
+            ha[w][r][i] = ((r * 7 + i + w * 2) % 9 - 4) as f16;
+          }
+          for k in 0..32 {
+            sa[w][i][k] = (((w * 32 + i) * 3 + k * 5) % 7 - 3) as f8e4m3;
+          }
+          for j in 0..16 {
+            acc[w][i][j] = 1.0;
+            sb[w][i][j] = ((i * 2 + j) % 5 - 2) as f8e4m3;
+          }
+          for h in 0..2 {
+            let k = h * 32 + i;
+            for r in 0..16 {
+              ea[w][r][k] = (((w * 16 + r) + k * 3) % 5 - 2) as f8e5m2;
+            }
+            for j in 0..8 {
+              eb[w][k][j] = ((k + j * 3) % 7 - 3) as f8e5m2;
+            }
+          }
+        }
+        acc[w] = acc[w] + (sa[w] as f32) @ (sb[w] as f32);
+        last[w] = (ea[w] as f32) @ (eb[w] as f32);
+        by_f16[w] = (sa[w] as f32) @ (hb[w] as f32);
+        f16_by[w] = (ha[w] as f32) @ (gb[w] as f32);
+        for i in 0..32 across lanes {
+          for j in 0..16 {
+            c[w][i][j] = acc[w][i][j];
+          }
+          for j in 0..8 {
+            e[w][i][j] = by_f16[w][i][j];
+          }
+          if i < 16 {
+            for j in 0..8 {
+              d[w][i][j] = last[w][i][j];
+              g[w][i][j] = f16_by[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let hd = transfer(d, Memory::CPU_DRAM);
+  let he = transfer(e, Memory::CPU_DRAM);
+  let hg = transfer(g, Memory::CPU_DRAM);
+  let mut all = 0.0;
+  let mut all_last = 0.0;
+  let mut all_e = 0.0;
+  let mut all_g = 0.0;
+  for w in 0..2 {
+    for i in 0..32 {
+      for j in 0..16 {
+        all = all + hc[w][i][j];
+      }
+    }
+    for i in 0..16 {
+      for j in 0..8 {
+        all_last = all_last + hd[w][i][j];
+        all_g = all_g + hg[w][i][j];
+      }
+    }
+    for i in 0..32 {
+      for j in 0..8 {
+        all_e = all_e + he[w][i][j];
+      }
+    }
+  }
+  println!("e4m3: {} {} {} sum of all {}", hc[0][0][0], hc[1][31][15], hc[1][20][5], all);
+  println!("e5m2: {} {} {} sum of all {}", hd[0][0][0], hd[1][15][7], hd[0][9][3], all_last);
+  println!("e4m3 by f16: {} {} {} sum of all {}", he[0][0][0], he[1][31][7], he[1][20][5], all_e);
+  println!("f16 by e5m2: {} {} {} sum of all {}", hg[0][0][0], hg[1][15][7], hg[0][9][3], all_g);
+  return 0;
+}

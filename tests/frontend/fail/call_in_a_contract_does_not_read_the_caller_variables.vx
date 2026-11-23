@@ -1,0 +1,71 @@
+//===- call_in_a_contract_does_not_read_the_caller_variables.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A call in a contract, such as `id(x)` in `requires i < id(x)`, reads the arguments of the call
+// that the contract is about. Each caller here has its own variable with the name of the
+// parameter, and the contract is false for the argument.
+
+import std::vec;
+
+fn id(x : i32) -> i32
+ensures return == x {
+  return x;
+}
+
+fn need_below(i : i32, x : i32) -> i32
+requires i < id(x) {
+  return i;
+}
+
+// `need_below(i, y)` asks for `i < y`. The `x` of this caller is a different variable.
+fn caller_with_its_own_x(i : i32, x : i32, y : i32) -> i32
+requires i < x && y <= i {
+  // CHECK: Error[E8006] at {{.*}}call_in_a_contract_does_not_read_the_caller_variables.vx:[[@LINE+1]]:{{[0-9]+}}: this call to 'need_below' may not meet its precondition
+  return need_below(i, y);
+}
+
+fn len_of(v : &Vec<i64>) -> i32
+ensures return == v.len {
+  return v.len();
+}
+
+fn need_an_element(v : Vec<i64>) -> i32
+requires 0 < len_of(&v) {
+  return 0;
+}
+
+// `need_an_element(w)` asks for `0 < len_of(&w)`, through a reference to the argument.
+fn caller_with_its_own_v(v : Vec<i64>, w : Vec<i64>) -> i32
+requires 0 < len_of(&v) {
+  // CHECK: Error[E8006] at {{.*}}call_in_a_contract_does_not_read_the_caller_variables.vx:[[@LINE+1]]:{{[0-9]+}}: this call to 'need_an_element' may not meet its precondition
+  return need_an_element(w);
+}
+
+fn twice(x : i32) -> i32
+ensures return == x + x {
+  return x + x;
+}
+
+fn twice_again(x : i32) -> i32
+ensures return == twice(x) {
+  return twice(x);
+}
+
+// `twice_again(a)` is 2. Only `twice(x)` of this caller's `x` is 10.
+fn result_with_its_own_x(a : i32, x : i32) -> i32
+requires a == 1 && x == 5
+ensures return == 10 {
+  let r = twice_again(a);
+  // CHECK: Error[E8001] at {{.*}}call_in_a_contract_does_not_read_the_caller_variables.vx:[[@LINE+1]]:{{[0-9]+}}: Function 'result_with_its_own_x' cannot prove postcondition
+  return r;
+}
+
+fn main() -> i32 {
+  return 0;
+}

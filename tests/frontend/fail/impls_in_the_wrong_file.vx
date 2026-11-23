@@ -1,0 +1,63 @@
+//===- impls_in_the_wrong_file.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Only the file that declares a struct or an enum writes a plain `impl` of it, and `core` and
+// `std` declare the built-in types. Another file writes `extern impl`. An `extern impl` in the
+// file of the type is an error, and a macro cannot write `extern impl`.
+import tests::modules::types_with_impls_in_other_files;
+
+struct Local {
+  value : i64,
+}
+
+impl Show for Ticket {
+  fn show(self : &Ticket) -> i64 {
+    return self.number;
+  }
+}
+
+impl Ticket {
+  fn twice(self : &Ticket) -> i64 {
+    return 2i64 * self.number;
+  }
+}
+
+impl Show for i64 {
+  fn show(self : &i64) -> i64 {
+    return *self;
+  }
+}
+
+extern impl Show for Local {
+  fn show(self : &Local) -> i64 {
+    return self.value;
+  }
+}
+
+macro_rules show_handle {
+  ($t : ident) => {
+    extern impl Show for $t {
+      fn show(self : &$t) -> i64 {
+        return 0i64;
+      }
+    }
+  };
+}
+
+show_handle!(Handle);
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E3066] at {{.*}}impls_in_the_wrong_file.vx:19:1: `impl Show for Ticket` is in `impls_in_the_wrong_file.vx`, and `types_with_impls_in_other_files.vx` declares `Ticket`. Move the impl to `types_with_impls_in_other_files.vx`, or write `extern impl` here
+// CHECK: Error[E3066] at {{.*}}impls_in_the_wrong_file.vx:25:1: `impl Ticket` is in `impls_in_the_wrong_file.vx`, and `types_with_impls_in_other_files.vx` declares `Ticket`.
+// CHECK: Error[E3066] at {{.*}}impls_in_the_wrong_file.vx:31:1: `impl Show for i64` is in `impls_in_the_wrong_file.vx`, and `i64` is a type of `core` and `std`. Write `extern impl` here
+// CHECK: Error[E3066] at {{.*}}impls_in_the_wrong_file.vx:37:8: `impls_in_the_wrong_file.vx` declares `Local`, so its impl here is a plain `impl`. Remove `extern`
+// CHECK: Error[E3066] at {{.*}}impls_in_the_wrong_file.vx:45:12: a macro wrote `extern impl Show for Handle`. A macro cannot write `extern impl`: write it in the file, so that a review finds it

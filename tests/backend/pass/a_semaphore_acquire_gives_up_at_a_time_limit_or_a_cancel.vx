@@ -1,0 +1,100 @@
+//===- a_semaphore_acquire_gives_up_at_a_time_limit_or_a_cancel.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Semaphore` with 1 permit. While the main code holds it, `try_acquire` gets nothing, and
+// `acquire_for` gives `TimedOut` after its time limit. The drop of the `Permit` gives the permit
+// back, so `try_acquire` then gets it.
+//
+// Then a task waits in `acquire` while the main code holds the permit. The main code returns
+// from the function, so the `tasks` block cancels the task, and its `acquire` gives `Cancelled`.
+// Without the cancel, the end of the block would wait for the task forever.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}try_acquire while the permit is held: none{{$}}
+// CHECK-NEXT: {{^}}acquire_for gave TimedOut{{$}}
+// CHECK-NEXT: {{^}}it waited at least 0.05 seconds: true{{$}}
+// CHECK-NEXT: {{^}}free permits after the drop: 1{{$}}
+// CHECK-NEXT: {{^}}try_acquire after the drop: a permit{{$}}
+// CHECK-NEXT: {{^}}the task's acquire gave Cancelled{{$}}
+// CHECK-NEXT: {{^}}wait_in_a_task gave 7{{$}}
+
+import core::mem;
+import core::option;
+import core::sync::atomic;
+import core::time;
+import std::sync::semaphore;
+import std::sync::wait;
+
+// What an `acquire` gave: 0 for a permit, 1 for `Cancelled` and 2 for `TimedOut`.
+fn outcome(r : Result<Permit, AcquireError>) -> i32 {
+  if r.is_ok() {
+    return 0;
+  }
+  match r.unwrap_err() {
+    AcquireError::Cancelled => {
+      return 1;
+    }
+    AcquireError::TimedOut => {
+      return 2;
+    }
+  }
+}
+
+fn show_try(s : &Semaphore, when : i32) -> void {
+  let mut what = "none";
+  if s.try_acquire().is_some() {
+    what = "a permit";
+  }
+  if when == 0 {
+    println!("try_acquire while the permit is held: {}", what);
+  } else {
+    println!("try_acquire after the drop: {}", what);
+  }
+}
+
+// Waits in `acquire` while the main code holds the only permit, and then returns.
+fn wait_in_a_task(s : &Semaphore, waiting : &AtomicI64) -> i32 {
+  let held = s.acquire().unwrap();
+  tasks {
+    spawn {
+      waiting.store(1, AtomicOrdering::SeqCst);
+      if outcome(s.acquire()) == 1 {
+        println!("the task's acquire gave Cancelled");
+      }
+    };
+    while waiting.load(AtomicOrdering::SeqCst) == 0 {
+      sleep(Duration::from_millis(1));
+    }
+    sleep(Duration::from_millis(20));
+    return 7;
+  };
+  drop(held);
+  return 0;
+}
+
+fn main() -> i32 {
+  let s = Semaphore::new(1);
+  let held = s.acquire().unwrap();
+  show_try(&s, 0);
+  let start = clock_ns();
+  let timed = outcome(s.acquire_for(Duration::from_millis(50)));
+  if timed == 2 {
+    println!("acquire_for gave TimedOut");
+  }
+  println!("it waited at least 0.05 seconds: {}", clock_ns() - start >= 50000000);
+  drop(held);
+  println!("free permits after the drop: {}", s.available_permits());
+  show_try(&s, 1);
+
+  let waiting = AtomicI64::new(0);
+  let left = wait_in_a_task(&s, &waiting);
+  println!("wait_in_a_task gave {}", left);
+  return 0;
+}

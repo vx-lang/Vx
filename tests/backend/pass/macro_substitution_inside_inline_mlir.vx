@@ -17,38 +17,36 @@
 // Both signed: a Vx `u32` is an MLIR `i32`, so an unsigned width needs the MLIR type as a
 // second parameter, which is a property of the two type systems and not of macros.
 macro_rules stamp_bits {
-  ($t : ident) => {
-    impl $t {
-      fn ones(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.ctpop %a : $t
-          macro.yield %r : $t
-        };
-      }
+  ($t : ident, $ones : ident, $zeros_above : ident) => {
+    fn $ones(x : $t) -> $t {
+      return mlir!( inputs : (%a = x : $t), returns : $t, dialects : ["math"]) {
+        %r = math.ctpop %a : $t
+        macro.yield %r : $t
+      };
+    }
 
-      fn zeros_above(self : $t) -> $t {
-        return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
-          %r = math.ctlz %a : $t
-          macro.yield %r : $t
-        };
-      }
+    fn $zeros_above(x : $t) -> $t {
+      return mlir!( inputs : (%a = x : $t), returns : $t, dialects : ["math"]) {
+        %r = math.ctlz %a : $t
+        macro.yield %r : $t
+      };
     }
   };
 }
 
-stamp_bits!(i32);
-stamp_bits!(i16);
+stamp_bits!(i32, ones_i32, zeros_above_i32);
+stamp_bits!(i16, ones_i16, zeros_above_i16);
 
 fn main() -> i32 {
   let a : i32 = 12;
-  print(a.ones());
+  print(ones_i32(a));
   print!(" ");
-  print(a.zeros_above());
+  print(zeros_above_i32(a));
   print!(" ");
   let b : i16 = 6;
-  print(b.ones());
+  print(ones_i16(b));
   print!(" ");
-  print(b.zeros_above());
+  print(zeros_above_i16(b));
   return 0;
 }
 

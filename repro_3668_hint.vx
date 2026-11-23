@@ -1,0 +1,20 @@
+import core::hint;
+
+fn write_rows(out : &mut Tensor<bf16, [?, ?], Memory::HBM>, tiles : &DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    unsafe { assert_unchecked(out.extent(1) % 4 == 0); }
+    for t in 0..n across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = (tiles[t][0] as i64) + (r as i64);
+        if row < (tiles[t][1] as i64) {
+          let v = (10 * t + r) as f32;
+          out[row][0] = v as bf16;
+          out[row][1] = (v + 1.0) as bf16;
+          out[row][2] = (v + 2.0) as bf16;
+          out[row][3] = (v + 3.0) as bf16;
+        }
+      }
+    }
+  }
+  return;
+}

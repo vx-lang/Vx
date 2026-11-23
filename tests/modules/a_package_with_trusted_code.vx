@@ -1,0 +1,54 @@
+//===- a_package_with_trusted_code.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with each kind of trusted code, for the test of `vxc --no-trusted-code`. A macro of
+// the module writes one of the `unsafe` blocks.
+
+trait Size {
+  fn size(self : &Self) -> i64;
+}
+
+struct Handle {
+  place : *mut i64,
+}
+
+unsafe impl Send for Handle {}
+
+extern impl Size for i64 {
+  fn size(self : &i64) -> i64 {
+    return 8i64;
+  }
+}
+
+extern "C" {
+  safe fn abs(x : i32) -> i32;
+}
+
+unsafe fn first(p : *const i64) -> i64 {
+  return unsafe { p[0] };
+}
+
+macro_rules read_first {
+  ($p : expr) => {
+    unsafe { first($p) }
+  };
+}
+
+fn ones(x : i32) -> i32 {
+  return mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["math"]) {
+    %r = math.ctpop %a : i32
+    macro.yield %r : i32
+  };
+}
+
+fn checked_value() -> i64 {
+  let n = 2i64;
+  let p = &n as *const i64;
+  let x = read_first!(p);
+  let five = 5i64;
+  return (ones(3) + abs(-1)) as i64 + x + five.size();
+}

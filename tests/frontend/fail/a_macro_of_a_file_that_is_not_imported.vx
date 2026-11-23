@@ -1,0 +1,25 @@
+//===- a_macro_of_a_file_that_is_not_imported.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// macro_label_left.vx declares the macro `label`. This file imports a file that imports
+// macro_label_left.vx, but it does not import macro_label_left.vx itself. So it cannot call
+// `label!`.
+import tests::modules::imports_macro_label_left;
+
+struct Here {
+  x : i64,
+}
+
+label!(Here);
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Macro label not found. `macro_label_left.vx` defines it, and `a_macro_of_a_file_that_is_not_imported.vx` does not import `macro_label_left.vx`. Add `import tests::modules::macro_label_left;`.

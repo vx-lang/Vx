@@ -8,11 +8,6 @@
 // A million passes through a `while` whose body declares a local. The loop must
 // not grow the stack on each pass, and a `let` in the body is a fresh variable
 // every time: it starts again from its initial value rather than carrying over.
-//
-// The legacy AST codegen places the local's `memref.alloca` inside the loop
-// body, so each pass takes a new stack slot and the program overflows the stack.
-//
-// REQUIRES: flat-codegen
 
 fn main() -> i32 {
   let mut i : i32 = 0;

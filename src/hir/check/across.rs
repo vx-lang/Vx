@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::arch::{Level, LevelKind};
+use crate::hir::check::across_proof::Claim;
 use crate::hir::check::{across_lanes, lanes};
 use crate::syntax::stmt::{ForLoopStmt, Statement};
 use crate::syntax::{ElementType, Expr, RelationalOp, Span};
@@ -81,6 +82,11 @@ struct Walk<'g> {
     auto_schedule: bool,
     /// The memories with `scope: cta` or `scope: sm`, whose tensors the lanes of a block share.
     shared: HashSet<String>,
+    /// The memories with `scope: thread`, the registers.
+    registers: HashSet<String>,
+    /// The tensors in `registers` that the code of a block makes, with the position of the `let`
+    /// and the type of the tensor.
+    register_tiles: Vec<(String, Span, crate::syntax::Type)>,
     /// The parameters with an `atomic` clause, for each function that has one.
     contracts: HashMap<String, Vec<usize>>,
     /// The names of the generic functions, to name an instance by its template in a message.
@@ -95,9 +101,9 @@ struct Walk<'g> {
     lane_matmuls: HashSet<Span>,
     /// The parameters of the function that are `&` tensors, not `&mut`.
     read_only: HashSet<String>,
-    /// The parameters that are `Distinct` tensors, with the type of their elements. A name that
-    /// the body binds again is not here.
-    distinct: HashMap<String, ElementType>,
+    /// The parameters that are `Distinct` tensors or `DisjointRanges` tables, with the type of
+    /// their elements. A name that the body binds again is not here.
+    claims: HashMap<String, (Claim, ElementType)>,
 }
 
 /// A lane reduction in the code of a level.
@@ -126,7 +132,7 @@ impl crate::hir::TypeChecker<'_> {
             .map(|(name, _)| name.as_ref().to_string())
             .collect();
         let bound = bound_names(body);
-        let distinct = params
+        let claims = params
             .iter()
             .filter(|(name, _)| !bound.contains(name.as_ref()))
             .filter_map(|(name, ty)| {
@@ -134,13 +140,15 @@ impl crate::hir::TypeChecker<'_> {
                     crate::syntax::Type::Borrow { inner, .. } => inner,
                     ty => ty,
                 };
-                match ty {
-                    crate::syntax::Type::Distinct(t) => match &**t {
-                        crate::syntax::Type::Tensor(el, ..) => {
-                            Some((name.as_ref().to_string(), el.clone()))
-                        }
-                        _ => None,
-                    },
+                let (claim, t) = match ty {
+                    crate::syntax::Type::Distinct(t) => (Claim::Distinct, t),
+                    crate::syntax::Type::DisjointRanges(t) => (Claim::DisjointRanges, t),
+                    _ => return None,
+                };
+                match &**t {
+                    crate::syntax::Type::Tensor(el, ..) => {
+                        Some((name.as_ref().to_string(), (claim, el.clone())))
+                    }
                     _ => None,
                 }
             })
@@ -157,6 +165,13 @@ impl crate::hir::TypeChecker<'_> {
             })
             .map(|d| d.name.as_ref().to_string())
             .collect();
+        let registers = self
+            .env
+            .memories
+            .values()
+            .filter(|d| d.scope == Some(crate::syntax::Scope::Thread))
+            .map(|d| d.name.as_ref().to_string())
+            .collect();
         let mut walk = Walk {
             graph: self.transfer_cost_graph,
             errors: Vec::new(),
@@ -164,6 +179,8 @@ impl crate::hir::TypeChecker<'_> {
             largest_ends: HashMap::new(),
             auto_schedule: self.worker.global.auto_schedule_levels,
             shared,
+            registers,
+            register_tiles: Vec::new(),
             contracts: self.atomic_contracts(),
             templates: self
                 .env
@@ -176,12 +193,13 @@ impl crate::hir::TypeChecker<'_> {
             lane_calls: Vec::new(),
             lane_matmuls: HashSet::new(),
             read_only,
-            distinct,
+            claims,
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
         check_sizes_at_launch(body, &walk.largest_ends, !walk.errors.is_empty());
         walk.lane_reductions(body);
+        self.block_register_tiles = std::mem::take(&mut walk.register_tiles);
         // The proof of an outer loop also walks the inner loops, so one place can come twice.
         let mut seen = HashSet::new();
         walk.errors
@@ -464,11 +482,22 @@ impl Walk<'_> {
             return;
         }
         let space = crate::hir::flatten::tensor_alloc_placement(fc).map(|p| p.space.name());
+        // A tile in registers with a row for each subgroup. Whether the registers can hold it is
+        // decided at the end of the function, with its uses.
+        if let (true, Some(ty)) = (
+            space.as_ref().is_some_and(|s| self.registers.contains(s)),
+            fc.type_args.as_ref().and_then(|t| t.first()),
+        ) {
+            self.register_tiles
+                .push((l.name.to_string(), l.span, ty.clone()));
+            return;
+        }
         if !space.as_ref().is_some_and(|s| self.shared.contains(s)) {
             self.error(
                 "the lanes of a block share a tensor that the code of the block makes outside its \
                  lane loops, so it goes in a memory with `scope: cta` or `scope: sm`, such as \
-                 `Memory::SMEM`. A tensor for each lane is made inside a lane loop"
+                 `Memory::SMEM`, or in registers as a tile of sums for each subgroup. A tensor \
+                 for each lane is made inside a lane loop"
                     .to_string(),
                 l.span,
             );
@@ -836,6 +865,14 @@ impl Walk<'_> {
         }
         let calls = std::mem::take(&mut self.lane_calls);
         for c in &calls {
+            // A scaled matmul in the code of a subgroup, like a matmul with `@`, runs on its 32
+            // lanes. In the code of a block, all the lanes of the block compute it.
+            if lanes::lane_routine(&c.name).is_some_and(|r| r.op == lanes::LaneOp::MatmulScaled) {
+                if c.scope == LevelKind::Subgroups {
+                    self.needs_subgroups_of_32(c);
+                }
+                continue;
+            }
             let copy = lanes::lane_routine(&c.name).is_some_and(|r| {
                 matches!(
                     r.op,
@@ -844,6 +881,7 @@ impl Walk<'_> {
                         | lanes::LaneOp::Copy
                         | lanes::LaneOp::Fill
                         | lanes::LaneOp::ScaleRows
+                        | lanes::LaneOp::Prefetch
                 )
             });
             if copy {
@@ -1406,7 +1444,7 @@ impl Walk<'_> {
             &self.contracts,
             &self.templates,
             &self.lane_copies_out,
-            &self.distinct,
+            &self.claims,
         ) {
             Err((why, at)) => self.error(why, at),
             Ok(ends) => {

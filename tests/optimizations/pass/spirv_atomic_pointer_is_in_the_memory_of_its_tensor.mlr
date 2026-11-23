@@ -1,0 +1,34 @@
+//===- spirv_atomic_pointer_is_in_the_memory_of_its_tensor.mlr --*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An atomic of core::sync::atomic takes the address of its tensor as an
+// integer, adds the offset of the element, and makes a pointer of it. A plain
+// `!llvm.ptr` is private memory in SPIR-V. So the SPIR-V argument flattening
+// gives the pointer the address space of the tensor, here 1, the memory of the
+// device. The integer is the one of the pointer of the tensor.
+//
+// RUN: vx-opt %s --pass-pipeline="builtin.module(gpu.module(vx-flatten-spirv-kernel-args))" | FileCheck %s --implicit-check-not=memref.
+// CHECK-LABEL: gpu.func @add(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i32
+// CHECK: %[[INT:[0-9]+]] = llvm.ptrtoint %arg1 : !llvm.ptr<1> to i64
+// CHECK-NEXT: %[[INDEX:[0-9]+]] = arith.index_cast %[[INT]] : i64 to index
+// CHECK-NEXT: %[[ADDRESS:[0-9]+]] = arith.index_cast %[[INDEX]] : index to i64
+// CHECK-NEXT: %[[BASE:[0-9]+]] = llvm.inttoptr %[[ADDRESS]] : i64 to !llvm.ptr<1>
+// CHECK-NEXT: %[[AT:[0-9]+]] = llvm.getelementptr %[[BASE]][%arg5] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i32
+// CHECK-NEXT: llvm.atomicrmw add %[[AT]], %arg6 monotonic : !llvm.ptr<1>, i32
+
+module {
+  gpu.module @kernels {
+    gpu.func @add(%counts: memref<4xi32>, %i: i64, %x: i32) kernel {
+      %intptr = memref.extract_aligned_pointer_as_index %counts : memref<4xi32> -> index
+      %0 = arith.index_cast %intptr : index to i64
+      %1 = llvm.inttoptr %0 : i64 to !llvm.ptr
+      %2 = llvm.getelementptr %1[%i] : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      %3 = llvm.atomicrmw add %2, %x monotonic : !llvm.ptr, i32
+      gpu.return
+    }
+  }
+}

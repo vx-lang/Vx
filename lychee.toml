@@ -11,6 +11,7 @@ accept = ["100..=103", "200..=299", "429"]
 exclude = [
   '^https://www\.reddit\.com/',
   '^https://wg21\.link/',
+  '^https://(www\.)?open-std\.org/',
   '^https://www\.cs\.umd\.edu/',
 ]
 

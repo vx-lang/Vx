@@ -1,0 +1,31 @@
+//===- an_impl_for_a_reference.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An impl is for a type. An impl for a reference to the type is an error, because no method call
+// finds its methods.
+
+struct Cap {
+  x : i64,
+}
+
+trait Describe {
+  fn describe(self : Self) -> i64;
+}
+
+impl Describe for &Cap {
+  fn describe(self : Self) -> i64 {
+    return 1i64;
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error at {{.*}}an_impl_for_a_reference.vx:21:19: an impl is for a type, not for a reference or a raw pointer to it. Write `impl Describe for Cap`

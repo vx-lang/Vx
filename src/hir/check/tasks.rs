@@ -484,6 +484,7 @@ impl TypeChecker<'_> {
     }
 
     fn check_tasks_block(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let unused = self.value_unused;
         if let Expr::TaskBlock(tb) = &*expr {
             find_ending_joins(
                 &tb.stmts,
@@ -527,6 +528,17 @@ impl TypeChecker<'_> {
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
         let fails_as = self.check_block_failures(&failures, &passed_up, &ty, &expr.span());
+        if unused && fails_as.is_some() && !self.speculating {
+            self.errors.warn(
+                DiagnosticCode::W1038,
+                format!(
+                    "this `tasks` block can fail, but nothing uses its value, a '{ty}'. When the \
+                     block fails, the code after it goes on, and nothing sees the error. Use the \
+                     value, as in `let r = tasks {{ .. }};`"
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span())),
+            );
+        }
         let has_value = matches!(&*expr, Expr::TaskBlock(tb) if tb.ret.is_some())
             && !crate::syntax::types::is_void_ty(&ty);
         let value_ty = has_value.then(|| ty.clone());

@@ -23,26 +23,36 @@ describes each value of the type, in each function that gets the value.
 
 ## 2. The syntax
 
-An `invariant` clause comes after the name of the struct and before its fields, as a `requires`
-comes before the body of a function:
-
-<!-- vx-doctest: skip (proposed syntax) -->
+An `invariant` clause comes inside the braces of the struct, after its last field. Each one ends
+with a comma, as a field does:
 
 ```vx
-struct Vec<T>
-invariant 0i32 <= self.len && self.len <= self.capacity
-invariant valid(self.data, self.capacity as i64)
-invariant initialized(self.data, self.len as i64)
-{
+struct Vec<T> {
   data : *mut T,
   len : i32,
   capacity : i32,
+
+  invariant 0i32 <= len && len <= capacity,
+  invariant valid(data, capacity as i64),
+  invariant initialized(data, len as i64),
 }
 ```
 
-In an invariant, `self` is the value of the type. An invariant can name the fields of `self` at any
-depth. It is an expression that the prover models, or a pointer clause: `valid`, `initialized` or
-`!overlaps`. It calls no function.
+An invariant names the fields directly, as a field declaration does: `len`, not `self.len`. A
+`requires` comes after the parameters, so the names that it uses are declared before it. An
+invariant after the fields keeps that order. D and Eiffel also put the invariant inside the body of
+the type, with bare field names (#2873).
+
+An invariant can name the fields at any depth, as in `pair.a`. It is an expression that the prover
+models, or a pointer clause: `valid`, `initialized` or `!overlaps`. It calls no function, and it
+names no constant. `self` is an error in an invariant. The parser reads each field `len` as
+`self.len`, so the checker sees the value of the type as `self`.
+
+The rules of the syntax:
+
+- A field after an invariant is an error.
+- The comma after the last invariant is optional.
+- An invariant before the braces is an error. The message says to move it after the last field.
 
 ## 3. Who can write the fields
 
@@ -124,13 +134,13 @@ fixed buffer can:
 <!-- vx-doctest: skip (proposed syntax) -->
 
 ```vx
-struct FixedBuf<T>
-invariant valid(self.data, self.cap as i64)
-invariant 0i32 <= self.len && self.len <= self.cap
-{
+struct FixedBuf<T> {
   final data : *mut T,
   final cap : i32,
   len : i32,
+
+  invariant valid(data, cap as i64),
+  invariant 0i32 <= len && len <= cap,
 }
 ```
 
@@ -155,8 +165,8 @@ Code in the module can break the invariant for a short time, for example to chan
 A value behind a `&` parameter cannot change, so the function proves nothing for it at a `return`.
 A `SharedCell` field is the exception, and a type with such a field cannot have an invariant in v1.
 
-In `VecIntoIter::drop`, the body takes the elements out of `self.vec` and breaks
-`initialized(self.data, self.len)`. Then it sets `self.vec.len` to 0, and the invariant holds
+In `VecIntoIter::drop`, the body takes the elements out of `self.vec` and breaks its invariant
+`initialized(data, len)`. Then it sets `self.vec.len` to 0, and the invariant holds
 again at the `return`.
 
 **A helper that gets a broken value.** A function of the module can state the clause
@@ -175,7 +185,8 @@ the clause itself makes this rule: a call from another module gets an error.
 
 Outside the module, the invariant holds at each read of a field. Inside the module, it holds
 where section 4 says, until code writes a field. At each read of a field of a value whose
-invariant holds, the checker adds the invariant as facts. `self` becomes the place of the value:
+invariant holds, the checker adds the invariant as facts. Each field `len` becomes the field of
+that value, as in `v.len`:
 
 - The prover gets each invariant that it models, such as `v.len <= v.capacity`.
 - For a pointer clause about the field that the code reads, the tracker gives the new base of the
@@ -213,7 +224,7 @@ So `as_mut_ptr` proves its `ensures` with no `assume`. Outside the module, safe 
 1. A write level wider than the module, such as `pkg`, for a field of a type with an invariant. It
    is sound, because each function that writes a field must give the invariant back. But then the
    invariant can be false in more than one file.
-1. An invariant about memory behind a pointer. `initialized(self.data, self.len)` is a fact about
+1. An invariant about memory behind a pointer. `initialized(data, len)` is a fact about
    the buffer, not about a field, so the rule of section 3 does not keep it. It holds because safe
    code cannot write through a `*mut T`, and unsafe code must keep the invariant. This is enough
    while one value owns the buffer. It is not enough for a type whose invariant uses the invariant

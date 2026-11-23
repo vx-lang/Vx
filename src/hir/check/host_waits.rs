@@ -75,6 +75,7 @@ impl TypeChecker<'_> {
             | Type::Ref(inner, _)
             | Type::Verified(inner)
             | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => self.host_only_part(inner, visiting),
             Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
                 if self.implements_host_only(ty) {

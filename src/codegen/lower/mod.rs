@@ -210,6 +210,7 @@ pub(crate) fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, St
         "f4E2M1FN" => Ok("f4E2M1FN"),
         "f8E4M3FN" => Ok("f8E4M3FN"),
         "f8E5M2" => Ok("f8E5M2"),
+        "f8E8M0FNU" => Ok("f8E8M0FNU"),
         "bf16" => Ok("bf16"),
         "f16" => Ok("f16"),
         "f32" => Ok("f32"),
@@ -1531,7 +1532,7 @@ pub(crate) fn pick_scalar_print<'c>(
         ("i128", false) => ("print_i128", None),
         // A `for` variable over a range is an `index` here.
         ("index", _) => ("print_i64", Some(("arith.index_cast", "i64"))),
-        ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16", _) => {
+        ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16", _) => {
             ("print_f32", Some(("arith.extf", "f32")))
         }
         ("f32", _) => ("print_f32", None),

@@ -51,6 +51,11 @@ pub enum LaneOp {
     Matmul,
     /// Multiplies each row of a tile in shared memory by an element of another tile.
     ScaleRows,
+    /// `acc` gets the matmul of two `f4e2m1` tiles, each with a scale for each block of k. The
+    /// lanes of a block or of a subgroup compute it together.
+    MatmulScaled,
+    /// Asks for a part of a tensor to come into the L2 cache. It reads no value.
+    Prefetch,
 }
 
 impl LaneOp {
@@ -84,7 +89,8 @@ pub enum LaneArg {
     Matrix(&'static [ElementType]),
     /// An `i32`, such as the number of elements to combine, or a copy token.
     I32,
-    /// The place of a tile, `[i, j, ..]`. The op takes each number as an operand.
+    /// The place of a tile, `[i, j, ..]`, or the shape of a part of a tensor, `[rows, cols]`. The
+    /// op takes each number as an operand. All the places of a call have the same length.
     Place,
     /// A number, such as the value of a fill.
     Scalar,
@@ -290,7 +296,9 @@ impl LaneRoutine {
     /// arguments leave. `None` when there are too few.
     pub fn operand_kinds(&self, operands: usize) -> Option<Vec<LaneArg>> {
         let fixed = self.args.iter().filter(|a| **a != LaneArg::Place).count();
-        let places = operands.checked_sub(fixed)?;
+        let lists = self.args.len() - fixed;
+        let numbers = operands.checked_sub(fixed)?;
+        let places = numbers.checked_div(lists).unwrap_or(0);
         let mut kinds = Vec::new();
         for kind in self.args {
             match kind {
@@ -343,7 +351,13 @@ impl LaneRoutine {
 
 /// The element types of the accumulator of a lane matmul, and of the tiles that it multiplies.
 const MATMUL_ACC: &[ElementType] = &[ElementType::F32];
-const MATMUL_TILES: &[ElementType] = &[ElementType::F32, ElementType::BF16, ElementType::F16];
+const MATMUL_TILES: &[ElementType] = &[
+    ElementType::F32,
+    ElementType::BF16,
+    ElementType::F16,
+    ElementType::F8E4M3,
+    ElementType::F8E5M2,
+];
 
 const KIND_SUM: (&str, LaneAttr) = ("kind", LaneAttr::Str("sum"));
 const KIND_MAX: (&str, LaneAttr) = ("kind", LaneAttr::Str("max"));
@@ -449,6 +463,24 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
         .with_lanes()
         .with_row_of(0)
         .writing_first(),
+        LaneRoutine::call(
+            "matmul_scaled",
+            MatmulScaled,
+            "vx.lane_matmul_scaled",
+            &[Tensor, Tensor, Tensor, Tensor, Tensor],
+            None,
+        )
+        .with_lanes()
+        .with_row_of(0)
+        .writing_first(),
+        LaneRoutine::call(
+            "prefetch",
+            Prefetch,
+            "vx.lane_prefetch",
+            &[Tile, Place, Place],
+            None,
+        )
+        .with_lanes(),
         LaneRoutine::call("matmul", Matmul, "vx.lane_matmul", matmul, None)
             .with_syntax(LaneSyntax::Operator)
             .with_row_of(0)
@@ -547,6 +579,9 @@ pub struct LaneMatmul<'a> {
     /// The tiles, without their `as f32`.
     pub lhs: &'a Expr,
     pub rhs: &'a Expr,
+    /// The types of the tiles before their `as f32`, once the type checker has seen them.
+    pub lhs_source: Option<&'a Type>,
+    pub rhs_source: Option<&'a Type>,
     /// Whether the products are added to the old `acc`.
     pub accumulate: bool,
     /// The `@`.
@@ -571,22 +606,27 @@ pub fn lane_matmul(a: &crate::syntax::AssignStmt) -> Option<LaneMatmul<'_>> {
     if mm.op != BinaryOp::MatMul {
         return None;
     }
+    let (lhs, lhs_source) = matmul_tile(&mm.lhs)?;
+    let (rhs, rhs_source) = matmul_tile(&mm.rhs)?;
     Some(LaneMatmul {
         acc: &a.lhs,
-        lhs: matmul_tile(&mm.lhs)?,
-        rhs: matmul_tile(&mm.rhs)?,
+        lhs,
+        rhs,
+        lhs_source,
+        rhs_source,
         accumulate,
         at: mm.span,
     })
 }
 
-/// The tile of an operand of a lane matmul: `t`, or `t` of `t as f32`.
-fn matmul_tile(e: &Expr) -> Option<&Expr> {
+/// The tile of an operand of a lane matmul, `t` or `t as f32`, and the type of `t` before the
+/// `as f32`.
+fn matmul_tile(e: &Expr) -> Option<(&Expr, Option<&Type>)> {
     match e {
         Expr::AsCast(c) if c.target_ty == Type::Scalar(ElementType::F32) && is_place(&c.expr) => {
-            Some(&c.expr)
+            Some((&c.expr, c.source_ty.as_ref()))
         }
-        e if is_place(e) => Some(e),
+        e if is_place(e) => Some((e, None)),
         _ => None,
     }
 }
@@ -644,6 +684,10 @@ impl crate::hir::TypeChecker<'_> {
             Some(LaneOp::ScaleRows) => {
                 return self.check_scale_rows(name, args, arg_types, call_span)
             }
+            Some(LaneOp::MatmulScaled) => {
+                return self.check_matmul_scaled(name, args, arg_types, call_span)
+            }
+            Some(LaneOp::Prefetch) => return self.check_prefetch(name, args, arg_types, call_span),
             _ => {}
         }
         let argmax = lane_routine(name).map(|r| r.op) == Some(LaneOp::ArgMax);
@@ -1024,6 +1068,18 @@ impl crate::hir::TypeChecker<'_> {
         token
     }
 
+    /// Whether a tensor with placement `p` is a tile of sums: in a memory that the lanes of a block
+    /// share, or in registers (check/subgroup_registers.rs).
+    fn in_tile_memory(&self, p: &Option<crate::syntax::Placement>) -> bool {
+        self.in_shared_memory(p)
+            || p.as_ref().is_some_and(|p| {
+                self.env.memories.values().any(|d| {
+                    crate::syntax::MemorySpace::from_name(d.name.as_ref()) == p.space
+                        && d.scope == Some(crate::syntax::Scope::Thread)
+                })
+            })
+    }
+
     /// Whether a tensor with placement `p` is in a memory that the lanes of a block share.
     fn in_shared_memory(&self, p: &Option<crate::syntax::Placement>) -> bool {
         p.as_ref().is_some_and(|p| {
@@ -1097,13 +1153,13 @@ impl crate::hir::TypeChecker<'_> {
             );
             return void;
         };
-        let into_tile = self.in_shared_memory(&dst_place);
+        let into_tile = self.in_tile_memory(&dst_place);
         let tile = match (&src, into_tile) {
             (Some((e, dims, _, _)), true) if *e == elem && dims.len() == dst_dims.len() => {
                 tile_dims(&dst_dims)
             }
             (Some((e, dims, p, _)), false)
-                if *e == elem && dims.len() == dst_dims.len() && self.in_shared_memory(p) =>
+                if *e == elem && dims.len() == dst_dims.len() && self.in_tile_memory(p) =>
             {
                 tile_dims(dims)
             }
@@ -1113,8 +1169,8 @@ impl crate::hir::TypeChecker<'_> {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
-                    "`{name}` copies a tile in shared memory with a size that is a number, into \
-                     the first argument or out of the second. Both must borrow tensors of `{elem}` \
+                    "`{name}` copies a tile in shared memory or in registers with a size that is a \
+                     number, into the first argument or out of the second. Both must borrow tensors of `{elem}` \
                      with {} dimensions, but they are `{}` and `{}`",
                     dst_dims.len(),
                     arg_types[0],
@@ -1179,7 +1235,7 @@ impl crate::hir::TypeChecker<'_> {
                 ..
             } => match inner.as_ref() {
                 Type::Tensor(e, dims, p, _)
-                    if self.in_shared_memory(p)
+                    if self.in_tile_memory(p)
                         && dims.iter().all(|d| {
                             crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
                         }) =>
@@ -1194,9 +1250,9 @@ impl crate::hir::TypeChecker<'_> {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
-                    "the first argument of `{name}` must borrow a tile in shared memory as `&mut`, \
-                     with a size that is a number, such as `&mut acc[w]` for `Tensor<f32, [4, 32, \
-                     32], Memory::SMEM>`, but it is `{}`",
+                    "the first argument of `{name}` must borrow a tile in shared memory or in \
+                     registers as `&mut`, with a size that is a number, such as `&mut acc[w]` for \
+                     `Tensor<f32, [4, 32, 32], Memory::SMEM>`, but it is `{}`",
                     arg_types[0]
                 ),
                 span,
@@ -1213,6 +1269,78 @@ impl crate::hir::TypeChecker<'_> {
                 ),
                 span,
             );
+        }
+        void
+    }
+
+    /// The type of a call `lanes::prefetch(&x, [i, j], [rows, cols])`, which asks for the part of
+    /// `x` at `[i, j]` with that shape to come into the L2 cache. It reads no value, so it never
+    /// changes a result.
+    fn check_prefetch(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let void = Type::Struct("void".into(), None);
+        if self.speculating {
+            return void;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 3 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 3 arguments, a borrowed tensor, the place of the part such as \
+                     `[r, c]`, and the shape of the part such as `[rows, cols]`, but it got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return void;
+        }
+        // `x` and `&x` for a parameter `x : &Tensor<..>` both name the tensor.
+        let mut src = &arg_types[0];
+        while let Type::Borrow { inner, .. } = src {
+            src = inner;
+        }
+        let rank = match src {
+            Type::Tensor(_, dims, p, _)
+                if !matches!(arg_types[0], Type::Tensor(..)) && !self.in_shared_memory(p) =>
+            {
+                dims.len()
+            }
+            _ => {
+                self.errors.error_with_code(
+                    DiagnosticCode::E3003,
+                    format!(
+                        "the first argument of `{name}` must borrow a tensor that is not in shared \
+                         memory, such as `&w`, but it is `{}`",
+                        arg_types[0]
+                    ),
+                    span,
+                );
+                return void;
+            }
+        };
+        for (at, what) in [(1, "place"), (2, "shape")] {
+            let ok = matches!(&args[at], Expr::Array(a) if a.elements.len() == rank)
+                && matches!(
+                    &arg_types[at],
+                    Type::Tensor(ElementType::I32 | ElementType::I64, ..)
+                );
+            if !ok {
+                let ordinal = if at == 1 { "second" } else { "third" };
+                self.errors.error_with_code(
+                    DiagnosticCode::E3003,
+                    format!(
+                        "the {ordinal} argument of `{name}` is the {what} of the part, written as \
+                         a list of {rank} integers, one for each dimension of the tensor"
+                    ),
+                    span.clone(),
+                );
+            }
         }
         void
     }
@@ -1244,16 +1372,20 @@ impl crate::hir::TypeChecker<'_> {
             );
             return void;
         }
-        // The sizes of an `f32` tile in shared memory, borrowed as `&mut` or as `&`.
+        // The sizes of an `f32` tile, borrowed as `&mut` or as `&`. The tile of sums can be in
+        // registers. Each lane reads the scales of its rows, so they are in shared memory.
         let f32_tile = |t: &Type, is_mut: bool| -> Option<Vec<i128>> {
             match t {
                 Type::Borrow {
                     inner, is_mut: m, ..
                 } if *m == is_mut => match inner.as_ref() {
-                    Type::Tensor(ElementType::F32, dims, p, _) if self.in_shared_memory(p) => dims
-                        .iter()
-                        .map(|d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1))
-                        .collect(),
+                    Type::Tensor(ElementType::F32, dims, p, _)
+                        if (is_mut && self.in_tile_memory(p)) || self.in_shared_memory(p) =>
+                    {
+                        dims.iter()
+                            .map(|d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1))
+                            .collect()
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -1263,9 +1395,9 @@ impl crate::hir::TypeChecker<'_> {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
-                    "the first argument of `{name}` must borrow an `f32` matrix in shared memory as \
-                     `&mut`, with sizes that are numbers, such as `&mut acc[w]` for `Tensor<f32, \
-                     [4, 16, 64], Memory::SMEM>`, but it is `{}`",
+                    "the first argument of `{name}` must borrow an `f32` matrix in shared memory or \
+                     in registers as `&mut`, with sizes that are numbers, such as `&mut acc[w]` \
+                     for `Tensor<f32, [4, 16, 64], Memory::SMEM>`, but it is `{}`",
                     arg_types[0]
                 ),
                 span,
@@ -1280,6 +1412,116 @@ impl crate::hir::TypeChecker<'_> {
                      `&`, with one element for each of the {rows} rows of the first, such as \
                      `&scale[w]` for `Tensor<f32, [4, {rows}], Memory::SMEM>`, but it is `{}`",
                     arg_types[1]
+                ),
+                span,
+            );
+        }
+        void
+    }
+
+    /// The type of a call `lanes::matmul_scaled(&mut acc, &a, &sa, &b, &sb)`. It adds to
+    /// `acc[i][j]` the sum over `k` of `a[i][k] * sa[i][k / B] * b[k][j] * sb[k / B][j]`, where
+    /// `B` is the k size of `a` over the k size of `sa`. `acc` is an `f32` matrix, `a` and `b`
+    /// are `f4e2m1` matrices, and `sa` and `sb` are matrices of one scale type, `f8e4m3` (NVFP4)
+    /// or `f8e8m0` (MXFP4). All five are in shared memory, and their sizes are numbers.
+    fn check_matmul_scaled(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let void = Type::Struct("void".into(), None);
+        if self.speculating {
+            return void;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 5 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 5 arguments, `&mut acc`, `&a`, `&sa`, `&b` and `&sb`, but it \
+                     got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return void;
+        }
+        // The two sizes of a matrix of `elem` in shared memory, borrowed as `&mut` or as `&`.
+        let matrix = |t: &Type, elem: &ElementType, is_mut: bool| -> Option<[i128; 2]> {
+            let Type::Borrow {
+                inner, is_mut: m, ..
+            } = t
+            else {
+                return None;
+            };
+            let Type::Tensor(e, dims, p, _) = inner.as_ref() else {
+                return None;
+            };
+            if *m != is_mut || e != elem || dims.len() != 2 || !self.in_shared_memory(p) {
+                return None;
+            }
+            let size = |d| crate::hir::memory::static_extent(d).filter(|&n| n >= 1);
+            Some([size(&dims[0])?, size(&dims[1])?])
+        };
+        // NVFP4 has `f8e4m3` scales and MXFP4 `f8e8m0` scales. `sb` has the type of `sa`.
+        let scale = match &arg_types[2] {
+            Type::Borrow { inner, .. }
+                if matches!(inner.as_ref(), Type::Tensor(ElementType::F8E8M0, ..)) =>
+            {
+                ElementType::F8E8M0
+            }
+            _ => ElementType::F8E4M3,
+        };
+        let wanted = [
+            ("first", "`acc`", ElementType::F32, true, "an `f32`"),
+            ("second", "`a`", ElementType::F4E2M1, false, "an `f4e2m1`"),
+            (
+                "third",
+                "`sa`",
+                scale.clone(),
+                false,
+                "an `f8e4m3` or `f8e8m0`",
+            ),
+            ("fourth", "`b`", ElementType::F4E2M1, false, "an `f4e2m1`"),
+            ("fifth", "`sb`", scale.clone(), false, "a scale"),
+        ];
+        let mut sizes = Vec::new();
+        for (t, (nth, what, elem, is_mut, shown)) in arg_types.iter().zip(wanted) {
+            let Some(size) = matrix(t, &elem, is_mut) else {
+                let borrow = if is_mut { "`&mut`" } else { "`&`" };
+                let shown = if nth == "fifth" {
+                    format!("an `{scale}`")
+                } else {
+                    shown.to_string()
+                };
+                let like_sa = if nth == "fifth" { ", as `sa` does" } else { "" };
+                self.errors.error_with_code(
+                    DiagnosticCode::E3003,
+                    format!(
+                        "the {nth} argument of `{name}`, {what}, must borrow {shown} matrix in \
+                         shared memory as {borrow}{like_sa}, with sizes that are numbers, but it is \
+                         `{t}`"
+                    ),
+                    span,
+                );
+                return void;
+            };
+            sizes.push(size);
+        }
+        let [[m, n], [am, k], [sm, sk], [bk, bn], [sbk, sbn]] = sizes[..] else {
+            unreachable!("five matrices");
+        };
+        let fits = am == m && bn == n && bk == k && sm == m && sbn == n && sbk == sk && k % sk == 0;
+        if !fits {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the sizes of the tiles of `{name}` do not fit: with `acc` of [M, N] and `a` \
+                     of [M, K], `b` must be [K, N], `sa` [M, K / B] and `sb` [K / B, N], where \
+                     the block size B divides K. Here `acc` is [{m}, {n}], `a` [{am}, {k}], `sa` \
+                     [{sm}, {sk}], `b` [{bk}, {bn}] and `sb` [{sbk}, {sbn}]"
                 ),
                 span,
             );

@@ -1,0 +1,117 @@
+//===- select_ends_at_a_cancel_a_time_limit_or_a_close.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The ways that a `select` on channels with no value ends:
+// - A task waits in `select2`, and the code of the block returns early. That cancels the task,
+//   so `select2` gives `Cancelled`.
+// - In a call of `within`, `select2` gives `Cancelled` at the time limit. So does a
+//   `select_list` of an empty list, which waits only for a cancel.
+// - A task waits in `select2`, and the code drops the `Sender` of one channel. A closed channel
+//   is ready, so `select2` gives its index, and `try_recv` then gives `Closed`.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the block returned early: Cancelled{{$}}
+// CHECK-NEXT: {{^}}leave gave 7{{$}}
+// CHECK-NEXT: {{^}}within: Cancelled{{$}}
+// CHECK-NEXT: {{^}}an empty list in within: Cancelled{{$}}
+// CHECK-NEXT: {{^}}a Sender was dropped: index 1, and try_recv gave Closed{{$}}
+
+import core::time;
+import std::sync::channel;
+import std::sync::select;
+import std::sync::wait;
+import std::time;
+import std::vec;
+
+fn say(what : *const i8, r : Result<i32, SelectError>) -> void {
+  match r {
+    Result<i32, SelectError>::Ok(i) => {
+      println!("{}: index {}", what, i);
+    }
+    Result<i32, SelectError>::Err(_) => {
+      println!("{}: Cancelled", what);
+    }
+  }
+}
+
+fn wait_on_two(a : Receiver<i64>, b : Receiver<i64>, what : *const i8) -> void {
+  say(what, select2(&a, &b));
+}
+
+fn leave(early : bool) -> i64 {
+  let (tx0, rx0) = channel<i64>(1);
+  let (tx1, rx1) = channel<i64>(1);
+  tasks {
+    spawn {
+      wait_on_two(rx0, rx1, "the block returned early");
+    };
+    if early {
+      return 7;
+    }
+    drop(tx0);
+    drop(tx1);
+  };
+  return 0;
+}
+
+fn wait_for_a_close(a : Receiver<i64>, b : Receiver<i64>) -> void {
+  match select2(&a, &b) {
+    Result<i32, SelectError>::Ok(i) => {
+      let mut gave : *const i8 = "a value";
+      let rx : &Receiver<i64> = if i == 0 {
+        &a
+      } else {
+        &b
+      };
+      match rx.try_recv() {
+        Result<i64, TryRecvError>::Ok(_) => {}
+        Result<i64, TryRecvError>::Err(e) => {
+          match e {
+            TryRecvError::Closed => {
+              gave = "Closed";
+            }
+            TryRecvError::Empty => {
+              gave = "Empty";
+            }
+          }
+        }
+      }
+      println!("a Sender was dropped: index {}, and try_recv gave {}", i, gave);
+    }
+    Result<i32, SelectError>::Err(_) => {
+      println!("a Sender was dropped: Cancelled");
+    }
+  }
+}
+
+fn main() -> i32 {
+  let left = leave(true);
+  println!("leave gave {}", left);
+
+  let (tx0, rx0) = channel<i64>(1);
+  let (tx1, rx1) = channel<i64>(1);
+  within(Duration::from_millis(100), || -> void {
+    say("within", select2(&rx0, &rx1));
+  });
+  let empty = Vec<Receiver<i64>>::new();
+  within(Duration::from_millis(100), || -> void {
+    say("an empty list in within", select_list(&empty));
+  });
+
+  tasks {
+    spawn {
+      wait_for_a_close(rx0, rx1);
+    };
+    // The task waits in `select2` by the end of the sleep.
+    sleep(Duration::from_millis(200));
+    drop(tx1);
+  };
+  drop(tx0);
+  return 0;
+}

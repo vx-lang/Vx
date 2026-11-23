@@ -1,0 +1,40 @@
+//===- an_assert_that_fails.vx --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The same region as an_assert_that_passes.vx, with one negative input, so the
+// kernel's assert fails. A device has no `abort` that stops a kernel: the
+// kernel prints the message with the device's `printf`, sets the flag its last
+// parameter points at, and goes on. The library reads the flag after the wait
+// and stops the program, so the run exits with a message and prints no numbers.
+//
+// The runner requires the message, a nonzero status, and the library's own line
+// naming the kernel, so a run that quietly continued with a number fails the
+// case.
+
+import core::num;
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [8]>::uninit() };
+  let mut lo = unsafe { Tensor<f32, [8]>::uninit() };
+  for i in 0..8 {
+    a[i] = i as f32;
+    lo[i] = 2.0;
+  }
+  a[0] = -1.0;
+  let ga = transfer(a, Memory::HBM);
+  let gl = transfer(lo, Memory::HBM);
+  let mut go = transfer(unsafe { Tensor<f32, [8]>::uninit() }, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..8 {
+      assert(ga[i] >= 0.0, "a negative input");
+      go[i] = ga[i].clamp(gl[i], gl[i] + 1.0);
+    }
+  }
+  let o = transfer(go, Memory::CPU_DRAM);
+  println!("{}", o[7]);
+  return 0;
+}

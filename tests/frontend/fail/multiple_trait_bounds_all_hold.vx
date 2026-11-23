@@ -22,7 +22,7 @@ trait Signs {
   fn sign(self : Self) -> i32;
 }
 
-impl Doubles for f32 {
+extern impl Doubles for f32 {
   fn twice(self : f32) -> i32 {
     return 2;
   }

@@ -9,6 +9,10 @@ mod integration_test {
     mod apple_gpu_functions_called_from_two_c_threads;
     #[cfg(target_os = "macos")]
     mod apple_gpu_kernels_called_from_c;
+    // Linux only: it reads an ELF symbol table, and the Apple library is a
+    // Mach-O one.
+    #[cfg(target_os = "linux")]
+    mod abi_of_the_dispatch_library;
     mod architecture_test;
     mod arrival_counts_test;
     mod assert_codegen_test;
@@ -62,6 +66,9 @@ mod integration_test {
     mod shipped_programs_compile;
     mod solver_policy_test;
     mod solver_questions_of_raw_pointer_writes;
+    // It patches ELF libraries with patchelf, and pocl runs on Linux.
+    #[cfg(target_os = "linux")]
+    mod spirv_images_on_pocl;
     mod tensors_with_gaps_from_c;
     mod time_limit;
     mod traffic_test;

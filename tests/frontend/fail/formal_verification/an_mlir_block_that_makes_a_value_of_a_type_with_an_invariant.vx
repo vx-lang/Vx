@@ -1,0 +1,67 @@
+//===- an_mlir_block_that_makes_a_value_of_a_type_with_an_invariant.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `Token` has an invariant, so only its file can make a value of `Token`. An `mlir!` block in
+// this file cannot make a `Token`, as a struct literal here cannot. The block also cannot make
+// an `Option<Token>` or a `Wrapper`, because these hold a `Token`. An `unsafe` block does not
+// change this. The block can make a raw pointer to a `Token`, because a read through the pointer
+// needs `unsafe`. The file of `Token` makes a `Token` in its own `mlir!` block.
+import core::option;
+import tests::modules::a_token_with_an_invariant;
+
+struct Wrapper {
+  token : Token,
+}
+
+fn forged() -> Token {
+  return mlir!(inputs : (), returns : Token, dialects : ["llvm"]) {
+    %u = llvm.mlir.undef : !llvm.struct<(i64)>
+    macro.yield %u : !llvm.struct<(i64)>
+  };
+}
+
+fn forged_in_unsafe() -> Token {
+  unsafe {
+    return mlir!(inputs : (), returns : Token, dialects : ["llvm"]) {
+      %u = llvm.mlir.undef : !llvm.struct<(i64)>
+      macro.yield %u : !llvm.struct<(i64)>
+    };
+  }
+}
+
+fn forged_option() -> Option<Token> {
+  return mlir!(inputs : (), returns : Option<Token>, dialects : ["llvm"]) {
+    %u = llvm.mlir.undef : !llvm.struct<(i64)>
+    macro.yield %u : !llvm.struct<(i64)>
+  };
+}
+
+fn forged_wrapper() -> Wrapper {
+  return mlir!(inputs : (), returns : Wrapper, dialects : ["llvm"]) {
+    %u = llvm.mlir.undef : !llvm.struct<(i64)>
+    macro.yield %u : !llvm.struct<(i64)>
+  };
+}
+
+fn a_pointer() -> *mut Token {
+  return mlir!(inputs : (), returns : *mut Token, dialects : ["llvm"]) {
+    %p = llvm.mlir.zero : !llvm.ptr
+    macro.yield %p : !llvm.ptr
+  };
+}
+
+fn main() -> i32 {
+  let _t = token_from_mlir();
+  return 0;
+}
+
+// CHECK: Error[E8014] at {{.*}}an_mlir_block_that_makes_a_value_of_a_type_with_an_invariant.vx:23:16: this `mlir!` block makes a value of `Token`. `Token` has an invariant, so only code in `a_token_with_an_invariant.vx` can make a value of `Token`
+// CHECK: Error[E8014] at {{.*}}an_mlir_block_that_makes_a_value_of_a_type_with_an_invariant.vx:31:18: this `mlir!` block makes a value of `Token`.
+// CHECK: Error[E8014] at {{.*}}an_mlir_block_that_makes_a_value_of_a_type_with_an_invariant.vx:39:16: this `mlir!` block makes a value of `Option<Token>`, which holds a value of `Token`.
+// CHECK: Error[E8014] at {{.*}}an_mlir_block_that_makes_a_value_of_a_type_with_an_invariant.vx:46:16: this `mlir!` block makes a value of `Wrapper`, which holds a value of `Token`.

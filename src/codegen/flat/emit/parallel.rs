@@ -216,22 +216,28 @@ impl FnEmit<'_> {
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
         let across = matches!(self.region_slots.pop(), Some(Some(_)));
-        // The topology's name as the program wrote it, from the function's string table. A task
-        // has no name: its high half is the line of its `spawn`.
+        // The topology's name as the program wrote it, from the function's string table, and the
+        // line of the `spawn` from the string after it. A task has no name: its high half is the
+        // line of its `spawn`.
+        let file = self.file.map_or(String::new(), |f| {
+            format!(
+                ", vx.file = \"{}\"",
+                f.replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        });
         let name = match name.checked_sub(1) {
             _ if topo == crate::arch::TASK_DISPATCH_ID as i64 => {
-                let file = self.file.map_or(String::new(), |f| {
-                    format!(
-                        ", vx.file = \"{}\"",
-                        f.replace('\\', "\\\\").replace('"', "\\\"")
-                    )
-                });
                 format!(", vx.line = {name} : i64{file}")
             }
             Some(i) => {
                 let s = self.strings.get(i as usize).ok_or(crate::emitter_gap!())?;
+                let line: u64 = self
+                    .strings
+                    .get(i as usize + 1)
+                    .and_then(|l| l.parse().ok())
+                    .ok_or(crate::emitter_gap!())?;
                 format!(
-                    ", topology_name = \"{}\"",
+                    ", topology_name = \"{}\", vx.line = {line} : i64{file}",
                     s.replace('\\', "\\\\").replace('"', "\\\"")
                 )
             }

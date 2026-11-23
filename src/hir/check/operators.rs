@@ -658,7 +658,7 @@ impl<'a> TypeChecker<'a> {
                 // did not typecheck, and the stdlib `copy` is a copy-*into*
                 // rather than a duplication. That is enough for a test and never
                 // enough for a model, whose weights are read once per token.
-                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, _top_r))) = (
+                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, top_r))) = (
                     Self::as_tensor_operand(&lhs_ty),
                     Self::as_tensor_operand(&rhs_ty),
                 ) {
@@ -709,10 +709,40 @@ impl<'a> TypeChecker<'a> {
                                     return Type::Unknown;
                                 }
                             }
+                            // In a device region, the product goes to the memory that its
+                            // target names, such as registers for sums in `Memory::REG`. Tiles in
+                            // two memories, such as weights in HBM and activations in shared
+                            // memory, need such a target: a default would hide a copy.
+                            let target = self
+                                .expected_type
+                                .as_ref()
+                                .and_then(Self::as_tensor_operand)
+                                .and_then(|(_, _, t)| t.clone())
+                                .filter(|_| self.device_spawn.is_some());
+                            let top = match (top_l, top_r) {
+                                _ if target.is_some() => target,
+                                (Some(l), Some(r))
+                                    if l.space != r.space && self.device_spawn.is_some() =>
+                                {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3004,
+                                        format!(
+                                            "the tiles of this `@` are in {} and in {}, so the \
+                                             product needs a target that names its memory; \
+                                             assign it to a tensor whose type names one",
+                                            l.as_written(),
+                                            r.as_written()
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                    return Type::Unknown;
+                                }
+                                _ => top_l.clone(),
+                            };
                             return Type::Tensor(
                                 el_ty_l.clone(),
                                 vec![dims_l[0].clone(), dims_r[1].clone()],
-                                top_l.clone(),
+                                top,
                                 Self::as_tensor_storage(&lhs_ty),
                             );
                         }
@@ -772,7 +802,7 @@ impl<'a> TypeChecker<'a> {
                                 );
                             }
                         }
-                        return shape_side.clone();
+                        return Self::owned_tensor_result(shape_side);
                     }
                 }
 
@@ -819,9 +849,18 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
-                lhs_ty
+                Self::owned_tensor_result(&lhs_ty)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// The type of the result of an elementwise operation whose operand has type `operand`. The
+    /// result is a new tensor, also when the operand is a borrow of one, as in `&a + &a`.
+    fn owned_tensor_result(operand: &Type) -> Type {
+        match operand {
+            Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => (**inner).clone(),
+            other => other.clone(),
         }
     }
 

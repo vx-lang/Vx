@@ -221,6 +221,101 @@ static inline int vx_launch_entry_param_count(const char *ptx,
   return count;
 }
 
+/// One 32-bit word of a SPIR-V module, little-endian.
+///
+/// Read a byte at a time rather than through a `uint32_t *`, so the module need
+/// not be aligned and the decode does not depend on the host's byte order --
+/// the same rule `vx_payload_section` follows for the section's length.
+static inline uint32_t vx_spirv_word(const unsigned char *module,
+                                     size_t index) {
+  const unsigned char *p = module + index * 4;
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[3] << 24);
+}
+
+/// How many parameters an entry point in this SPIR-V module declares.
+///
+/// The counterpart of vx_launch_entry_param_count for a binary image: a SPIR-V
+/// module's header holds NUL bytes, so there is no text to scan and the count
+/// has to come from the instruction stream. It exists for the same reason --
+/// Level Zero cannot check a parameter array against the kernel it launches, so
+/// what the ABI produces is compared with what the image declares before
+/// anything runs.
+///
+/// Returns -1 when the module is not SPIR-V, is malformed, or has no entry
+/// point with that name, so "absent" and "takes none" stay distinguishable.
+static inline int vx_launch_entry_param_count_spirv(const void *image,
+                                                    size_t image_size,
+                                                    const char *entry) {
+  /* OpEntryPoint, OpFunction, OpFunctionParameter. */
+  enum { OpEntryPoint = 15, OpFunction = 54, OpFunctionParameter = 55 };
+  const unsigned char *module = (const unsigned char *)image;
+  size_t words;
+  size_t i;
+  uint32_t entry_id = 0;
+
+  if (!image || !entry || image_size < 20 || image_size % 4 != 0) {
+    return -1;
+  }
+  if (vx_spirv_word(module, 0) != 0x07230203u) {
+    return -1;
+  }
+  words = image_size / 4;
+
+  /* The entry point instruction carries both the name the driver enters by and
+     the id of the function it names. OpName would also link the two, but a
+     name is debug information: `spirv-opt --strip-debug` removes every OpName
+     and keeps the entry points, and then a launch would be refused as "no
+     entry named ...". It is also only a name, so a variable that happens to
+     carry the kernel's name matches it as well. */
+  for (i = 5; i < words;) {
+    uint32_t wc = vx_spirv_word(module, i) >> 16;
+    uint32_t opcode = vx_spirv_word(module, i) & 0xFFFF;
+    if (wc == 0 || i + wc > words) {
+      return -1;
+    }
+    /* Execution model, entry point id, then the name, then the interface. */
+    if (opcode == OpEntryPoint && wc >= 4) {
+      const char *name = (const char *)module + (i + 3) * 4;
+      size_t literal = (wc - 3) * 4;
+      size_t need = strlen(entry) + 1;
+      if (need <= literal && memcmp(name, entry, need) == 0) {
+        entry_id = vx_spirv_word(module, i + 2);
+      }
+    }
+    i += wc;
+  }
+  if (entry_id == 0) {
+    return -1;
+  }
+
+  /* Then the run of OpFunctionParameter immediately after that function. */
+  for (i = 5; i < words;) {
+    uint32_t wc = vx_spirv_word(module, i) >> 16;
+    uint32_t opcode = vx_spirv_word(module, i) & 0xFFFF;
+    if (wc == 0 || i + wc > words) {
+      return -1;
+    }
+    if (opcode == OpFunction && wc >= 3 &&
+        vx_spirv_word(module, i + 2) == entry_id) {
+      int count = 0;
+      size_t j = i + wc;
+      while (j < words) {
+        uint32_t pwc = vx_spirv_word(module, j) >> 16;
+        uint32_t pop = vx_spirv_word(module, j) & 0xFFFF;
+        if (pwc == 0 || j + pwc > words || pop != OpFunctionParameter) {
+          break;
+        }
+        ++count;
+        j += pwc;
+      }
+      return count;
+    }
+    i += wc;
+  }
+  return -1;
+}
+
 /// The alignment that each parameter of an entry point says it has, from its
 /// `.ptr .align N`, into `align[0..max)`: 0 for a parameter that is not such a
 /// pointer. Returns 0 when the entry is not found.
@@ -295,6 +390,29 @@ static inline int vx_launch_takes_assert_flag(const void *payload,
                                               size_t payload_size) {
   const char *flag = vx_payload_field(payload, payload_size, "assert_flag=");
   return flag && strcmp(flag, "1") == 0;
+}
+
+/* The kernel of `payload` for an error message, in `out`: for example
+   "vx_npu_kernel_3 (from pdl_chain at chain.vx:18)". The function and the
+   line come from the `function=` and `source=` entries, so an error tells the
+   programmer which `spawn` to look at. A payload without them gives the name
+   of the kernel only. Returns `out`. */
+static inline const char *vx_kernel_label(const void *payload,
+                                          size_t payload_size, char *out,
+                                          size_t size) {
+  const char *name = payload ? (const char *)payload : "?";
+  const char *fn = vx_payload_field(payload, payload_size, "function=");
+  const char *at = vx_payload_field(payload, payload_size, "source=");
+  if (fn && at) {
+    snprintf(out, size, "%s (from %s at %s)", name, fn, at);
+  } else if (fn) {
+    snprintf(out, size, "%s (from %s)", name, fn);
+  } else if (at) {
+    snprintf(out, size, "%s (at %s)", name, at);
+  } else {
+    snprintf(out, size, "%s", name);
+  }
+  return out;
 }
 
 /* One size of a launch shape, from `text`: `$j` is the `i32` launch value j,

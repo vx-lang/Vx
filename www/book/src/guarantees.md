@@ -65,8 +65,9 @@ OS threads (`VX_TASK_RUNTIME=shared`) keeps its ready tasks in one first-in, fir
 
 - The proof covers code with no loops, on a model of a CPU (`Finish.lean`).
 
-**`select` does not starve a channel.** Take `select()` on `n` channels. If one channel has a
-value at each of `n` calls in a row, one of those calls takes a value from it.
+**`select` does not starve a channel.** Take a loop of a task with one `select` on `n` sources in
+it. If one source is ready at each of `n` calls in a row, one of those calls chooses it. Two
+`select` calls in one loop share the start of the search, so the bound is weaker there.
 
 - **The check:** a proof in Lean (`Select.lean`). It also shows that the rule that `select` used
   before could starve a channel.

@@ -906,10 +906,16 @@ impl<'a> TypeChecker<'a> {
                 return Type::Struct("void".into(), None);
             }
         }
-        // `Distinct::check(t)` is a call of the function in `core::distinct` for the element type
-        // of `t`, which the parser imports for such a program.
+        // `Distinct::check(t)` and `DisjointRanges::check(t)` are calls of the function in
+        // `core::distinct` for the element type of `t`, which the parser imports for such a
+        // program.
         if let Expr::FunctionCall(fc) = expr {
-            if fc.name.as_ref() == "Distinct::check" {
+            let claim = match fc.name.as_ref() {
+                "Distinct::check" => Some(("Distinct", "distinct_check")),
+                "DisjointRanges::check" => Some(("DisjointRanges", "disjoint_ranges_check")),
+                _ => None,
+            };
+            if let Some((claim, prefix)) = claim {
                 let ty = match fc.args.as_slice() {
                     [t] => self.operand_type(t),
                     _ => Type::Unknown,
@@ -919,9 +925,9 @@ impl<'a> TypeChecker<'a> {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3004,
                             format!(
-                                "`Distinct::check(t)` reads the values of `t` on the CPU, but `t` \
+                                "`{claim}::check(t)` reads the values of `t` on the CPU, but `t` \
                                  is in {}. Check the tensor before the transfer, and transfer \
-                                 the `Distinct` tensor",
+                                 the `{claim}` tensor",
                                 p.space.name()
                             ),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&fc.span)),
@@ -929,30 +935,40 @@ impl<'a> TypeChecker<'a> {
                         return Type::Unknown;
                     }
                 }
+                let shape_holds = |dims: &[crate::syntax::Dim]| match claim {
+                    "Distinct" => dims.len() == 1,
+                    _ => dims.len() == 2 && dims[1].literal() == Some("2"),
+                };
                 let checked = match fc.args.as_slice() {
                     [_] => match ty {
-                        Type::Tensor(el, dims, _, _) if dims.len() == 1 => match el {
-                            ElementType::I32 => Some("distinct_check_i32"),
-                            ElementType::I64 => Some("distinct_check_i64"),
-                            ElementType::U32 => Some("distinct_check_u32"),
-                            ElementType::U64 => Some("distinct_check_u64"),
+                        Type::Tensor(el, dims, _, _) if shape_holds(&dims) => match el {
+                            ElementType::I32 => Some("i32"),
+                            ElementType::I64 => Some("i64"),
+                            ElementType::U32 => Some("u32"),
+                            ElementType::U64 => Some("u64"),
                             _ => None,
                         },
                         _ => None,
                     },
                     _ => None,
                 };
-                let Some(name) = checked else {
+                let Some(el) = checked else {
+                    let shape = if claim == "Distinct" {
+                        "with one dimension"
+                    } else {
+                        "of shape `[?, 2]`"
+                    };
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,
-                        "`Distinct::check(t)` takes one tensor with one dimension of `i32`, \
-                         `i64`, `u32` or `u64`, by value"
-                            .to_string(),
+                        format!(
+                            "`{claim}::check(t)` takes one tensor {shape} of `i32`, `i64`, `u32` \
+                             or `u64`, by value"
+                        ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(&fc.span)),
                     );
                     return Type::Unknown;
                 };
-                fc.name = name.into();
+                fc.name = format!("{prefix}_{el}").into();
             }
         }
         // A closure literal written as the `body` of `within` runs within its time limit.
@@ -1081,7 +1097,10 @@ impl<'a> TypeChecker<'a> {
                 // `Distinct(t)` and `Verified(t)` wrap `t` and read nothing.
                 let declared = self.env.functions.contains_key(base_name.as_ref())
                     || self.env.generic_functions.contains_key(base_name.as_ref())
-                    || matches!(base_name.as_ref(), "Distinct" | "Verified");
+                    || matches!(
+                        base_name.as_ref(),
+                        "Distinct" | "DisjointRanges" | "Verified"
+                    );
                 for arg in args.iter_mut() {
                     let ty = if declared {
                         self.check_whole_value(arg, |c, e| c.check_expr_type_flag(e, arg_consume))
@@ -2969,6 +2988,36 @@ impl<'a> TypeChecker<'a> {
                     Some(Type::Unknown)
                 }
             }
+        } else if resolved_name == "DisjointRanges" {
+            // The checker cannot see the values, so the program states that no ranges overlap.
+            if self.unsafe_is_missing() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    "`DisjointRanges(t)` is unsafe and needs an `unsafe` block: it states that no \
+                     two ranges `[t[i][0], t[i][1])` overlap, and the program does not check it. \
+                     Two blocks that write the rows of their ranges may then write the same row",
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                );
+            }
+            match arg_types {
+                [ty @ Type::Tensor(elem, dims, _, _)]
+                    if dims.len() == 2
+                        && dims[1].literal() == Some("2")
+                        && (elem.is_signed_int() || elem.is_unsigned_int()) =>
+                {
+                    Some(Type::DisjointRanges(Box::new(ty.clone())))
+                }
+                _ => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        "`DisjointRanges(t)` takes one tensor of integers of shape `[?, 2]`, by \
+                         value: the start and the end of each range"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                    );
+                    Some(Type::Unknown)
+                }
+            }
         // The older spelling, `Tensor<f32>([2, 3])`, names the constructor by its prefix. A name
         // holding `::` is a path -- the four constructors above are matched exactly, so anything
         // else is a method nothing defines, and reporting it undefined beats building a tensor
@@ -3558,6 +3607,13 @@ impl<'a> TypeChecker<'a> {
                     is_mut,
                     span: Span::default(),
                 }));
+            } else if !param_is_ref && obj_is_ref {
+                // `self` by value, called through a reference or a raw pointer: `r.f()` is
+                // `f(*r)`.
+                call_args.push(Expr::Dereference(DereferenceExpr::new(
+                    Box::new((*obj).clone()),
+                    span,
+                )));
             } else {
                 call_args.push((*obj).clone());
             }
@@ -3621,6 +3677,26 @@ impl<'a> TypeChecker<'a> {
                 ret_ty
             };
         (ret_ty, func_call)
+    }
+
+    /// `r.f()` for a method `f` that takes `self` by value passes `*r`. A reference cannot give
+    /// away a value that is not `Copy` (E4008).
+    fn check_receiver_taken_through(&mut self, base_ty: &Type, method: &str, span: &Span) {
+        match base_ty {
+            Type::Borrow { inner, .. } if inner.is_linear() && !self.is_copy(inner) => {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4008,
+                    format!(
+                        "`{method}` takes `self` by value, so this call moves a value of type \
+                         `{inner}` out from behind a reference, which does not own it. Call \
+                         `{method}` on the value itself, or on a clone of it"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+            Type::Pointer(inner, _, _) => self.refuse_move_through_raw_pointer(inner, true, span),
+            _ => {}
+        }
     }
 
     pub(crate) fn check_methodcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
@@ -3793,7 +3869,7 @@ impl<'a> TypeChecker<'a> {
                         t => t,
                     };
                     let counted = match counted {
-                        Type::Distinct(t) => t.as_ref(),
+                        Type::Distinct(t) | Type::DisjointRanges(t) => t.as_ref(),
                         _ => &base_ty,
                     };
                     if let Some((_, dims, _)) = Self::as_tensor_operand(counted) {
@@ -3959,6 +4035,16 @@ impl<'a> TypeChecker<'a> {
                     let self_by_value = generic_method.params.first().is_some_and(|(_, t)| {
                         !matches!(t, Type::Borrow { .. } | Type::Pointer(..))
                     });
+                    // Through a reference or a raw pointer, the call takes `*r`, as `f(*r)` does.
+                    if self_by_value && !self.speculating {
+                        self.check_receiver_taken_through(&base_ty, _method, &method_span);
+                    }
+                    // The method reads or changes the value that a raw pointer points at, as
+                    // `p.field` does.
+                    if matches!(base_ty, Type::Pointer(..)) && !self.speculating {
+                        let what = format!("Calling `{_method}` through a raw pointer");
+                        self.require_unsafe_raw_access(&what, &method_span);
+                    }
                     // Where the result may point. The receiver is argument 0.
                     let summary = self.env.method_provenance_of(&ib, _method.as_ref());
                     if consume
