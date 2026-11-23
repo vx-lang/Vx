@@ -106,10 +106,14 @@ impl FnEmit<'_> {
                     what: "an elementwise op on non-float elements",
                 });
             }
-            // Rank 1 takes the vector path below: the operands are read with a single-index
-            // `vector.load`, which a rank-2 memref rejects ("requires 2 indices"). Anything
-            // deeper is a named linalg op over the operand memrefs.
-            if shape.len() != 1 {
+            // A row of a larger tensor (a strided view) or a vector operand takes the vector
+            // path below, as in the AST generator. A whole tensor is a linalg op, a loop over
+            // its elements: one vector of a whole large tensor makes llc crash.
+            let row = |r: u32| {
+                matches!(self.vec_of.get(r as usize), Some(Some(_)))
+                    || matches!(self.mem_of.get(r as usize), Some(Some(m)) if m.contains("strided<"))
+            };
+            if shape.len() != 1 || !(row(ins.operand1.0) || row(ins.operand2.0)) {
                 let (elem, shape) = (elem.clone(), shape.clone());
                 return self.elementwise_linalg(idx, ins, &elem, &shape);
             }
@@ -206,10 +210,12 @@ impl FnEmit<'_> {
         true
     }
 
-    /// Elementwise arithmetic over a tensor of rank 2 or deeper: `linalg.{add,sub,mul,div}`
-    /// over the two operand memrefs into a fresh buffer of the result shape, which is what the
-    /// oracle emits and what `convert-linalg-to-loops` (or the vectorize pipeline's affine
-    /// route) already lowers. A `?` in the result shape is read off the first operand.
+    /// Elementwise arithmetic over a whole tensor, into a fresh buffer of the result shape:
+    /// `linalg.{add,sub,mul,div}` over two operand memrefs of the result's element type, which
+    /// is what the oracle emits and what `convert-linalg-to-loops` (or the vectorize pipeline's
+    /// affine route) already lowers. A scalar operand (`t * 2.0` on a rank-1 tensor) or a half
+    /// operand that widens to f32 needs a `linalg.generic`. A `?` in the result shape is read
+    /// off the first tensor operand.
     fn elementwise_linalg(
         &mut self,
         idx: usize,
@@ -218,35 +224,36 @@ impl FnEmit<'_> {
         shape: &[String],
     ) -> Lowered<()> {
         let memty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
-        let (ia, ib) = (ins.operand1.0 as usize, ins.operand2.0 as usize);
-        let a = self.names.get(ia).ok_or(crate::emitter_gap!())?.clone();
-        let b = self.names.get(ib).ok_or(crate::emitter_gap!())?.clone();
-        let ma = self
-            .mem_of
-            .get(ia)
-            .cloned()
-            .flatten()
-            .ok_or(crate::emitter_gap!())?;
-        let mb = self
-            .mem_of
-            .get(ib)
-            .cloned()
-            .flatten()
-            .ok_or(crate::emitter_gap!())?;
-        let op = match ins.opcode {
-            Opcode::Add => "linalg.add",
-            Opcode::Sub => "linalg.sub",
-            Opcode::Mul => "linalg.mul",
-            Opcode::Div => "linalg.div",
-            _ => return Err(crate::emitter_gap!()),
-        };
+        // Each operand: its name, its MLIR type, its element type, and whether it is a tensor.
+        let operand =
+            |r: u32| -> Lowered<(String, String, ElementType, bool)> {
+                let name = self
+                    .names
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                if let Some(m) = self.mem_of.get(r as usize).cloned().flatten() {
+                    let e = memref_elem_type(&m).ok_or(crate::emitter_gap!())?;
+                    return Ok((name, m, e, true));
+                }
+                let e = self.etypes.get(r as usize).cloned().flatten().ok_or(
+                    Decline::TypeNotModelled {
+                        what: "an operand of an elementwise op that is not a tensor or a scalar",
+                    },
+                )?;
+                let ty = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+                Ok((name, ty.to_string(), e, false))
+            };
+        let (a, ma, ea, ta) = operand(ins.operand1.0)?;
+        let (b, mb, eb, tb) = operand(ins.operand2.0)?;
+        let (sized, sized_ty) = if ta { (&a, &ma) } else { (&b, &mb) };
         let mut sizes: Vec<String> = Vec::new();
         for (k, d) in shape.iter().enumerate() {
             if d == DYN_DIM {
                 let c = format!("%ewc{idx}_{k}");
                 let s = format!("%ews{idx}_{k}");
                 self.body += &format!("  {c} = arith.constant {k} : index\n");
-                self.body += &format!("  {s} = memref.dim {a}, {c} : {ma}\n");
+                self.body += &format!("  {s} = memref.dim {sized}, {c} : {sized_ty}\n");
                 sizes.push(s);
             }
         }
@@ -261,7 +268,62 @@ impl FnEmit<'_> {
                 n
             }
         };
-        self.body += &format!("  {op} ins({a}, {b} : {ma}, {mb}) outs({n} : {memty})\n");
+        if ta && tb && ea == *elem && eb == *elem {
+            let op = match ins.opcode {
+                Opcode::Add => "linalg.add",
+                Opcode::Sub => "linalg.sub",
+                Opcode::Mul => "linalg.mul",
+                Opcode::Div => "linalg.div",
+                _ => return Err(crate::emitter_gap!()),
+            };
+            self.body += &format!("  {op} ins({a}, {b} : {ma}, {mb}) outs({n} : {memty})\n");
+        } else {
+            let op = match ins.opcode {
+                Opcode::Add => "arith.addf",
+                Opcode::Sub => "arith.subf",
+                Opcode::Mul => "arith.mulf",
+                Opcode::Div => "arith.divf",
+                _ => return Err(crate::emitter_gap!()),
+            };
+            let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?;
+            let dims: Vec<String> = (0..shape.len()).map(|i| format!("d{i}")).collect();
+            let whole = format!("affine_map<({0}) -> ({0})>", dims.join(", "));
+            let scalar = format!("affine_map<({}) -> ()>", dims.join(", "));
+            let map = |tensor: bool| if tensor { &whole } else { &scalar };
+            let iters: Vec<&str> = shape.iter().map(|_| "\"parallel\"").collect();
+            self.body += &format!(
+                "  linalg.generic {{indexing_maps = [{}, {}, {whole}], iterator_types = [{}]}} \
+                 ins({a}, {b} : {ma}, {mb}) outs({n} : {memty}) {{\n",
+                map(ta),
+                map(tb),
+                iters.join(", ")
+            );
+            let (xa, xb) = (format!("%ewa{idx}"), format!("%ewb{idx}"));
+            let (sa, sb) = (
+                mlir_scalar(&ea).ok_or(crate::emitter_gap!())?,
+                mlir_scalar(&eb).ok_or(crate::emitter_gap!())?,
+            );
+            self.body += &format!("  ^bb0({xa}: {sa}, {xb}: {sb}, %ewo{idx}: {et}):\n");
+            // A half operand widens to the f32 the op computes in, as on the vector path.
+            let mut widen = |x: String, e: &ElementType, s: &str| -> Lowered<String> {
+                if e == elem {
+                    Ok(x)
+                } else if e.is_half() && *elem == ElementType::F32 {
+                    let w = format!("{x}w");
+                    self.body += &format!("    {w} = arith.extf {x} : {s} to {et}\n");
+                    Ok(w)
+                } else {
+                    Err(Decline::TypeNotModelled {
+                        what: "an elementwise op on operands of two element types",
+                    })
+                }
+            };
+            let xa = widen(xa, &ea, &sa)?;
+            let xb = widen(xb, &eb, &sb)?;
+            let r = format!("%ewr{idx}");
+            self.body += &format!("    {r} = {op} {xa}, {xb} : {et}\n");
+            self.body += &format!("    linalg.yield {r} : {et}\n  }}\n");
+        }
         self.names[idx] = n;
         self.mem_of[idx] = Some(memty);
         Ok(())
