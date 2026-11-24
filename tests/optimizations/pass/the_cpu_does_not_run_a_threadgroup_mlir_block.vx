@@ -7,7 +7,7 @@
 // RUN: env VX_METAL=0 not vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=CPU
 //
 // GPU: {{^}}out: 7 7{{$}}
-// CPU: vx: the `mlir!` block with `threads` at line 16, column 23 runs only on a GPU, but no GPU ran its kernel, so the CPU did
+// CPU: vx: the `mlir!` block with `threads` at line 16, column 32 runs only on a GPU, but no GPU ran its kernel, so the CPU did
 // CPU-NOT: out:
 
 pub fn sevens(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {

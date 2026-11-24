@@ -1010,6 +1010,9 @@ impl<'a> TypeChecker<'a> {
                 // Calling a local, `p(env, x)` with `p` a closure's function, uses it.
                 if self.lookup(&resolved_name).is_some() {
                     self.used_vars.insert(resolved_name.clone());
+                } else if resolved_name.as_ref() == "main" {
+                    self.refuse_a_use_of_main(span);
+                    return Type::Unknown;
                 }
                 let mut base_name = resolved_name.clone();
                 let mut explicit_generic_args = type_args.clone().unwrap_or_default();
@@ -1577,6 +1580,20 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The file of this compile, as the compiler was given it.
+    /// E5004 for a call of `main` or for `main` as a value, so that no code gets a second `Root`.
+    pub(crate) fn refuse_a_use_of_main(&mut self, at: &crate::syntax::Span) {
+        if self.speculating {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E5004,
+            "A program cannot call `main` or use it as a value. Only the runtime starts `main`. \
+             A `main` that takes a `Root` would make a new `Root` at each call"
+                .to_string(),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
+        );
+    }
+
     pub(crate) fn file_name(&self) -> String {
         self.errors
             .file
@@ -1651,12 +1668,14 @@ impl<'a> TypeChecker<'a> {
                 ("column".into(), number(span.column)),
             ],
             type_id: None,
+            made_by_the_compiler: true,
             span: *span,
         });
         args.push(Expr::StructInit(crate::syntax::StructInitExpr {
             name: "Caller".into(),
             fields: vec![("location".into(), location)],
             type_id: None,
+            made_by_the_compiler: true,
             span: *span,
         }));
         true
@@ -4273,9 +4292,27 @@ impl<'a> TypeChecker<'a> {
                         Type::Pointer(_, _, _) => {
                             self.errors.push("Already a pointer".to_string());
                         }
+                        // The token of a `transfer_async`: the address that its copy fills. The
+                        // copy may still run, so the token gives no `as_mut_ptr`.
+                        token
+                            if !is_mut
+                                && matches!(
+                                    crate::syntax::types::transfer_token_inner(token),
+                                    Some(Type::Tensor(..))
+                                ) =>
+                        {
+                            let Some(Type::Tensor(el, _, place)) =
+                                crate::syntax::types::transfer_token_inner(token)
+                            else {
+                                unreachable!("matched above")
+                            };
+                            base_ty = element_pointer(false, el, place);
+                        }
                         _ => {
                             self.errors
                                 .push(format!("Cannot call {} on {}", _method, base_ty));
+                            // The call gives no pointer, and no value of the type of its base.
+                            base_ty = Type::Unknown;
                         }
                     }
                 } else if _method.as_ref() == "len" {

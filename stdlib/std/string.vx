@@ -40,6 +40,8 @@ extern {
 /// Released when it is dropped.
 struct String {
   ptr : *mut i8,
+
+  invariant true,
 }
 
 // The Rust core owns the text, and no method changes it through `&String`.
@@ -62,6 +64,17 @@ impl String {
   /// run of bytes. The copy is owned by the new `String`; the argument is not taken.
   unsafe fn from_c_str(c_str : *const i8) -> String {
     let ptr = unsafe { vx_string_from_c_str(c_str) };
+    String {
+      ptr:
+      ptr
+    }
+  }
+
+  /// The string that `ptr` holds, such as one from `vx_string_with_len`.
+  ///
+  /// Unsafe because `ptr` must come from a string function of the Rust core, and no other value
+  /// may own it. The new `String` frees it when it drops.
+  unsafe fn from_raw(ptr : *mut i8) -> String {
     String {
       ptr:
       ptr

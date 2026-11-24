@@ -127,6 +127,8 @@ struct Sender<T> {
   cap : i64,
   // The line that made the channel, for the deadlock report.
   made : Location,
+
+  invariant true,
 }
 
 /// The end of a channel that receives. A channel has one.
@@ -136,6 +138,8 @@ struct Receiver<T> {
   cap : i64,
   // The line that made the channel, for the deadlock report.
   made : Location,
+
+  invariant true,
 }
 
 // The ends move values of `T` between tasks, so they can move to another task when `T` can.

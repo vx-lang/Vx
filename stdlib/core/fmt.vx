@@ -415,6 +415,8 @@ struct ByteBuf {
   ptr : *mut i8,
   cap : i64,
   len : i64,
+
+  invariant true,
 }
 
 impl ByteBuf {

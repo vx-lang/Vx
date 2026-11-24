@@ -18,18 +18,26 @@ import core::time;
 
 struct Closure0<Ret> {
   env : *mut i8, func : fn(*mut i8)->Ret,
+
+  invariant true,
 }
 
 struct Closure1<Arg, Ret> {
   env : *mut i8, func : fn(*mut i8, Arg)->Ret,
+
+  invariant true,
 }
 
 struct Closure2<Arg1, Arg2, Ret> {
   env : *mut i8, func : fn(*mut i8, Arg1, Arg2)->Ret,
+
+  invariant true,
 }
 
 struct Closure3<Arg1, Arg2, Arg3, Ret> {
   env : *mut i8, func : fn(*mut i8, Arg1, Arg2, Arg3)->Ret,
+
+  invariant true,
 }
 
 // A closure value is a pair of pointers and owns neither, so copying one is a copy.

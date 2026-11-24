@@ -1,10 +1,9 @@
 # One `select` for channels, sockets, timers and tokens
 
 Issue #3414, part of #3413. The review took the recommended answer of each question in section 10.
-Stages 1 to 4 of section 9 are done: the core in `stdlib/std/sync/select.vx`, the sockets in
-`stdlib/std/net.vx`, the sources of #3415 to #3418 next to their types, and the deadlock report in
-`ffi/wait.rs`. Stage 5, tokens, is next: since #3483, the copy of a `transfer_async` to a GPU runs
-in the background.
+The five stages of section 9 are done: the core in `stdlib/std/sync/select.vx`, the sockets in
+`stdlib/std/net.vx`, the sources of #3415 to #3418 next to their types, the deadlock report in
+`ffi/wait.rs`, and `t.copy_end()` for the token of a `transfer_async` (`ffi/copies.rs`).
 
 ## 1. The problem
 
@@ -212,7 +211,7 @@ is the rule that the poller already follows.
 | sockets, and #3415 | the buffer has bytes, or `poll` with a time limit of 0 says ready | put `(fd, events, waiter)` on the list of the poller, which adds 1 to the waiter (section 2) |
 | `Deadline`, `Interval` | the clock passed the time | nothing: `select` waits with the earliest `deadline()` |
 | semaphore (#3418) | a permit is free | as a channel |
-| `Token<T>` | the copy ended | on a GPU, the end of the copy calls `vx_wake_watchers`. On the CPU and the NPU, a token is always ready. |
+| `t.copy_end()` of a `Token<T>` | the copy ended | the CUDA backend runs a function on the copy stream after the copy, and it calls `vx_wake_watchers`. On the other backends, the copy ended when `transfer_async` returned. |
 
 Before stage 2, the poller stored 1 in the word of a wait. It now adds 1, because the word of a
 `select` can hold 1 already, and a store of 1 would then not change it. The poller takes off only
@@ -309,7 +308,9 @@ Each stage is one PR with its own tests.
 1. **The new sources.** The buffered socket (#3415), the channels (#3416), `Interval` (#3417) and
    the semaphore (#3418). Each one is a small PR after its parent PR and stage 1 merged.
 1. **The deadlock report** lists the sources of a `select`.
-1. **Tokens.** The background copy to a GPU exists since #3483.
+1. **Tokens.** `t.copy_end()` gives a library struct `CopyEnd` that holds the address that the
+   copy fills. A pointer can be cast to `*const void` for it, and a read through a `void` pointer
+   is an error.
 
 **Tests.** Each Vx fixture in `tests/backend/pass/` runs on the AST code generator, the flat
 code generator, and the shared runtime with one worker, as the `select` tests do today.
@@ -353,4 +354,5 @@ Each question has a recommended answer.
    it is a shared source. Recommended: not in stage 1. Add it with the channels of #3416.
 1. **Tokens.** `Token<T>` is a type that the compiler knows, so a library `impl` for it needs a
    change in the checker, or a library struct for the token. Recommended: wait for the background
-   copy of #244. Until then, a token is always ready, and a `select` on it has no use.
+   copy of #244. Until then, a token is always ready, and a `select` on it has no use. Stage 5
+   took the library struct, `CopyEnd` from `t.copy_end()`, after #3483 added the copy.
