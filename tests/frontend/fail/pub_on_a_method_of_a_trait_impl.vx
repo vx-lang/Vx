@@ -1,0 +1,22 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A method of a trait impl needs no `pub`. It is public, because the trait is.
+
+trait Peek {
+  fn peek(self : &Self) -> i32;
+}
+
+struct Counter {
+  n : i32,
+}
+
+impl Peek for Counter {
+  pub fn peek(self : &Counter) -> i32 {
+    return self.n;
+  }
+}
+// CHECK: Error at {{.*}}pub_on_a_method_of_a_trait_impl.vx:[[@LINE-4]]:3: a method of a trait impl needs no `pub`: the trait makes it public
+
+fn main() -> i32 {
+  return 0;
+}

@@ -77,10 +77,10 @@ pub fn trusted_declarations(program: &Program) -> Vec<Trusted> {
         }
     }
     let pointer_clause = |e: &&Expr| crate::hir::check::pointer_facts::read_clause(e).is_some();
-    for f in program.functions.iter().filter(|f| f.is_pub) {
+    for f in program.functions.iter().filter(|f| f.exported) {
         for clause in f.requires.iter().filter(pointer_clause) {
             let what = format!(
-                "`pub fn {}` requires `{}`, and a call from C proves nothing",
+                "the exported function `{}` requires `{}`, and a call from C proves nothing",
                 f.name,
                 clause_text(clause)
             );

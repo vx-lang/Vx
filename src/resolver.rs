@@ -348,6 +348,7 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 where_transfers: Vec::new(),
                 is_unsafe: false,
                 is_pub: false,
+                exported: false,
                 body,
                 doc_comment: None,
                 span: crate::syntax::Span::default(),

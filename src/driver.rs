@@ -2084,6 +2084,7 @@ impl CompilerDriver {
             let synth = crate::syntax::Function {
                 is_unsafe: false,
                 is_pub: false,
+                exported: false,
                 name: body.name.clone(),
                 generics: vec![],
                 params: body
