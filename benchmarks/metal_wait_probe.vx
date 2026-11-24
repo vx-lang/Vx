@@ -18,10 +18,6 @@
 //   cargo build --release
 //   target/release/vxc benchmarks/metal_wait_probe.vx --host default --machine fleet/m4-uma.vx -O2
 //
-// The wait of a read spins on the sentinel only when VX_METAL_SENTINEL=1 is
-// set, for the sentinel is opt-in; the waits of a read otherwise block in
-// `waitUntilCompleted`.
-//
 // vx-bench flags: --host default --machine fleet/m4-uma.vx -O2
 
 import core::convert;

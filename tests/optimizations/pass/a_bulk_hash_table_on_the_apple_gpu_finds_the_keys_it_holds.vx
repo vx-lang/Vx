@@ -34,7 +34,7 @@
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4096 x 1 x 1, block 256
 // GPU-NOT: waited
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4096 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 4 kernels
+// GPU-NEXT: [Vx Metal] waited for 4 kernels
 // CPU-NOT: [Vx Metal]
 // CPU: Falling back to CPU libffi dispatch
 import std::bulk_hash;

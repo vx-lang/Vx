@@ -39,7 +39,7 @@
 // GPU-NEXT: [Vx Metal] [[SLOW]]: grid 1 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] [[FILL]]: a barrier before it
 // GPU-NEXT: [Vx Metal] [[FILL]]: grid 256 x 1 x 1, block 256
-// GPU: [Vx Metal] waited for 8 kernels,{{.*}}
+// GPU-NEXT: [Vx Metal] waited for 8 kernels,{{.*}}
 // GPU-NOT: {{.}}
 //
 // SERIAL: [Vx Metal] waited for 8 kernels,
