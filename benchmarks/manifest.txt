@@ -14,7 +14,7 @@
 #   benchmark_test.vx     a tracing demo, times nothing
 #   matmul_execution.vx   an execution demo, times nothing
 #   gpu_gemm/             needs an NVIDIA GPU; its run.sh times it against cuBLAS
-#   metal_wait_probe.vx   a probe printed by hand; no tracked measurement
+#   metal_wait_probe.vx   a probe of the wait of the Apple GPU, printed by hand; no tracked measurement
 
 benchmarks/benchmark_scalar.vx
 benchmarks/benchmark_simd.vx

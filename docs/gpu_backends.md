@@ -98,11 +98,7 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   kernels of its thread and for the kernels that write its tensor parameters. A call to a C
   function with a pointer into GPU memory waits for every kernel, because the pointer gives no
   size. `VX_METAL_SYNC=1`
-  waits after each launch, so a GPU fault names its kernel. `VX_METAL_SENTINEL=1` makes a wait
-  spin on a value that a kernel at the end of a batch writes, and block in
-  `waitUntilCompleted` only when the spin gives up; the default always blocks, for the probe
-  `benchmarks/metal_wait_probe.vx` measures the spin slower on this Mac's GPU.
-  `VX_DISPATCH_VERBOSE=1` prints each launch, and
+  waits after each launch, so a GPU fault names its kernel. `VX_DISPATCH_VERBOSE=1` prints each launch, and
   at each wait the number of kernels and their time on the GPU.
 - Metal cannot stop a kernel. So a failed `assert` in a kernel stores the number of the assert in
   a buffer, and the thread ends. The wait that finishes the launch prints the assert's message and

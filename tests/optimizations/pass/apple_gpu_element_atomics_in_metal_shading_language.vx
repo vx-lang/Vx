@@ -28,7 +28,7 @@ import core::sync::atomic;
 // CHECK-NEXT: } while (![[OK]] && [[E]] == (uint)[[EMPTY]]);
 // CHECK-NEXT: [[FOUND:v[0-9]+]] = (int)[[E]];
 // CHECK-NEXT: }
-// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
 // CHECK-NEXT: bool {{v[0-9]+}} = [[FOUND]] == [[EMPTY]];
 // WEAK-LABEL: // vx.kernel insert_all m1 m1r i32 i32
 // WEAK: } while (!{{v[0-9]+}} && {{e[0-9]+}} == (uint){{v[0-9]+}});
@@ -59,23 +59,23 @@ pub fn insert_all(slots : &Tensor<u32, [?], Memory::HBM>, keys : &Tensor<u32, [?
 // CHECK-LABEL: // vx.kernel count m1 m1 m1 m1 m1 m1 m1
 // CHECK: threadgroup int [[HITS:vx_npu_kernel_[0-9]+_smem_0]][1];
 // CHECK: int [[OLD:v[0-9]+]] = (int)atomic_fetch_add_explicit((device atomic_uint *)&p0[p0_b], (uint){{v[0-9]+}}, memory_order_relaxed);
-// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
 // CHECK: = (int)atomic_fetch_max_explicit((device atomic_int *)&p1[p1_b], {{v[0-9]+}}, memory_order_relaxed);
-// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
 // CHECK: = (int)atomic_fetch_min_explicit((device atomic_uint *)&p2[p2_b], (uint){{v[0-9]+}}, memory_order_relaxed);
-// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
 // CHECK: uint [[W:w[0-9]+]] = atomic_load_explicit((device atomic_uint *)&p3[p3_b], memory_order_relaxed);
 // CHECK-NEXT: while (!atomic_compare_exchange_weak_explicit((device atomic_uint *)&p3[p3_b], &[[W]], [[W]] >= (uint){{v[0-9]+}} ? 0u : [[W]] + 1u, memory_order_relaxed, memory_order_relaxed)) {
 // CHECK-NEXT: }
 // CHECK-NEXT: = (int)[[W]];
 // CHECK-NEXT: }
-// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
 // CHECK: atomic_store_explicit((device atomic_int *)&p4[p4_b], {{v[0-9]+}}, memory_order_relaxed);
 // CHECK-NOT: atomic_thread_fence
 // CHECK: = (int)atomic_fetch_add_explicit((threadgroup atomic_uint *)&[[HITS]][0], (uint){{v[0-9]+}}, memory_order_relaxed);
-// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_threadgroup, memory_order_seq_cst, thread_scope_threadgroup);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_threadgroup, memory_order_acquire, thread_scope_threadgroup);
 // CHECK: int [[LOADED:v[0-9]+]] = atomic_load_explicit((device atomic_int *)&p5[p5_b], memory_order_relaxed);
-// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+// CHECK-NEXT: atomic_thread_fence(mem_flags::mem_device, memory_order_acquire, thread_scope_device);
 // CHECK-NEXT: int {{v[0-9]+}} = (int)((uint)[[LOADED]] + (uint)[[OLD]]);
 // WEAK-LABEL: // vx.kernel count m1 m1 m1 m1 m1 m1 m1
 // WEAK: atomic_fetch_add_explicit((threadgroup atomic_uint *)
