@@ -487,6 +487,10 @@ pub enum DiagnosticCode {
     /// is `extern impl`, so that a review finds each one. An `extern impl` in the file of the
     /// type is an error too. A macro cannot write `extern impl`: write it in the file.
     E3066,
+    /// A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an
+    /// address, for example one that `p as *const void` made to give to a C function. It has no
+    /// element type, so the compiler does not know what to read.
+    E3067,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

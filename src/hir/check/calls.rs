@@ -4292,9 +4292,27 @@ impl<'a> TypeChecker<'a> {
                         Type::Pointer(_, _, _) => {
                             self.errors.push("Already a pointer".to_string());
                         }
+                        // The token of a `transfer_async`: the address that its copy fills. The
+                        // copy may still run, so the token gives no `as_mut_ptr`.
+                        token
+                            if !is_mut
+                                && matches!(
+                                    crate::syntax::types::transfer_token_inner(token),
+                                    Some(Type::Tensor(..))
+                                ) =>
+                        {
+                            let Some(Type::Tensor(el, _, place)) =
+                                crate::syntax::types::transfer_token_inner(token)
+                            else {
+                                unreachable!("matched above")
+                            };
+                            base_ty = element_pointer(false, el, place);
+                        }
                         _ => {
                             self.errors
                                 .push(format!("Cannot call {} on {}", _method, base_ty));
+                            // The call gives no pointer, and no value of the type of its base.
+                            base_ty = Type::Unknown;
                         }
                     }
                 } else if _method.as_ref() == "len" {

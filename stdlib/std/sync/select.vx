@@ -44,6 +44,14 @@ extern {
   fn vx_watch_fd(fd : i32, waiter : *mut i64) -> void;
   /// Undo one `vx_watch_fd` of the same pair.
   fn vx_unwatch_fd(fd : i32, waiter : *mut i64) -> void;
+  /// The key of the copy of a `transfer_async` into `at`: the address as a number.
+  fn vx_copy_key<M : Memory>(at : *const void in Memory::M) -> i64;
+  /// 1 when no copy into the address `key` may still run.
+  fn vx_copy_ended(key : i64) -> i32;
+  /// Until `vx_unwatch_copy`, the end of the copy into `key` adds 1 to `waiter` and wakes it.
+  fn vx_watch_copy(key : i64, waiter : *mut i64) -> void;
+  /// Undo one `vx_watch_copy` of the same pair.
+  fn vx_unwatch_copy(key : i64, waiter : *mut i64) -> void;
 }
 
 // The kinds of source that the deadlock report names. The key of a channel is its `WAKE` word.
@@ -594,5 +602,33 @@ impl WaitSource for Deadline {
 
   fn deadline(self : &Deadline) -> Instant {
     return self.at;
+  }
+}
+
+/// The end of the copy of a `transfer_async`. `t.copy_end()` gives one for the token `t`. It is
+/// ready when the copy ended. Only a GPU copies in the background, so on the CPU it is always
+/// ready.
+struct CopyEnd {
+  key : i64,
+}
+
+/// The end of the copy into `at`. The compiler calls it for `t.copy_end()`.
+fn copy_end_at<M : Memory>(at : *const void in Memory::M) -> CopyEnd {
+  return CopyEnd {
+    key : unsafe { vx_copy_key(at) }
+  };
+}
+
+impl WaitSource for CopyEnd {
+  fn is_ready(self : &CopyEnd) -> bool {
+    return unsafe { vx_copy_ended(self.key) } != 0;
+  }
+
+  fn watch(self : &CopyEnd, w : &Waiter) -> void {
+    unsafe { vx_watch_copy(self.key, w.word.as_ptr()); }
+  }
+
+  fn unwatch(self : &CopyEnd, w : &Waiter) -> void {
+    unsafe { vx_unwatch_copy(self.key, w.word.as_ptr()); }
   }
 }
