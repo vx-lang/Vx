@@ -11,19 +11,25 @@
 // A `main` that takes a `Root` gets the capabilities of the program, and passes them on. The
 // compiler makes the `Root` in an `unsafe` block of its own, which `vxc --audit` does not list as
 // trusted code of the program.
+import std::fs;
 import std::net;
 
-// A function that needs the network gets the right to it as a parameter.
+// A function that needs the network or files gets the right as a parameter.
 fn can_connect(network : &Network) -> bool {
   let _right = network;
   return true;
 }
 
+fn can_open(files : &Files) -> bool {
+  let _right = files;
+  return true;
+}
+
 fn main(root : Root) -> i32 {
-  println!("{}", can_connect(&root.network));
+  println!("{} {}", can_connect(&root.network), can_open(&root.files));
   return 0;
 }
 
-// CHECK: {{^}}true{{$}}
+// CHECK: {{^}}true true{{$}}
 // AUDIT-NOT: main_gets_the_capabilities_of_the_program.vx{{.*}}trusted code
 // AUDIT: core and std:

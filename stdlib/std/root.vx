@@ -7,11 +7,12 @@
 //===----------------------------------------------------------------------===//
 // The capabilities of a program: the rights to use the operating system. A program gets them as
 // the parameter of `main`, `fn main(root : Root) -> i32`, and passes each one on to the code that
-// needs it. A library gets only the capabilities that its caller passes, so a library that gets
-// no `&Network` cannot open a connection. `docs/discussions/capability_types.md` explains the
-// design.
+// needs it. A library gets only the capabilities that its caller passes. So a library that gets
+// no `&Files` cannot open a file, and a library that gets no `&Network` cannot open a connection.
+// `docs/discussions/capability_types.md` explains the design.
 //===----------------------------------------------------------------------===//
 
+import std::fs;
 import std::net;
 
 /// The capabilities of a program. Only this file can make a `Root`, and the compiler makes one
@@ -19,6 +20,8 @@ import std::net;
 struct Root {
   // The right to open network connections and to bind network addresses.
   network : Network,
+  // The right to open files.
+  files : Files,
 
   invariant true,
 }
@@ -27,6 +30,7 @@ struct Root {
 /// Unsafe because a second `Root` gives the rights to code that did not get them.
 unsafe fn root_of_the_program() -> Root {
   return Root {
-    network : unsafe { network_of_the_program() }
+    network : unsafe { network_of_the_program() },
+    files : unsafe { files_of_the_program() }
   };
 }
