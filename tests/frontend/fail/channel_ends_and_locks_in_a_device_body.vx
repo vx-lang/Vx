@@ -24,7 +24,7 @@ fn send_on_the_gpu(tx : Sender<i64>) -> void {
   let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     r[0] = 1.0;
-    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:5: the body of the `spawn on` at line [[@LINE-2]] runs on GPU[0], and it uses 'tx': 'Sender<i64>' can wait for the host. A channel end and a lock stay on the host, because a wait on the device for the host can wait forever. Use 'tx' before the `spawn on`, or after it
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:5: the body of the `spawn on` at line [[@LINE-2]] runs on GPU[0], and it uses 'tx': 'Sender<i64>' can only be used on the host. Use 'tx' before the `spawn on`, or after it
     tx.send(7);
   }
 }
@@ -33,7 +33,7 @@ fn receive_through_a_reference_on_the_gpu(rx : &Receiver<i64>) -> void {
   let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     r[0] = 1.0;
-    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:11: {{.*}} it uses 'rx': 'Receiver<i64>' can wait for the host.
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:11: {{.*}} it uses 'rx': 'Receiver<i64>' can only be used on the host.
     match rx.recv() {
       Result<i64, RecvError>::Ok(v) => {
         r[1] = v as f32;
@@ -50,7 +50,7 @@ fn a_struct_that_holds_a_channel_end(w : &Waiter) -> void {
   let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     r[0] = 1.0;
-    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:11: {{.*}} it uses 'w': field 'rx' of 'Waiter' has type 'Receiver<i64>', and 'Receiver<i64>' can wait for the host.
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:11: {{.*}} it uses 'w': field 'rx' of 'Waiter' has type 'Receiver<i64>', and 'Receiver<i64>' can only be used on the host.
     match w.rx.recv() {
       Result<i64, RecvError>::Ok(v) => {
         r[1] = v as f32;
@@ -67,7 +67,7 @@ fn lock_on_the_gpu(m : &Mutex<i64>) -> void {
   let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     r[0] = 1.0;
-    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 'm': 'Mutex<i64>' can wait for the host.
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 'm': 'Mutex<i64>' can only be used on the host.
     let _g = m.lock();
   }
 }
@@ -77,7 +77,7 @@ fn a_guard_on_the_gpu(m : &Mutex<i64>) -> void {
   let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     r[0] = 1.0;
-    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 'g': 'MutexGuard<i64>' can wait for the host.
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 'g': 'MutexGuard<i64>' can only be used on the host.
     let _v = g.get();
   }
 }
@@ -86,7 +86,7 @@ fn acquire_on_the_gpu(s : &Semaphore) -> void {
   let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     r[0] = 1.0;
-    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 's': 'Semaphore' can wait for the host.
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 's': 'Semaphore' can only be used on the host.
     let _p = s.acquire();
   }
 }
@@ -95,7 +95,7 @@ fn a_permit_on_the_gpu(permit : &Permit) -> void {
   let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     r[0] = 1.0;
-    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:17: {{.*}} it uses 'permit': 'Permit' can wait for the host.
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:17: {{.*}} it uses 'permit': 'Permit' can only be used on the host.
     let _held = permit;
   }
 }
@@ -105,7 +105,7 @@ fn a_semaphore_made_on_the_gpu() -> void {
   spawn on(Topology::GPU) {
     r[0] = 1.0;
     let s = Semaphore::new(1);
-    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 's': 'Semaphore' can wait for the host.
+    // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: {{.*}} it uses 's': 'Semaphore' can only be used on the host.
     let _p = s.acquire();
   }
 }

@@ -35,7 +35,7 @@ impl TypeChecker<'_> {
     }
 
     /// E6038 when the device body being checked names `name`, of type `ty`, and `ty` holds a
-    /// channel end or a lock. True when it reported the error.
+    /// `HostOnly` type. True when it reported the error.
     pub(crate) fn report_host_only_on_a_device(
         &mut self,
         name: &str,
@@ -56,9 +56,8 @@ impl TypeChecker<'_> {
         self.errors.error_with_code(
             crate::diagnostic::DiagnosticCode::E6038,
             format!(
-                "the body of the `spawn on` at line {} runs on {}, and it uses '{name}': {why}. A \
-                 channel end and a lock stay on the host, because a wait on the device for the \
-                 host can wait forever. Use '{name}' before the `spawn on`, or after it",
+                "the body of the `spawn on` at line {} runs on {}, and it uses '{name}': {why}. \
+                 Use '{name}' before the `spawn on`, or after it",
                 spawn.line,
                 self.active_topology.display_name()
             ),
@@ -67,8 +66,7 @@ impl TypeChecker<'_> {
         true
     }
 
-    /// The chain of fields from `ty` to a channel end or a lock in it, or `None` when it holds
-    /// none.
+    /// The chain of fields from `ty` to a `HostOnly` type in it, or `None` when it holds none.
     fn host_only_part(&mut self, ty: &Type, visiting: &mut Vec<Type>) -> Option<String> {
         match ty {
             Type::Borrow { inner, .. }
@@ -79,7 +77,7 @@ impl TypeChecker<'_> {
             | Type::Pinned(inner, _) => self.host_only_part(inner, visiting),
             Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
                 if self.implements_host_only(ty) {
-                    return Some(format!("'{ty}' can wait for the host"));
+                    return Some(format!("'{ty}' can only be used on the host"));
                 }
                 let (name, args) = match ty {
                     Type::GenericInstance(base, args) => match base.as_ref() {
@@ -108,8 +106,7 @@ impl TypeChecker<'_> {
         }
     }
 
-    /// Whether the standard library marks `ty` with `impl HostOnly`, as it does for a channel end
-    /// and a lock.
+    /// Whether the standard library marks `ty` with `impl HostOnly`.
     fn implements_host_only(&mut self, ty: &Type) -> bool {
         let blocks = self.env.impls.get("HostOnly").cloned().unwrap_or_default();
         blocks
