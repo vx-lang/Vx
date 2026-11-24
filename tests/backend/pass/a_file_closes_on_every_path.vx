@@ -7,10 +7,10 @@
 // returns an error early. A failed open leaves no file open. Each loop runs 50 times, and then
 // checks that the lowest free file descriptor did not change. One file that stays open would
 // change it, because POSIX `dup` returns the lowest free descriptor.
-import core::mem;
 import core::result;
 import std::fs;
-import std::io;
+import std::string;
+import std::vec;
 
 extern {
   fn vx_get_temp_file(name : *const i8) -> *mut i8;
@@ -28,50 +28,54 @@ fn lowest_free_descriptor() -> i32 {
 }
 
 // Opens `path` for reading and writes to it. The write fails, so `?` returns while `file` is open.
-unsafe fn write_to_a_reader(path : *const i8) -> Result<usize, IoError> {
-  let mut file = (unsafe { File::open_raw(path) })?;
-  let byte : u8 = 65;
-  let count = (unsafe { file.try_write_raw((&byte) as *const u8, 1) })?;
-  return Result<usize, IoError>::Ok(count);
+fn write_to_a_reader(files : &Files, path : &String) -> Result<u64, FileError> {
+  let mut file = File::open(files, path, OpenMode::Read())?;
+  let mut bytes = Vec<u8>::new();
+  bytes.push(65u8);
+  let count = file.write(&bytes)?;
+  return Result<u64, FileError>::Ok(count);
 }
 
-fn main() -> i32 {
-  let path = unsafe { vx_get_temp_file("a_file_closes_on_every_path") };
-  let missing = unsafe {
+fn main(root : Root) -> i32 {
+  let c_path = unsafe { vx_get_temp_file("a_file_closes_on_every_path") };
+  let c_missing = unsafe {
     vx_get_temp_file("a_file_closes_on_every_path_missing")
   };
-  unsafe { remove(missing); }
-  let first = unsafe { File::create_raw(path) };
-  assert(first.is_ok(), "create_raw of the test file failed");
+  unsafe { remove(c_missing); }
+  let path = unsafe { String::from_c_str(c_path) };
+  let missing = unsafe { String::from_c_str(c_missing) };
+  let files = &root.files;
+  let first = File::open(files, &path, OpenMode::Write());
+  assert(first.is_ok(), "the test file could not be made");
   drop(first);
   let start = lowest_free_descriptor();
 
   for _i in 0..50 {
-    let opened = unsafe { File::open_raw(path) };
-    assert(opened.is_ok(), "open_raw of the test file failed");
+    let opened = File::open(files, &path, OpenMode::Read());
+    assert(opened.is_ok(), "the test file did not open");
     let mut file = opened.unwrap();
     assert(file.stream_position().is_ok(), "stream_position of the open file failed");
   }
   assert(lowest_free_descriptor() == start, "a file closes at the end of its scope");
 
   for _i in 0..50 {
-    let opened = unsafe { File::open_raw(path) };
+    let opened = File::open(files, &path, OpenMode::Read());
     assert(opened.is_ok(), "the file opened");
   }
   assert(lowest_free_descriptor() == start, "a file inside a Result closes");
 
   for _i in 0..50 {
-    assert((unsafe { File::open_raw(missing) }).is_err(), "the file does not exist");
+    assert(File::open(files, &missing, OpenMode::Read()).is_err(), "the file does not exist");
   }
   assert(lowest_free_descriptor() == start, "a failed open leaves no file open");
 
   for _i in 0..50 {
-    assert((unsafe { write_to_a_reader(path) }).is_err(), "the write fails");
+    assert(write_to_a_reader(files, &path).is_err(), "the write fails");
   }
   assert(lowest_free_descriptor() == start, "a file closes when ? returns an error");
 
   unsafe {
-    remove(path); vx_free_temp_file(path); vx_free_temp_file(missing);
+    remove(c_path); vx_free_temp_file(c_path); vx_free_temp_file(c_missing);
   }
   println!("a file closes on every path");
   return 0;

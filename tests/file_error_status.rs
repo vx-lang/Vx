@@ -779,16 +779,6 @@ fn options_open_validates_flags_and_preserves_native_errors() -> Result<(), Stri
         unsafe { _vx_file_open_options(path.as_ptr(), 1, &mut out, &mut code, &mut has_code) };
     expect_equal(status, 1, "read-only opening does not create")?;
     expect_equal(has_code, true, "open preserves native error presence")?;
-    expect_equal(
-        _vx_io_error_kind(code),
-        1,
-        "native constructor classifies the captured code",
-    )?;
-    expect_equal(
-        _vx_io_error_kind(12345),
-        12,
-        "unrecognized native error is Other",
-    )?;
     Ok(())
 }
 

@@ -494,12 +494,6 @@ macro_rules! instantiate_file_ffi {
             }
         }
 
-        /// The `IoError` category of an error number of the system.
-        #[no_mangle]
-        pub extern "C" fn _vx_io_error_kind(code: i32) -> i32 {
-            vx_file_error_kind(std::io::Error::from_raw_os_error(code).kind())
-        }
-
         /// Opens `c_path` with the bits of `OpenOptions`. On success it gives 0 and stores the
         /// file in `*out`. Else it gives the error category of `_vx_file_try_read`, and stores
         /// the error number of the system in `*native_code`. Unknown bits or a null pointer give

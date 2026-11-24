@@ -61,6 +61,12 @@ fn report_error(call : *const i8, e : FileError) -> void {
     FileError::NotInFolder => {
       println!("{}: NotInFolder", call);
     }
+    FileError::AlreadyExists => {
+      println!("{}: AlreadyExists", call);
+    }
+    FileError::InvalidInput => {
+      println!("{}: InvalidInput", call);
+    }
     FileError::Os(code) => {
       println!("{}: Os({})", call, code);
     }

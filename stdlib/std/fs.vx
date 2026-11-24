@@ -8,22 +8,18 @@
 // Files and the right to open them. A program gets the right, a `Files`, in its `Root`
 // (`std::root`), and passes `&root.files` to `File::open`, or to a function that calls it.
 //
-// Layer: the OS layer. Runs on: the host only. `File` is `HostOnly`.
-//
-// Stage: `OpenOptions`, `File::open_raw`, `create_raw`, `create_new_raw`, `try_read_raw`,
-// `try_write_raw` and `Seek for File` are incubating, with the feature name `file_io_errors`.
-// They give an `IoError` from `std::io`. They take raw pointers and need no `&Files`, so each
-// one is `unsafe`.
+// Layer: the OS layer. Runs on: the host only. `File` is `HostOnly`, so device code cannot use
+// it.
 //===----------------------------------------------------------------------===//
 import core::marker;
 import core::ops;
 import core::ptr;
 import core::result;
-import std::io;
 import std::string;
 import std::vec;
 
 import std::fs::raw;
+
 extern {
   /// The Rust core behind `File::open_c_str`. Null when the open fails.
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
@@ -97,6 +93,10 @@ enum FileError {
   // The name does not name a file inside the folder: it is empty or absolute, it has a `..`
   // part, or a part of it is a symbolic link.
   NotInFolder,
+  // The file exists, and the options say to make a new file.
+  AlreadyExists,
+  // The options do not go together, or a seek goes before the start of the file.
+  InvalidInput,
   // Another failure, with the error number of the system, or 0 when it gave none.
   Os(i32),
 }
@@ -110,6 +110,12 @@ fn file_error(status : i32, native_code : i32) -> FileError {
   }
   if status == 2 {
     return FileError::PermissionDenied;
+  }
+  if status == 3 {
+    return FileError::AlreadyExists;
+  }
+  if status == 4 {
+    return FileError::InvalidInput;
   }
   if status == 13 {
     return FileError::NotInFolder;
@@ -164,7 +170,6 @@ struct File {
   invariant true,
 }
 
-
 // The handle may move to another task. It is not `Sync`, because each method takes
 // `*mut File`, so a shared `&File` has no use yet.
 unsafe impl Send for File {}
@@ -185,6 +190,17 @@ fn open_mode_code(mode : OpenMode) -> i32 {
   }
   return mode_code;
 }
+
+/// A position in a file, for `File::seek_to`. `Start` counts from the start of the file.
+/// `Current` counts from the current position, and `End` from the end of the file. These two can
+/// be negative.
+enum SeekFrom {
+  Start(u64),
+  Current(i64),
+  End(i64),
+}
+
+impl Copy for SeekFrom {}
 
 impl File {
   /// Open `path` with a named mode. The caller needs the file right, a `&Files`.
@@ -285,269 +301,9 @@ impl File {
     unsafe { vx_file_seek(self.ptr, offset, whence) }
   }
 
-  /// Open the file at `path` for reading. The file must exist.
-  ///
-  /// # Errors
-  ///
-  /// The error that the operating system reports, with the operation `Open`. A missing file
-  /// gives `NotFound`, and a file that the program cannot read gives `PermissionDenied`.
-  ///
-  /// # Safety
-  ///
-  /// `path` must point to a NUL-terminated string that stays valid during the call.
-  ///
-  /// # Allocates
-  ///
-  /// The runtime allocates one small block on the heap for the open file. Dropping the `File`
-  /// frees it. A failed open keeps no memory.
-  ///
-  /// # Stage
-  ///
-  /// Incubating, with the feature name `file_io_errors`.
-  ///
-  /// # Example
-  ///
-  /// ```vx
-  /// let error = (unsafe { File::open_raw("/tmp/vx_example_missing_file") }).unwrap_err();
-  /// let missing = match error.kind() {
-  ///   ErrorKind::NotFound() => { true },
-  ///   _ => { false }
-  /// };
-  /// assert(missing, "a missing file gives NotFound");
-  /// ```
-  unsafe fn open_raw(path : *const i8) -> Result<File, IoError>
-  requires valid(path, 1)
-  requires initialized(path, 1)
-  {
-    let options = OpenOptions::new().read(true);
-    return unsafe { options.open_raw(path) };
-  }
-
-  /// Open the file at `path` for writing. Make the file if it does not exist, and make it empty
-  /// if it does.
-  ///
-  /// # Errors
-  ///
-  /// The error that the operating system reports, with the operation `Open`. For example, a
-  /// folder in `path` that does not exist gives `NotFound`.
-  ///
-  /// # Safety
-  ///
-  /// `path` must point to a NUL-terminated string that stays valid during the call.
-  ///
-  /// # Allocates
-  ///
-  /// The runtime allocates one small block on the heap for the open file. Dropping the `File`
-  /// frees it. A failed open keeps no memory.
-  ///
-  /// # Stage
-  ///
-  /// Incubating, with the feature name `file_io_errors`.
-  ///
-  /// # Example
-  ///
-  /// ```vx
-  /// let mut file = (unsafe { File::create_raw("/tmp/vx_example_create.txt") }).unwrap();
-  /// assert(file.seek_to(SeekFrom::End(0)).unwrap() == 0, "the new file is empty");
-  /// ```
-  unsafe fn create_raw(path : *const i8) -> Result<File, IoError>
-  requires valid(path, 1)
-  requires initialized(path, 1)
-  {
-    let options = OpenOptions::new().write(true).create(true).truncate(true);
-    return unsafe { options.open_raw(path) };
-  }
-
-  /// Make a new file at `path`, and open it for reading and writing. Fail if the file exists.
-  ///
-  /// The check and the creation are one step, so another program cannot make the file between
-  /// them.
-  ///
-  /// # Errors
-  ///
-  /// `AlreadyExists` when the file exists. Otherwise, the error that the operating system
-  /// reports. Each error has the operation `Open`.
-  ///
-  /// # Safety
-  ///
-  /// `path` must point to a NUL-terminated string that stays valid during the call.
-  ///
-  /// # Allocates
-  ///
-  /// The runtime allocates one small block on the heap for the open file. Dropping the `File`
-  /// frees it. A failed open keeps no memory.
-  ///
-  /// # Stage
-  ///
-  /// Incubating, with the feature name `file_io_errors`.
-  ///
-  /// # Example
-  ///
-  /// ```vx
-  /// let path = "/tmp/vx_example_create_new.txt";
-  /// let _old = unsafe { File::create_raw(path) };
-  /// let error = (unsafe { File::create_new_raw(path) }).unwrap_err();
-  /// let exists = match error.kind() {
-  ///   ErrorKind::AlreadyExists() => { true },
-  ///   _ => { false }
-  /// };
-  /// assert(exists, "the file exists already");
-  /// ```
-  unsafe fn create_new_raw(path : *const i8) -> Result<File, IoError>
-  requires valid(path, 1)
-  requires initialized(path, 1)
-  {
-    let options = OpenOptions::new().read(true).write(true).create_new(true);
-    return unsafe { options.open_raw(path) };
-  }
-
-  /// Read at most `len` bytes into `buffer`, and return the number of bytes that the read got.
-  ///
-  /// A read can get fewer bytes than `len`. That is not an error. A count of 0 means the end of
-  /// the file, or a `len` of 0. Only the first bytes, up to the count, hold data from the file.
-  /// The read can also change the other bytes of `buffer`.
-  ///
-  /// # Errors
-  ///
-  /// The error that the operating system reports, with the operation `Read`. For example, a
-  /// read from a file that is open only for writing gives an error.
-  ///
-  /// `Interrupted` when a signal stopped the read before it got a byte. The method does not try
-  /// again, so the program can call it again.
-  ///
-  /// # Safety
-  ///
-  /// `buffer` must point to `len` bytes that the program can write. The bytes need not hold
-  /// values. `buffer` must not be null, also when `len` is 0.
-  ///
-  /// # Contract
-  ///
-  /// `buffer` is valid for `len` bytes.
-  ///
-  /// # Stage
-  ///
-  /// Incubating, with the feature name `file_io_errors`.
-  ///
-  /// # Example
-  ///
-  /// ```vx
-  /// let path = "/tmp/vx_example_read.txt";
-  /// let mut out = (unsafe { File::create_raw(path) }).unwrap();
-  /// let letter : u8 = 65;
-  /// (unsafe { out.try_write_raw((&letter) as *const u8, 1) }).unwrap();
-  /// drop(out);
-  ///
-  /// let mut file = (unsafe { File::open_raw(path) }).unwrap();
-  /// let mut byte : u8 = 0;
-  /// let count = (unsafe { file.try_read_raw((&mut byte) as *mut u8, 1) }).unwrap();
-  /// assert(count == 1 && byte == 65, "the read got the letter A");
-  /// let end = (unsafe { file.try_read_raw((&mut byte) as *mut u8, 1) }).unwrap();
-  /// assert(end == 0, "a count of 0 is the end of the file");
-  /// ```
-  unsafe fn try_read_raw(self : &mut File, buffer : *mut u8, len : usize) -> Result<usize, IoError>
-  requires valid(buffer, len)
-  {
-    let mut count : u64 = 0;
-    let mut code : i32 = 0;
-    let mut has_code : bool = false;
-    let status = unsafe {
-      _vx_file_try_read(self.ptr, buffer, len as u64, &mut count, &mut code, &mut has_code)
-    };
-    if status != 0 {
-      return Result<usize, IoError>::Err(_io_error_from_bridge(status, Operation::Read(), code, has_code));
-    }
-    return Result<usize, IoError>::Ok(count as usize);
-  }
-
-  /// Write at most `len` bytes from `buffer`, and return the number of bytes that the write
-  /// took.
-  ///
-  /// A write can take fewer bytes than `len`. That is not an error, and this method does not try
-  /// again. A `len` of 0 writes nothing and returns 0.
-  ///
-  /// # Errors
-  ///
-  /// The error that the operating system reports, with the operation `Write`. For example, a
-  /// write to a file that is open only for reading gives an error.
-  ///
-  /// `Interrupted` when a signal stopped the write before it took a byte. The method does not try
-  /// again, so the program can call it again.
-  ///
-  /// # Safety
-  ///
-  /// `buffer` must point to `len` bytes that hold values. `buffer` must not be null, also when
-  /// `len` is 0.
-  ///
-  /// # Contract
-  ///
-  /// `buffer` is valid for `len` bytes, and each of these bytes holds a value.
-  ///
-  /// # Stage
-  ///
-  /// Incubating, with the feature name `file_io_errors`.
-  ///
-  /// # Example
-  ///
-  /// ```vx
-  /// let mut file = (unsafe { File::create_raw("/tmp/vx_example_write.txt") }).unwrap();
-  /// let mut letters = Vec<u8>::new();
-  /// letters.push(72u8);
-  /// letters.push(105u8);
-  /// let count = (unsafe { file.try_write_raw(letters.as_mut_ptr() as *const u8, 2) }).unwrap();
-  /// assert(count == 2, "the write took both bytes");
-  /// ```
-  unsafe fn try_write_raw(self : &mut File, buffer : *const u8, len : usize) -> Result<usize, IoError>
-  requires valid(buffer, len)
-  requires initialized(buffer, len)
-  {
-    let mut count : u64 = 0;
-    let mut code : i32 = 0;
-    let mut has_code : bool = false;
-    let status = unsafe {
-      _vx_file_try_write(self.ptr, buffer, len as u64, &mut count, &mut code, &mut has_code)
-    };
-    if status != 0 {
-      return Result<usize, IoError>::Err(_io_error_from_bridge(status, Operation::Write(), code, has_code));
-    }
-    return Result<usize, IoError>::Ok(count as usize);
-  }
-}
-
-impl Drop for File {
-  /// Close the file and release it.
-  fn drop(self : &mut File) -> void {
-    unsafe { vx_file_drop(self.ptr) };
-  }
-}
-
-impl Seek for File {
-  /// Move the position of the next read or write, and return the new position from the start of
-  /// the file.
-  ///
-  /// # Errors
-  ///
-  /// The error that the operating system reports, with the operation `Seek`. A position before
-  /// the start of the file gives `InvalidInput`.
-  ///
-  /// # Stage
-  ///
-  /// Incubating, with the feature name `file_io_errors`.
-  ///
-  /// # Example
-  ///
-  /// ```vx
-  /// let mut file = (unsafe { File::create_raw("/tmp/vx_example_seek.txt") }).unwrap();
-  /// let mut letters = Vec<u8>::new();
-  /// letters.push(97u8);
-  /// letters.push(98u8);
-  /// letters.push(99u8);
-  /// (unsafe { file.try_write_raw(letters.as_mut_ptr() as *const u8, 3) }).unwrap();
-  /// assert(file.seek_to(SeekFrom::Start(1)).unwrap() == 1, "from the start");
-  /// assert(file.seek_to(SeekFrom::Current(1)).unwrap() == 2, "from the current position");
-  /// assert(file.seek_to(SeekFrom::End(-3)).unwrap() == 0, "from the end");
-  /// assert(file.seek_to(SeekFrom::Current(-1)).is_err(), "before the start");
-  /// ```
-  fn seek_to(self : &mut File, from : SeekFrom) -> Result<u64, IoError> {
+  /// Move the position of the next read or write, and give the new position from the start of
+  /// the file. A position before the start of the file gives `InvalidInput`.
+  fn seek_to(self : &mut File, from : SeekFrom) -> Result<u64, FileError> {
     let mut offset : i64 = 0;
     let mut whence : i32 = 0;
     match from {
@@ -568,47 +324,39 @@ impl Seek for File {
       _vx_file_try_seek(self.ptr, offset, whence, &mut position, &mut code, &mut has_code)
     };
     if status != 0 {
-      return Result<u64, IoError>::Err(_io_error_from_bridge(status, Operation::Seek(), code, has_code));
+      return Result<u64, FileError>::Err(file_error(status, code));
     }
-    return Result<u64, IoError>::Ok(position);
+    return Result<u64, FileError>::Ok(position);
+  }
+
+  /// The position of the next read or write. It does not move the position.
+  fn stream_position(self : &mut File) -> Result<u64, FileError> {
+    return self.seek_to(SeekFrom::Current(0));
+  }
+}
+
+impl Drop for File {
+  /// Close the file and release it.
+  fn drop(self : &mut File) -> void {
+    unsafe { vx_file_drop(self.ptr) };
   }
 }
 
 /// The choices for opening a file: read, write, append, create, truncate and create new. Each
-/// choice is on or off on its own.
+/// choice is on or off on its own. `OpenMode` names the three common sets of choices.
 ///
 /// `OpenOptions::new()` turns every choice off. Each setter returns new options, so that a
-/// program can chain the calls. Options with no choice turned on cannot open a file.
-///
-/// # Stage
-///
-/// Incubating, with the feature name `file_io_errors`.
-///
-/// # Example
-///
-/// One example covers `new`, the six setters and `open_raw`.
+/// program can chain the calls. Rust's setters take `&mut self` instead. The invariant lets only
+/// this file make an `OpenOptions` or change its bits.
 ///
 /// ```vx
-/// let path = "/tmp/vx_example_options.txt";
-/// let create = OpenOptions::new().write(true).create(true).truncate(true);
-/// let mut file = (unsafe { create.open_raw(path) }).unwrap();
-/// let letter : u8 = 65;
-/// (unsafe { file.try_write_raw((&letter) as *const u8, 1) }).unwrap();
-/// drop(file);
-///
-/// let append = OpenOptions::new().append(true);
-/// let mut log = (unsafe { append.open_raw(path) }).unwrap();
-/// (unsafe { log.try_write_raw((&letter) as *const u8, 1) }).unwrap();
-/// assert(log.stream_position().unwrap() == 2, "append writes at the end");
-/// drop(log);
-///
-/// let exclusive = OpenOptions::new().write(true).create_new(true);
-/// assert((unsafe { exclusive.open_raw(path) }).is_err(), "the file exists");
-/// let nothing = OpenOptions::new().read(true).read(false);
-/// assert((unsafe { nothing.open_raw(path) }).is_err(), "no choice is on");
+/// let log = OpenOptions::new().append(true).create(true);
+/// let mut file = log.open(&root.files, &path)?;
 /// ```
 struct OpenOptions {
   flags : i32,
+
+  invariant true,
 }
 impl Copy for OpenOptions {}
 
@@ -663,39 +411,23 @@ impl OpenOptions {
     return self._with_flag(_OPEN_CREATE_NEW, enabled);
   }
 
-  /// Open the file at `path` with these options.
+  /// Open the file at `path` with these options. The caller needs the file right, a `&Files`.
   ///
-  /// On Unix, the path can hold bytes that are not UTF-8. The method gives them to the operating
-  /// system as they are.
-  ///
-  /// # Errors
-  ///
-  /// `InvalidInput` when no choice is on, or when the choices do not go together. For example,
-  /// `create` without `write` or `append`, or `truncate` with `append`. Otherwise, the error that
-  /// the operating system reports. Each error has the operation `Open`.
-  ///
-  /// # Safety
-  ///
-  /// `path` must point to a NUL-terminated string that stays valid during the call.
-  ///
-  /// # Allocates
-  ///
-  /// The runtime allocates one small block on the heap for the open file. Dropping the `File`
-  /// frees it. A failed open keeps no memory.
-  unsafe fn open_raw(self : &OpenOptions, path : *const i8) -> Result<File, IoError>
-  requires valid(path, 1)
-  requires initialized(path, 1)
-  {
+  /// Options with no choice on, or with choices that do not go together, give `InvalidInput`.
+  /// For example, `create` without `write` or `append`, or `truncate` with `append`. With
+  /// `create_new`, a file that exists gives `AlreadyExists`.
+  fn open(self : &OpenOptions, _files : &Files, path : &String) -> Result<File, FileError> {
+    let c_path = CPath::of(path)?;
     let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
     let mut code : i32 = 0;
     let mut has_code : bool = false;
     let status = unsafe {
-      _vx_file_open_options(path, self.flags, &mut ptr, &mut code, &mut has_code)
+      _vx_file_open_options(c_path.ptr, self.flags, &mut ptr, &mut code, &mut has_code)
     };
     if status != 0 {
-      return Result<File, IoError>::Err(_io_error_from_bridge(status, Operation::Open(), code, has_code));
+      return Result<File, FileError>::Err(file_error(status, code));
     }
-    return Result<File, IoError>::Ok(File {
+    return Result<File, FileError>::Ok(File {
       ptr : ptr
     });
   }

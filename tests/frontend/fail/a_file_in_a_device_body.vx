@@ -12,7 +12,6 @@
 
 import core::result;
 import std::fs;
-import std::io;
 
 fn seek_on_the_gpu(file : &mut File) -> void {
   let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
