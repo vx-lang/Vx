@@ -48,6 +48,7 @@ Here `2` is only an example of a host's missing-file code. A real backend must u
 | `10` | `LimitExceeded` | Rust's `StorageFull`, `QuotaExceeded`, or `FileTooLarge` |
 | `11` | `Unsupported` | `Unsupported` |
 | `12` | `Other` | Every remaining or unknown Rust error kind |
+| `13` | Not in the folder | `vx_folder_open_file` only: the name is empty or absolute, has a `..` part, or goes through a symbolic link |
 
 The Rust entry points are `unsafe extern "C"`. A non-null handle must remain a live, exclusively accessed bridge-owned `File` for the call. A non-null read buffer used with a valid positive length must hold that many writable bytes; they need not be initialized. A write buffer must hold that many initialized, readable bytes. Every non-null output pointer must be aligned and writable, including on an invalid-argument path; the file, buffer, and outputs must not overlap. Null handle and buffer pointers are accepted as invalid arguments, but null checks cannot validate other pointer properties. The future Vx wrapper must keep these requirements inside its unsafe boundary.
 
