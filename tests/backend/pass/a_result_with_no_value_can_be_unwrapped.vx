@@ -1,0 +1,37 @@
+//===- a_result_with_no_value_can_be_unwrapped.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Result<void, E>` can be unwrapped, and a `match` arm can name the empty value of its `Ok`.
+// Both code generators compile it, and the default one does not fall back to the other one.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}unwrapped{{$}}
+// CHECK-NEXT: {{^}}ok{{$}}
+
+import core::result;
+
+fn succeed() -> Result<void, i32> {
+  return Result<void, i32>::Ok();
+}
+
+fn main() -> i32 {
+  succeed().unwrap();
+  println!("unwrapped");
+  match succeed() {
+    Result<void,
+    i32>::Ok(nothing) => {
+      let _same = nothing;
+      println!("ok");
+    }
+    Result<void,
+    i32>::Err(code) => {
+      println!("error {}", code);
+    }
+  }
+  return 0;
+}
