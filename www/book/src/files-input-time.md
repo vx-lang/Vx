@@ -167,6 +167,13 @@ The program does not print the time that it slept, because that time is differen
 connection. `UdpSocket` sends and receives UDP datagrams, which are single messages. Each address
 is a text of the form `host:port`, for example `"127.0.0.1:7878"`.
 
+To open a connection or to bind an address, a call needs the right to use the network: a
+`&Network`. Only `main` gets it. A `main` written `fn main(root : Root) -> i32` gets the rights of
+the program in `root`, and passes `&root.network` to `TcpStream::connect`, `TcpListener::bind` and
+`UdpSocket::bind`, or to a function that calls them. Only `std::net` can make a `Network`, so a
+function that gets no `&Network` cannot open a connection. A connection that `accept` gives needs
+no other right.
+
 The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
 The length of the vector is the size of the buffer. Each type also has methods that take raw
 pointers. Their names end in `_c_str` or `_raw`.
