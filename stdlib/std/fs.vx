@@ -149,6 +149,8 @@ impl Copy for OpenMode {}
 /// Closed when it is dropped.
 struct File {
   ptr : *mut i8,
+
+  invariant true,
 }
 
 // The handle may move to another task. It is not `Sync`, because each method takes

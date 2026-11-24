@@ -131,6 +131,8 @@ fn count_or_error(status : i32, count : u64) -> Result<u64, NetError> {
 /// A NUL-terminated copy of an address, for the Rust core. A drop releases it.
 struct CAddress {
   ptr : *const i8,
+
+  invariant true,
 }
 
 impl CAddress {
@@ -159,6 +161,8 @@ impl Drop for CAddress {
 /// Closed when it is dropped.
 struct TcpStream {
   ptr : *mut i8,
+
+  invariant true,
 }
 
 // The handle may move to another task. It is not `Sync`, because each method takes
@@ -310,6 +314,8 @@ impl Drop for TcpStream {
 /// A bound UDP socket, held by the Rust core behind an opaque pointer.
 struct UdpSocket {
   ptr : *mut i8,
+
+  invariant true,
 }
 
 // The handle may move to another task. It is not `Sync`, because each method takes
@@ -407,6 +413,8 @@ impl Drop for UdpSocket {
 /// A listening TCP socket, held by the Rust core behind an opaque pointer.
 struct TcpListener {
   ptr : *mut i8,
+
+  invariant true,
 }
 
 // The handle may move to another task. It is not `Sync`, because each method takes

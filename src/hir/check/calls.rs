@@ -1668,12 +1668,14 @@ impl<'a> TypeChecker<'a> {
                 ("column".into(), number(span.column)),
             ],
             type_id: None,
+            made_by_the_compiler: true,
             span: *span,
         });
         args.push(Expr::StructInit(crate::syntax::StructInitExpr {
             name: "Caller".into(),
             fields: vec![("location".into(), location)],
             type_id: None,
+            made_by_the_compiler: true,
             span: *span,
         }));
         true

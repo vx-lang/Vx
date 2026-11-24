@@ -30,6 +30,8 @@ struct Location {
   file : *const i8,
   line : i32,
   column : i32,
+
+  invariant true,
 }
 
 // A `Location` is three numbers, so it can be given to many calls.

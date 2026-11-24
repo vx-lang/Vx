@@ -25,9 +25,7 @@ import std::vec;
 /// `text` with a NUL byte after it.
 fn with_a_nul(text : *const i8) -> String {
   let length = unsafe { string_length(text) };
-  let s = String {
-    ptr : unsafe { vx_string_with_len((length + 1) as i64) }
-  };
+  let s = unsafe { String::from_raw(vx_string_with_len((length + 1) as i64)) };
   let p = unsafe { vx_string_as_mut_ptr(s.ptr) };
   for i in 0..length {
     unsafe { p[i] = text[i]; }
