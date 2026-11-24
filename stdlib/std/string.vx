@@ -87,7 +87,7 @@ impl String {
   }
 
   /// The length in bytes, not in characters: this counts UTF-8 code units.
-  fn len(self : *mut String) -> i32 {
+  fn len(self : &String) -> i32 {
     return unsafe { vx_string_len(self.ptr) };
   }
 
@@ -97,7 +97,7 @@ impl String {
   /// raw pointer, so every call costs a copy that is never released: the matching
   /// `vx_string_free_c_str` is declared in the extern block and is not wrapped as a method
   /// here. Calling this in a loop grows the process without bound.
-  fn as_c_str(self : *mut String) -> *const i8 {
+  fn as_c_str(self : &String) -> *const i8 {
     return unsafe { vx_string_as_c_str(self.ptr) };
   }
 }

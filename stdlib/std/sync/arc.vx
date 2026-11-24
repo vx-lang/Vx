@@ -129,7 +129,7 @@ fn core_arc_take<T>(a : Arc<T>) -> T {
   let value_at : *mut T = core_arc_value(count);
   let value : T = unsafe { read(value_at as *const T) };
   let block : *mut i8 = count;
-  dealloc(block, 16);
+  unsafe { dealloc(block, 16) };
   forget(a);
   return value;
 }
@@ -161,6 +161,6 @@ impl<T> Drop for Arc<T> {
     let value : T = unsafe { read(value_at as *const T) };
     drop(value);
     let block : *mut i8 = count;
-    dealloc(block, 16);
+    unsafe { dealloc(block, 16) };
   }
 }

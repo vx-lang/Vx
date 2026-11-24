@@ -106,8 +106,10 @@ fn watch_release<T>(words : *mut AtomicI64, data : *mut T) -> void {
   drop(value);
   let w : *mut i8 = words;
   let d : *mut i8 = data;
-  dealloc(w, 8);
-  dealloc(d, 16);
+  unsafe {
+    dealloc(w, 8);
+    dealloc(d, 16);
+  }
 }
 
 impl<T : Clone>
