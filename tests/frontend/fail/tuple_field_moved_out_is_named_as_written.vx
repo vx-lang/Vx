@@ -27,11 +27,7 @@ fn take(t : (Noisy, Noisy)) -> i32 {
 }
 
 fn twice() -> i32 {
-  let t = (Noisy {
-    id: 1
-  }, Noisy {
-    id: 2
-  });
+  let t = (Noisy { id: 1 }, Noisy { id: 2 });
   let x = t.0;
   // CHECK: Error[E4001] at {{.*}}tuple_field_moved_out_is_named_as_written.vx:[[@LINE+1]]:{{.*}}`t.0` was moved out of `t` and has no value
   let y = t.0;
@@ -39,11 +35,7 @@ fn twice() -> i32 {
 }
 
 fn whole() -> i32 {
-  let t = (Noisy {
-    id: 3
-  }, Noisy {
-    id: 4
-  });
+  let t = (Noisy { id: 3 }, Noisy { id: 4 });
   let x = t.0;
   // CHECK: Error[E4001] at {{.*}}tuple_field_moved_out_is_named_as_written.vx:[[@LINE+1]]:{{.*}}`t` is used whole, but `t.0` was moved out of it
   return take(t);

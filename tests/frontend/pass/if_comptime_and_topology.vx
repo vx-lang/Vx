@@ -21,11 +21,7 @@
 // CHECK: return
 fn check_top() on Topology::NPU[0] -> void {
   // If comptime returns an expression
-  let a = if comptime true {
-    1
-  } else {
-    0
-  };
+  let a = if comptime true { 1 } else { 0 };
 
   // Topology::Current should evaluate to NPU here
   let t = Topology::Current;
@@ -42,11 +38,7 @@ fn check_top() on Topology::NPU[0] -> void {
 }
 
 fn check_top2() on Topology::GPU -> void {
-  let t = if comptime true {
-    Topology::Current
-  } else {
-    Topology::CPU
-  };
+  let t = if comptime true { Topology::Current } else { Topology::CPU };
   comptime {
     assert(t == Topology::GPU);
   }

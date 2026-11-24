@@ -59,10 +59,12 @@ fn say(who : *const i8, e : RecvError) -> void {
 
 fn show(who : *const i8, r : Result<i64, RecvError>) -> void {
   match r {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("{} got {}", who, v);
     }
-    Result<i64, RecvError>::Err(e) => {
+    Result<i64,
+    RecvError>::Err(e) => {
       say(who, e);
     }
   }
@@ -74,11 +76,13 @@ fn sum_all(rx : BroadcastReceiver<i64>) -> void {
   let mut sum : i64 = 0;
   loop {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         count = count + 1;
         sum = sum + v;
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("a receiver got {} values, sum {}", count, sum);
         return;
       }
@@ -96,8 +100,10 @@ fn say_send_error(e : SendError<i64>) -> void {
 
 fn send_now(tx : &BroadcastSender<i64>, v : i64) -> void {
   match tx.send(v) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(e) => {
       say_send_error(e);
     }
   }
@@ -161,10 +167,12 @@ fn main() -> i32 {
   show("late", late.recv());
   // `early` did not read 2, so the room is full.
   match to_early.send_for(3, Duration::from_millis(20)) {
-    Result<void, SendError<i64>>::Ok() => {
+    Result<void,
+    SendError<i64>>::Ok() => {
       println!("send_for sent 3");
     }
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Err(e) => {
       println!("send_for gave back {}, timed out {}", e.value, e.timed_out);
     }
   }

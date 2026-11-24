@@ -43,9 +43,7 @@ impl Drop for Noisy {
 }
 
 fn make_noisy(id : i32) -> Noisy {
-  return Noisy {
-    id: id
-  };
+  return Noisy { id: id };
 }
 
 fn numbers(n : i32) -> Vec<i32> {

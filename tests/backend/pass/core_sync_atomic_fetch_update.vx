@@ -14,11 +14,13 @@ import core::sync::atomic;
 
 fn show(r : Result<i64, i64>) -> i32 {
   match r {
-    Result<i64, i64>::Ok(v) => {
+    Result<i64,
+    i64>::Ok(v) => {
       print!("ok ");
       print(v);
     }
-    Result<i64, i64>::Err(v) => {
+    Result<i64,
+    i64>::Err(v) => {
       print!("err ");
       print(v);
     }

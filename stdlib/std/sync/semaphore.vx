@@ -68,7 +68,10 @@ impl Semaphore {
   fn new(n : i64, at : Caller) -> Semaphore {
     assert(n >= 0, "Semaphore::new: the number of permits must not be negative");
     return Semaphore {
-      permits : AtomicI64::new(n), sleepers : AtomicI64::new(0), watchers : AtomicI64::new(0), made : at.location
+      permits : AtomicI64::new(n),
+      sleepers : AtomicI64::new(0),
+      watchers : AtomicI64::new(0),
+      made : at.location
     };
   }
 
@@ -92,12 +95,12 @@ impl Semaphore {
       if now > 0 {
         // A failed compare-exchange gives the value that it found, so no load is needed.
         match self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst) {
-          Result<i64, i64>::Ok(_old) => {
-            return Result<Permit, AcquireError>::Ok(Permit {
-              semaphore : self
-            });
+          Result<i64,
+          i64>::Ok(_old) => {
+            return Result<Permit, AcquireError>::Ok(Permit { semaphore : self });
           }
-          Result<i64, i64>::Err(found) => {
+          Result<i64,
+          i64>::Err(found) => {
             now = found;
           }
         }
@@ -121,12 +124,12 @@ impl Semaphore {
     let mut now = self.permits.load(AtomicOrdering::SeqCst);
     while now > 0 {
       match self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst) {
-        Result<i64, i64>::Ok(_old) => {
-          return Option<Permit>::Some(Permit {
-            semaphore : self
-          });
+        Result<i64,
+        i64>::Ok(_old) => {
+          return Option<Permit>::Some(Permit { semaphore : self });
         }
-        Result<i64, i64>::Err(found) => {
+        Result<i64,
+        i64>::Err(found) => {
           now = found;
         }
       }

@@ -50,21 +50,15 @@ fn main() -> i32 {
   while never invariant ok {}
   for i in 0..n {}
   for i in 0..n invariant ok {}
-  if (Point {
-    x : 1i64
-  }).x == 1i64 {
+  if (Point { x : 1i64 }).x == 1i64 {
     println!("a struct literal in parentheses");
   }
-  if is_one(Point {
-    x : 1i64
-  }) {
+  if is_one(Point { x : 1i64 }) {
     println!("a struct literal in a call");
   }
   needs(true);
   gives();
-  let p = Point {
-    x : 2i64
-  };
+  let p = Point { x : 2i64 };
   p.nothing();
   return 0;
 }

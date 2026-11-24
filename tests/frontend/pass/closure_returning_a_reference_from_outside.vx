@@ -13,9 +13,7 @@ struct Slot {
 }
 
 fn main() -> i32 {
-  let s = Slot {
-    v : 4
-  };
+  let s = Slot { v : 4 };
   let through_a_parameter = |q : &Slot| &q.v;
   let x = 9;
   let rx = &x;

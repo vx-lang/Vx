@@ -65,11 +65,7 @@ fn main() -> i32 {
   spawn on(Topology::Dev) {
     for i in 0..2 {
       for j in 0..8 {
-        gp[i][j] = if ga[i][j] < 0.0 {
-          gb[i][j]
-        } else {
-          ga[i][j]
-        };
+        gp[i][j] = if ga[i][j] < 0.0 { gb[i][j] } else { ga[i][j] };
       }
     }
   }

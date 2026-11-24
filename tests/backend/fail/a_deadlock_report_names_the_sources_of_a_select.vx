@@ -16,12 +16,12 @@
 // RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
 
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
-// CHECK-NEXT: {{^}}  the main code waits in `select` at {{.*}}.vx:37 on channel 1, made at {{.*}}.vx:48, on channel 2, made at {{.*}}.vx:49, and on semaphore 1, made at {{.*}}.vx:50{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `acquire` at {{.*}}.vx:32 on semaphore 1, made at {{.*}}.vx:50{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:52{{$}}
+// CHECK-NEXT: {{^}}  the main code waits in `select` at {{.*}}.vx:37 on channel 1, made at {{.*}}.vx:50, on channel 2, made at {{.*}}.vx:51, and on semaphore 1, made at {{.*}}.vx:52{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `acquire` at {{.*}}.vx:32 on semaphore 1, made at {{.*}}.vx:52{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:54{{$}}
 // CHECK-NEXT: {{^}}  the channels of these waits:{{$}}
-// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:48: 0 waits in `recv` and 0 in `send`. 1 `select` watches it. 1 `Sender` is not dropped.{{$}}
-// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:49: 0 waits in `recv` and 0 in `send`. 1 `select` watches it. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:50: 0 waits in `recv` and 0 in `send`. 1 `select` watches it. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:51: 0 waits in `recv` and 0 in `send`. 1 `select` watches it. 1 `Sender` is not dropped.{{$}}
 
 import core::mem;
 import std::sync::channel;
@@ -35,10 +35,12 @@ fn take_a_permit(s : &Semaphore) -> void {
 
 fn wait_on(numbers : &Receiver<i64>, flags : &Receiver<bool>, s : &Semaphore) -> void {
   match select4(numbers, flags, s, numbers) {
-    Result<i32, SelectError>::Ok(i) => {
+    Result<i32,
+    SelectError>::Ok(i) => {
       println!("select4 gave {}", i);
     }
-    Result<i32, SelectError>::Err(_) => {
+    Result<i32,
+    SelectError>::Err(_) => {
       println!("select4 gave Cancelled");
     }
   }

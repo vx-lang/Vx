@@ -31,14 +31,8 @@ struct Pair<T> {
 impl<T : Copy> Copy for Pair<T> {}
 
 fn main() -> i32 {
-  let inner = Pair<i32> {
-    a : 3,
-    b : 4,
-  };
-  let outer : Pair<Pair<i32>> = Pair<Pair<i32>> {
-    a : inner,
-    b : inner,
-  };
+  let inner = Pair<i32> { a : 3, b : 4 };
+  let outer : Pair<Pair<i32>> = Pair<Pair<i32>> { a : inner, b : inner };
   let got = outer.a;
   print(got.a + got.b);
   return 0;

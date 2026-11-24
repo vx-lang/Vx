@@ -69,9 +69,7 @@ fn main() -> i32 {
 ");
   // CHECK-NEXT: {{^}}not null: 1{{$}}
 
-  let p = Point {
-    x: 1, y: 2
-  };
+  let p = Point { x: 1, y: 2 };
   let first : *const Point = &p;
   let second : *const Point = &p;
   print!("same struct ==: ");

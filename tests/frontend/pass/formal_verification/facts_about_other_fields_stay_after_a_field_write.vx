@@ -42,9 +42,7 @@ ensures o.inner.cap == 3i32 && o.k == 2i32 {
 }
 
 fn main() -> i32 {
-  let mut c = Counter {
-    n : 3i32, cap : 4i32
-  };
+  let mut c = Counter { n : 3i32, cap : 4i32 };
   if c.n < c.cap {
     bump(&mut c);
   }
@@ -53,9 +51,8 @@ fn main() -> i32 {
     reset(&mut c);
   }
   let mut o = Outer {
-    inner : Counter {
-      n : 0i32, cap : 3i32
-    }, k : 2i32
+    inner : Counter { n : 0i32, cap : 3i32 },
+    k : 2i32
   };
   if o.inner.cap == 3i32 && o.k == 2i32 {
     set_inner(&mut o);

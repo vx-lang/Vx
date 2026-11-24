@@ -32,18 +32,14 @@ fn set_both(a : &mut i32, b : &mut i32) -> i32 {
 }
 
 fn method_and_its_own_field() -> i32 {
-  let mut holder = Holder {
-    n: 5i32
-  };
+  let mut holder = Holder { n: 5i32 };
   // CHECK: Error[E4004]{{.*}}Cannot borrow 'holder' as mutable twice in one call.
   let _result = holder.set(&mut holder.n);
   return holder.n;
 }
 
 fn method_and_a_shared_borrow_of_its_field() -> i32 {
-  let mut holder = Holder {
-    n: 5i32
-  };
+  let mut holder = Holder { n: 5i32 };
   // CHECK: Error[E4003]{{.*}}Cannot borrow 'holder' as mutable and as immutable in one call.
   let _result = holder.add(&holder.n);
   return holder.n;
@@ -58,9 +54,7 @@ fn kept_reference_and_new_borrow() -> i32 {
 }
 
 fn kept_reference_as_receiver() -> i32 {
-  let mut holder = Holder {
-    n: 5i32
-  };
+  let mut holder = Holder { n: 5i32 };
   let kept = &mut holder;
   // CHECK: Error[E4004]{{.*}}Cannot borrow 'holder' as mutable twice in one call.
   let _result = kept.set(&mut holder.n);

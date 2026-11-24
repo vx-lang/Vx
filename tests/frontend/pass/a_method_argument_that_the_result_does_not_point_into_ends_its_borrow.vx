@@ -25,9 +25,7 @@ impl Table {
 }
 
 fn main() -> i32 {
-  let t = Table {
-    n : 1i64
-  };
+  let t = Table { n : 1i64 };
   let mut k = 1i64;
   let r = t.count(&k);
   k = 2i64;

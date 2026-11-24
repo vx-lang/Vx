@@ -42,10 +42,12 @@ fn scatter(y : &mut Tensor<f32, [?, ?], Memory::HBM>, rows : &Distinct<Tensor<i3
 
 fn say_i32(o : Option<Distinct<Tensor<i32, [?]>>>) -> void {
   match o {
-    Option<Distinct<Tensor<i32, [?]>>>::Some(_d) => {
+    Option<Distinct<Tensor<i32,
+    [?]>>>::Some(_d) => {
       println!("distinct");
     }
-    Option<Distinct<Tensor<i32, [?]>>>::None => {
+    Option<Distinct<Tensor<i32,
+    [?]>>>::None => {
       println!("two are equal");
     }
   }
@@ -54,10 +56,12 @@ fn say_i32(o : Option<Distinct<Tensor<i32, [?]>>>) -> void {
 
 fn say_i64(o : Option<Distinct<Tensor<i64, [?]>>>) -> void {
   match o {
-    Option<Distinct<Tensor<i64, [?]>>>::Some(_d) => {
+    Option<Distinct<Tensor<i64,
+    [?]>>>::Some(_d) => {
       println!("distinct");
     }
-    Option<Distinct<Tensor<i64, [?]>>>::None => {
+    Option<Distinct<Tensor<i64,
+    [?]>>>::None => {
       println!("two are equal");
     }
   }
@@ -66,10 +70,12 @@ fn say_i64(o : Option<Distinct<Tensor<i64, [?]>>>) -> void {
 
 fn say_u64(o : Option<Distinct<Tensor<u64, [?]>>>) -> void {
   match o {
-    Option<Distinct<Tensor<u64, [?]>>>::Some(_d) => {
+    Option<Distinct<Tensor<u64,
+    [?]>>>::Some(_d) => {
       println!("distinct");
     }
-    Option<Distinct<Tensor<u64, [?]>>>::None => {
+    Option<Distinct<Tensor<u64,
+    [?]>>>::None => {
       println!("two are equal");
     }
   }
@@ -82,14 +88,16 @@ fn main() -> i32 {
   order[1] = 0;
   order[2] = 1;
   match Distinct::check(order) {
-    Option<Distinct<Tensor<i32, [?]>>>::Some(rows) => {
+    Option<Distinct<Tensor<i32,
+    [?]>>>::Some(rows) => {
       let on_gpu = transfer(rows, Memory::HBM);
       let mut y = transfer(Tensor<f32, [3, 2]>::fill(-1.0), Memory::HBM);
       scatter(&mut y, &on_gpu);
       let h = transfer(y, Memory::CPU_DRAM);
       println!("rows: {} {} {}", h[0][1], h[1][1], h[2][1]);
     }
-    Option<Distinct<Tensor<i32, [?]>>>::None => {
+    Option<Distinct<Tensor<i32,
+    [?]>>>::None => {
       println!("rows: two are equal");
     }
   }

@@ -21,10 +21,12 @@ trait Rewinder {
   fn rewind(self : &mut Self) -> Result<void, i32> {
     let position = self.position();
     match position {
-      Result<u64, i32>::Ok(_) => {
+      Result<u64,
+      i32>::Ok(_) => {
         return Result<void, i32>::Ok();
       }
-      Result<u64, i32>::Err(error) => {
+      Result<u64,
+      i32>::Err(error) => {
         return Result<void, i32>::Err(error);
       }
     }
@@ -46,23 +48,21 @@ impl Rewinder for Reader {
 
 fn report(reader : &mut Reader) -> void {
   match reader.rewind() {
-    Result<void, i32>::Ok(_) => {
+    Result<void,
+    i32>::Ok(_) => {
       println!("rewound");
     }
-    Result<void, i32>::Err(code) => {
+    Result<void,
+    i32>::Err(code) => {
       println!("error {}", code);
     }
   }
 }
 
 fn main() -> i32 {
-  let mut good = Reader {
-    fails: false
-  };
+  let mut good = Reader { fails: false };
   report(&mut good);
-  let mut bad = Reader {
-    fails: true
-  };
+  let mut bad = Reader { fails: true };
   report(&mut bad);
   return 0;
 }

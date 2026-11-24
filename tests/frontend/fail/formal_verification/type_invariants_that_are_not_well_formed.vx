@@ -29,9 +29,7 @@ fn positive(n : i64) -> bool {
 }
 
 fn make_pair() -> Pair {
-  return Pair {
-    a : 1i64, b : 2i64
-  };
+  return Pair { a : 1i64, b : 2i64 };
 }
 
 struct Holder {

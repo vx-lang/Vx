@@ -78,9 +78,7 @@ fn main() -> i32 {
   println!("noted={};", note_a_local(&mut out));
 
   let x = 1i64;
-  let mut h = Holder {
-    r : &x
-  };
+  let mut h = Holder { r : &x };
   let mut y = 2i64;
   let counted = count(&mut h, &y);
   y = 5i64;

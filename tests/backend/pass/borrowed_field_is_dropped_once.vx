@@ -31,12 +31,8 @@ struct Pair {
 
 fn run() -> void {
   let p = Pair {
-    a : Noisy {
-      id : 1
-    },
-    b : Noisy {
-      id : 2
-    }
+    a : Noisy { id : 1 },
+    b : Noisy { id : 2 }
   };
   let x = &p.a;
   print!("read=");

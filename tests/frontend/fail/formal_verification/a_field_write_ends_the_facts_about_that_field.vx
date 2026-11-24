@@ -56,9 +56,7 @@ ensures return == 0i32 {
 }
 
 fn main() -> i32 {
-  let c = Counter {
-    n : 0i32, cap : 5i32
-  };
+  let c = Counter { n : 0i32, cap : 5i32 };
   return through_a_reference(c);
 }
 

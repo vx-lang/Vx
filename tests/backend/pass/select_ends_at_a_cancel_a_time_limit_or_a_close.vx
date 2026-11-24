@@ -31,10 +31,12 @@ import std::vec;
 
 fn say(what : *const i8, r : Result<i32, SelectError>) -> void {
   match r {
-    Result<i32, SelectError>::Ok(i) => {
+    Result<i32,
+    SelectError>::Ok(i) => {
       println!("{}: index {}", what, i);
     }
-    Result<i32, SelectError>::Err(_) => {
+    Result<i32,
+    SelectError>::Err(_) => {
       println!("{}: Cancelled", what);
     }
   }
@@ -62,16 +64,15 @@ fn leave(early : bool) -> i64 {
 
 fn wait_for_a_close(a : Receiver<i64>, b : Receiver<i64>) -> void {
   match select2(&a, &b) {
-    Result<i32, SelectError>::Ok(i) => {
+    Result<i32,
+    SelectError>::Ok(i) => {
       let mut gave : *const i8 = "a value";
-      let rx : &Receiver<i64> = if i == 0 {
-        &a
-      } else {
-        &b
-      };
+      let rx : &Receiver<i64> = if i == 0 { &a } else { &b };
       match rx.try_recv() {
-        Result<i64, TryRecvError>::Ok(_) => {}
-        Result<i64, TryRecvError>::Err(e) => {
+        Result<i64,
+        TryRecvError>::Ok(_) => {}
+        Result<i64,
+        TryRecvError>::Err(e) => {
           match e {
             TryRecvError::Closed => {
               gave = "Closed";
@@ -84,7 +85,8 @@ fn wait_for_a_close(a : Receiver<i64>, b : Receiver<i64>) -> void {
       }
       println!("a Sender was dropped: index {}, and try_recv gave {}", i, gave);
     }
-    Result<i32, SelectError>::Err(_) => {
+    Result<i32,
+    SelectError>::Err(_) => {
       println!("a Sender was dropped: Cancelled");
     }
   }

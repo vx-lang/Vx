@@ -42,9 +42,7 @@ fn bump(s : &Shared) -> void {
 
 fn main() -> i32 {
   let mut n : i64 = 0;
-  let s = Shared {
-    p : (&mut n) as *mut i64
-  };
+  let s = Shared { p : (&mut n) as *mut i64 };
   tasks {
     spawn {
       bump(&s);

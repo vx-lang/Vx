@@ -36,12 +36,14 @@ fn pick(o : Outer, i : Inner) -> i64 {
     Outer::Plain => {
       return 1;
     }
-    , Outer::Wrapped => {
+    ,
+    Outer::Wrapped => {
       match i {
         Inner::A => {
           return 5;
         }
-        , Inner::B => {
+        ,
+        Inner::B => {
           return 99;
         }
       }
@@ -54,7 +56,8 @@ fn pick_by_if(o : Outer, a : bool) -> i64 {
     Outer::Plain => {
       return 1;
     }
-    , Outer::Wrapped => {
+    ,
+    Outer::Wrapped => {
       if a {
         return 5;
       } else {
@@ -71,17 +74,20 @@ fn value(o : Outer, i : Inner) -> i64 {
         Inner::A => {
           1
         }
-        , Inner::B => {
+        ,
+        Inner::B => {
           2
         }
       }
     }
-    , Outer::Wrapped => {
+    ,
+    Outer::Wrapped => {
       match i {
         Inner::A => {
           5
         }
-        , Inner::B => {
+        ,
+        Inner::B => {
           99
         }
       }
@@ -98,7 +104,8 @@ fn value_by_if(o : Outer, a : bool) -> i64 {
         2
       }
     }
-    , Outer::Wrapped => {
+    ,
+    Outer::Wrapped => {
       if a {
         5
       } else {

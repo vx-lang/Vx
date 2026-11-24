@@ -34,11 +34,13 @@ fn show_bool(b : bool) -> i32 {
 
 fn show_i32(r : Result<i32, i32>) -> i32 {
   match r {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       print!("ok ");
       print(v);
     }
-    Result<i32, i32>::Err(v) => {
+    Result<i32,
+    i32>::Err(v) => {
       print!("err ");
       print(v);
     }
@@ -48,11 +50,13 @@ fn show_i32(r : Result<i32, i32>) -> i32 {
 
 fn show_bool_result(r : Result<bool, bool>) -> i32 {
   match r {
-    Result<bool, bool>::Ok(v) => {
+    Result<bool,
+    bool>::Ok(v) => {
       print!("ok ");
       let _ = show_bool(v);
     }
-    Result<bool, bool>::Err(v) => {
+    Result<bool,
+    bool>::Err(v) => {
       print!("err ");
       let _ = show_bool(v);
     }

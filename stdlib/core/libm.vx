@@ -157,11 +157,7 @@ fn libm_log_eval(x : f64) -> f64 {
 fn libm_asinhf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32;
-  let x_sign : f64 = if (x_u >> 31u32) == 0u32 {
-    1.0
-  } else {
-    -1.0
-  };
+  let x_sign : f64 = if (x_u >> 31u32) == 0u32 { 1.0 } else { -1.0 };
   let sign : f32 = x_sign as f32;
   // |x| <= 2^-3
   if x_abs <= 1040187392u32 {
@@ -1125,7 +1121,10 @@ fn libm_dyadic_shl(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
     hi = d.lo << (s - 64u64);
   }
   return LibmDyadic128 {
-    negative: d.negative, exponent: d.exponent, hi: hi, lo: lo
+    negative: d.negative,
+    exponent: d.exponent,
+    hi: hi,
+    lo: lo
   };
 }
 
@@ -1144,7 +1143,10 @@ fn libm_dyadic_shr(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
     lo = d.hi >> (s - 64u64);
   }
   return LibmDyadic128 {
-    negative: d.negative, exponent: d.exponent, hi: hi, lo: lo
+    negative: d.negative,
+    exponent: d.exponent,
+    hi: hi,
+    lo: lo
   };
 }
 
@@ -1159,7 +1161,10 @@ fn libm_dyadic_normalize(d : LibmDyadic128) -> LibmDyadic128 {
   }
   let m = libm_dyadic_shl(d, shift);
   return LibmDyadic128 {
-    negative: d.negative, exponent: d.exponent - (shift as i32), hi: m.hi, lo: m.lo
+    negative: d.negative,
+    exponent: d.exponent - (shift as i32),
+    hi: m.hi,
+    lo: m.lo
   };
 }
 
@@ -1177,7 +1182,10 @@ fn libm_dyadic_from_f64(x : f64) -> LibmDyadic128 {
     exponent = -52;
   }
   return libm_dyadic_normalize(LibmDyadic128 {
-    negative: (b >> 63u64) == 1u64, exponent: exponent, hi: 0u64, lo: mantissa
+    negative: (b >> 63u64) == 1u64,
+    exponent: exponent,
+    hi: 0u64,
+    lo: mantissa
   });
 }
 
@@ -1186,7 +1194,10 @@ fn libm_dyadic_from_f64(x : f64) -> LibmDyadic128 {
 fn libm_dyadic_shift_right(d : LibmDyadic128, s : i32) -> LibmDyadic128 {
   let m = libm_dyadic_shr(d, s as u64);
   return LibmDyadic128 {
-    negative: d.negative, exponent: d.exponent + s, hi: m.hi, lo: m.lo
+    negative: d.negative,
+    exponent: d.exponent + s,
+    hi: m.hi,
+    lo: m.lo
   };
 }
 
@@ -1208,43 +1219,46 @@ fn libm_dyadic_add(a0 : LibmDyadic128, b0 : LibmDyadic128) -> LibmDyadic128 {
   }
   if a.negative == b.negative {
     let lo = a.lo + b.lo;
-    let carry = if lo < a.lo {
-      1u64
-    } else {
-      0u64
-    };
+    let carry = if lo < a.lo { 1u64 } else { 0u64 };
     let t = a.hi + b.hi;
     let hi = t + carry;
     if t < a.hi || hi < t {
       // The sum needs 129 bits: shift right by one and put the carry back on top.
       let m = libm_dyadic_shr(LibmDyadic128 {
-        negative: a.negative, exponent: a.exponent, hi: hi, lo: lo
+        negative: a.negative,
+        exponent: a.exponent,
+        hi: hi,
+        lo: lo
       }, 1u64);
       return LibmDyadic128 {
-        negative: a.negative, exponent: a.exponent + 1, hi: m.hi | 9223372036854775808u64, lo: m.lo
+        negative: a.negative,
+        exponent: a.exponent + 1,
+        hi: m.hi | 9223372036854775808u64,
+        lo: m.lo
       };
     }
     return LibmDyadic128 {
-      negative: a.negative, exponent: a.exponent, hi: hi, lo: lo
+      negative: a.negative,
+      exponent: a.exponent,
+      hi: hi,
+      lo: lo
     };
   }
   if a.hi > b.hi || (a.hi == b.hi && a.lo >= b.lo) {
-    let borrow = if a.lo < b.lo {
-      1u64
-    } else {
-      0u64
-    };
+    let borrow = if a.lo < b.lo { 1u64 } else { 0u64 };
     return libm_dyadic_normalize(LibmDyadic128 {
-      negative: a.negative, exponent: a.exponent, hi: a.hi - b.hi - borrow, lo: a.lo - b.lo
+      negative: a.negative,
+      exponent: a.exponent,
+      hi: a.hi - b.hi - borrow,
+      lo: a.lo - b.lo
     });
   }
-  let borrow = if b.lo < a.lo {
-    1u64
-  } else {
-    0u64
-  };
+  let borrow = if b.lo < a.lo { 1u64 } else { 0u64 };
   return libm_dyadic_normalize(LibmDyadic128 {
-    negative: b.negative, exponent: b.exponent, hi: b.hi - a.hi - borrow, lo: b.lo - a.lo
+    negative: b.negative,
+    exponent: b.exponent,
+    hi: b.hi - a.hi - borrow,
+    lo: b.lo - a.lo
   });
 }
 
@@ -1256,7 +1270,10 @@ fn libm_dyadic_mul(a : LibmDyadic128, b : LibmDyadic128) -> LibmDyadic128 {
   let exponent = a.exponent + b.exponent + 128;
   if (a.hi == 0u64 && a.lo == 0u64) || (b.hi == 0u64 && b.lo == 0u64) {
     return LibmDyadic128 {
-      negative: negative, exponent: exponent, hi: 0u64, lo: 0u64
+      negative: negative,
+      exponent: exponent,
+      hi: 0u64,
+      lo: 0u64
     };
   }
   // The cross products a.lo * b.hi + a.hi * b.lo, in 128 bits plus a carry.
@@ -1265,40 +1282,30 @@ fn libm_dyadic_mul(a : LibmDyadic128, b : LibmDyadic128) -> LibmDyadic128 {
   let p2_lo = a.hi * b.lo;
   let p2_hi = libm_u64_mul_hi(a.hi, b.lo);
   let s_lo = p1_lo + p2_lo;
-  let k0 = if s_lo < p1_lo {
-    1u64
-  } else {
-    0u64
-  };
+  let k0 = if s_lo < p1_lo { 1u64 } else { 0u64 };
   let s_mid = p1_hi + p2_hi;
-  let c1 = if s_mid < p1_hi {
-    1u64
-  } else {
-    0u64
-  };
+  let c1 = if s_mid < p1_hi { 1u64 } else { 0u64 };
   let s_hi = s_mid + k0;
-  let c2 = if s_hi < s_mid {
-    1u64
-  } else {
-    0u64
-  };
+  let c2 = if s_hi < s_mid { 1u64 } else { 0u64 };
   // Drop the low word, then add a.hi * b.hi.
   let p3_lo = a.hi * b.hi;
   let p3_hi = libm_u64_mul_hi(a.hi, b.hi);
   let lo = s_hi + p3_lo;
-  let k1 = if lo < s_hi {
-    1u64
-  } else {
-    0u64
-  };
+  let k1 = if lo < s_hi { 1u64 } else { 0u64 };
   let hi = (c1 + c2) + p3_hi + k1;
   let product = LibmDyadic128 {
-    negative: negative, exponent: exponent, hi: hi, lo: lo
+    negative: negative,
+    exponent: exponent,
+    hi: hi,
+    lo: lo
   };
   if (hi >> 63u64) == 0u64 {
     let m = libm_dyadic_shl(product, 1u64);
     return LibmDyadic128 {
-      negative: negative, exponent: exponent - 1, hi: m.hi, lo: m.lo
+      negative: negative,
+      exponent: exponent - 1,
+      hi: m.hi,
+      lo: m.lo
     };
   }
   return product;
@@ -1309,11 +1316,7 @@ fn libm_dyadic_mul(a : LibmDyadic128, b : LibmDyadic128) -> LibmDyadic128 {
 /// bits make `d_hi`; the round and sticky bits below them, scaled to `d_hi`'s last place, are
 /// added with one FMA, which rounds the sum correctly.
 fn libm_dyadic_to_f64(d : LibmDyadic128) -> f64 {
-  let sign = if d.negative {
-    9223372036854775808u64
-  } else {
-    0u64
-  };
+  let sign = if d.negative { 9223372036854775808u64 } else { 0u64 };
   if d.hi == 0u64 && d.lo == 0u64 {
     return libm_f64_from_bits(sign);
   }
@@ -1331,11 +1334,7 @@ fn libm_dyadic_to_f64(d : LibmDyadic128) -> f64 {
   }
   let exp_lo = exp_hi - 54;
   // The low 64 bits of the mantissa shifted right by `shift`, which is at least 75.
-  let m_hi : u64 = if shift < 128u64 {
-    d.hi >> (shift - 64u64)
-  } else {
-    0u64
-  };
+  let m_hi : u64 = if shift < 128u64 { d.hi >> (shift - 64u64) } else { 0u64 };
   let d_hi = libm_f64_from_bits(sign | ((exp_hi as u64) << 52u64) | (m_hi & 4503599627370495u64));
   // The bit just below d_hi's last place, at `shift - 1` (in the high word, since `shift` is at
   // least 75), and whether any bit below it is set.
@@ -1346,11 +1345,7 @@ fn libm_dyadic_to_f64(d : LibmDyadic128) -> f64 {
     round_bit = ((d.hi >> (p - 64u64)) & 1u64) != 0u64;
     sticky_bit = (d.hi & ((1u64 << (p - 64u64)) - 1u64)) != 0u64 || d.lo != 0u64;
   }
-  let round_and_sticky : f64 = (if round_bit {
-    2.0
-  } else {
-    0.0
-  }) + (if sticky_bit {
+  let round_and_sticky : f64 = (if round_bit { 2.0 } else { 0.0 }) + (if sticky_bit {
     1.0
   } else {
     0.0
@@ -1884,7 +1879,8 @@ fn libm_trig_reduce(xd : f64, x_abs : u32) -> LibmTrigReduced {
     let kd = libm_round_even_f64(xd * libm_f64_from_bits(4621923779193981059u64)); // 0x1.45f306dc9c883p+3
     let y0 = libm_multiply_add(xd, libm_f64_from_bits(4621923779193981059u64), -kd); // 0x1.45f306dc9c883p+3
     return LibmTrigReduced {
-      k: kd as i64, y: libm_multiply_add(xd, libm_f64_from_bits(13602753370724069462u64), y0)
+      k: kd as i64,
+      y: libm_multiply_add(xd, libm_f64_from_bits(13602753370724069462u64), y0)
     }; // -0x1.6b01ec5417056p-51
   }
   let x_exp = ((x_abs >> 23u32) as i32) - 127;
@@ -1901,9 +1897,7 @@ fn libm_trig_reduce(xd : f64, x_abs : u32) -> LibmTrigReduced {
     let mut y = libm_multiply_add(xd, libm_f64_from_bits(13602753370724069462u64), truncated_prod - k_lo); // -0x1.6b01ec5417056p-51
     y = libm_multiply_add(xd, libm_f64_from_bits(13359440653826315470u64), y); // -0x1.6447e493ad4cep-105
     y = libm_multiply_add(xd, libm_f64_from_bits(3895087871152826546u64), y); // 0x1.e21c820ff28b2p-159
-    return LibmTrigReduced {
-      k: k_lo as i64, y: y
-    };
+    return LibmTrigReduced { k: k_lo as i64, y: y };
   }
   // From 2^99 the first part of 32 / pi contributes only multiples of 64; below 2^110 the
   // lowest 6 integer bits are in the last 12 bits of the product with the second part.
@@ -1918,9 +1912,7 @@ fn libm_trig_reduce(xd : f64, x_abs : u32) -> LibmTrigReduced {
   let mut y = libm_multiply_add(xd, libm_f64_from_bits(13359440653826315470u64), truncated_prod - k_lo); // -0x1.6447e493ad4cep-105
   y = libm_multiply_add(xd, libm_f64_from_bits(3895087871152826546u64), y); // 0x1.e21c820ff28b2p-159
   y = libm_multiply_add(xd, libm_f64_from_bits(12868200654512296503u64), y); // -0x1.508510ea79237p-214
-  return LibmTrigReduced {
-    k: k_lo as i64, y: y
-  };
+  return LibmTrigReduced { k: k_lo as i64, y: y };
 }
 
 /// `sin(k * pi / 32)`, `cos(k * pi / 32)`, `sin(y * pi / 32)` and `cos(y * pi / 32) - 1` for the
@@ -1941,7 +1933,10 @@ fn libm_sincosf_eval(xd : f64, x_abs : u32) -> LibmSinCosParts {
   // Sollya: fpminimax(cos(x*pi/32), [|0, 2, 4, 6|], [|1, D...|], [0, 0.5])
   let cosm1_y = ysq * libm_multiply_add(ysq, libm_multiply_add(ysq, libm_f64_from_bits(13696955857052975616u64), libm_f64_from_bits(4526183729467239975u64)), libm_f64_from_bits(13795578152346338059u64)); // -0x1.55cc84bd942p-30, 0x1.03c1f070c2e27p-18, -0x1.3bd3cc9be430bp-8
   return LibmSinCosParts {
-    sin_k: LIBM_SIN_K_PI_OVER_32[r.k & 63], cos_k: LIBM_SIN_K_PI_OVER_32[(r.k + 16) & 63], sin_y: sin_y, cosm1_y: cosm1_y
+    sin_k: LIBM_SIN_K_PI_OVER_32[r.k & 63],
+    cos_k: LIBM_SIN_K_PI_OVER_32[(r.k + 16) & 63],
+    sin_y: sin_y,
+    cosm1_y: cosm1_y
   };
 }
 
@@ -2039,11 +2034,7 @@ fn libm_tanf(x : f32) -> f32 {
     let result = libm_multiply_add(xsq, libm_multiply_add(xsq, libm_multiply_add(xsq, libm_multiply_add(xsq, libm_f64_from_bits(4582021239951898399u64), libm_f64_from_bits(4587938219332198093u64)), libm_f64_from_bits(4593971860091454145u64)), libm_f64_from_bits(4599676419420966946u64)), 1.0); // 0x1.69c0a88a0b71fp-6, 0x1.ba180a6bbdecdp-5, 0x1.111111ce442c1p-3, 0x1.555555553d022p-2
     return (xd * result) as f32;
   }
-  let sign : f32 = if (x_u >> 31u32) == 1u32 {
-    -1.0
-  } else {
-    1.0
-  };
+  let sign : f32 = if (x_u >> 31u32) == 1u32 { -1.0 } else { 1.0 };
   // An input where the evaluation below would round the wrong way.
   if x_abs == 1066016610u32 { // 0x3f8a1f62
     return libm_multiply_add_f32(sign, libm_f32_from_bits(1072626938u32), sign * libm_f32_from_bits(864550912u32)); // 0x1.ddf9f4p0f, 0x1.1p-24f
@@ -2200,11 +2191,7 @@ fn libm_asinf(x : f32) -> f32 {
     return libm_f32_from_bits(2143289344u32); // 0x7fc00000
   }
   // -2 for a positive x, 2 for a negative one.
-  let sign_two : f64 = if (x_uint >> 31u32) == 1u32 {
-    2.0
-  } else {
-    -2.0
-  };
+  let sign_two : f64 = if (x_uint >> 31u32) == 1u32 { 2.0 } else { -2.0 };
   let uf = libm_multiply_add_f32(-0.5, libm_f32_from_bits(x_abs), 0.5);
   let u = uf as f64;
   let c1 = sign_two * libm_sqrt_f64(u);
@@ -2353,11 +2340,7 @@ fn libm_atanf(x : f32) -> f32 {
     let k_d = libm_round_even_f64(x_d * 16.0);
     x_d = libm_multiply_add(k_d, -0.0625, x_d);
     idx = k_d as i64;
-    final_sign = if neg {
-      1.0
-    } else {
-      -1.0
-    };
+    final_sign = if neg { 1.0 } else { -1.0 };
     const_term = libm_multiply_add(final_sign, LIBM_ATAN_COEFFS[9 * idx], signed_pi_over_2);
   } else {
     // An input where the evaluation below would round the wrong way.
@@ -2371,11 +2354,7 @@ fn libm_atanf(x : f32) -> f32 {
     let k_f = libm_round_even_f32(x_f * 16.0);
     x_d = libm_multiply_add_f32(k_f, -0.0625, x_f) as f64;
     idx = k_f as i64;
-    final_sign = if neg {
-      -1.0
-    } else {
-      1.0
-    };
+    final_sign = if neg { -1.0 } else { 1.0 };
     const_term = final_sign * LIBM_ATAN_COEFFS[9 * idx];
   }
   let p = libm_atan_eval(x_d, idx);
@@ -2395,9 +2374,7 @@ impl Copy for LibmDoubleDouble {}
 fn libm_dd_exact_add(a : f64, b : f64) -> LibmDoubleDouble {
   let hi = a + b;
   let t = hi - a;
-  return LibmDoubleDouble {
-    hi: hi, lo: b - t
-  };
+  return LibmDoubleDouble { hi: hi, lo: b - t };
 }
 
 /// `a + b`: `add`.
@@ -2413,9 +2390,7 @@ fn libm_dd_quick_mult(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleD
   let lo = libm_multiply_add(a.hi, b.hi, -hi);
   let t1 = libm_multiply_add(a.hi, b.lo, lo);
   let t2 = libm_multiply_add(a.lo, b.hi, t1);
-  return LibmDoubleDouble {
-    hi: hi, lo: t2
-  };
+  return LibmDoubleDouble { hi: hi, lo: t2 };
 }
 
 /// `a * b + c`: the double-double `multiply_add`.
@@ -2479,24 +2454,29 @@ fn libm_atan2_double_double(num_d : f64, den_d : f64, q_d : f64, idx : i64, k_d 
     q_hi = num_r / den_r;
   }
   let q = LibmDoubleDouble {
-    hi: q_hi, lo: libm_multiply_add(q_hi, -den_r, num_r) / den_r
+    hi: q_hi,
+    lo: libm_multiply_add(q_hi, -den_r, num_r) / den_r
   };
   let q2 = libm_dd_quick_mult(q, q);
   let mut p = LibmDoubleDouble {
-    hi: LIBM_ATAN2F_COEFFS[17], lo: LIBM_ATAN2F_COEFFS[16]
+    hi: LIBM_ATAN2F_COEFFS[17],
+    lo: LIBM_ATAN2F_COEFFS[16]
   };
   let mut j : i64 = 7;
   while j >= 0 {
     p = libm_dd_multiply_add(q2, p, LibmDoubleDouble {
-      hi: LIBM_ATAN2F_COEFFS[2 * j + 1], lo: LIBM_ATAN2F_COEFFS[2 * j]
+      hi: LIBM_ATAN2F_COEFFS[2 * j + 1],
+      lo: LIBM_ATAN2F_COEFFS[2 * j]
     });
     j = j - 1;
   }
   let atan_i = LibmDoubleDouble {
-    hi: LIBM_ATAN2F_ATAN_I[2 * idx + 1], lo: LIBM_ATAN2F_ATAN_I[2 * idx]
+    hi: LIBM_ATAN2F_ATAN_I[2 * idx + 1],
+    lo: LIBM_ATAN2F_ATAN_I[2 * idx]
   };
   let r_dd = libm_dd_add(LibmDoubleDouble {
-    hi: const_hi, lo: const_lo
+    hi: const_hi,
+    lo: const_lo
   }, libm_dd_multiply_add(q, p, atan_i));
   return libm_dd_exact_add(r_dd.hi * final_sign, r_dd.lo * final_sign);
 }
@@ -2519,23 +2499,11 @@ fn libm_atan2_value(y : f32, x : f32, mask : u64, always_accurate : bool) -> f64
   let y_sign = (y_u >> 31u32) == 1u32;
   let x_abs = x_u & 2147483647u32; // 0x7fffffff
   let y_abs = y_u & 2147483647u32; // 0x7fffffff
-  let max_abs = if x_abs > y_abs {
-    x_abs
-  } else {
-    y_abs
-  };
-  let min_abs = if x_abs <= y_abs {
-    x_abs
-  } else {
-    y_abs
-  };
+  let max_abs = if x_abs > y_abs { x_abs } else { y_abs };
+  let min_abs = if x_abs <= y_abs { x_abs } else { y_abs };
   let num_d = libm_f32_from_bits(min_abs) as f64;
   let den_d = libm_f32_from_bits(max_abs) as f64;
-  let y_neg : f64 = if y_sign {
-    -1.0
-  } else {
-    1.0
-  };
+  let y_neg : f64 = if y_sign { -1.0 } else { 1.0 };
   // An infinity, a NaN, or a zero.
   if max_abs >= 2139095040u32 || num_d == 0.0 { // 0x7f800000
     if x_abs > 2139095040u32 || y_abs > 2139095040u32 { // 0x7f800000, 0x7f800000
@@ -2547,20 +2515,12 @@ fn libm_atan2_value(y : f32, x : f32, mask : u64, always_accurate : bool) -> f64
     // pi/4 or 3pi/4 for an infinite x.
     let mut r : f64 = 0.0;
     if y_abs == 0u32 {
-      r = if x_sign {
-        pi
-      } else {
-        0.0
-      };
+      r = if x_sign { pi } else { 0.0 };
     } else if y_abs < 2139095040u32 { // 0x7f800000
       if x_abs == 0u32 {
         r = pi_2;
       } else if x_abs == 2139095040u32 { // 0x7f800000
-        r = if x_sign {
-          pi
-        } else {
-          0.0
-        };
+        r = if x_sign { pi } else { 0.0 };
       }
     } else {
       if x_abs < 2139095040u32 { // 0x7f800000
@@ -2576,11 +2536,7 @@ fn libm_atan2_value(y : f32, x : f32, mask : u64, always_accurate : bool) -> f64
     return y_neg * r;
   }
   let recip = x_abs < y_abs;
-  let final_sign : f64 = if (x_sign != y_sign) != recip {
-    -1.0
-  } else {
-    1.0
-  };
+  let final_sign : f64 = if (x_sign != y_sign) != recip { -1.0 } else { 1.0 };
   // CONST_ADJ[x_sign][y_sign][recip]
   let mut const_hi : f64 = 0.0;
   let mut const_lo : f64 = 0.0;
@@ -2730,16 +2686,8 @@ fn libm_hypotf(x : f32, y : f32) -> f32 {
   if ((r_u32 + 1u64) & 268435454u64) == 0u64 {
     let r_d = r_f as f64;
     let y_sq = yd * yd;
-    let a = if y_a < x_a {
-      x_sq
-    } else {
-      y_sq
-    };
-    let b = if y_a < x_a {
-      y_sq
-    } else {
-      x_sq
-    };
+    let a = if y_a < x_a { x_sq } else { y_sq };
+    let b = if y_a < x_a { y_sq } else { x_sq };
     let e = b - libm_multiply_add(r_d, r_d, -a);
     if e == 0.0 {
       return r_f;
@@ -2940,7 +2888,8 @@ fn libm_dd_quick_mult_d(x : f64, b : LibmDoubleDouble) -> LibmDoubleDouble {
   let hi = x * b.hi;
   let lo = libm_multiply_add(x, b.hi, -hi);
   return LibmDoubleDouble {
-    hi: hi, lo: libm_multiply_add(x, b.lo, lo)
+    hi: hi,
+    lo: libm_multiply_add(x, b.lo, lo)
   };
 }
 
@@ -3312,43 +3261,47 @@ fn libm_powf_double_double(idx_x : i64, dx : f64, y6 : f64, lo6_hi : f64, exp2_h
   let idx2 = libm_round_even_f64(libm_multiply_add(dx, 16384.0, 64.0)) as i64;
   // Exact.
   let dx2 = libm_multiply_add(1.0 + dx, LIBM_COMMON_R2[idx2], -1.0);
-  let dx_dd = LibmDoubleDouble {
-    hi: dx2, lo: 0.0
-  };
+  let dx_dd = LibmDoubleDouble { hi: dx2, lo: 0.0 };
   // log2(1 + dx2) / dx2
   let mut p = LibmDoubleDouble {
-    hi: libm_f64_from_bits(13821203156263148710u64), lo: libm_f64_from_bits(4351272168970118743u64)
+    hi: libm_f64_from_bits(13821203156263148710u64),
+    lo: libm_f64_from_bits(4351272168970118743u64)
   }; // -0x1.ec70af1929ca6p-3, 0x1.2d2fbd081e657p-57
   p = libm_dd_multiply_add(dx_dd, p, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4598869476604809890u64), lo: libm_f64_from_bits(13572541067231605528u64)
+    hi: libm_f64_from_bits(4598869476604809890u64),
+    lo: libm_f64_from_bits(13572541067231605528u64)
   }); // 0x1.2776c516a92a2p-2, -0x1.b5a30b3bdb318p-58
   p = libm_dd_multiply_add(dx_dd, p, LibmDoubleDouble {
-    hi: libm_f64_from_bits(13823540977621238523u64), lo: libm_f64_from_bits(4355323562998062053u64)
+    hi: libm_f64_from_bits(13823540977621238523u64),
+    lo: libm_f64_from_bits(4355323562998062053u64)
   }); // -0x1.71547652b82fbp-2, 0x1.137b47e635be5p-56
   p = libm_dd_multiply_add(dx_dd, p, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4602334714382648317u64), lo: libm_f64_from_bits(4358605153478170727u64)
+    hi: libm_f64_from_bits(4602334714382648317u64),
+    lo: libm_f64_from_bits(4358605153478170727u64)
   }); // 0x1.ec709dc3a03fdp-2, 0x1.ce04b5140d867p-56
   p = libm_dd_multiply_add(dx_dd, p, LibmDoubleDouble {
-    hi: libm_f64_from_bits(13828044577248609022u64), lo: libm_f64_from_bits(13575951341293865604u64)
+    hi: libm_f64_from_bits(13828044577248609022u64),
+    lo: libm_f64_from_bits(13575951341293865604u64)
   }); // -0x1.71547652b82fep-1, -0x1.777d101cf0a84p-57
   p = libm_dd_multiply_add(dx_dd, p, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4609176140021203710u64), lo: libm_f64_from_bits(4357082904033633760u64)
+    hi: libm_f64_from_bits(4609176140021203710u64),
+    lo: libm_f64_from_bits(4357082904033633760u64)
   }); // 0x1.71547652b82fep0, 0x1.777d0ffda25ep-56
   let log2_x_lo = libm_dd_quick_mult_d(dx2, p);
   let log2_x_mid = LibmDoubleDouble {
-    hi: LIBM_POWF_LOG2_R_TD[3 * idx_x + 1], lo: LIBM_POWF_LOG2_R_TD[3 * idx_x]
+    hi: LIBM_POWF_LOG2_R_TD[3 * idx_x + 1],
+    lo: LIBM_POWF_LOG2_R_TD[3 * idx_x]
   };
   let log2_x_m = libm_dd_add(LibmDoubleDouble {
-    hi: LIBM_POWF_LOG2_R2_DD[2 * idx2 + 1], lo: LIBM_POWF_LOG2_R2_DD[2 * idx2]
+    hi: LIBM_POWF_LOG2_R2_DD[2 * idx2 + 1],
+    lo: LIBM_POWF_LOG2_R2_DD[2 * idx2]
   }, log2_x_mid);
   let log2_x = if libm_larger_exponent(log2_x_m.hi, log2_x_lo.hi) {
     libm_dd_add(log2_x_m, log2_x_lo)
   } else {
     libm_dd_add(log2_x_lo, log2_x_m)
   };
-  let lo6_hi_dd = LibmDoubleDouble {
-    hi: lo6_hi, lo: 0.0
-  };
+  let lo6_hi_dd = LibmDoubleDouble { hi: lo6_hi, lo: 0.0 };
   let prod = libm_dd_quick_mult_d(y6, log2_x);
   let lo6 = if libm_larger_exponent(prod.hi, lo6_hi) {
     libm_dd_add(prod, lo6_hi_dd)
@@ -3357,35 +3310,42 @@ fn libm_powf_double_double(idx_x : i64, dx : f64, y6 : f64, lo6_hi : f64, exp2_h
   };
   // 2^(lo6 / 64)
   let mut pp = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4259088384742899425u64), lo: libm_f64_from_bits(13238410538663896109u64)
+    hi: libm_f64_from_bits(4259088384742899425u64),
+    lo: libm_f64_from_bits(13238410538663896109u64)
   }; // 0x1.b5251ff97bee1p-78, -0x1.8483eabd9642dp-132
   pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4302674886669337401u64), lo: libm_f64_from_bits(13281320184314770283u64)
+    hi: libm_f64_from_bits(4302674886669337401u64),
+    lo: libm_f64_from_bits(13281320184314770283u64)
   }); // 0x1.62c034beb8339p-68, -0x1.0ba57164eb36bp-122
   pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4345970066018852569u64), lo: libm_f64_from_bits(13322521076972774527u64)
+    hi: libm_f64_from_bits(4345970066018852569u64),
+    lo: libm_f64_from_bits(13322521076972774527u64)
   }); // 0x1.ffcbfc588ded9p-59, -0x1.31a55719de47fp-113
   pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4387685337091456952u64), lo: libm_f64_from_bits(13369397596894643686u64)
+    hi: libm_f64_from_bits(4387685337091456952u64),
+    lo: libm_f64_from_bits(13369397596894643686u64)
   }); // 0x1.430912f86bfb8p-49, -0x1.9a447bfddc5e6p-103
   pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4428683852445804337u64), lo: libm_f64_from_bits(4174420041262859232u64)
+    hi: libm_f64_from_bits(4428683852445804337u64),
+    lo: libm_f64_from_bits(4174420041262859232u64)
   }); // 0x1.5d87fe78a6731p-40, 0x1.e84e916be83ep-97
   pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4468611704665296503u64), lo: libm_f64_from_bits(4221274946447384910u64)
+    hi: libm_f64_from_bits(4468611704665296503u64),
+    lo: libm_f64_from_bits(4221274946447384910u64)
   }); // 0x1.3b2ab6fba4e77p-31, 0x1.4fb32d240a14ep-86
   pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4507095012802339008u64), lo: libm_f64_from_bits(13487492629240293007u64)
+    hi: libm_f64_from_bits(4507095012802339008u64),
+    lo: libm_f64_from_bits(13487492629240293007u64)
   }); // 0x1.c6b08d704a0cp-23, -0x1.d33162491268fp-77
   pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4543779896819893647u64), lo: libm_f64_from_bits(13521464395421040091u64)
+    hi: libm_f64_from_bits(4543779896819893647u64),
+    lo: libm_f64_from_bits(13521464395421040091u64)
   }); // 0x1.ebfbdff82c58fp-15, -0x1.5e43a5429bddbp-69
   pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4577396936549218799u64), lo: libm_f64_from_bits(4330981379454631972u64)
+    hi: libm_f64_from_bits(4577396936549218799u64),
+    lo: libm_f64_from_bits(4330981379454631972u64)
   }); // 0x1.62e42fefa39efp-7, 0x1.abc9e3b398024p-62
-  pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble {
-    hi: 1.0, lo: 0.0
-  });
+  pp = libm_dd_multiply_add(lo6, pp, LibmDoubleDouble { hi: 1.0, lo: 0.0 });
   let rr = libm_dd_quick_mult(exp2_hi_mid, pp);
   return libm_dd_exact_add(rr.hi, rr.lo);
 }
@@ -3599,16 +3559,15 @@ fn libm_pow_value(x0 : f32, y0 : f32, mask : u64, narrow : bool) -> f64 {
     mid_lo = libm_f64_from_bits((exp_hi_i + (libm_f64_to_bits(LIBM_EXP2_MID1[3 * idx_y + 1]) as i64)) as u64);
   }
   let mut r_dd = libm_powf_double_double(idx_x, dx, y6, lo6_hi, LibmDoubleDouble {
-    hi: exp2_hi_mid, lo: mid_lo
+    hi: exp2_hi_mid,
+    lo: mid_lo
   });
   // A low part this small is rounding noise on an exact result, such as (6^4 * 2^-24)^1.25 = 6^5 *
   // 2^-30, which can sit exactly on a halfway point of f16 and must round to even.
   let abs_hi = libm_f64_from_bits(libm_f64_to_bits(r_dd.hi) & 9223372036854775807u64); // 0x7fffffffffffffff
   let abs_lo = libm_f64_from_bits(libm_f64_to_bits(r_dd.lo) & 9223372036854775807u64); // 0x7fffffffffffffff
   if narrow && abs_lo < abs_hi * libm_f64_from_bits(4201858452336672768u64) { // 0x1p-90
-    r_dd = LibmDoubleDouble {
-      hi: r_dd.hi, lo: 0.0
-    };
+    r_dd = LibmDoubleDouble { hi: r_dd.hi, lo: 0.0 };
   }
   let v = libm_dd_nudge(r_dd, mask);
   if narrow && sign != 0u64 {
@@ -3662,27 +3621,15 @@ impl Copy for LibmI128 {}
 
 /// `v` widened to 128 bits.
 fn libm_i128_from_i64(v : i64) -> LibmI128 {
-  let hi = if v < 0 {
-    18446744073709551615u64
-  } else {
-    0u64
-  };
-  return LibmI128 {
-    hi: hi, lo: v as u64
-  };
+  let hi = if v < 0 { 18446744073709551615u64 } else { 0u64 };
+  return LibmI128 { hi: hi, lo: v as u64 };
 }
 
 /// `a + b`.
 fn libm_i128_add(a : LibmI128, b : LibmI128) -> LibmI128 {
   let lo = a.lo + b.lo;
-  let carry = if lo < a.lo {
-    1u64
-  } else {
-    0u64
-  };
-  return LibmI128 {
-    hi: a.hi + b.hi + carry, lo: lo
-  };
+  let carry = if lo < a.lo { 1u64 } else { 0u64 };
+  return LibmI128 { hi: a.hi + b.hi + carry, lo: lo };
 }
 
 /// `a << s`, for `s` below 128.
@@ -3692,24 +3639,20 @@ fn libm_i128_shl(a : LibmI128, s : u64) -> LibmI128 {
   }
   if s < 64u64 {
     return LibmI128 {
-      hi: (a.hi << s) | (a.lo >> (64u64 - s)), lo: a.lo << s
+      hi: (a.hi << s) | (a.lo >> (64u64 - s)),
+      lo: a.lo << s
     };
   }
-  return LibmI128 {
-    hi: a.lo << (s - 64u64), lo: 0u64
-  };
+  return LibmI128 { hi: a.lo << (s - 64u64), lo: 0u64 };
 }
 
 /// `a * s`, keeping the low 128 bits.
 fn libm_i128_mul_i64(a : LibmI128, s : i64) -> LibmI128 {
   let s_lo = s as u64;
-  let s_hi = if s < 0 {
-    18446744073709551615u64
-  } else {
-    0u64
-  };
+  let s_hi = if s < 0 { 18446744073709551615u64 } else { 0u64 };
   return LibmI128 {
-    hi: libm_u64_mul_hi(a.lo, s_lo) + a.lo * s_hi + a.hi * s_lo, lo: a.lo * s_lo
+    hi: libm_u64_mul_hi(a.lo, s_lo) + a.lo * s_hi + a.hi * s_lo,
+    lo: a.lo * s_lo
   };
 }
 
@@ -3721,10 +3664,9 @@ fn libm_i128_is_negative(a : LibmI128) -> bool {
 /// `-a`.
 fn libm_i128_negate(a : LibmI128) -> LibmI128 {
   return libm_i128_add(LibmI128 {
-    hi: a.hi ^ 18446744073709551615u64, lo: a.lo ^ 18446744073709551615u64
-  }, LibmI128 {
-    hi: 0u64, lo: 1u64
-  });
+    hi: a.hi ^ 18446744073709551615u64,
+    lo: a.lo ^ 18446744073709551615u64
+  }, LibmI128 { hi: 0u64, lo: 1u64 });
 }
 
 /// Bits 68 to 99 of `a`, as `(int)(a >> 68)` with an arithmetic shift.
@@ -3736,7 +3678,10 @@ fn libm_i128_bits_from_68(a : LibmI128) -> i32 {
 /// mantissa high and low.
 fn libm_dyadic_from_parts(negative : u64, exponent : u64, hi : u64, lo : u64) -> LibmDyadic128 {
   return LibmDyadic128 {
-    negative: negative == 1u64, exponent: (exponent as i64) as i32, hi: hi, lo: lo
+    negative: negative == 1u64,
+    exponent: (exponent as i64) as i32,
+    hi: hi,
+    lo: lo
   };
 }
 
@@ -4588,17 +4533,14 @@ fn libm_log_range_reduction(m_x : f64, sum0 : LibmDyadic128, step : i32) -> Libm
   let sv4 = libm_i128_mul_i64(vv3, s4);
   let vv4 = libm_i128_add(libm_i128_shl(spv4, 28u64), sv4);
   let negative = libm_i128_is_negative(vv4);
-  let mag = if negative {
-    libm_i128_negate(vv4)
-  } else {
-    vv4
-  };
+  let mag = if negative { libm_i128_negate(vv4) } else { vv4 };
   let reduced = libm_dyadic_normalize(LibmDyadic128 {
-    negative: negative, exponent: -125, hi: mag.hi, lo: mag.lo
+    negative: negative,
+    exponent: -125,
+    hi: mag.hi,
+    lo: mag.lo
   });
-  return LibmLogReduced {
-    sum: sum, v: reduced
-  };
+  return LibmLogReduced { sum: sum, v: reduced };
 }
 
 /// Entry `i` of step `k` (1 to 4) of a logarithm's range reduction table: `log`'s while `table`
@@ -4646,7 +4588,10 @@ fn libm_log_step(table : i32, k : i32, i : i64) -> LibmDyadic128 {
 fn libm_log_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
   // log(2) with 128-bit precision.
   let log_2 = LibmDyadic128 {
-    negative: false, exponent: -128, hi: 12786308645202655659u64, lo: 14547668686819489455u64
+    negative: false,
+    exponent: -128,
+    hi: 12786308645202655659u64,
+    lo: 14547668686819489455u64
   }; // 0xb17217f7d1cf79ab, 0xc9e3b39803f2f6af
   let mut sum = libm_dyadic_mul(log_2, libm_dyadic_from_f64(e_x as f64));
   sum = libm_dyadic_add(sum, libm_log_step(0, 1, index));
@@ -5469,12 +5414,11 @@ fn libm_log2(x : f64) -> f64 {
   let p1 = libm_multiply_add(u, libm_f64_from_bits(4596373780821541436u64), libm_f64_from_bits(13821547256400659815u64)); // 0x1.99999dcc9823cp-3, -0x1.0000000094567p-2
   let p2 = libm_multiply_add(u, libm_f64_from_bits(4594263169067001047u64), libm_f64_from_bits(13818544836630696826u64)); // 0x1.21a02c4e624d7p-3, -0x1.55550ac2e537ap-3
   let p = libm_multiply_add(u_sq, libm_multiply_add(u_sq, libm_multiply_add(u_sq, p2, p1), p0), LIBM_LOG2_LOG_R1[2 * index]);
-  let r1p = LibmDoubleDouble {
-    hi: r1.hi, lo: r1.lo + p
-  };
+  let r1p = LibmDoubleDouble { hi: r1.hi, lo: r1.lo + p };
   // log2(e)
   let r2 = libm_dd_quick_mult(r1p, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4609176140021203710u64), lo: libm_f64_from_bits(4357082904033627428u64)
+    hi: libm_f64_from_bits(4609176140021203710u64),
+    lo: libm_f64_from_bits(4357082904033627428u64)
   }); // 0x1.71547652b82fep0, 0x1.777d0ffda0d24p-56
   let r3 = libm_dd_exact_add(e_x, r2.hi);
   let r3_lo = r3.lo + r2.lo;
@@ -6122,7 +6066,10 @@ const LIBM_LOG10_BIG_COEFFS : Tensor<u64, [16]> = [
 fn libm_log10_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
   // log10(2) with 128-bit precision.
   let log10_2 = LibmDyadic128 {
-    negative: false, exponent: -129, hi: 11106046577046714264u64, lo: 10342896614695014776u64
+    negative: false,
+    exponent: -129,
+    hi: 11106046577046714264u64,
+    lo: 10342896614695014776u64
   }; // 0x9a209a84fbcff798, 0x8f8959ac0b7c9178
   let mut sum = libm_dyadic_mul(log10_2, libm_dyadic_from_f64(e_x as f64));
   sum = libm_dyadic_add(sum, libm_log_step(2, 1, index));
@@ -6180,12 +6127,11 @@ fn libm_log10(x : f64) -> f64 {
   let p2 = libm_multiply_add(u, libm_f64_from_bits(4594263169067001047u64), libm_f64_from_bits(13818544836630696826u64)); // 0x1.21a02c4e624d7p-3, -0x1.55550ac2e537ap-3
   let p = libm_multiply_add(u_sq, libm_multiply_add(u_sq, libm_multiply_add(u_sq, p2, p1), p0), lo);
   let r1 = libm_dd_exact_add(hi, u);
-  let r1p = LibmDoubleDouble {
-    hi: r1.hi, lo: r1.lo + p
-  };
+  let r1p = LibmDoubleDouble { hi: r1.hi, lo: r1.lo + p };
   // log10(e)
   let r2 = libm_dd_quick_mult(r1p, LibmDoubleDouble {
-    hi: libm_f64_from_bits(4601495173785380110u64), lo: libm_f64_from_bits(4353102142499388115u64)
+    hi: libm_f64_from_bits(4601495173785380110u64),
+    lo: libm_f64_from_bits(4353102142499388115u64)
   }); // 0x1.bcb7b1526e50ep-2, 0x1.95355baaafad3p-57
   let err = libm_multiply_add(u_sq, libm_f64_from_bits(4377498837804122112u64), libm_f64_from_bits(4224376450473525248u64)); // 0x1.0p-51, 0x1.0p-85
   let left = r2.hi + (r2.lo - err);
@@ -6902,7 +6848,10 @@ fn libm_log1p_step(k : i32, i : i64) -> LibmDyadic128 {
 fn libm_log1p_accurate(e_x : i32, index : i64, m_hi : f64, m_lo : f64) -> f64 {
   // log(2) with 128-bit precision.
   let log_2 = LibmDyadic128 {
-    negative: false, exponent: -128, hi: 12786308645202655659u64, lo: 14547668686819489455u64
+    negative: false,
+    exponent: -128,
+    hi: 12786308645202655659u64,
+    lo: 14547668686819489455u64
   }; // 0xb17217f7d1cf79ab, 0xc9e3b39803f2f6af
   let mut sum = libm_dyadic_mul(log_2, libm_dyadic_from_f64(e_x as f64));
   sum = libm_dyadic_add(sum, libm_log1p_step(1, index));
@@ -6945,9 +6894,7 @@ fn libm_log1p(x : f64) -> f64 {
 fn libm_log1p_value(x : f64, always_accurate : bool) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_exp = (x_u >> 52u64) & 2047u64;
-  let mut x_dd = LibmDoubleDouble {
-    hi: 0.0, lo: 0.0
-  };
+  let mut x_dd = LibmDoubleDouble { hi: 0.0, lo: 0.0 };
   if x_exp >= 1023u64 {
     // |x| >= 1
     if x_u >= 5066549580791808000u64 { // 0x4650000000000000
@@ -6964,9 +6911,7 @@ fn libm_log1p_value(x : f64, always_accurate : bool) -> f64 {
         }
         return libm_f64_from_bits(9221120237041090560u64); // 0x7ff8000000000000
       }
-      x_dd = LibmDoubleDouble {
-        hi: x, lo: 0.0
-      };
+      x_dd = LibmDoubleDouble { hi: x, lo: 0.0 };
     } else {
       x_dd = libm_dd_exact_add(x, 1.0);
     }
@@ -7158,16 +7103,19 @@ const LIBM_EXPM1_COEFFS_128 : Tensor<u64, [28]> = [
 fn libm_exp_coeff_dd(which : i32, i : i64) -> LibmDoubleDouble {
   if which == 0 {
     return LibmDoubleDouble {
-      hi: LIBM_EXP_COEFFS_DD[2 * i + 1], lo: LIBM_EXP_COEFFS_DD[2 * i]
+      hi: LIBM_EXP_COEFFS_DD[2 * i + 1],
+      lo: LIBM_EXP_COEFFS_DD[2 * i]
     };
   }
   if which == 1 {
     return LibmDoubleDouble {
-      hi: LIBM_EXP2_COEFFS_DD[2 * i + 1], lo: LIBM_EXP2_COEFFS_DD[2 * i]
+      hi: LIBM_EXP2_COEFFS_DD[2 * i + 1],
+      lo: LIBM_EXP2_COEFFS_DD[2 * i]
     };
   }
   return LibmDoubleDouble {
-    hi: LIBM_EXPM1_COEFFS_DD[2 * i + 1], lo: LIBM_EXPM1_COEFFS_DD[2 * i]
+    hi: LIBM_EXPM1_COEFFS_DD[2 * i + 1],
+    lo: LIBM_EXPM1_COEFFS_DD[2 * i]
   };
 }
 
@@ -7210,10 +7158,12 @@ fn libm_exp_poly_128(which : i32, degree : i64, dx : LibmDyadic128) -> LibmDyadi
 /// two tables.
 fn libm_exp_mid_dd(idx1 : i64, idx2 : i64) -> LibmDoubleDouble {
   let m1 = LibmDoubleDouble {
-    hi: LIBM_EXP2_MID1[3 * idx1 + 2], lo: LIBM_EXP2_MID1[3 * idx1 + 1]
+    hi: LIBM_EXP2_MID1[3 * idx1 + 2],
+    lo: LIBM_EXP2_MID1[3 * idx1 + 1]
   };
   let m2 = LibmDoubleDouble {
-    hi: LIBM_EXP2_MID2[3 * idx2 + 2], lo: LIBM_EXP2_MID2[3 * idx2 + 1]
+    hi: LIBM_EXP2_MID2[3 * idx2 + 2],
+    lo: LIBM_EXP2_MID2[3 * idx2 + 1]
   };
   return libm_dd_quick_mult(m1, m2);
 }
@@ -7265,7 +7215,8 @@ fn libm_exp_ziv_denorm(hi : i32, mid : f64, lo : f64, err0 : f64) -> LibmZivResu
   let upper = extra_factor + (mid_hi + (lo_scaled + err_scaled));
   let lower = extra_factor + (mid_hi + (lo_scaled - err_scaled));
   return LibmZivResult {
-    ok: upper == lower, value: libm_f64_from_bits(libm_f64_to_bits(upper) - scale_down)
+    ok: upper == lower,
+    value: libm_f64_from_bits(libm_f64_to_bits(upper) - scale_down)
   };
 }
 
@@ -7412,7 +7363,12 @@ fn libm_exp2_reduce(x : f64) -> LibmExp2Reduced {
   let c1 = libm_multiply_add(dx, libm_f64_from_bits(4576698096660601481u64), libm_f64_from_bits(4588159806396435470u64)); // 0x1.3b2aba7a95a89p-7, 0x1.c6b08e8fc0c0ep-5
   let p = libm_multiply_add(dx2, c1, c0);
   return LibmExp2Reduced {
-    hi: k >> 12, idx1: ((k >> 6) & 63) as i64, idx2: (k & 63) as i64, dx: dx, exp_mid: exp_mid, lo: libm_multiply_add(p, mid_lo, exp_mid.lo)
+    hi: k >> 12,
+    idx1: ((k >> 6) & 63) as i64,
+    idx2: (k & 63) as i64,
+    dx: dx,
+    exp_mid: exp_mid,
+    lo: libm_multiply_add(p, mid_lo, exp_mid.lo)
   };
 }
 
@@ -7425,7 +7381,8 @@ fn libm_exp2_denorm(x : f64) -> f64 {
     return r.value;
   }
   let r_dd = libm_dd_quick_mult(s.exp_mid, libm_exp_poly_dd(1, LibmDoubleDouble {
-    hi: s.dx, lo: 0.0
+    hi: s.dx,
+    lo: 0.0
   }));
   let r2 = libm_exp_ziv_denorm(s.hi, r_dd.hi, r_dd.lo, libm_f64_from_bits(4156822456062967808u64)); // 0x1.0p-100
   if r2.ok {
@@ -7468,7 +7425,8 @@ fn libm_exp2(x : f64) -> f64 {
     return libm_f64_scale(upper, s.hi);
   }
   let r_dd = libm_dd_quick_mult(s.exp_mid, libm_exp_poly_dd(1, LibmDoubleDouble {
-    hi: s.dx, lo: 0.0
+    hi: s.dx,
+    lo: 0.0
   }));
   let err_dd = libm_f64_from_bits(4156822456062967808u64); // 0x1.0p-100
   let upper_dd = r_dd.hi + (r_dd.lo + err_dd);
@@ -7489,7 +7447,10 @@ fn libm_expm1_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
   let exp_mid = libm_exp_mid_128(idx1, idx2);
   let hi = (kd as i32) >> 12;
   let minus_one = LibmDyadic128 {
-    negative: true, exponent: -127 - hi, hi: 9223372036854775808u64, lo: 0u64 // 0x8000000000000000
+    negative: true,
+    exponent: -127 - hi,
+    hi: 9223372036854775808u64,
+    lo: 0u64 // 0x8000000000000000
   };
   let exp_mid_m1 = libm_dyadic_add(exp_mid, minus_one);
   let p = libm_exp_poly_128(2, 6, dx);
@@ -7563,11 +7524,7 @@ fn libm_expm1(x : f64) -> f64 {
   let p = libm_multiply_add(dx2, c1, c0);
   let lo = libm_multiply_add(p, mid_lo, hi_part.lo);
   // For a negative x the result is near -1, not 2^-hi, so the error bound is scaled by 2^-hi.
-  let err : u64 = if x_is_neg {
-    ((-hi) as u64) << 52u64
-  } else {
-    0u64
-  };
+  let err : u64 = if x_is_neg { ((-hi) as u64) << 52u64 } else { 0u64 };
   let err_d = libm_f64_from_bits(4325707442089361408u64 + err); // 0x3c08000000000000
   let upper = hi_part.hi + (lo + err_d);
   let lower = hi_part.hi + (lo - err_d);
@@ -7903,17 +7860,13 @@ fn libm_dd_two_sum(a : f64, b : f64) -> LibmDoubleDouble {
   let t2 = hi - t1;
   let t3 = b - t1;
   let t4 = a - t2;
-  return LibmDoubleDouble {
-    hi: hi, lo: t3 + t4
-  };
+  return LibmDoubleDouble { hi: hi, lo: t3 + t4 };
 }
 
 /// `a * b` as a double-double, exactly: `exact_mult` with FMA.
 fn libm_dd_exact_mult(a : f64, b : f64) -> LibmDoubleDouble {
   let hi = a * b;
-  return LibmDoubleDouble {
-    hi: hi, lo: libm_multiply_add(a, b, -hi)
-  };
+  return LibmDoubleDouble { hi: hi, lo: libm_multiply_add(a, b, -hi) };
 }
 
 /// `a / b` as a double-double: `div` from `double_double.h`, one correction step on `a.hi / b.hi`.
@@ -7922,9 +7875,7 @@ fn libm_dd_div(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
   let hi = a.hi * q;
   let e_hi = libm_multiply_add(b.hi, -hi, a.hi);
   let e_lo = libm_multiply_add(b.lo, -hi, a.lo);
-  return LibmDoubleDouble {
-    hi: hi, lo: q * (e_hi + e_lo)
-  };
+  return LibmDoubleDouble { hi: hi, lo: q * (e_hi + e_lo) };
 }
 
 /// The result of reducing `x` by multiples of pi/128: `x = k pi / 128 + u`, with `|u|` at most
@@ -7955,22 +7906,26 @@ fn libm_trig64_reduce_small(x : f64) -> LibmTrig64Reduced {
   let u1 = libm_multiply_add(kd, libm_f64_from_bits(13650608799707299840u64), u0); // -0x1.0b4611a6p-40
   let u_lo = libm_multiply_add(kd, libm_f64_from_bits(13493656989800296563u64), u1); // -0x1.3198a2e037073p-75
   return LibmTrig64Reduced {
-    k: kd as i64, u: LibmDoubleDouble {
-      hi: u_hi, lo: u_lo
-    }, idx: 0, x_reduced: 0.0, y_hi: 0.0, y_lo: 0.0, y_mid: LibmDoubleDouble {
-      hi: 0.0, lo: 0.0
-    }
+    k: kd as i64,
+    u: LibmDoubleDouble { hi: u_hi, lo: u_lo },
+    idx: 0,
+    x_reduced: 0.0,
+    y_hi: 0.0,
+    y_lo: 0.0,
+    y_mid: LibmDoubleDouble { hi: 0.0, lo: 0.0 }
   };
 }
 
 /// `x` itself as `u`, with `k = 0`, for an `x` too small to need reducing.
 fn libm_trig64_reduce_none(x : f64) -> LibmTrig64Reduced {
   return LibmTrig64Reduced {
-    k: 0, u: LibmDoubleDouble {
-      hi: x, lo: 0.0
-    }, idx: 0, x_reduced: 0.0, y_hi: 0.0, y_lo: 0.0, y_mid: LibmDoubleDouble {
-      hi: 0.0, lo: 0.0
-    }
+    k: 0,
+    u: LibmDoubleDouble { hi: x, lo: 0.0 },
+    idx: 0,
+    x_reduced: 0.0,
+    y_hi: 0.0,
+    y_lo: 0.0,
+    y_mid: LibmDoubleDouble { hi: 0.0, lo: 0.0 }
   };
 }
 
@@ -7995,17 +7950,27 @@ fn libm_trig64_reduce_large(x : f64) -> LibmTrig64Reduced {
   let mut y = libm_dd_exact_add(y_hi, y_mid.hi);
   y.lo = y.lo + (y_mid.lo + y_l);
   let pi_over_128 = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4582731459160452376u64), lo: libm_f64_from_bits(4337430599130438663u64) // 0x1.921fb54442d18p-6, 0x1.1a62633145c07p-60
+    hi: libm_f64_from_bits(4582731459160452376u64),
+    lo: libm_f64_from_bits(4337430599130438663u64) // 0x1.921fb54442d18p-6, 0x1.1a62633145c07p-60
   };
   return LibmTrig64Reduced {
-    k: kd as i64, u: libm_dd_quick_mult(y, pi_over_128), idx: idx, x_reduced: x_reduced, y_hi: y_hi, y_lo: y_lo, y_mid: y_mid
+    k: kd as i64,
+    u: libm_dd_quick_mult(y, pi_over_128),
+    idx: idx,
+    x_reduced: x_reduced,
+    y_hi: y_hi,
+    y_lo: y_lo,
+    y_mid: y_mid
   };
 }
 
 /// pi/128 in 128 bits.
 fn libm_trig64_pi_over_128_f128() -> LibmDyadic128 {
   return LibmDyadic128 {
-    negative: false, exponent: -133, hi: 14488038916154245684u64, lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
+    negative: false,
+    exponent: -133,
+    hi: 14488038916154245684u64,
+    lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
   };
 }
 
@@ -8034,7 +7999,8 @@ fn libm_trig64_reduce_f128(x : f64, r : LibmTrig64Reduced) -> LibmDyadic128 {
 fn libm_trig64_sin_k(k : i64) -> LibmDoubleDouble {
   let i = k & 255;
   return LibmDoubleDouble {
-    hi: LIBM_TRIG64_SIN_K_PI_OVER_128[2 * i + 1], lo: LIBM_TRIG64_SIN_K_PI_OVER_128[2 * i]
+    hi: LIBM_TRIG64_SIN_K_PI_OVER_128[2 * i + 1],
+    lo: LIBM_TRIG64_SIN_K_PI_OVER_128[2 * i]
   };
 }
 
@@ -8111,7 +8077,9 @@ fn libm_trig64_sincos_eval(u : LibmDoubleDouble) -> LibmSinCos {
   let cos_lo = libm_multiply_add(u_hi_4, r2, s2);
   let abs_u_hi_3 = libm_f64_from_bits(libm_f64_to_bits(u_hi_3) & 9223372036854775807u64); // 0x7fffffffffffffff
   return LibmSinCos {
-    sin_u: libm_dd_exact_add(u.hi, sin_lo), cos_u: libm_dd_exact_add(v_hi, cos_lo), err: libm_multiply_add(abs_u_hi_3, libm_f64_from_bits(4377498837804122112u64), libm_f64_from_bits(4134304457926115328u64)) // 0x1.0p-51, 0x1.0p-105
+    sin_u: libm_dd_exact_add(u.hi, sin_lo),
+    cos_u: libm_dd_exact_add(v_hi, cos_lo),
+    err: libm_multiply_add(abs_u_hi_3, libm_f64_from_bits(4377498837804122112u64), libm_f64_from_bits(4134304457926115328u64)) // 0x1.0p-51, 0x1.0p-105
   };
 }
 
@@ -8675,13 +8643,19 @@ const LIBM_ATAN_I : Tensor<f64, [130]> = [
 /// pi/2 and pi in 128 bits.
 fn libm_pi_over_two_f128() -> LibmDyadic128 {
   return LibmDyadic128 {
-    negative: false, exponent: -127, hi: 14488038916154245684u64, lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
+    negative: false,
+    exponent: -127,
+    hi: 14488038916154245684u64,
+    lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
   };
 }
 
 fn libm_pi_f128() -> LibmDyadic128 {
   return LibmDyadic128 {
-    negative: false, exponent: -126, hi: 14488038916154245684u64, lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
+    negative: false,
+    exponent: -126,
+    hi: 14488038916154245684u64,
+    lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
   };
 }
 
@@ -8704,7 +8678,8 @@ fn libm_asin_eval_dd(u : LibmDoubleDouble, err0 : f64) -> LibmAsinEval {
   let y2 = y.hi * y.hi;
   let err = libm_multiply_add(err0, y2, libm_f64_from_bits(4147815256808226816u64)); // 0x1.0p-102
   let c0 = libm_dd_quick_mult(y, LibmDoubleDouble {
-    hi: LIBM_ASIN_COEFFS[i + 2], lo: LIBM_ASIN_COEFFS[i + 3]
+    hi: LIBM_ASIN_COEFFS[i + 2],
+    lo: LIBM_ASIN_COEFFS[i + 3]
   });
   let c1 = libm_multiply_add(y.hi, LIBM_ASIN_COEFFS[i + 5], LIBM_ASIN_COEFFS[i + 4]);
   let c2 = libm_multiply_add(y.hi, LIBM_ASIN_COEFFS[i + 7], LIBM_ASIN_COEFFS[i + 6]);
@@ -8717,8 +8692,10 @@ fn libm_asin_eval_dd(u : LibmDoubleDouble, err0 : f64) -> LibmAsinEval {
   let e1 = libm_multiply_add(y4, d1, d0);
   return LibmAsinEval {
     p: LibmDoubleDouble {
-      hi: r.hi, lo: libm_multiply_add(y2, e1, LIBM_ASIN_COEFFS[i + 1] + c0.lo + r.lo)
-    }, err: err
+      hi: r.hi,
+      lo: libm_multiply_add(y2, e1, LIBM_ASIN_COEFFS[i + 1] + c0.lo + r.lo)
+    },
+    err: err
   };
 }
 
@@ -8753,7 +8730,8 @@ fn libm_asin_small_f128(x_sq : LibmDoubleDouble) -> LibmAsinSmall128 {
   let k = libm_round_even_f64(x_sq.hi * 64.0);
   let u_hi = libm_dyadic_from_f64(libm_multiply_add(k, -0.015625, x_sq.hi));
   return LibmAsinSmall128 {
-    u: libm_dyadic_add(u_hi, libm_dyadic_from_f64(x_sq.lo)), idx: k as i64
+    u: libm_dyadic_add(u_hi, libm_dyadic_from_f64(x_sq.lo)),
+    idx: k as i64
   };
 }
 
@@ -8779,12 +8757,17 @@ fn libm_asin_large(x_abs : f64) -> LibmAsinLarge {
   let vh = v_hi * 2.0;
   let vl = h / v_hi;
   let e = libm_asin_eval_dd(LibmDoubleDouble {
-    hi: u, lo: 0.0
+    hi: u,
+    lo: 0.0
   }, vh * libm_f64_from_bits(4377498837804122112u64)); // 0x1.0p-51
   return LibmAsinLarge {
-    u: u, v_hi: v_hi, h: h, vh: vh, vl: vl, r0: libm_dd_quick_mult(LibmDoubleDouble {
-      hi: vh, lo: vl
-    }, e.p), err: e.err
+    u: u,
+    v_hi: v_hi,
+    h: h,
+    vh: vh,
+    vl: vl,
+    r0: libm_dd_quick_mult(LibmDoubleDouble { hi: vh, lo: vl }, e.p),
+    err: e.err
   };
 }
 
@@ -8835,13 +8818,10 @@ fn libm_asin(x : f64) -> f64 {
     let s = libm_asin_small_f128(x_sq);
     return libm_dyadic_to_f64(libm_dyadic_mul(libm_dyadic_from_f64(x), libm_asin_eval_f128(s.u, s.idx)));
   }
-  let x_sign : f64 = if (x_u >> 63u64) == 1u64 {
-    -1.0
-  } else {
-    1.0
-  };
+  let x_sign : f64 = if (x_u >> 63u64) == 1u64 { -1.0 } else { 1.0 };
   let pi_over_two = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4609753056924675352u64), lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
+    hi: libm_f64_from_bits(4609753056924675352u64),
+    lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
   };
   if x_exp >= 1023 {
     if x_abs == 1.0 {
@@ -8872,10 +8852,12 @@ fn libm_acos(x : f64) -> f64 {
   let x_exp = ((x_u >> 52u64) & 2047u64) as i32;
   let x_abs = libm_f64_from_bits(x_u & 9223372036854775807u64); // 0x7fffffffffffffff
   let pi_over_two = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4609753056924675352u64), lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
+    hi: libm_f64_from_bits(4609753056924675352u64),
+    lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
   };
   let pi = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4614256656552045848u64), lo: libm_f64_from_bits(4368955796522032135u64) // 0x1.921fb54442d18p1, 0x1.1a62633145c07p-53
+    hi: libm_f64_from_bits(4614256656552045848u64),
+    lo: libm_f64_from_bits(4368955796522032135u64) // 0x1.921fb54442d18p1, 0x1.1a62633145c07p-53
   };
   if x_exp < 1023 - 1 {
     // |x| < 2^-55: acos(x) rounds like pi/2 just below the double nearest it.
@@ -8939,14 +8921,16 @@ fn libm_atan_eval_dd(x : LibmDoubleDouble) -> LibmDoubleDouble {
   let d0 = libm_multiply_add(x_hi_4, c1, c0);
   let d1 = libm_multiply_add(x_hi_4 - x_hi_sq, x.lo, x.lo);
   return LibmDoubleDouble {
-    hi: x.hi, lo: libm_multiply_add(x_hi_3, d0, d1)
+    hi: x.hi,
+    lo: libm_multiply_add(x_hi_3, d0, d1)
   };
 }
 
 /// `atan(i / 64)` as a double-double.
 fn libm_atan_i(i : i64) -> LibmDoubleDouble {
   return LibmDoubleDouble {
-    hi: LIBM_ATAN_I[2 * i + 1], lo: LIBM_ATAN_I[2 * i]
+    hi: LIBM_ATAN_I[2 * i + 1],
+    lo: LIBM_ATAN_I[2 * i]
   };
 }
 
@@ -8955,11 +8939,7 @@ fn libm_atan_i(i : i64) -> LibmDoubleDouble {
 /// pi/2. LLVM libc has no 128-bit pass for this one, so the last bit can be off.
 fn libm_atan(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
-  let x_sign : f64 = if (x_u >> 63u64) == 1u64 {
-    -1.0
-  } else {
-    1.0
-  };
+  let x_sign : f64 = if (x_u >> 63u64) == 1u64 { -1.0 } else { 1.0 };
   let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
   let x_exp = ((x_abs_u >> 52u64) as i32) - 1023;
   let x_d = libm_f64_from_bits(x_abs_u);
@@ -8977,11 +8957,10 @@ fn libm_atan(x : f64) -> f64 {
     let den_hi = libm_multiply_add(x_d, k, 1.0);
     let prod = libm_dd_exact_mult(x_d, k);
     let den = LibmDoubleDouble {
-      hi: den_hi, lo: ((1.0 - den_hi) + prod.hi) + prod.lo
+      hi: den_hi,
+      lo: ((1.0 - den_hi) + prod.hi) + prod.lo
     };
-    let x_r = libm_dd_div(LibmDoubleDouble {
-      hi: x_d - k, lo: 0.0
-    }, den);
+    let x_r = libm_dd_div(LibmDoubleDouble { hi: x_d - k, lo: 0.0 }, den);
     let p = libm_atan_eval_dd(x_r);
     let a = libm_atan_i(idx);
     let c0 = libm_dd_exact_add(a.hi, p.hi);
@@ -9006,7 +8985,8 @@ fn libm_atan(x : f64) -> f64 {
   let num_hi = libm_multiply_add(-x_d, k, 1.0);
   let prod = libm_dd_exact_mult(x_d, k);
   let num = LibmDoubleDouble {
-    hi: num_hi, lo: ((1.0 - num_hi) - prod.hi) - prod.lo
+    hi: num_hi,
+    lo: ((1.0 - num_hi) - prod.hi) - prod.lo
   };
   let x_r = libm_dd_div(num, den);
   let p = libm_atan_eval_dd(x_r);
@@ -9041,11 +9021,7 @@ fn libm_atan2(y : f64, x : f64) -> f64 {
   let mut max_exp = max_abs >> 52u64;
   let mut num = libm_f64_from_bits(min_abs);
   let mut den = libm_f64_from_bits(max_abs);
-  let y_neg : f64 = if y_sign {
-    -1.0
-  } else {
-    1.0
-  };
+  let y_neg : f64 = if y_sign { -1.0 } else { 1.0 };
   if max_exp > 2047u64 - 128u64 || min_exp < 128u64 {
     if x_abs > 9218868437227405312u64 || y_abs > 9218868437227405312u64 { // 0x7ff0000000000000, 0x7ff0000000000000
       return libm_f64_from_bits(9221120237041090560u64); // 0x7ff8000000000000
@@ -9085,11 +9061,7 @@ fn libm_atan2(y : f64, x : f64) -> f64 {
     min_exp = min_abs >> 52u64;
     max_exp = max_abs >> 52u64;
   }
-  let final_sign : f64 = if (x_sign != y_sign) != recip {
-    -1.0
-  } else {
-    1.0
-  };
+  let final_sign : f64 = if (x_sign != y_sign) != recip { -1.0 } else { 1.0 };
   let const_term = libm_atan2_const_adj(x_sign, y_sign, recip);
   let exp_diff = max_exp - min_exp;
   if exp_diff > 54u64 {
@@ -9115,42 +9087,38 @@ fn libm_atan2(y : f64, x : f64) -> f64 {
 /// -pi/2 or -pi as double-doubles.
 fn libm_atan2_const_adj(x_sign : bool, y_sign : bool, recip : bool) -> LibmDoubleDouble {
   let pi_over_2 = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4609753056924675352u64), lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
+    hi: libm_f64_from_bits(4609753056924675352u64),
+    lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
   };
   if recip {
     if x_sign {
       return pi_over_2;
     }
-    return LibmDoubleDouble {
-      hi: -pi_over_2.hi, lo: -pi_over_2.lo
-    };
+    return LibmDoubleDouble { hi: -pi_over_2.hi, lo: -pi_over_2.lo };
   }
   if x_sign {
     return LibmDoubleDouble {
-      hi: libm_f64_from_bits(13837628693406821656u64), lo: libm_f64_from_bits(13592327833376807943u64) // -0x1.921fb54442d18p1, -0x1.1a62633145c07p-53
+      hi: libm_f64_from_bits(13837628693406821656u64),
+      lo: libm_f64_from_bits(13592327833376807943u64) // -0x1.921fb54442d18p1, -0x1.1a62633145c07p-53
     };
   }
   if y_sign {
-    return LibmDoubleDouble {
-      hi: -0.0, lo: -0.0
-    };
+    return LibmDoubleDouble { hi: -0.0, lo: -0.0 };
   }
-  return LibmDoubleDouble {
-    hi: 0.0, lo: 0.0
-  };
+  return LibmDoubleDouble { hi: 0.0, lo: 0.0 };
 }
 
 /// What `atan2` answers when either input is a zero or an infinity, before the sign of `y`:
 /// `EXCEPTS[y_except][x_except][x_sign]`.
 fn libm_atan2_except(y_except : i32, x_except : i32, x_sign : bool) -> LibmDoubleDouble {
-  let zero = LibmDoubleDouble {
-    hi: 0.0, lo: 0.0
-  };
+  let zero = LibmDoubleDouble { hi: 0.0, lo: 0.0 };
   let pi = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4614256656552045848u64), lo: libm_f64_from_bits(4368955796522032135u64) // 0x1.921fb54442d18p1, 0x1.1a62633145c07p-53
+    hi: libm_f64_from_bits(4614256656552045848u64),
+    lo: libm_f64_from_bits(4368955796522032135u64) // 0x1.921fb54442d18p1, 0x1.1a62633145c07p-53
   };
   let pi_over_2 = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4609753056924675352u64), lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
+    hi: libm_f64_from_bits(4609753056924675352u64),
+    lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
   };
   // y zero: 0 for a positive x, pi for a negative one.
   if y_except == 0 || (y_except == 1 && x_except == 2) {
@@ -9166,11 +9134,13 @@ fn libm_atan2_except(y_except : i32, x_except : i32, x_sign : bool) -> LibmDoubl
   // Both infinite.
   if x_sign {
     return LibmDoubleDouble {
-      hi: libm_f64_from_bits(4612488097114038738u64), lo: libm_f64_from_bits(4366936075694672394u64) // 0x1.2d97c7f3321d2p+1, 0x1.a79394c9e8a0ap-54
+      hi: libm_f64_from_bits(4612488097114038738u64),
+      lo: libm_f64_from_bits(4366936075694672394u64) // 0x1.2d97c7f3321d2p+1, 0x1.a79394c9e8a0ap-54
     };
   }
   return LibmDoubleDouble {
-    hi: libm_f64_from_bits(4605249457297304856u64), lo: libm_f64_from_bits(4359948597267291143u64) // 0x1.921fb54442d18p-1, 0x1.1a62633145c07p-55
+    hi: libm_f64_from_bits(4605249457297304856u64),
+    lo: libm_f64_from_bits(4359948597267291143u64) // 0x1.921fb54442d18p-1, 0x1.1a62633145c07p-55
   };
 }
 
@@ -9240,11 +9210,7 @@ fn libm_hypot_exact(x : f64, y : f64) -> f64 {
   let tail_bits = (sum as u64) & (leading_one - 1u64);
   let mut current_bit = leading_one >> 1u64;
   while current_bit != 0u64 {
-    r = (r << 1u64) + (if (tail_bits & current_bit) != 0u64 {
-      1u64
-    } else {
-      0u64
-    });
+    r = (r << 1u64) + (if (tail_bits & current_bit) != 0u64 { 1u64 } else { 0u64 });
     let tmp = (y_new << 1u64) + current_bit;
     if r >= tmp {
       r = r - tmp;
@@ -9305,9 +9271,7 @@ fn libm_hypot_denorm(a0 : f64, b0 : f64) -> f64 {
   sum.lo = sum.lo + (a_sq.lo + b_sq.lo);
   let r_hi = libm_sqrt_f64(sum.hi);
   let r_inv = 0.5 / r_hi;
-  let mut r_h = LibmDoubleDouble {
-    hi: r_hi, lo: 0.0
-  };
+  let mut r_h = LibmDoubleDouble { hi: r_hi, lo: 0.0 };
   let mut correction : f64 = 0.0;
   if r_hi < 1.0 {
     r_h = libm_dd_exact_add(1.0, r_hi);
@@ -9420,12 +9384,14 @@ const LIBM_EXP10_COEFFS_128 : Tensor<u64, [32]> = [
 /// The degree-6 double-double polynomial of `exp10` at `dx`, by Horner's rule: `polyeval`.
 fn libm_exp10_poly_dd(dx : LibmDoubleDouble) -> LibmDoubleDouble {
   let mut p = LibmDoubleDouble {
-    hi: LIBM_EXP10_COEFFS_DD[13], lo: LIBM_EXP10_COEFFS_DD[12]
+    hi: LIBM_EXP10_COEFFS_DD[13],
+    lo: LIBM_EXP10_COEFFS_DD[12]
   };
   let mut i : i64 = 5;
   while i >= 0 {
     p = libm_dd_multiply_add(dx, p, LibmDoubleDouble {
-      hi: LIBM_EXP10_COEFFS_DD[2 * i + 1], lo: LIBM_EXP10_COEFFS_DD[2 * i]
+      hi: LIBM_EXP10_COEFFS_DD[2 * i + 1],
+      lo: LIBM_EXP10_COEFFS_DD[2 * i]
     });
     i = i - 1;
   }
@@ -9496,7 +9462,12 @@ fn libm_exp10_reduce(x : f64) -> LibmExp10Reduced {
   let c1 = libm_multiply_add(dx, libm_f64_from_bits(4607953682391825509u64), libm_f64_from_bits(4611764107503871564u64)); // 0x1.2bd75cc6afc65p+0, 0x1.0470587aa264cp+1
   let p = libm_multiply_add(dx2, c1, c0);
   return LibmExp10Reduced {
-    kd: kd, hi: k >> 12, idx1: idx1, idx2: idx2, exp_mid: exp_mid, lo: libm_multiply_add(p, mid_lo, exp_mid.lo)
+    kd: kd,
+    hi: k >> 12,
+    idx1: idx1,
+    idx2: idx2,
+    exp_mid: exp_mid,
+    lo: libm_multiply_add(p, mid_lo, exp_mid.lo)
   };
 }
 
@@ -9957,9 +9928,7 @@ struct LibmU256 {
 impl Copy for LibmU256 {}
 
 fn libm_u256(w0 : u64, w1 : u64, w2 : u64, w3 : u64) -> LibmU256 {
-  return LibmU256 {
-    w0: w0, w1: w1, w2: w2, w3: w3
-  };
+  return LibmU256 { w0: w0, w1: w1, w2: w2, w3: w3 };
 }
 
 fn libm_u256_zero() -> LibmU256 {
@@ -10001,7 +9970,8 @@ fn libm_u256_add_carry(a : LibmU256, b : LibmU256) -> LibmU256Carry {
   let s2 = (a.w2 as u128) + (b.w2 as u128) + (s1 >> 64u128);
   let s3 = (a.w3 as u128) + (b.w3 as u128) + (s2 >> 64u128);
   return LibmU256Carry {
-    v: libm_u256(s0 as u64, s1 as u64, s2 as u64, s3 as u64), carry: (s3 >> 64u128) != (0 as u128)
+    v: libm_u256(s0 as u64, s1 as u64, s2 as u64, s3 as u64),
+    carry: (s3 >> 64u128) != (0 as u128)
   };
 }
 
@@ -10014,23 +9984,11 @@ fn libm_u256_add(a : LibmU256, b : LibmU256) -> LibmU256 {
 fn libm_u256_sub(a : LibmU256, b : LibmU256) -> LibmU256 {
   let two64 : u128 = (1 as u128) << 64u128;
   let d0 = (a.w0 as u128) + two64 - (b.w0 as u128);
-  let b0 : u128 = if d0 < two64 {
-    1 as u128
-  } else {
-    0 as u128
-  };
+  let b0 : u128 = if d0 < two64 { 1 as u128 } else { 0 as u128 };
   let d1 = (a.w1 as u128) + two64 - (b.w1 as u128) - b0;
-  let b1 : u128 = if d1 < two64 {
-    1 as u128
-  } else {
-    0 as u128
-  };
+  let b1 : u128 = if d1 < two64 { 1 as u128 } else { 0 as u128 };
   let d2 = (a.w2 as u128) + two64 - (b.w2 as u128) - b1;
-  let b2 : u128 = if d2 < two64 {
-    1 as u128
-  } else {
-    0 as u128
-  };
+  let b2 : u128 = if d2 < two64 { 1 as u128 } else { 0 as u128 };
   let d3 = (a.w3 as u128) + two64 - (b.w3 as u128) - b2;
   return libm_u256(d0 as u64, d1 as u64, d2 as u64, d3 as u64);
 }
@@ -10155,30 +10113,23 @@ impl Copy for LibmMulAcc {}
 fn libm_mul_acc_add(m : LibmMulAcc, a : u64, b : u64) -> LibmMulAcc {
   let p = (a as u128) * (b as u128);
   let s = m.acc + p;
-  let c : u64 = if s < p {
-    1u64
-  } else {
-    0u64
-  };
-  return LibmMulAcc {
-    acc: s, carry: m.carry + c
-  };
+  let c : u64 = if s < p { 1u64 } else { 0u64 };
+  return LibmMulAcc { acc: s, carry: m.carry + c };
 }
 
 /// The accumulator moved down a word, with the carries as its new high word:
 /// `Accumulator::advance`. Its old low word is the result's next word.
 fn libm_mul_acc_advance(m : LibmMulAcc) -> LibmMulAcc {
   return LibmMulAcc {
-    acc: (m.acc >> 64u128) | ((m.carry as u128) << 64u128), carry: 0u64
+    acc: (m.acc >> 64u128) | ((m.carry as u128) << 64u128),
+    carry: 0u64
   };
 }
 
 /// The high 256 bits of `a * b`, without the products below the top half and the carries out of
 /// them: `UInt<256>::quick_mul_hi`, at most 3 below the exact high half.
 fn libm_u256_quick_mul_hi(a : LibmU256, b : LibmU256) -> LibmU256 {
-  let mut m = LibmMulAcc {
-    acc: 0 as u128, carry: 0u64
-  };
+  let mut m = LibmMulAcc { acc: 0 as u128, carry: 0u64 };
   m = libm_mul_acc_add(m, a.w0, b.w3);
   m = libm_mul_acc_add(m, a.w1, b.w2);
   m = libm_mul_acc_add(m, a.w2, b.w1);
@@ -10203,9 +10154,7 @@ fn libm_u128_quick_mul_hi(a : u128, b : u128) -> u128 {
   let a1 = (a >> 64u128) as u64;
   let b0 = b as u64;
   let b1 = (b >> 64u128) as u64;
-  let mut m = LibmMulAcc {
-    acc: 0 as u128, carry: 0u64
-  };
+  let mut m = LibmMulAcc { acc: 0 as u128, carry: 0u64 };
   m = libm_mul_acc_add(m, a0, b1);
   m = libm_mul_acc_add(m, a1, b0);
   m = libm_mul_acc_advance(m);
@@ -10244,7 +10193,10 @@ fn libm_frac256_to_128(a : LibmU256) -> u128 {
 /// A 128-bit fraction as a dyadic float `2^exponent * m`, normalized.
 fn libm_dyadic_from_u128(negative : bool, exponent : i32, m : u128) -> LibmDyadic128 {
   return libm_dyadic_normalize(LibmDyadic128 {
-    negative: negative, exponent: exponent, hi: (m >> 64u128) as u64, lo: m as u64
+    negative: negative,
+    exponent: exponent,
+    hi: (m >> 64u128) as u64,
+    lo: m as u64
   });
 }
 
@@ -10270,7 +10222,9 @@ fn libm_dyadic256_normalize(d : LibmDyadic256) -> LibmDyadic256 {
   }
   let s = libm_u256_leading_zeros(d.m);
   return LibmDyadic256 {
-    negative: d.negative, exponent: d.exponent - (s as i32), m: libm_u256_shl(d.m, s)
+    negative: d.negative,
+    exponent: d.exponent - (s as i32),
+    m: libm_u256_shl(d.m, s)
   };
 }
 
@@ -10280,11 +10234,15 @@ fn libm_dyadic256_from_f64(x : f64) -> LibmDyadic256 {
   if d.hi == 0u64 && d.lo == 0u64 {
     // A zero keeps the exponent the constructor gives it at every width.
     return LibmDyadic256 {
-      negative: d.negative, exponent: d.exponent, m: libm_u256_zero()
+      negative: d.negative,
+      exponent: d.exponent,
+      m: libm_u256_zero()
     };
   }
   return libm_dyadic256_normalize(LibmDyadic256 {
-    negative: d.negative, exponent: d.exponent - 128, m: libm_u256(0u64, 0u64, d.lo, d.hi)
+    negative: d.negative,
+    exponent: d.exponent - 128,
+    m: libm_u256(0u64, 0u64, d.lo, d.hi)
   });
 }
 
@@ -10300,11 +10258,15 @@ fn libm_dyadic256_add(a0 : LibmDyadic256, b0 : LibmDyadic256) -> LibmDyadic256 {
   let mut b = b0;
   if a.exponent > b.exponent {
     b = LibmDyadic256 {
-      negative: b.negative, exponent: a.exponent, m: libm_u256_shr(b.m, (a.exponent - b.exponent) as u64)
+      negative: b.negative,
+      exponent: a.exponent,
+      m: libm_u256_shr(b.m, (a.exponent - b.exponent) as u64)
     };
   } else if b.exponent > a.exponent {
     a = LibmDyadic256 {
-      negative: a.negative, exponent: b.exponent, m: libm_u256_shr(a.m, (b.exponent - a.exponent) as u64)
+      negative: a.negative,
+      exponent: b.exponent,
+      m: libm_u256_shr(a.m, (b.exponent - a.exponent) as u64)
     };
   }
   if a.negative == b.negative {
@@ -10313,20 +10275,28 @@ fn libm_dyadic256_add(a0 : LibmDyadic256, b0 : LibmDyadic256) -> LibmDyadic256 {
       let mut m = libm_u256_shr(s.v, 1u64);
       m.w3 = m.w3 | 9223372036854775808u64; // 0x8000000000000000
       return LibmDyadic256 {
-        negative: a.negative, exponent: a.exponent + 1, m: m
+        negative: a.negative,
+        exponent: a.exponent + 1,
+        m: m
       };
     }
     return LibmDyadic256 {
-      negative: a.negative, exponent: a.exponent, m: s.v
+      negative: a.negative,
+      exponent: a.exponent,
+      m: s.v
     };
   }
   if libm_u256_ge(a.m, b.m) {
     return libm_dyadic256_normalize(LibmDyadic256 {
-      negative: a.negative, exponent: a.exponent, m: libm_u256_sub(a.m, b.m)
+      negative: a.negative,
+      exponent: a.exponent,
+      m: libm_u256_sub(a.m, b.m)
     });
   }
   return libm_dyadic256_normalize(LibmDyadic256 {
-    negative: b.negative, exponent: b.exponent, m: libm_u256_sub(b.m, a.m)
+    negative: b.negative,
+    exponent: b.exponent,
+    m: libm_u256_sub(b.m, a.m)
   });
 }
 
@@ -10336,7 +10306,9 @@ fn libm_dyadic256_mul(a : LibmDyadic256, b : LibmDyadic256) -> LibmDyadic256 {
   let mut exponent = a.exponent + b.exponent + 256;
   if libm_u256_is_zero(a.m) || libm_u256_is_zero(b.m) {
     return LibmDyadic256 {
-      negative: negative, exponent: exponent, m: libm_u256_zero()
+      negative: negative,
+      exponent: exponent,
+      m: libm_u256_zero()
     };
   }
   let mut m = libm_u256_quick_mul_hi(a.m, b.m);
@@ -10345,7 +10317,9 @@ fn libm_dyadic256_mul(a : LibmDyadic256, b : LibmDyadic256) -> LibmDyadic256 {
     m = libm_u256_shl(m, 1u64);
   }
   return LibmDyadic256 {
-    negative: negative, exponent: exponent, m: m
+    negative: negative,
+    exponent: exponent,
+    m: m
   };
 }
 
@@ -10376,11 +10350,7 @@ fn libm_dyadic256_to_f64(d : LibmDyadic256) -> f64 {
   let d_hi = libm_f64_from_bits(sign | ((exp_hi as u64) << 52u64) | (m_hi & 4503599627370495u64)); // 0x000fffffffffffff
   let round_bit = libm_u256_bit(d.m, shift - 1u64);
   let sticky_bit = libm_u256_any_below(d.m, shift - 1u64);
-  let round_and_sticky : f64 = (if round_bit {
-    2.0
-  } else {
-    0.0
-  }) + (if sticky_bit {
+  let round_and_sticky : f64 = (if round_bit { 2.0 } else { 0.0 }) + (if sticky_bit {
     1.0
   } else {
     0.0
@@ -10463,7 +10433,8 @@ fn libm_pow64_ziv_denorm(hi : i32, mid : f64, lo : f64, err0 : f64, negative : b
   let upper = extra_factor + (mid_hi + (lo_scaled + err_scaled));
   let lower = extra_factor + (mid_hi + (lo_scaled - err_scaled));
   return LibmZivResult {
-    ok: upper == lower, value: libm_f64_from_bits(libm_f64_to_bits(upper) - scale_down)
+    ok: upper == lower,
+    value: libm_f64_from_bits(libm_f64_to_bits(upper) - scale_down)
   };
 }
 
@@ -10478,15 +10449,11 @@ struct LibmMaybeF64 {
 impl Copy for LibmMaybeF64 {}
 
 fn libm_some_f64(v : f64) -> LibmMaybeF64 {
-  return LibmMaybeF64 {
-    has: true, value: v
-  };
+  return LibmMaybeF64 { has: true, value: v };
 }
 
 fn libm_none_f64() -> LibmMaybeF64 {
-  return LibmMaybeF64 {
-    has: false, value: 0.0
-  };
+  return LibmMaybeF64 { has: false, value: 0.0 };
 }
 
 /// Whether the bits of a double are a signaling NaN.
@@ -10543,11 +10510,7 @@ fn libm_pow64_special(x : f64, y : f64) -> LibmMaybeF64 {
   let x_biased = (x_u >> 52u64) & 2047u64;
   if !x_sign && x_biased != 0u64 && x_biased != 2047u64 && (x_u & 4503599627370495u64) == 0u64 && y_a > 4318532713074062601u64 && y_a < 4888456257178775634u64 { // 0x000fffffffffffff, 0x3bee829f39aef509, 0x43d74910d52d3052
     let e_x = (x_biased as i32) - 1023;
-    let abs_e : i32 = if e_x > 0 {
-      e_x
-    } else {
-      -e_x
-    };
+    let abs_e : i32 = if e_x > 0 { e_x } else { -e_x };
     if (abs_e & (abs_e - 1)) == 0 && abs_e != 0 {
       let hi = (e_x as f64) * y;
       if hi >= 1024.0 {
@@ -10671,9 +10634,7 @@ struct LibmPow64Exact {
 impl Copy for LibmPow64Exact {}
 
 fn libm_pow64_exact(x : f64, y : f64) -> LibmPow64Exact {
-  let none = LibmPow64Exact {
-    ok: false, m: 0u64, e: 0
-  };
+  let none = LibmPow64Exact { ok: false, m: 0u64, e: 0 };
   let x_u = libm_f64_to_bits(x);
   let mut x_e : i32 = 0;
   let mut x_mant = x_u & 4503599627370495u64; // 0x000fffffffffffff
@@ -10689,9 +10650,7 @@ fn libm_pow64_exact(x : f64, y : f64) -> LibmPow64Exact {
   if x_mant == 0u64 {
     let ey = (x_e as f64) * y;
     if libm_pow64_is_integer(ey) {
-      return LibmPow64Exact {
-        ok: true, m: 1u64, e: ey as i32
-      };
+      return LibmPow64Exact { ok: true, m: 1u64, e: ey as i32 };
     }
     return none;
   }
@@ -10736,9 +10695,7 @@ fn libm_pow64_exact(x : f64, y : f64) -> LibmPow64Exact {
       res = res * cur;
       j = j + 1u64;
     }
-    return LibmPow64Exact {
-      ok: true, m: res, e: ey as i32
-    };
+    return LibmPow64Exact { ok: true, m: res, e: ey as i32 };
   }
   let y_int = y as i32;
   let mut res : u64 = 1u64;
@@ -10750,9 +10707,7 @@ fn libm_pow64_exact(x : f64, y : f64) -> LibmPow64Exact {
     res = res * m;
     i = i + 1;
   }
-  return LibmPow64Exact {
-    ok: true, m: res, e: e * y_int
-  };
+  return LibmPow64Exact { ok: true, m: res, e: e * y_int };
 }
 
 /// The exact value `m * 2^e` with the sign `negative`, rounded to a double.
@@ -10771,19 +10726,11 @@ fn libm_pow64_log2_f128(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic128 {
   if dx == 0.0 {
     return libm_dyadic_add(x_e_f128, libm_dyadic_from_u128(false, -127, log2_rd));
   }
-  let abs_dx : f64 = if dx < 0.0 {
-    -dx
-  } else {
-    dx
-  };
+  let abs_dx : f64 = if dx < 0.0 { -dx } else { dx };
   let bits = libm_f64_to_bits(abs_dx);
   let mant = (bits & 4503599627370495u64) | 4503599627370496u64; // 0x000fffffffffffff, 0x0010000000000000
   let shift = 127 + ((((bits >> 52u64) & 2047u64) as i32) - 1023) - 52;
-  let y : u128 = if shift >= 0 {
-    (mant as u128) << (shift as u128)
-  } else {
-    0 as u128
-  };
+  let y : u128 = if shift >= 0 { (mant as u128) << (shift as u128) } else { 0 as u128 };
   let y64 = (y >> 64u128) as u64;
   let mut p64 = (libm_frac128_at(0, 15) >> 64u128) as u64;
   let mut k : i64 = 14;
@@ -10809,11 +10756,7 @@ fn libm_pow64_log2_f128(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic128 {
     k = k - 1;
   }
   let log2_1p = libm_u128_quick_mul_hi(y, p) << 2u128;
-  let log2_m : u128 = if dx >= 0.0 {
-    log2_rd + log2_1p
-  } else {
-    log2_rd - log2_1p
-  };
+  let log2_m : u128 = if dx >= 0.0 { log2_rd + log2_1p } else { log2_rd - log2_1p };
   return libm_dyadic_add(x_e_f128, libm_dyadic_from_u128(false, -127, log2_m));
 }
 
@@ -10834,11 +10777,7 @@ fn libm_pow64_exp2_f128(z : LibmDyadic128) -> LibmDyadic128 {
   }
   let lo_is_neg = lo.negative;
   let shift = -127 - lo.exponent;
-  let u : u128 = if shift < 128 {
-    libm_dyadic_mantissa(lo) >> (shift as u128)
-  } else {
-    0 as u128
-  };
+  let u : u128 = if shift < 128 { libm_dyadic_mantissa(lo) >> (shift as u128) } else { 0 as u128 };
   let u64v = (u >> 64u128) as u64;
   let mut p64 = (libm_frac128_at(1, 11) >> 64u128) as u64;
   let mut i : i64 = 10;
@@ -10865,11 +10804,7 @@ fn libm_pow64_exp2_f128(z : LibmDyadic128) -> LibmDyadic128 {
   }
   let t = libm_u128_quick_mul_hi(u, p) << 1u128;
   let mt = libm_u128_quick_mul_hi(m, t) << 1u128;
-  let mut m_final : u128 = if lo_is_neg {
-    m - mt
-  } else {
-    m + mt
-  };
+  let mut m_final : u128 = if lo_is_neg { m - mt } else { m + mt };
   if (m_final >> 127u128) == (0 as u128) {
     m_final = m_final << 1u128;
     hi = hi - 1;
@@ -10884,14 +10819,12 @@ fn libm_pow64_log2_f256(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic256 {
   let log2_rd = libm_frac256_at(3, idx_x);
   if dx == 0.0 {
     return libm_dyadic256_add(x_e_f256, libm_dyadic256_normalize(LibmDyadic256 {
-      negative: false, exponent: -255, m: log2_rd
+      negative: false,
+      exponent: -255,
+      m: log2_rd
     }));
   }
-  let abs_dx : f64 = if dx < 0.0 {
-    -dx
-  } else {
-    dx
-  };
+  let abs_dx : f64 = if dx < 0.0 { -dx } else { dx };
   let bits = libm_f64_to_bits(abs_dx);
   let mant = (bits & 4503599627370495u64) | 4503599627370496u64; // 0x000fffffffffffff, 0x0010000000000000
   let shift = 255 + ((((bits >> 52u64) & 2047u64) as i32) - 1023) - 52;
@@ -10944,7 +10877,9 @@ fn libm_pow64_log2_f256(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic256 {
     libm_u256_sub(log2_rd, log2_1p)
   };
   return libm_dyadic256_add(x_e_f256, libm_dyadic256_normalize(LibmDyadic256 {
-    negative: false, exponent: -255, m: log2_m
+    negative: false,
+    exponent: -255,
+    m: log2_m
   }));
 }
 
@@ -10961,16 +10896,14 @@ fn libm_pow64_exp2_f256(z : LibmDyadic256) -> LibmDyadic256 {
   let m = libm_frac256_at(2, idx);
   if libm_u256_is_zero(lo.m) {
     return libm_dyadic256_normalize(LibmDyadic256 {
-      negative: false, exponent: hi - 255, m: m
+      negative: false,
+      exponent: hi - 255,
+      m: m
     });
   }
   let lo_is_neg = lo.negative;
   let shift = -255 - lo.exponent;
-  let u : LibmU256 = if shift < 256 {
-    libm_u256_shr(lo.m, shift as u64)
-  } else {
-    libm_u256_zero()
-  };
+  let u : LibmU256 = if shift < 256 { libm_u256_shr(lo.m, shift as u64) } else { libm_u256_zero() };
   let u64v = u.w3;
   let mut p64 = libm_frac256_at(1, 21).w3;
   let mut i : i64 = 20;
@@ -11010,17 +10943,15 @@ fn libm_pow64_exp2_f256(z : LibmDyadic256) -> LibmDyadic256 {
   }
   let t = libm_u256_shl(libm_u256_quick_mul_hi(u, p), 1u64);
   let mt = libm_u256_shl(libm_u256_quick_mul_hi(m, t), 1u64);
-  let mut m_final : LibmU256 = if lo_is_neg {
-    libm_u256_sub(m, mt)
-  } else {
-    libm_u256_add(m, mt)
-  };
+  let mut m_final : LibmU256 = if lo_is_neg { libm_u256_sub(m, mt) } else { libm_u256_add(m, mt) };
   if (m_final.w3 >> 63u64) == 0u64 {
     m_final = libm_u256_shl(m_final, 1u64);
     hi = hi - 1;
   }
   return libm_dyadic256_normalize(LibmDyadic256 {
-    negative: false, exponent: hi - 255, m: m_final
+    negative: false,
+    exponent: hi - 255,
+    m: m_final
   });
 }
 
@@ -11088,16 +11019,8 @@ fn libm_pow64_accurate(x : f64, y : f64, is_neg : bool, x_e : i32, idx_x : i64, 
     let mant = libm_dyadic_mantissa(r);
     let rem = mant & ((one << (shift as u128)) - one);
     let half = one << ((shift - 1) as u128);
-    let dist : u128 = if rem <= half {
-      rem
-    } else {
-      (one << (shift as u128)) - rem
-    };
-    let abs_y : f64 = if y < 0.0 {
-      -y
-    } else {
-      y
-    };
+    let dist : u128 = if rem <= half { rem } else { (one << (shift as u128)) - rem };
+    let abs_y : f64 = if y < 0.0 { -y } else { y };
     let mut eps_bound : u128 = one << 13u128;
     if abs_y < libm_f64_from_bits(4872894796814876672u64) { // 0x1.0p59
       eps_bound = eps_bound + (((abs_y as u64) as u128) << 5u128);
@@ -11136,7 +11059,14 @@ fn libm_pow(x0 : f64, y0 : f64) -> f64 {
     }
   }
   let mut s = LibmPow64State {
-    has: false, value: 0.0, x: x0, y: y0, e_x: ((((x_u0 >> 52u64) & 2047u64) as i32) - 1023) as f64, x_mant: x_u0 & 4503599627370495u64, is_neg: false, sign_d: 1.0 // 0x000fffffffffffff
+    has: false,
+    value: 0.0,
+    x: x0,
+    y: y0,
+    e_x: ((((x_u0 >> 52u64) & 2047u64) as i32) - 1023) as f64,
+    x_mant: x_u0 & 4503599627370495u64,
+    is_neg: false,
+    sign_d: 1.0 // 0x000fffffffffffff
   };
   if y_a <= 4318532713074062601u64 || y_a >= 4888456257178775634u64 || x_u0 >= 9218868437227405312u64 || x_u0 < 4503599627370496u64 { // 0x3bee829f39aef509, 0x43d74910d52d3052, 0x7ff0000000000000, 0x0010000000000000
     s = libm_pow64_exceptional(s);
@@ -11188,11 +11118,7 @@ fn libm_pow(x0 : f64, y0 : f64) -> f64 {
   y6_log2_x.lo = libm_multiply_add(y6, log2_x.lo, y6_log2_x.lo);
   let mut scale : f64 = 1.0;
   let mut is_denorm = false;
-  let abs_hi : f64 = if y6_log2_x.hi < 0.0 {
-    -y6_log2_x.hi
-  } else {
-    y6_log2_x.hi
-  };
+  let abs_hi : f64 = if y6_log2_x.hi < 0.0 { -y6_log2_x.hi } else { y6_log2_x.hi };
   if abs_hi >= 32704.0 { // 511 * 64
     if y6_log2_x.hi > 0.0 {
       if y6_log2_x.hi > 65600.0 { // 1025 * 64
@@ -11223,10 +11149,12 @@ fn libm_pow(x0 : f64, y0 : f64) -> f64 {
     exp2_hi = libm_f64_from_bits(((hi + 1023) as u64) << 52u64);
   }
   let exp2_mid = LibmDoubleDouble {
-    hi: LIBM_EXP2_MID1[3 * idx_y + 2] * sign_d, lo: LIBM_EXP2_MID1[3 * idx_y + 1] * sign_d
+    hi: LIBM_EXP2_MID1[3 * idx_y + 2] * sign_d,
+    lo: LIBM_EXP2_MID1[3 * idx_y + 1] * sign_d
   };
   let log_2_over_64 = LibmDoubleDouble {
-    hi: libm_f64_from_bits(4577396936549218799u64), lo: libm_f64_from_bits(4330981379454631999u64) // 0x1.62e42fefa39efp-7, 0x1.abc9e3b39803fp-62
+    hi: libm_f64_from_bits(4577396936549218799u64),
+    lo: libm_f64_from_bits(4330981379454631999u64) // 0x1.62e42fefa39efp-7, 0x1.abc9e3b39803fp-62
   };
   let lo_log_2 = libm_dd_quick_mult(lo6, log_2_over_64);
   let mut lo_log_2_p1 = libm_dd_exact_add(1.0, lo_log_2.hi);
@@ -11285,7 +11213,8 @@ fn libm_exp_parts(a : f64) -> LibmExpParts {
   let kd = k as f64;
   let exp_mid = libm_exp_mid_dd(((k >> 6) & 63) as i64, (k & 63) as i64);
   return LibmExpParts {
-    hi: k >> 12, m: libm_exp_dd(a, kd, exp_mid)
+    hi: k >> 12,
+    m: libm_exp_dd(a, kd, exp_mid)
   };
 }
 
@@ -11306,13 +11235,9 @@ fn libm_exp_half_sum(a : f64, sign : f64) -> f64 {
   let e = libm_exp_parts(a);
   let mut t = e.m;
   if e.hi < 60 {
-    let inv = libm_dd_div(LibmDoubleDouble {
-      hi: 1.0, lo: 0.0
-    }, e.m);
+    let inv = libm_dd_div(LibmDoubleDouble { hi: 1.0, lo: 0.0 }, e.m);
     let scale = libm_f64_from_bits(((1023 - 2 * e.hi) as u64) << 52u64) * sign;
-    t = libm_dd_add(e.m, LibmDoubleDouble {
-      hi: inv.hi * scale, lo: inv.lo * scale
-    });
+    t = libm_dd_add(e.m, LibmDoubleDouble { hi: inv.hi * scale, lo: inv.lo * scale });
   }
   return libm_f64_ldexp(t.hi + t.lo, e.hi - 1);
 }
@@ -11322,9 +11247,7 @@ fn libm_exp_half_sum(a : f64, sign : f64) -> f64 {
 /// on its own: the series of `sinh` and `tanh` below 1/64.
 fn libm_odd_series_small(x : f64, c_hi : f64, c_lo : f64, rest : f64) -> f64 {
   let x2 = libm_dd_exact_mult(x, x);
-  let x3 = libm_dd_quick_mult(LibmDoubleDouble {
-    hi: x, lo: 0.0
-  }, x2);
+  let x3 = libm_dd_quick_mult(LibmDoubleDouble { hi: x, lo: 0.0 }, x2);
   let c = libm_dd_exact_add(c_hi, libm_multiply_add(x2.hi, rest, c_lo));
   let t = libm_dd_quick_mult(x3, c);
   let mut r = libm_dd_exact_add(x, t.hi);
@@ -11348,11 +11271,7 @@ fn libm_sinh(x : f64) -> f64 {
     return x + x;
   }
   let a = libm_f64_from_bits(x_abs_u);
-  let sign : f64 = if (x_u >> 63u64) == 1u64 {
-    -1.0
-  } else {
-    1.0
-  };
+  let sign : f64 = if (x_u >> 63u64) == 1u64 { -1.0 } else { 1.0 };
   if a < 0.015625 {
     return libm_odd_series_small(x, libm_f64_from_bits(4595172819793696085u64), libm_f64_from_bits(4351978439915689301u64), libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_f64_from_bits(4493156764026750180u64), libm_f64_from_bits(4523617214285662004u64)), libm_f64_from_bits(4551452160554016794u64)), libm_f64_from_bits(4575957461383581969u64))); // 0x1.5555555555555p-3, 0x1.5555555555555p-57, 0x1.ae64567f544e4p-26, 0x1.71de3a556c734p-19, 0x1.a01a01a01a01ap-13, 0x1.1111111111111p-7
   }
@@ -11422,11 +11341,7 @@ fn libm_tanh(x : f64) -> f64 {
     return x + x;
   }
   let a = libm_f64_from_bits(x_abs_u);
-  let sign : f64 = if (x_u >> 63u64) == 1u64 {
-    -1.0
-  } else {
-    1.0
-  };
+  let sign : f64 = if (x_u >> 63u64) == 1u64 { -1.0 } else { 1.0 };
   if a < 0.015625 {
     return libm_odd_series_small(x, libm_f64_from_bits(13823048456275842389u64), libm_f64_from_bits(13579854076397835605u64), libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_f64_from_bits(4570429305847643616u64), libm_f64_from_bits(13799634966057239101u64)), libm_f64_from_bits(4581960672315445498u64)), libm_f64_from_bits(13811310502961330716u64)), libm_f64_from_bits(4593971859893063953u64))); // -0x1.5555555555555p-2, -0x1.5555555555555p-56, 0x1.d6d3d0e157de0p-9, -0x1.226e355e6c23dp-7, 0x1.664f4882c10fap-6, -0x1.ba1ba1ba1ba1cp-5, 0x1.1111111111111p-3
   }
@@ -11438,15 +11353,9 @@ fn libm_tanh(x : f64) -> f64 {
   }
   let e = libm_exp_parts(2.0 * a);
   let scale = libm_f64_from_bits(((1023 + e.hi) as u64) << 52u64);
-  let big = LibmDoubleDouble {
-    hi: e.m.hi * scale, lo: e.m.lo * scale
-  };
-  let num = libm_dd_add(big, LibmDoubleDouble {
-    hi: -1.0, lo: 0.0
-  });
-  let den = libm_dd_add(big, LibmDoubleDouble {
-    hi: 1.0, lo: 0.0
-  });
+  let big = LibmDoubleDouble { hi: e.m.hi * scale, lo: e.m.lo * scale };
+  let num = libm_dd_add(big, LibmDoubleDouble { hi: -1.0, lo: 0.0 });
+  let den = libm_dd_add(big, LibmDoubleDouble { hi: 1.0, lo: 0.0 });
   let t = libm_dd_div(num, den);
   return sign * (t.hi + t.lo);
 }
@@ -11488,11 +11397,7 @@ fn libm_asinhf16(x : f16) -> f16 {
     return libm_f16_from_bits(49975u16); // 0xc337
   }
   let xf = x as f32;
-  let x_sign : f32 = if (x_u >> 15u16) == 1u16 {
-    -1.0
-  } else {
-    1.0
-  };
+  let x_sign : f32 = if (x_u >> 15u16) == 1u16 { -1.0 } else { 1.0 };
   if x_abs <= 13312u16 { // 0x3400
     if x_abs < 10694u16 { // 0x29c6
       return x;
@@ -11698,23 +11603,18 @@ fn libm_log_dd(a : LibmDoubleDouble) -> LibmDoubleDouble {
   let hi = libm_multiply_add(x_e, libm_f64_from_bits(4604418534313441280u64), LIBM_COMMON_LOG_R_DD[2 * index + 1]); // 0x1.62e42fefa38p-1
   let lo = libm_multiply_add(x_e, libm_f64_from_bits(4408728642709317424u64), LIBM_COMMON_LOG_R_DD[2 * index]); // 0x1.ef35793c7673p-45
   let u2 = libm_dd_exact_mult(u, u);
-  let u3 = libm_dd_quick_mult(LibmDoubleDouble {
-    hi: u, lo: 0.0
-  }, u2);
+  let u3 = libm_dd_quick_mult(LibmDoubleDouble { hi: u, lo: 0.0 }, u2);
   // -1/4 + u/5 - u^2/6 + ... - u^8/12, past which |u| < 2^-7 makes the terms vanish.
   let rr = libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_multiply_add(u, libm_f64_from_bits(13814041257021101397u64), libm_f64_from_bits(4591215111030249286u64)), libm_f64_from_bits(13815242216921733530u64)), libm_f64_from_bits(4592670820000712476u64)), -0.125), libm_f64_from_bits(4594314991293244562u64)), libm_f64_from_bits(13818544856648471893u64)), 0.2), -0.25); // -0x1.5555555555555p-4, 0x1.745d1745d1746p-4, -0x1.999999999999ap-4, 0x1.c71c71c71c71cp-4, 0x1.2492492492492p-3, -0x1.5555555555555p-3
   let c = libm_dd_exact_add(libm_f64_from_bits(4599676419421066581u64), libm_multiply_add(u, rr, libm_f64_from_bits(4356482039543059797u64))); // 0x1.5555555555555p-2, 0x1.5555555555555p-56
   let q = libm_dd_quick_mult(u3, c);
   // log(1 + u) = u - u^2 / 2 + q.
-  let mut s = libm_dd_add_any(LibmDoubleDouble {
-    hi: u, lo: 0.0
-  }, LibmDoubleDouble {
-    hi: -0.5 * u2.hi, lo: -0.5 * u2.lo
+  let mut s = libm_dd_add_any(LibmDoubleDouble { hi: u, lo: 0.0 }, LibmDoubleDouble {
+    hi: -0.5 * u2.hi,
+    lo: -0.5 * u2.lo
   });
   s = libm_dd_add_any(s, q);
-  let mut r = libm_dd_add_any(LibmDoubleDouble {
-    hi: hi, lo: lo
-  }, s);
+  let mut r = libm_dd_add_any(LibmDoubleDouble { hi: hi, lo: lo }, s);
   r.lo = r.lo + a.lo / a.hi;
   return libm_dd_exact_add(r.hi, r.lo);
 }
@@ -11722,7 +11622,8 @@ fn libm_log_dd(a : LibmDoubleDouble) -> LibmDoubleDouble {
 /// log(2) as a double-double.
 fn libm_log2_dd() -> LibmDoubleDouble {
   return LibmDoubleDouble {
-    hi: libm_f64_from_bits(4604418534313441775u64), lo: libm_f64_from_bits(4358002977218854975u64) // 0x1.62e42fefa39efp-1, 0x1.abc9e3b39803fp-56
+    hi: libm_f64_from_bits(4604418534313441775u64),
+    lo: libm_f64_from_bits(4358002977218854975u64) // 0x1.62e42fefa39efp-1, 0x1.abc9e3b39803fp-56
   };
 }
 
@@ -11742,30 +11643,18 @@ fn libm_asinh(x : f64) -> f64 {
     return x + x;
   }
   let a = libm_f64_from_bits(x_abs_u);
-  let sign : f64 = if (x_u >> 63u64) == 1u64 {
-    -1.0
-  } else {
-    1.0
-  };
+  let sign : f64 = if (x_u >> 63u64) == 1u64 { -1.0 } else { 1.0 };
   if a < 0.015625 {
     // x - x^3/6 + 3x^5/40 - 5x^7/112 + 35x^9/1152 - 63x^11/2816.
     return libm_odd_series_small(x, libm_f64_from_bits(13818544856648471893u64), libm_f64_from_bits(13575350476770465109u64), libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_f64_from_bits(13805477594093298409u64), libm_f64_from_bits(4584414220683866567u64)), libm_f64_from_bits(13809966571643956663u64)), libm_f64_from_bits(4590068740216009523u64))); // -0x1.5555555555555p-3, -0x1.5555555555555p-57, -0x1.6e8ba2e8ba2e9p-6, 0x1.f1c71c71c71c7p-6, -0x1.6db6db6db6db7p-5, 0x1.3333333333333p-4
   }
-  let mut l = LibmDoubleDouble {
-    hi: 0.0, lo: 0.0
-  };
+  let mut l = LibmDoubleDouble { hi: 0.0, lo: 0.0 };
   if a >= libm_f64_from_bits(4787326403894837248u64) { // 0x1p40
-    l = libm_dd_add_any(libm_log_dd(LibmDoubleDouble {
-      hi: a, lo: 0.0
-    }), libm_log2_dd());
+    l = libm_dd_add_any(libm_log_dd(LibmDoubleDouble { hi: a, lo: 0.0 }), libm_log2_dd());
   } else {
     let a2 = libm_dd_exact_mult(a, a);
-    let s = libm_dd_add_any(a2, LibmDoubleDouble {
-      hi: 1.0, lo: 0.0
-    });
-    let w = libm_dd_add_any(LibmDoubleDouble {
-      hi: a, lo: 0.0
-    }, libm_dd_sqrt(s));
+    let s = libm_dd_add_any(a2, LibmDoubleDouble { hi: 1.0, lo: 0.0 });
+    let w = libm_dd_add_any(LibmDoubleDouble { hi: a, lo: 0.0 }, libm_dd_sqrt(s));
     l = libm_log_dd(w);
   }
   return sign * (l.hi + l.lo);
@@ -11790,21 +11679,13 @@ fn libm_acosh(x : f64) -> f64 {
   if x == 1.0 {
     return 0.0;
   }
-  let mut l = LibmDoubleDouble {
-    hi: 0.0, lo: 0.0
-  };
+  let mut l = LibmDoubleDouble { hi: 0.0, lo: 0.0 };
   if x >= libm_f64_from_bits(4787326403894837248u64) { // 0x1p40
-    l = libm_dd_add_any(libm_log_dd(LibmDoubleDouble {
-      hi: x, lo: 0.0
-    }), libm_log2_dd());
+    l = libm_dd_add_any(libm_log_dd(LibmDoubleDouble { hi: x, lo: 0.0 }), libm_log2_dd());
   } else {
     let x2 = libm_dd_exact_mult(x, x);
-    let s = libm_dd_add_any(x2, LibmDoubleDouble {
-      hi: -1.0, lo: 0.0
-    });
-    let w = libm_dd_add_any(LibmDoubleDouble {
-      hi: x, lo: 0.0
-    }, libm_dd_sqrt(s));
+    let s = libm_dd_add_any(x2, LibmDoubleDouble { hi: -1.0, lo: 0.0 });
+    let w = libm_dd_add_any(LibmDoubleDouble { hi: x, lo: 0.0 }, libm_dd_sqrt(s));
     l = libm_log_dd(w);
   }
   return l.hi + l.lo;
@@ -11832,11 +11713,7 @@ fn libm_atanh(x : f64) -> f64 {
     return libm_f64_from_bits(9221120237041090560u64); // 0x7ff8000000000000
   }
   let a = libm_f64_from_bits(x_abs_u);
-  let sign : f64 = if (x_u >> 63u64) == 1u64 {
-    -1.0
-  } else {
-    1.0
-  };
+  let sign : f64 = if (x_u >> 63u64) == 1u64 { -1.0 } else { 1.0 };
   if a < 0.015625 {
     // x + x^3/3 + x^5/5 + ... + x^13/13.
     return libm_odd_series_small(x, libm_f64_from_bits(4599676419421066581u64), libm_f64_from_bits(4356482039543059797u64), libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_multiply_add(x * x, libm_f64_from_bits(4590207312512236308u64), libm_f64_from_bits(4591215111030249286u64)), libm_f64_from_bits(4592670820000712476u64)), libm_f64_from_bits(4594314991293244562u64)), 0.2)); // 0x1.5555555555555p-2, 0x1.5555555555555p-56, 0x1.3b13b13b13b14p-4, 0x1.745d1745d1746p-4, 0x1.c71c71c71c71cp-4, 0x1.2492492492492p-3
@@ -12054,20 +11931,14 @@ fn libm_cbrt_value(x0_in : f64, always_accurate : bool) -> f64 {
   let x0 = m23 * p;
   let a_sq = libm_dd_exact_mult(a, a);
   let x0_sq = libm_dd_exact_mult(x0, x0);
-  let x0_3 = libm_dd_quick_mult(LibmDoubleDouble {
-    hi: x0, lo: 0.0
-  }, x0_sq);
+  let x0_3 = libm_dd_quick_mult(LibmDoubleDouble { hi: x0, lo: 0.0 }, x0_sq);
   let h0 = libm_cbrt_error(x0_3, a_sq);
   let rel_error = libm_f64_from_bits(4377498837804122112u64); // 0x1.0p-51
   // (1 + h)^(-1/3) - 1 ~ h (-1/3 + 2h/9 - 14h^2/81), with the error bound folded into -1/3.
   let e0 = libm_multiply_add(h0, libm_multiply_add(h0, libm_f64_from_bits(13818767256630070436u64), libm_f64_from_bits(4597174419628082972u64)), libm_f64_from_bits(13823048456275842389u64) - rel_error); // -0x1.61f9add3c0ca4p-3, 0x1.c71c71c71c71cp-3, -0x1.5555555555555p-2
   let x0_h0 = x0 * h0;
-  let x1_dd = LibmDoubleDouble {
-    hi: x0, lo: x0_h0 * e0
-  };
-  let r1 = libm_dd_quick_mult(LibmDoubleDouble {
-    hi: a, lo: 0.0
-  }, x1_dd);
+  let x1_dd = LibmDoubleDouble { hi: x0, lo: x0_h0 * e0 };
+  let r1 = libm_dd_quick_mult(LibmDoubleDouble { hi: a, lo: 0.0 }, x1_dd);
   let r1_lower = r1.hi + r1.lo;
   let r1_upper = r1.hi + libm_multiply_add(x0_h0, 2.0 * rel_error * a, r1.lo);
   if r1_upper == r1_lower && !always_accurate {
@@ -12076,15 +11947,11 @@ fn libm_cbrt_value(x0_in : f64, always_accurate : bool) -> f64 {
   // A second Newton step, in double-doubles.
   let x1 = x1_dd.hi + (e0 + rel_error) * x0_h0;
   let x1_sq = libm_dd_exact_mult(x1, x1);
-  let x1_3 = libm_dd_quick_mult(LibmDoubleDouble {
-    hi: x1, lo: 0.0
-  }, x1_sq);
+  let x1_3 = libm_dd_quick_mult(LibmDoubleDouble { hi: x1, lo: 0.0 }, x1_sq);
   let h1 = libm_cbrt_error(x1_3, a_sq);
   let e1 = h1 * (x1 * libm_f64_from_bits(13823048456275842389u64)); // -0x1.5555555555555p-2
   let x2 = libm_dd_exact_add(x1, e1);
-  let r2 = libm_dd_quick_mult(LibmDoubleDouble {
-    hi: a, lo: 0.0
-  }, x2);
+  let r2 = libm_dd_quick_mult(LibmDoubleDouble { hi: a, lo: 0.0 }, x2);
   let r2_upper = r2.hi + libm_multiply_add(a, libm_f64_from_bits(4147815256808226816u64), r2.lo); // 0x1.0p-102
   let r2_lower = r2.hi + libm_multiply_add(a, libm_f64_from_bits(13371187293663002624u64), r2.lo); // -0x1.0p-102
   if r2_upper == r2_lower && !always_accurate {
@@ -12107,7 +11974,10 @@ fn libm_cbrt_value(x0_in : f64, always_accurate : bool) -> f64 {
     r3.lo = r3.lo & 18446744073709551600u64; // 0xfffffffffffffff0
     if rounding_bits >= low_mask - (15 as u128) {
       let tmp = LibmDyadic128 {
-        negative: r3.negative, exponent: r3.exponent - 123, hi: 9223372036854775808u64, lo: 0u64 // 0x8000000000000000
+        negative: r3.negative,
+        exponent: r3.exponent - 123,
+        hi: 9223372036854775808u64,
+        lo: 0u64 // 0x8000000000000000
       };
       result = libm_dyadic_to_f64(libm_dyadic_add(r3, tmp));
     } else {
@@ -12344,9 +12214,7 @@ fn libm_erf_bf16(x : bf16) -> bf16 {
 fn libm_rsqrt_special(x_u : u64, sign_bit : u64, inf : u64, quiet : u64) -> LibmZivResult {
   let x_abs = x_u & (sign_bit - 1u64);
   if x_u != 0u64 && x_u < inf {
-    return LibmZivResult {
-      ok: false, value: 0.0
-    };
+    return LibmZivResult { ok: false, value: 0.0 };
   }
   let mut bits : u64 = 0u64;
   if x_abs > inf {
@@ -12364,7 +12232,8 @@ fn libm_rsqrt_special(x_u : u64, sign_bit : u64, inf : u64, quiet : u64) -> Libm
   }
   // +infinity gives +0.
   return LibmZivResult {
-    ok: true, value: libm_f64_from_bits(bits)
+    ok: true,
+    value: libm_f64_from_bits(bits)
   };
 }
 
@@ -12412,10 +12281,9 @@ fn libm_rsqrt(x : f64) -> f64 {
     a = x * libm_f64_from_bits(5507902344274116608u64);
     scale = libm_f64_from_bits(5057542381537067008u64);
   }
-  let r = libm_dd_div(LibmDoubleDouble {
-    hi: 1.0, lo: 0.0
-  }, libm_dd_sqrt(LibmDoubleDouble {
-    hi: a, lo: 0.0
+  let r = libm_dd_div(LibmDoubleDouble { hi: 1.0, lo: 0.0 }, libm_dd_sqrt(LibmDoubleDouble {
+    hi: a,
+    lo: 0.0
   }));
   return (r.hi + r.lo) * scale;
 }

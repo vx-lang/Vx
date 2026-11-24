@@ -18,12 +18,16 @@ import std::vec;
 
 fn send_then_wait(tx : Sender<i64>, reply : Receiver<i64>, v : i64) -> void {
   match tx.send(v) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {}
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {}
   }
   match reply.recv() {
-    Result<i64, RecvError>::Ok(_r) => {}
-    Result<i64, RecvError>::Err(_e) => {}
+    Result<i64,
+    RecvError>::Ok(_r) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {}
   }
 }
 
@@ -44,14 +48,18 @@ fn main() -> i32 {
       };
       let mut v : i64 = 0;
       match sel.select() {
-        Result<Selected<i64>, RecvError>::Ok(s) => {
+        Result<Selected<i64>,
+        RecvError>::Ok(s) => {
           v = s.value;
         }
-        Result<Selected<i64>, RecvError>::Err(_e) => {}
+        Result<Selected<i64>,
+        RecvError>::Err(_e) => {}
       }
       match reply_tx.send(0) {
-        Result<void, SendError<i64>>::Ok() => {}
-        Result<void, SendError<i64>>::Err(_e) => {}
+        Result<void,
+        SendError<i64>>::Ok() => {}
+        Result<void,
+        SendError<i64>>::Err(_e) => {}
       }
       v
     };

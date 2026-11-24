@@ -15,9 +15,9 @@
 // becomes an `unsafe` block the compiler writes, which never warns or counts as an outer block.
 
 // CHECK-NOT: Warning[W1010]
-// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:52:11: this `unsafe` block holds nothing that needs `unsafe`
+// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:50:11: this `unsafe` block holds nothing that needs `unsafe`
 // CHECK-NOT: Warning[W1010]
-// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:60:12: this `unsafe` block is inside another one
+// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:58:12: this `unsafe` block is inside another one
 // CHECK-NOT: Warning[W1010]
 
 import std::vec;
@@ -39,9 +39,7 @@ struct Cell {
 impl Cell {
   unsafe fn make(p : *mut i32) -> Cell {
     let v = unsafe { *p };
-    return Cell {
-      v : v
-    };
+    return Cell { v : v };
   }
 }
 

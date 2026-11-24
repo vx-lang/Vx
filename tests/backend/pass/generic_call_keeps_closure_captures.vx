@@ -16,9 +16,7 @@ fn apply<F>(f : F, value : i32) -> i32 {
 }
 
 fn main() -> i32 {
-  let captured = Captured {
-    value : 10
-  };
+  let captured = Captured { value : 10 };
   let extra : i32 = 20;
   let add = | value : i32 | captured.value + extra + value;
   assert(apply(add, 12) == 42, "generic call preserves both captures");

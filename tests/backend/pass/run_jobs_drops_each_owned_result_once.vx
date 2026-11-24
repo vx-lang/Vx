@@ -96,7 +96,9 @@ fn make(ctx : &Ctx, job : i64) -> Tracked {
     values.push(job * 10 + i64::from(k));
   }
   return Tracked {
-    job : job, values : values, counts : ctx.counts
+    job : job,
+    values : values,
+    counts : ctx.counts
   };
 }
 
@@ -144,11 +146,10 @@ fn main() -> i32 {
   }
 
   let mut counts = Counts {
-    made : AtomicI64::new(0), dropped : AtomicI64::new(0)
+    made : AtomicI64::new(0),
+    dropped : AtomicI64::new(0)
   };
-  let ctx = Ctx {
-    counts : (&mut counts) as *mut Counts
-  };
+  let ctx = Ctx { counts : (&mut counts) as *mut Counts };
   let made : Result<Vec<Tracked>, RunJobsError> = run_jobs(&jobs, 3, | job : &i64 | -> Tracked {
     make_one(&ctx, job)
   });
@@ -168,7 +169,8 @@ fn main() -> i32 {
   println!("each value dropped once after the results go: {}", held.each_dropped_once());
 
   let mut counts_two = Counts {
-    made : AtomicI64::new(0), dropped : AtomicI64::new(0)
+    made : AtomicI64::new(0),
+    dropped : AtomicI64::new(0)
   };
   let ctx_two = Ctx {
     counts : (&mut counts_two) as *mut Counts
@@ -177,10 +179,12 @@ fn main() -> i32 {
     make_or_fail(&ctx_two, job)
   });
   match made_two {
-    Result<Vec<Tracked>, TryRunJobsError<Tracked>>::Ok(_r) => {
+    Result<Vec<Tracked>,
+    TryRunJobsError<Tracked>>::Ok(_r) => {
       println!("try_run_jobs gave each result");
     }
-    Result<Vec<Tracked>, TryRunJobsError<Tracked>>::Err(e) => {
+    Result<Vec<Tracked>,
+    TryRunJobsError<Tracked>>::Err(e) => {
       match e {
         TryRunJobsError<Tracked>::Failed(t) => {
           println!("try_run_jobs failed with job {}", t.job);
@@ -195,7 +199,8 @@ fn main() -> i32 {
   println!("each value dropped once after the error goes: {}", two.each_dropped_once());
 
   let mut counts_three = Counts {
-    made : AtomicI64::new(0), dropped : AtomicI64::new(0)
+    made : AtomicI64::new(0),
+    dropped : AtomicI64::new(0)
   };
   let ctx_three = Ctx {
     counts : (&mut counts_three) as *mut Counts

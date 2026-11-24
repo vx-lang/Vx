@@ -39,7 +39,9 @@ fn main() -> i32 {
 
   // In a struct field, from the field's type.
   let w = Weights {
-    scale : -0.25, offset : -5000000000, count : 5000000000
+    scale : -0.25,
+    offset : -5000000000,
+    count : 5000000000
   };
   print(w.offset);
   print!(" ");

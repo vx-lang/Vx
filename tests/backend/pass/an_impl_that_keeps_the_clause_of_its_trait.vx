@@ -49,9 +49,7 @@ fn main() -> i32 {
   v.push(30i64);
   v.push(40i64);
   v.push(50i64);
-  let mut c = Cursor {
-    data : &v, pos : 0
-  };
+  let mut c = Cursor { data : &v, pos : 0 };
   let a = c.next();
   let b = c.next();
   println!("a={}; b={};", *a, *b);

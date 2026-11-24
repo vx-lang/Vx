@@ -12,8 +12,6 @@ struct Point {
 }
 
 fn right_z() -> i64 {
-  let p = Point {
-    y : 5, z : 20i64
-  };
+  let p = Point { y : 5, z : 20i64 };
   return p.z;
 }

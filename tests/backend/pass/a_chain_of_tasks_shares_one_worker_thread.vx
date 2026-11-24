@@ -31,8 +31,10 @@ fn main() -> i32 {
       let first : i64 = 1;
       for i in first..1001 {
         match first_out.send(i) {
-          Result<void, SendError<i64>>::Ok() => {}
-          Result<void, SendError<i64>>::Err(_) => {
+          Result<void,
+          SendError<i64>>::Ok() => {}
+          Result<void,
+          SendError<i64>>::Err(_) => {
             panic("the second task is gone");
           }
         }
@@ -43,15 +45,19 @@ fn main() -> i32 {
       let second_out = to_block;
       for _i in 0..1000 {
         match second_in.recv() {
-          Result<i64, RecvError>::Ok(v) => {
+          Result<i64,
+          RecvError>::Ok(v) => {
             match second_out.send(v * 2) {
-              Result<void, SendError<i64>>::Ok() => {}
-              Result<void, SendError<i64>>::Err(_) => {
+              Result<void,
+              SendError<i64>>::Ok() => {}
+              Result<void,
+              SendError<i64>>::Err(_) => {
                 panic("the code of the block is gone");
               }
             }
           }
-          Result<i64, RecvError>::Err(_) => {
+          Result<i64,
+          RecvError>::Err(_) => {
             panic("the first task is gone");
           }
         }
@@ -59,11 +65,13 @@ fn main() -> i32 {
     };
     for _i in 0..1000 {
       match from_second.recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           count = count + 1;
           sum = sum + v;
         }
-        Result<i64, RecvError>::Err(_) => {
+        Result<i64,
+        RecvError>::Err(_) => {
           panic("the second task is gone");
         }
       }

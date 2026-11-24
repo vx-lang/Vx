@@ -12,12 +12,8 @@ import tests::modules::macro_label_left;
 import tests::modules::macro_label_right;
 
 fn main() -> i32 {
-  let l = Left {
-    x : 0i64
-  };
-  let r = Right {
-    x : 0i64
-  };
+  let l = Left { x : 0i64 };
+  let r = Right { x : 0i64 };
   print(l.label());
   print!(" ");
   print(r.label());

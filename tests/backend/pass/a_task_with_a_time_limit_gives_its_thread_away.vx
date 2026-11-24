@@ -31,8 +31,10 @@ fn main() -> i32 {
     spawn {
       let first_in = rx;
       match first_in.recv_for(Duration::from_millis(200)) {
-        Result<i64, RecvError>::Ok(_v) => {}
-        Result<i64, RecvError>::Err(e) => {
+        Result<i64,
+        RecvError>::Ok(_v) => {}
+        Result<i64,
+        RecvError>::Err(e) => {
           match e {
             RecvError::TimedOut => {
               timed_out.store(1, AtomicOrdering::SeqCst);

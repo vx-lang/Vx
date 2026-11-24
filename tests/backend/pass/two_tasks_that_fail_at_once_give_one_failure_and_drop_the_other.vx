@@ -34,9 +34,7 @@ impl Drop for Failure {
 }
 
 fn fail_now(id : i64, drops : Arc<AtomicI64>) -> Result<i64, Failure> {
-  return Result<i64, Failure>::Err(Failure {
-    id : id, drops : drops
-  });
+  return Result<i64, Failure>::Err(Failure { id : id, drops : drops });
 }
 
 fn round(drops : &Arc<AtomicI64>) -> Result<i64, Failure> {
@@ -61,10 +59,12 @@ fn main() -> i32 {
   let mut other : i64 = 0;
   for _i in 0..500 {
     match round(&drops) {
-      Result<i64, Failure>::Ok(_v) => {
+      Result<i64,
+      Failure>::Ok(_v) => {
         other = other + 1;
       }
-      Result<i64, Failure>::Err(f) => {
+      Result<i64,
+      Failure>::Err(f) => {
         if f.id == 1 || f.id == 2 {
           failed = failed + 1;
         } else {

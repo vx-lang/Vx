@@ -14,9 +14,7 @@ struct Point {
 
 // `Point` has no field `y`.
 fn wrong_field() -> i64 {
-  let p = Point {
-    x : 1i64
-  };
+  let p = Point { x : 1i64 };
   return p.y;
 }
 

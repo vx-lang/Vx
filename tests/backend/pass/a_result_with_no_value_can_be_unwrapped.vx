@@ -23,11 +23,13 @@ fn main() -> i32 {
   succeed().unwrap();
   println!("unwrapped");
   match succeed() {
-    Result<void, i32>::Ok(nothing) => {
+    Result<void,
+    i32>::Ok(nothing) => {
       let _same = nothing;
       println!("ok");
     }
-    Result<void, i32>::Err(code) => {
+    Result<void,
+    i32>::Err(code) => {
       println!("error {}", code);
     }
   }

@@ -29,26 +29,18 @@ fn take(x : Noisy) -> void {
 }
 
 fn moved() -> void {
-  let a = Noisy {
-    id: 1
-  };
+  let a = Noisy { id: 1 };
   take(a);
-  let a = Noisy {
-    id: 2
-  };
+  let a = Noisy { id: 2 };
   print!("a{} ", a.id);
 }
 
 fn moved_in_a_branch(c : bool) -> void {
-  let a = Noisy {
-    id: 3
-  };
+  let a = Noisy { id: 3 };
   if c {
     take(a);
   }
-  let a = Noisy {
-    id: 4
-  };
+  let a = Noisy { id: 4 };
   print!("a{} ", a.id);
 }
 

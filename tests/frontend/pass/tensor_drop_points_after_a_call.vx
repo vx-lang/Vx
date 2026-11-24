@@ -30,9 +30,7 @@ fn first_and_last(t : &Tensor<i64, [4]>) -> i64 {
 }
 
 fn view_of(t : &Tensor<i64, [4]>) -> View {
-  return View {
-    r : t
-  };
+  return View { r : t };
 }
 
 fn keep(p : *mut i64) -> *mut i64 {
@@ -41,9 +39,7 @@ fn keep(p : *mut i64) -> *mut i64 {
 
 fn left(a : &Tensor<i64, [4]>, b : &Tensor<i64, [4]>) -> View {
   println!("{}", b[0]);
-  return View {
-    r : a
-  };
+  return View { r : a };
 }
 
 fn a_number() -> i64 {
@@ -57,9 +53,7 @@ fn a_number() -> i64 {
 // `p` borrowed `t` before the call, and the call does not end that.
 fn reference_first() -> i64 {
   let t : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(5i64);
-  let p = ReferenceFirst {
-    r : &t, n : first_and_last(&t)
-  };
+  let p = ReferenceFirst { r : &t, n : first_and_last(&t) };
   println!("{}", p.n);
   // CHECK: drop in reference_first: t, after the statement on line [[@LINE+1]]
   let v = p.r[1] + p.n;
@@ -68,9 +62,7 @@ fn reference_first() -> i64 {
 
 fn number_first() -> i64 {
   let t : Tensor<i64, [4]> = Tensor<i64, [4]>::fill(5i64);
-  let p = NumberFirst {
-    n : first_and_last(&t), r : &t
-  };
+  let p = NumberFirst { n : first_and_last(&t), r : &t };
   println!("{}", p.n);
   // CHECK: drop in number_first: t, after the statement on line [[@LINE+1]]
   let v = p.r[1] + p.n;

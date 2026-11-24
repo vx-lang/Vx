@@ -46,60 +46,31 @@ struct Line {
 }
 
 fn other_fields() -> i32 {
-  let p = Pair {
-    a: Noisy {
-      id: 1
-    }, b: Noisy {
-      id: 2
-    }
-  };
+  let p = Pair { a: Noisy { id: 1 }, b: Noisy { id: 2 } };
   let x = p.a;
   let id = p.b.id;
   return id + take(p.b) + x.id;
 }
 
 fn field_given_a_value_again() -> i32 {
-  let mut p = Pair {
-    a: Noisy {
-      id: 1
-    }, b: Noisy {
-      id: 2
-    }
-  };
+  let mut p = Pair { a: Noisy { id: 1 }, b: Noisy { id: 2 } };
   let x = p.a;
-  p.a = Noisy {
-    id: 3
-  };
+  p.a = Noisy { id: 3 };
   let q = p;
   return x.id + q.a.id;
 }
 
 fn declared_again() -> i32 {
-  let p = Pair {
-    a: Noisy {
-      id: 1
-    }, b: Noisy {
-      id: 2
-    }
-  };
+  let p = Pair { a: Noisy { id: 1 }, b: Noisy { id: 2 } };
   let x = p.a;
-  let p = Pair {
-    a: Noisy {
-      id: 3
-    }, b: Noisy {
-      id: 4
-    }
-  };
+  let p = Pair { a: Noisy { id: 3 }, b: Noisy { id: 4 } };
   return x.id + take(p.a);
 }
 
 fn nothing_to_drop() -> i32 {
   let l = Line {
-    from: Point {
-      x: 1, y: 2
-    }, to: Point {
-      x: 3, y: 4
-    }
+    from: Point { x: 1, y: 2 },
+    to: Point { x: 3, y: 4 }
   };
   let a = l.from;
   let b = l.from;

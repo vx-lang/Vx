@@ -21,9 +21,7 @@ fn main() -> i32 {
   take(o);
   o = Vec<i32>::new();
   o.push(1);
-  let mut p = P {
-    x : 1, v : Vec<i32>::new()
-  };
+  let mut p = P { x : 1, v : Vec<i32>::new() };
   take(p.v);
   p.v = o;
   print(p.v.len());

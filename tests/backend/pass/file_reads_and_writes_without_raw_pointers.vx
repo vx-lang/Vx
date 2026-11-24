@@ -66,10 +66,12 @@ fn report_error(call : *const i8, e : FileError) -> void {
 
 fn report_count(call : *const i8, result : Result<u64, FileError>) -> void {
   match result {
-    Result<u64, FileError>::Ok(count) => {
+    Result<u64,
+    FileError>::Ok(count) => {
       println!("{}: {}", call, count);
     }
-    Result<u64, FileError>::Err(e) => {
+    Result<u64,
+    FileError>::Err(e) => {
       report_error(call, e);
     }
   }
@@ -77,10 +79,12 @@ fn report_count(call : *const i8, result : Result<u64, FileError>) -> void {
 
 fn report_open(call : *const i8, result : Result<File, FileError>) -> void {
   match result {
-    Result<File, FileError>::Ok(_file) => {
+    Result<File,
+    FileError>::Ok(_file) => {
       println!("{}: opened", call);
     }
-    Result<File, FileError>::Err(e) => {
+    Result<File,
+    FileError>::Err(e) => {
       report_error(call, e);
     }
   }

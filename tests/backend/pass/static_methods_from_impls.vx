@@ -31,17 +31,13 @@ struct Point {
 
 impl Point {
   fn origin() -> Point {
-    return Point {
-      x : 1, y : 2
-    };
+    return Point { x : 1, y : 2 };
   }
 }
 
 impl Default for Point {
   fn default() -> Point {
-    return Point {
-      x : 3, y : 4
-    };
+    return Point { x : 3, y : 4 };
   }
 }
 

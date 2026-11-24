@@ -38,9 +38,7 @@ fn main() -> i32 {
 }
 
 fn forged_path(path : &String) -> i32 {
-  let _c = CPath {
-    ptr : path.ptr as *const i8
-  };
+  let _c = CPath { ptr : path.ptr as *const i8 };
   return 0;
 }
 

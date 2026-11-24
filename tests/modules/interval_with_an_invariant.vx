@@ -31,9 +31,10 @@ struct Interval {
 impl Interval {
   fn new() -> Interval {
     return Interval {
-      lo : 0i64, hi : 1i64, count : Counter {
-        value : 0i64
-      }, items : Vec<i64>::new()
+      lo : 0i64,
+      hi : 1i64,
+      count : Counter { value : 0i64 },
+      items : Vec<i64>::new()
     };
   }
 

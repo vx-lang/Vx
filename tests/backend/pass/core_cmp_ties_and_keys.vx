@@ -35,12 +35,8 @@ fn only_eq<T : Eq>(value : T) -> T {
 }
 
 fn main() -> i32 {
-  let first = Item {
-    key: 5, tag: 1
-  };
-  let second = Item {
-    key: 5, tag: 2
-  };
+  let first = Item { key: 5, tag: 1 };
+  let second = Item { key: 5, tag: 2 };
   print(first.max(second).tag);
   print!(" ");
   print(first.min(second).tag);

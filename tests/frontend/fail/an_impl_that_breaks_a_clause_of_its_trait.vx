@@ -54,15 +54,9 @@ struct Plain {
 impl Pick for Plain {}
 
 fn main() -> i32 {
-  let w = Wrong {
-    n : 1i64
-  };
-  let r = Renamed {
-    n : 2i64
-  };
-  let p = Plain {
-    n : 3i64
-  };
+  let w = Wrong { n : 1i64 };
+  let r = Renamed { n : 2i64 };
+  let p = Plain { n : 3i64 };
   let x = 3i64;
   return (*w.first(&x) + *r.first(&x) + *p.pick(&x)) as i32;
 }

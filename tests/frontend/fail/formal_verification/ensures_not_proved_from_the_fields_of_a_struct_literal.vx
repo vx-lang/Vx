@@ -23,16 +23,12 @@ struct Counter {
 
 fn wrong_value() -> Counter
 ensures return.n == 1i32 {
-  return Counter {
-    n : 0i32, cap : 4i32
-  };
+  return Counter { n : 0i32, cap : 4i32 };
 }
 
 fn a_field_write() -> i32
 ensures return == 0i32 {
-  let mut c = Counter {
-    n : 0i32, cap : 4i32
-  };
+  let mut c = Counter { n : 0i32, cap : 4i32 };
   c.n = 5i32;
   return c.n;
 }
@@ -40,21 +36,15 @@ ensures return == 0i32 {
 fn a_changed_variable() -> i32
 ensures return == 5i32 {
   let mut x = 0i32;
-  let c = Counter {
-    n : x, cap : 4i32
-  };
+  let c = Counter { n : x, cap : 4i32 };
   x = 5i32;
   return c.n;
 }
 
 fn a_hidden_local() -> i32
 ensures return == 1i32 {
-  let c = Counter {
-    n : 1i32, cap : 4i32
-  };
-  let c = Counter {
-    n : c.n + 1i32, cap : c.cap
-  };
+  let c = Counter { n : 1i32, cap : 4i32 };
+  let c = Counter { n : c.n + 1i32, cap : c.cap };
   return c.n;
 }
 
@@ -74,7 +64,8 @@ fn a_call_in_a_field(k : i32) -> i32
 requires k > 1 {
   let mut limit = k;
   let c = Counter {
-    n : change_limit(limit, &mut limit), cap : 4i32
+    n : change_limit(limit, &mut limit),
+    cap : 4i32
   };
   return consume_index(limit, c.n);
 }
@@ -84,7 +75,7 @@ fn main() -> i32 {
 }
 
 // CHECK: Error[E8001] at {{.*}}.vx:26:3: Function 'wrong_value' cannot prove postcondition
-// CHECK: Error[E8001] at {{.*}}.vx:37:3: Function 'a_field_write' cannot prove postcondition
-// CHECK: Error[E8001] at {{.*}}.vx:47:3: Function 'a_changed_variable' cannot prove postcondition
-// CHECK: Error[E8001] at {{.*}}.vx:58:3: Function 'a_hidden_local' cannot prove postcondition
-// CHECK: Error[E8006] at {{.*}}.vx:79:10: this call to 'consume_index' may not meet its precondition
+// CHECK: Error[E8001] at {{.*}}.vx:33:3: Function 'a_field_write' cannot prove postcondition
+// CHECK: Error[E8001] at {{.*}}.vx:41:3: Function 'a_changed_variable' cannot prove postcondition
+// CHECK: Error[E8001] at {{.*}}.vx:48:3: Function 'a_hidden_local' cannot prove postcondition
+// CHECK: Error[E8006] at {{.*}}.vx:70:10: this call to 'consume_index' may not meet its precondition

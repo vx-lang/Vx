@@ -36,26 +36,14 @@ fn take(n : Noisy) -> i32 {
 }
 
 fn one_field() -> void {
-  let p = Pair {
-    a: Noisy {
-      id: 1
-    }, b: Noisy {
-      id: 2
-    }
-  };
+  let p = Pair { a: Noisy { id: 1 }, b: Noisy { id: 2 } };
   let x = p.a;
   print!("| ");
 }
 
 // Moved only on one path: `p` drops `p.a` only if that path did not run.
 fn maybe(c : bool) -> void {
-  let p = Pair {
-    a: Noisy {
-      id: 3
-    }, b: Noisy {
-      id: 4
-    }
-  };
+  let p = Pair { a: Noisy { id: 3 }, b: Noisy { id: 4 } };
   if c {
     print(take(p.a));
     print!(" ");
@@ -65,39 +53,19 @@ fn maybe(c : bool) -> void {
 
 // Given a value again: the new one is dropped with `p`.
 fn field_again() -> void {
-  let mut p = Pair {
-    a: Noisy {
-      id: 5
-    }, b: Noisy {
-      id: 6
-    }
-  };
+  let mut p = Pair { a: Noisy { id: 5 }, b: Noisy { id: 6 } };
   print(take(p.a));
   print!(" ");
-  p.a = Noisy {
-    id: 7
-  };
+  p.a = Noisy { id: 7 };
   print!("| ");
 }
 
 // `p` given a whole new value: the old one drops only `p.b`, the new one both fields.
 fn whole_again() -> void {
-  let mut p = Pair {
-    a: Noisy {
-      id: 8
-    }, b: Noisy {
-      id: 9
-    }
-  };
+  let mut p = Pair { a: Noisy { id: 8 }, b: Noisy { id: 9 } };
   print(take(p.a));
   print!(" ");
-  p = Pair {
-    a: Noisy {
-      id: 10
-    }, b: Noisy {
-      id: 11
-    }
-  };
+  p = Pair { a: Noisy { id: 10 }, b: Noisy { id: 11 } };
   print!("| ");
 }
 

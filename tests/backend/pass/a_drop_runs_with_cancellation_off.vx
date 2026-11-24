@@ -30,10 +30,12 @@ impl Drop for SlotGuard {
   fn drop(self : &mut SlotGuard) -> void {
     println!("in the drop, cancelled {}", cancelled());
     match self.pool.send(self.slot) {
-      Result<void, SendError<i64>>::Ok() => {
+      Result<void,
+      SendError<i64>>::Ok() => {
         println!("the drop sent slot {} back", self.slot);
       }
-      Result<void, SendError<i64>>::Err(e) => {
+      Result<void,
+      SendError<i64>>::Err(e) => {
         println!("the drop lost slot {}, cancelled {}", e.value, e.cancelled);
       }
     }
@@ -42,10 +44,12 @@ impl Drop for SlotGuard {
 
 fn use_slot(guard : SlotGuard, work : Receiver<i64>) -> void {
   match work.recv() {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("the recv gave {}", v);
     }
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Err(_e) => {
       println!("the recv gave no value, cancelled {}", cancelled());
     }
   }
@@ -67,15 +71,15 @@ fn leave_early(guard : SlotGuard) -> i64 {
 
 fn main() -> i32 {
   let (pool, slots) = channel<i64>(2);
-  let guard = SlotGuard {
-    slot : 4, pool : pool
-  };
+  let guard = SlotGuard { slot : 4, pool : pool };
   leave_early(guard);
   match slots.recv() {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("the pool got slot {}", v);
     }
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Err(_e) => {
       println!("the pool got no slot");
     }
   }

@@ -36,10 +36,12 @@ fn say(e : RecvError) -> void {
 
 fn wait_for_one(rx : Receiver<i64>) -> void {
   match rx.recv() {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("the recv gave {}", v);
     }
-    Result<i64, RecvError>::Err(e) => {
+    Result<i64,
+    RecvError>::Err(e) => {
       say(e);
     }
   }

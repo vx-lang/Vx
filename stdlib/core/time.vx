@@ -31,45 +31,46 @@ impl Duration {
     let carry = (nanos / 1000000000) as u64;
     assert(secs <= 18446744073709551615u64 - carry, "Duration::new overflows its seconds");
     return Duration {
-      secs: secs + carry, nanos: nanos % 1000000000
+      secs: secs + carry,
+      nanos: nanos % 1000000000
     };
   }
 
   fn from_secs(secs : u64) -> Duration {
-    return Duration {
-      secs: secs, nanos: 0
-    };
+    return Duration { secs: secs, nanos: 0 };
   }
 
   fn from_millis(millis : u64) -> Duration {
     return Duration {
-      secs: millis / 1000, nanos: ((millis % 1000) * 1000000) as u32
+      secs: millis / 1000,
+      nanos: ((millis % 1000) * 1000000) as u32
     };
   }
 
   fn from_micros(micros : u64) -> Duration {
     return Duration {
-      secs: micros / 1000000, nanos: ((micros % 1000000) * 1000) as u32
+      secs: micros / 1000000,
+      nanos: ((micros % 1000000) * 1000) as u32
     };
   }
 
   fn from_nanos(nanos : u64) -> Duration {
     return Duration {
-      secs: nanos / 1000000000, nanos: (nanos % 1000000000) as u32
+      secs: nanos / 1000000000,
+      nanos: (nanos % 1000000000) as u32
     };
   }
 
   /// No time at all.
   fn zero() -> Duration {
-    return Duration {
-      secs: 0, nanos: 0
-    };
+    return Duration { secs: 0, nanos: 0 };
   }
 
   /// The longest duration: the largest `u64` of seconds and 999,999,999 nanoseconds.
   fn max_value() -> Duration {
     return Duration {
-      secs: 18446744073709551615u64, nanos: 999999999
+      secs: 18446744073709551615u64,
+      nanos: 999999999
     };
   }
 
@@ -145,9 +146,7 @@ impl Duration {
       nanos = nanos - 1000000000;
       whole_secs = whole_secs + 1;
     }
-    return Duration {
-      secs: whole_secs, nanos: nanos
-    };
+    return Duration { secs: whole_secs, nanos: nanos };
   }
 
   /// As `from_secs_f64`, from an `f32`.
@@ -197,9 +196,7 @@ impl Duration {
     if secs > 18446744073709551615u64 - carry {
       return Option<Duration>::None;
     }
-    return Option<Duration>::Some(Duration {
-      secs: secs + carry, nanos: nanos
-    });
+    return Option<Duration>::Some(Duration { secs: secs + carry, nanos: nanos });
   }
 
   /// The difference, or `None` when `other` is longer than this duration.
@@ -209,11 +206,13 @@ impl Duration {
     }
     if self.nanos >= other.nanos {
       return Option<Duration>::Some(Duration {
-        secs: self.secs - other.secs, nanos: self.nanos - other.nanos
+        secs: self.secs - other.secs,
+        nanos: self.nanos - other.nanos
       });
     }
     return Option<Duration>::Some(Duration {
-      secs: self.secs - other.secs - 1, nanos: self.nanos + 1000000000 - other.nanos
+      secs: self.secs - other.secs - 1,
+      nanos: self.nanos + 1000000000 - other.nanos
     });
   }
 
@@ -229,9 +228,7 @@ impl Duration {
     if secs > 18446744073709551615u64 - carry {
       return Option<Duration>::None;
     }
-    return Option<Duration>::Some(Duration {
-      secs: secs + carry, nanos: nanos
-    });
+    return Option<Duration>::Some(Duration { secs: secs + carry, nanos: nanos });
   }
 
   /// This duration divided by `rhs`, rounded down to a nanosecond, or `None` when `rhs` is 0.
@@ -246,7 +243,8 @@ impl Duration {
     let left_nanos = self.nanos % rhs;
     let extra = (left_secs * 1000000000 + (left_nanos as u64)) / divisor;
     return Option<Duration>::Some(Duration {
-      secs: secs, nanos: nanos + (extra as u32)
+      secs: secs,
+      nanos: nanos + (extra as u32)
     });
   }
 

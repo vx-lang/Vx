@@ -78,7 +78,9 @@ fn print_all(label : *const i8, values : &Vec<i64>) -> void {
 
 fn new_counts() -> Counts {
   return Counts {
-    inside : AtomicI64::new(0), most : AtomicI64::new(0), ran : AtomicI64::new(0)
+    inside : AtomicI64::new(0),
+    most : AtomicI64::new(0),
+    ran : AtomicI64::new(0)
   };
 }
 
@@ -87,11 +89,14 @@ fn main() -> i32 {
   for i in 0..12 {
     // Early jobs sleep longest, so later jobs end first.
     jobs.push(Job {
-      number : i64::from(i), sleep_ms : (13 - i) as u64
+      number : i64::from(i),
+      sleep_ms : (13 - i) as u64
     });
   }
   let counts = Counts {
-    inside : AtomicI64::new(0), most : AtomicI64::new(0), ran : AtomicI64::new(0)
+    inside : AtomicI64::new(0),
+    most : AtomicI64::new(0),
+    ran : AtomicI64::new(0)
   };
   let squares_result : Result<Vec<i64>, RunJobsError> = run_jobs(&jobs, 3, | job : &Job | -> i64 {
     square(&counts, job)

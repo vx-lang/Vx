@@ -50,10 +50,7 @@ impl String {
   /// An empty string.
   fn new ()->String {
     let ptr = unsafe { vx_string_new() };
-    String {
-      ptr:
-      ptr
-    }
+    String { ptr: ptr }
   }
 
   /// A copy of a NUL-terminated C string.
@@ -62,10 +59,7 @@ impl String {
   /// run of bytes. The copy is owned by the new `String`; the argument is not taken.
   unsafe fn from_c_str(c_str : *const i8) -> String {
     let ptr = unsafe { vx_string_from_c_str(c_str) };
-    String {
-      ptr:
-      ptr
-    }
+    String { ptr: ptr }
   }
 
   /// Append a NUL-terminated C string, with the same requirement `from_c_str` has.
@@ -114,9 +108,7 @@ macro_rules stamp_to_string {
       fn to_string(self : $t) -> String {
         let ptr = unsafe { vx_string_with_len(self.decimal_len()) };
         unsafe { self.write_decimal(vx_string_as_mut_ptr(ptr), 0i64) };
-        return String {
-          ptr : ptr
-        };
+        return String { ptr : ptr };
       }
     }
   };

@@ -27,10 +27,12 @@ fn worker(jobs : WorkReceiver<Job>) -> void {
   let mut open = true;
   while open {
     match jobs.recv() {
-      Result<Job, RecvError>::Ok(job) => {
+      Result<Job,
+      RecvError>::Ok(job) => {
         let _sent = job.reply.send(job.n * job.n);
       }
-      Result<Job, RecvError>::Err(_e) => {
+      Result<Job,
+      RecvError>::Err(_e) => {
         open = false;
       }
     }
@@ -39,9 +41,7 @@ fn worker(jobs : WorkReceiver<Job>) -> void {
 
 fn ask(jobs : &Sender<Job>, n : i64) -> OneshotReceiver<i64> {
   let (reply, answer) = oneshot<i64>();
-  let _sent = jobs.send(Job {
-    n : n, reply : reply
-  });
+  let _sent = jobs.send(Job { n : n, reply : reply });
   return answer;
 }
 
@@ -66,10 +66,12 @@ fn main() -> i32 {
     drop(jobs);
     for i in 0..answers.len() {
       match answers.get_ref(i).recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           sum = sum + v;
         }
-        Result<i64, RecvError>::Err(_e) => {}
+        Result<i64,
+        RecvError>::Err(_e) => {}
       }
     }
   };

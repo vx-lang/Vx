@@ -19,8 +19,6 @@ fn bad(f : fn(&Map) -> &i32, m : &mut Map) -> &i32 {
   return found;
 }
 fn main() -> i32 {
-  let mut x = Map {
-    slot : 1, present : 1
-  };
+  let mut x = Map { slot : 1, present : 1 };
   return *bad(probe, &mut x);
 }

@@ -15,9 +15,7 @@ struct Point {
 }
 
 fn main() -> i32 {
-  if Point {
-    x : 1i64
-  }.x == 1i64 {
+  if Point { x : 1i64 }.x == 1i64 {
     println!("one");
   }
   return 0;

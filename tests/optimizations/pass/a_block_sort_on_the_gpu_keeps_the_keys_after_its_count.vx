@@ -64,11 +64,7 @@ fn check(n : i32, down : bool) -> i32 {
   for i in n..512 {
     kept = kept && u[i] == key(i);
   }
-  let name = if down {
-    "down"
-  } else {
-    "up"
-  };
+  let name = if down { "down" } else { "up" };
   println!("{} {}: in order {}, same keys {}, keys after n kept {}", name, n, ordered, sum == 0 && squares == 0, kept);
   return 0;
 }

@@ -16,7 +16,5 @@ trait Describe {
 }
 
 fn make() -> Point {
-  return Point {
-    x: 1
-  };
+  return Point { x: 1 };
 }

@@ -44,30 +44,36 @@ fn main() -> i32 {
     };
     while open_a || open_b {
       match select2(&when(open_a, &a), &when(open_b, &b)) {
-        Result<i32, SelectError>::Ok(i) => {
+        Result<i32,
+        SelectError>::Ok(i) => {
           if i == 0 {
             match a.try_recv() {
-              Result<i64, TryRecvError>::Ok(v) => {
+              Result<i64,
+              TryRecvError>::Ok(v) => {
                 count_a = count_a + 1;
                 sum_a = sum_a + v;
               }
-              Result<i64, TryRecvError>::Err(_) => {
+              Result<i64,
+              TryRecvError>::Err(_) => {
                 open_a = false;
               }
             }
           } else {
             match b.try_recv() {
-              Result<i64, TryRecvError>::Ok(v) => {
+              Result<i64,
+              TryRecvError>::Ok(v) => {
                 count_b = count_b + 1;
                 sum_b = sum_b + v;
               }
-              Result<i64, TryRecvError>::Err(_) => {
+              Result<i64,
+              TryRecvError>::Err(_) => {
                 open_b = false;
               }
             }
           }
         }
-        Result<i32, SelectError>::Err(_) => {
+        Result<i32,
+        SelectError>::Err(_) => {
           println!("cancelled");
           open_a = false;
           open_b = false;

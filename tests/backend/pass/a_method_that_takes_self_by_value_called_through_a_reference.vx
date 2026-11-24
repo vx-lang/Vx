@@ -36,14 +36,10 @@ extern impl Bump for i64 {
 }
 
 fn main() -> i32 {
-  let p = Point {
-    x : 7i64
-  };
+  let p = Point { x : 7i64 };
   let r = &p;
   println!("{} {}", r.bumped(), p.x);
-  let mut q = Point {
-    x : 20i64
-  };
+  let mut q = Point { x : 20i64 };
   let m = &mut q;
   println!("{}", m.bumped());
   println!("{}", q.x);

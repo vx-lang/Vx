@@ -26,9 +26,7 @@ struct Handle {
 }
 
 fn make(id : i32) -> Result<Handle, i32> {
-  return Result<Handle, i32>::Ok(Handle {
-    id : id
-  });
+  return Result<Handle, i32>::Ok(Handle { id : id });
 }
 
 fn earlier() -> i64 {
@@ -39,14 +37,14 @@ fn earlier() -> i64 {
 // The arm's value is a new local `w`. Only `earlier` has a `w` before it.
 fn from_a_new_local() -> i32 {
   let h = match make(7) {
-    Result<Handle, i32>::Ok(x) => {
+    Result<Handle,
+    i32>::Ok(x) => {
       let w = x;
       w
     }
-    Result<Handle, i32>::Err(_) => {
-      Handle {
-        id : 0
-      }
+    Result<Handle,
+    i32>::Err(_) => {
+      Handle { id : 0 }
     }
   };
   return h.id;
@@ -56,10 +54,12 @@ fn from_a_new_local() -> i32 {
 fn from_a_payload() -> i32 {
   let v : i64 = earlier();
   let h = match make(8) {
-    Result<Handle, i32>::Ok(v) => {
+    Result<Handle,
+    i32>::Ok(v) => {
       v
     }
-    Result<Handle, i32>::Err(e) => {
+    Result<Handle,
+    i32>::Err(e) => {
       return e;
     }
   };

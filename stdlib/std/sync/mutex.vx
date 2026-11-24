@@ -83,7 +83,10 @@ Mutex<T> {
     }
     lock_taken(&self.holder);
     return MutexGuard<T> {
-      serving : &self.serving, sleepers : &self.sleepers, holder : &self.holder, value : self.value.get()
+      serving : &self.serving,
+      sleepers : &self.sleepers,
+      holder : &self.holder,
+      value : self.value.get()
     };
   }
 

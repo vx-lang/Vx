@@ -163,9 +163,7 @@ fn first_ready<S : WaitSources>(sources : &S) -> i32 {
 /// `Cancelled` when the `tasks` block of this task was cancelled, or at the time limit of
 /// `within`.
 fn select_from<S : WaitSources>(sources : &S, at : Caller) -> Result<i32, SelectError> {
-  let w = Waiter {
-    word : AtomicI64::new(0)
-  };
+  let w = Waiter { word : AtomicI64::new(0) };
   while !cancelled_at(at) {
     let mut i = first_ready(sources);
     if i >= 0 {
@@ -456,50 +454,38 @@ impl<A : WaitSource> WaitSources for SourceList<A> {
 /// is ready. Give `Cancelled` when the `tasks` block of this task was cancelled, or at the time
 /// limit of `within`.
 fn select2<A : WaitSource, B : WaitSource>(a : &A, b : &B, at : Caller) -> Result<i32, SelectError> {
-  let sources = Sources2<A, B> {
-    a : a, b : b
-  };
+  let sources = Sources2<A, B> { a : a, b : b };
   return select_from(&sources, at);
 }
 
 /// `select2` with three sources.
 fn select3<A : WaitSource, B : WaitSource, C : WaitSource>(a : &A, b : &B, c : &C, at : Caller) -> Result<i32, SelectError> {
-  let sources = Sources3<A, B, C> {
-    a : a, b : b, c : c
-  };
+  let sources = Sources3<A, B, C> { a : a, b : b, c : c };
   return select_from(&sources, at);
 }
 
 /// `select2` with four sources.
 fn select4<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource>(a : &A, b : &B, c : &C, d : &D, at : Caller) -> Result<i32, SelectError> {
-  let sources = Sources4<A, B, C, D> {
-    a : a, b : b, c : c, d : d
-  };
+  let sources = Sources4<A, B, C, D> { a : a, b : b, c : c, d : d };
   return select_from(&sources, at);
 }
 
 /// `select2` with five sources.
 fn select5<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource>(a : &A, b : &B, c : &C, d : &D, e : &E, at : Caller) -> Result<i32, SelectError> {
-  let sources = Sources5<A, B, C, D, E> {
-    a : a, b : b, c : c, d : d, e : e
-  };
+  let sources = Sources5<A, B, C, D, E> { a : a, b : b, c : c, d : d, e : e };
   return select_from(&sources, at);
 }
 
 /// `select2` with six sources. For more, give some of them to a task that sends on a channel.
 fn select6<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource, F : WaitSource>(a : &A, b : &B, c : &C, d : &D, e : &E, f : &F, at : Caller) -> Result<i32, SelectError> {
-  let sources = Sources6<A, B, C, D, E, F> {
-    a : a, b : b, c : c, d : d, e : e, f : f
-  };
+  let sources = Sources6<A, B, C, D, E, F> { a : a, b : b, c : c, d : d, e : e, f : f };
   return select_from(&sources, at);
 }
 
 /// `select2` with the sources of a list, all of one type. The index is the index in the list. A
 /// `select_list` of an empty list waits for a cancel.
 fn select_list<A : WaitSource>(sources : &Vec<A>, at : Caller) -> Result<i32, SelectError> {
-  let list = SourceList<A> {
-    list : sources
-  };
+  let list = SourceList<A> { list : sources };
   return select_from(&list, at);
 }
 
@@ -512,9 +498,7 @@ struct When<A> {
 
 /// `source` when `active` is true, and a source that is never ready when it is false.
 fn when<A : WaitSource>(active : bool, source : &A) -> When<A> {
-  return When<A> {
-    active : active, source : source
-  };
+  return When<A> { active : active, source : source };
 }
 
 impl<A : WaitSource> WaitSource for When<A> {
@@ -552,16 +536,12 @@ impl Copy for Deadline {}
 impl Deadline {
   /// A source that gets ready `d` from now.
   fn after(d : Duration) -> Deadline {
-    return Deadline {
-      at : deadline_after(d)
-    };
+    return Deadline { at : deadline_after(d) };
   }
 
   /// A source that gets ready when the clock reaches `t`.
   fn until(t : Instant) -> Deadline {
-    return Deadline {
-      at : t
-    };
+    return Deadline { at : t };
   }
 }
 

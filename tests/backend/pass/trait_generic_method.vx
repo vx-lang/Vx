@@ -64,12 +64,8 @@ impl Folder<i32> for Other {
 }
 
 fn main() -> i32 {
-  let c : Counter = Counter {
-    n : 5
-  };
-  let o : Other = Other {
-    n : 6
-  };
+  let c : Counter = Counter { n : 5 };
+  let o : Other = Other { n : 6 };
   let big : i64 = 9223372036854775807;
 
   print(c.seed());

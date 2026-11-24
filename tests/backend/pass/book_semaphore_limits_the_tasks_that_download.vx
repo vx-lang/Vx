@@ -25,7 +25,8 @@ fn download(s : &Semaphore, active : &AtomicI64, most : &AtomicI64, done : &Atom
   // `acquire` waits while 2 tasks hold a permit. It gives `Cancelled` when the `tasks` block of
   // this task was cancelled.
   match s.acquire() {
-    Result<Permit, AcquireError>::Ok(permit) => {
+    Result<Permit,
+    AcquireError>::Ok(permit) => {
       let now = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
       most.fetch_max(now, AtomicOrdering::SeqCst);
       sleep(Duration::from_millis(5));
@@ -34,7 +35,8 @@ fn download(s : &Semaphore, active : &AtomicI64, most : &AtomicI64, done : &Atom
       // The drop gives the permit back.
       drop(permit);
     }
-    Result<Permit, AcquireError>::Err(_e) => {
+    Result<Permit,
+    AcquireError>::Err(_e) => {
       // The block was cancelled, so this download does not start.
     }
   }

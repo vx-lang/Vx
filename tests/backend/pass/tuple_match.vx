@@ -17,9 +17,11 @@ fn describe(t : (i32, i32)) -> i32 {
   match t {
     (0, 0) => {
       return 100;
-    }, (0, y) => {
+    },
+    (0, y) => {
       return y;
-    }, (x, _) => {
+    },
+    (x, _) => {
       return x * 10;
     }
   }
@@ -37,9 +39,11 @@ fn main() -> i32 {
   let r : i32 = match (a, b) {
     (2, true) => {
       1
-    }, (_, false) => {
+    },
+    (_, false) => {
       2
-    }, _ => {
+    },
+    _ => {
       3
     }
   };
@@ -48,7 +52,8 @@ fn main() -> i32 {
   match pair(4, 5) {
     (4, z) => {
       print(z);
-    }, _ => {
+    },
+    _ => {
       print(0);
     }
   }
@@ -57,7 +62,8 @@ fn main() -> i32 {
   match n {
     ((1, q), w) => {
       print(q + w);
-    }, ((_, _), _) => {
+    },
+    ((_, _), _) => {
       print(0);
     }
   }

@@ -28,8 +28,10 @@ fn send_all(tx : Sender<i64>) -> void {
   let first : i64 = 1;
   for v in first..1001 {
     match tx.send(v) {
-      Result<void, SendError<i64>>::Ok() => {}
-      Result<void, SendError<i64>>::Err(_e) => {
+      Result<void,
+      SendError<i64>>::Ok() => {}
+      Result<void,
+      SendError<i64>>::Err(_e) => {
         println!("the receiver was dropped early");
       }
     }
@@ -61,7 +63,8 @@ fn main() -> i32 {
     let mut open = true;
     while open {
       match sel.select() {
-        Result<Selected<i64>, RecvError>::Ok(s) => {
+        Result<Selected<i64>,
+        RecvError>::Ok(s) => {
           let i = s.index;
           count[i] = count[i] + 1;
           if s.value != last[i] + 1 {
@@ -69,7 +72,8 @@ fn main() -> i32 {
           }
           last[i] = s.value;
         }
-        Result<Selected<i64>, RecvError>::Err(_e) => {
+        Result<Selected<i64>,
+        RecvError>::Err(_e) => {
           open = false;
         }
       }

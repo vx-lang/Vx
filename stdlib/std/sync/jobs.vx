@@ -106,9 +106,7 @@ fn run_jobs<J : Sync, R : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work 
           }
           let job = i as i32;
           let value : R = work(jobs.get_ref(job));
-          if mine.send(JobResult<R> {
-            job : job, value : value
-          }).is_err() {
+          if mine.send(JobResult<R> { job : job, value : value }).is_err() {
             return;
           }
         }
@@ -117,11 +115,13 @@ fn run_jobs<J : Sync, R : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work 
     drop(tx);
     while arrived < jobs.len() {
       match rx.recv() {
-        Result<JobResult<R>, RecvError>::Ok(r) => {
+        Result<JobResult<R>,
+        RecvError>::Ok(r) => {
           slots.set(r.job, Option<R>::Some(r.value));
           arrived = arrived + 1;
         }
-        Result<JobResult<R>, RecvError>::Err(_e) => {
+        Result<JobResult<R>,
+        RecvError>::Err(_e) => {
           // A cancel from outside: the workers stop by themselves.
           break;
         }
@@ -153,9 +153,7 @@ fn run_until_a_failure<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(j
           }
           let job = i as i32;
           let value : Result<R, E> = work(jobs.get_ref(job));
-          if mine.send(JobResult<Result<R, E>> {
-            job : job, value : value
-          }).is_err() {
+          if mine.send(JobResult<Result<R, E>> { job : job, value : value }).is_err() {
             return;
           }
         }
@@ -164,19 +162,25 @@ fn run_until_a_failure<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(j
     drop(tx);
     while arrived < jobs.len() {
       match rx.recv() {
-        Result<JobResult<Result<R, E>>, RecvError>::Ok(r) => {
+        Result<JobResult<Result<R,
+        E>>,
+        RecvError>::Ok(r) => {
           match r.value {
-            Result<R, E>::Ok(v) => {
+            Result<R,
+            E>::Ok(v) => {
               slots.set(r.job, Option<R>::Some(v));
               arrived = arrived + 1;
             }
-            Result<R, E>::Err(e) => {
+            Result<R,
+            E>::Err(e) => {
               *failure = Option<E>::Some(e);
               return false;
             }
           }
         }
-        Result<JobResult<Result<R, E>>, RecvError>::Err(_e) => {
+        Result<JobResult<Result<R,
+        E>>,
+        RecvError>::Err(_e) => {
           return false;
         }
       }

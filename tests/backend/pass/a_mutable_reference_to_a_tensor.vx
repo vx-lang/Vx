@@ -47,9 +47,7 @@ struct Holder {
 fn reference_from_a_field() -> void {
   let mut a = Tensor<f32, [4]>::new();
   a[0] = 3.0;
-  let h = Holder {
-    r : &a
-  };
+  let h = Holder { r : &a };
   let r = h.r;
   println!("from a field {} {}", first(r), r[0]);
 }

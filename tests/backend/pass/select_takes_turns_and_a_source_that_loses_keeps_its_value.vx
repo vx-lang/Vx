@@ -34,10 +34,12 @@ import std::vec;
 
 fn take(what : *const i8, i : i32, rx : &Receiver<i64>) -> void {
   match rx.try_recv() {
-    Result<i64, TryRecvError>::Ok(v) => {
+    Result<i64,
+    TryRecvError>::Ok(v) => {
       println!("{} gave {}, the value {}", what, i, v);
     }
-    Result<i64, TryRecvError>::Err(_) => {
+    Result<i64,
+    TryRecvError>::Err(_) => {
       println!("{} gave {}, with no value", what, i);
     }
   }
@@ -56,14 +58,16 @@ fn main() -> i32 {
   fill(&tx_b, 20, 3);
   for _round in 0..6 {
     match select2(&a, &b) {
-      Result<i32, SelectError>::Ok(i) => {
+      Result<i32,
+      SelectError>::Ok(i) => {
         if i == 0 {
           take("select2", i, &a);
         } else {
           take("select2", i, &b);
         }
       }
-      Result<i32, SelectError>::Err(_) => {
+      Result<i32,
+      SelectError>::Err(_) => {
         println!("cancelled");
       }
     }
@@ -73,19 +77,23 @@ fn main() -> i32 {
   fill(&tx_b, 30, 2);
   for _round in 0..2 {
     match select2(&when(false, &a), &b) {
-      Result<i32, SelectError>::Ok(i) => {
+      Result<i32,
+      SelectError>::Ok(i) => {
         take("with the first turned off, select2", i, &b);
       }
-      Result<i32, SelectError>::Err(_) => {
+      Result<i32,
+      SelectError>::Err(_) => {
         println!("cancelled");
       }
     }
   }
   match a.try_recv() {
-    Result<i64, TryRecvError>::Ok(v) => {
+    Result<i64,
+    TryRecvError>::Ok(v) => {
       println!("the first still has the value {}", v);
     }
-    Result<i64, TryRecvError>::Err(_) => {
+    Result<i64,
+    TryRecvError>::Err(_) => {
       println!("the first lost its value");
     }
   }
@@ -102,14 +110,16 @@ fn main() -> i32 {
   fill(senders.get_ref(1), 51, 1);
   for _round in 0..3 {
     match select_list(&list) {
-      Result<i32, SelectError>::Ok(i) => {
+      Result<i32,
+      SelectError>::Ok(i) => {
         take("select_list", i, list.get_ref(i));
         if i == 1 {
           fill(senders.get_ref(0), 50, 1);
           fill(senders.get_ref(2), 52, 1);
         }
       }
-      Result<i32, SelectError>::Err(_) => {
+      Result<i32,
+      SelectError>::Err(_) => {
         println!("cancelled");
       }
     }

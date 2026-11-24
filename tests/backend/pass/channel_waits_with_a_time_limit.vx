@@ -38,10 +38,12 @@ fn say(e : RecvError) -> void {
 
 fn show_recv(r : Result<i64, RecvError>) -> void {
   match r {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("recv gave {}", v);
     }
-    Result<i64, RecvError>::Err(e) => {
+    Result<i64,
+    RecvError>::Err(e) => {
       say(e);
     }
   }
@@ -49,8 +51,10 @@ fn show_recv(r : Result<i64, RecvError>) -> void {
 
 fn send_now(tx : &Sender<i64>, v : i64) -> void {
   match tx.send(v) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {
       println!("the send of {} did not send", v);
     }
   }
@@ -65,19 +69,23 @@ fn main() -> i32 {
 
   send_now(&tx, 1);
   match tx.send_for(2, Duration::from_millis(50)) {
-    Result<void, SendError<i64>>::Ok() => {
+    Result<void,
+    SendError<i64>>::Ok() => {
       println!("send_for sent 2");
     }
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Err(e) => {
       println!("send_for gave back {}, timed out {}, cancelled {}", e.value, e.timed_out, e.cancelled);
     }
   }
   show_recv(rx.recv());
   match rx.try_recv() {
-    Result<i64, TryRecvError>::Ok(v) => {
+    Result<i64,
+    TryRecvError>::Ok(v) => {
       println!("try_recv gave {}", v);
     }
-    Result<i64, TryRecvError>::Err(_e) => {
+    Result<i64,
+    TryRecvError>::Err(_e) => {
       println!("try_recv found no value");
     }
   }

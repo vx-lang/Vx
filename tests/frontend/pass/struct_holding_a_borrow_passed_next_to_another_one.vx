@@ -28,18 +28,14 @@ fn read_then_write_other(s : View, a : &mut i64) -> i64 {
 
 fn both_shared() -> i64 {
   let x = 1i64;
-  let s = View {
-    r : &x
-  };
+  let s = View { r : &x };
   return read_both(s, &x);
 }
 
 fn different_variables() -> i64 {
   let x = 1i64;
   let mut y = 2i64;
-  let s = View {
-    r : &x
-  };
+  let s = View { r : &x };
   return read_then_write_other(s, &mut y);
 }
 

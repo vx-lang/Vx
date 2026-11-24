@@ -24,9 +24,7 @@ impl Drop for Noisy {
 }
 
 fn take_it() -> void {
-  let mut o = Option<Noisy>::Some(Noisy {
-    id: 1
-  });
+  let mut o = Option<Noisy>::Some(Noisy { id: 1 });
   let t = o.take();
   match o {
     Option<Noisy>::Some(_) => {
@@ -45,12 +43,8 @@ fn take_it() -> void {
 }
 
 fn replace_it() -> void {
-  let mut o = Option<Noisy>::Some(Noisy {
-    id: 2
-  });
-  let old = o.replace(Noisy {
-    id: 3
-  });
+  let mut o = Option<Noisy>::Some(Noisy { id: 2 });
+  let old = o.replace(Noisy { id: 3 });
   match old {
     Option<Noisy>::Some(v) => {
       print!("r{} ", v.id);

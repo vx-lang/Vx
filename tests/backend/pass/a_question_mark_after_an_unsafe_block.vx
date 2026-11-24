@@ -41,10 +41,12 @@ fn before_an_as() -> Result<i32, i32> {
 // The value of `r`, or minus its error.
 fn value(r : Result<i64, i32>) -> i64 {
   match r {
-    Result<i64, i32>::Ok(v) => {
+    Result<i64,
+    i32>::Ok(v) => {
       return v;
     }
-    Result<i64, i32>::Err(e) => {
+    Result<i64,
+    i32>::Err(e) => {
       return 0 - (e as i64);
     }
   }
@@ -54,10 +56,12 @@ fn main() -> i32 {
   println!("in a let {} {}", value(in_a_let(true)), value(in_a_let(false)));
   println!("as a statement {} {}", value(as_a_statement(true)), value(as_a_statement(false)));
   match before_an_as() {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       println!("before an as {}", v);
     }
-    Result<i32, i32>::Err(_e) => {
+    Result<i32,
+    i32>::Err(_e) => {
       println!("before an as failed");
     }
   }

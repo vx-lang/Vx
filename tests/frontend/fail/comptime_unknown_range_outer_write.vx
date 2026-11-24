@@ -17,11 +17,7 @@ fn main(n : i32) -> i32 {
   let mut outside : i32 = 0i32;
   // CHECK: Error[E3033]{{.*}}writes to 'outside'
   let value = comptime {
-    let _range = if n > 0i32 {
-      touch(&mut outside)..2i32
-    } else {
-      0i32..2i32
-    };
+    let _range = if n > 0i32 { touch(&mut outside)..2i32 } else { 0i32..2i32 };
     7i32
   };
   return value;

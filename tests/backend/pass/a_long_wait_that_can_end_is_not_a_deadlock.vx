@@ -31,8 +31,10 @@ fn run_for_half_a_second() -> void {
 fn wait_half_a_second(rx : Receiver<i64>) -> bool {
   let mut no_value = false;
   match rx.recv_for(Duration::from_millis(500)) {
-    Result<i64, RecvError>::Ok(_v) => {}
-    Result<i64, RecvError>::Err(_e) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {
       no_value = true;
     }
   }

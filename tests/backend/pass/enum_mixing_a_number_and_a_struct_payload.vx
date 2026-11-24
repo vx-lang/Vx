@@ -37,9 +37,7 @@ fn describe(s : Shape) -> i32 {
 }
 
 fn main() -> i32 {
-  print(describe(Shape::At(Point {
-    id: 4, other: 8i64
-  })));
+  print(describe(Shape::At(Point { id: 4, other: 8i64 })));
   print!(" ");
   print(describe(Shape::Radius(7)));
   print!(" ");

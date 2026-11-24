@@ -27,16 +27,12 @@ fn ptr_of(w : &Weights) -> *mut f32 {
 }
 
 fn views(w : &Weights) -> Views {
-  return Views {
-    a: ptr_of(w), b: ptr_of(w)
-  };
+  return Views { a: ptr_of(w), b: ptr_of(w) };
 }
 
 fn main() -> i32 {
   let mut t = Tensor<f32, [2]>::fill(3.0);
-  let w = Weights {
-    dev: t.as_mut_ptr()
-  };
+  let w = Weights { dev: t.as_mut_ptr() };
   let v = views(&w);
   println!("{}", unsafe { *v.a + *v.b });
   return 0;

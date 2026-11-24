@@ -71,10 +71,12 @@ fn question_mark(x : i32) -> Result<i32, i32> {
 
 fn show(r : Result<i32, i32>) -> void {
   match r {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       print!("ok {}", v);
     }
-    Result<i32, i32>::Err(e) => {
+    Result<i32,
+    i32>::Err(e) => {
       print!("err {}", e);
     }
   }

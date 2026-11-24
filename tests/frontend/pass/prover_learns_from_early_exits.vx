@@ -80,7 +80,8 @@ ensures return > 0 {
   match x {
     0 => {
       return 1;
-    }, _ => {
+    },
+    _ => {
       return 2;
     }
   }

@@ -18,26 +18,26 @@
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 not vxc %s 2>&1 | FileCheck %s
 // RUN: env VX_TASK_SEED=1 not vxc %s 2>&1 | FileCheck %s
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
-// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:91{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:50 on channel 1, made at {{.*}}.vx:86, which only the task from the `spawn` at {{.*}}.vx:94 can send on{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:91{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:60 on channel 2, made at {{.*}}.vx:87, which only the task from the `spawn` at {{.*}}.vx:91 can send on{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:94{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `send` at {{.*}}.vx:71 on channel 3, made at {{.*}}.vx:89, which only the task from the `spawn` at {{.*}}.vx:100 can receive from{{$}}
+// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:97{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:50 on channel 1, made at {{.*}}.vx:92, which only the task from the `spawn` at {{.*}}.vx:100 can send on{{$}}
 // CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:97{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:77 on channel 4, made at {{.*}}.vx:88, which only the task from the `spawn` at {{.*}}.vx:97 can send on{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:62 on channel 2, made at {{.*}}.vx:93, which only the task from the `spawn` at {{.*}}.vx:97 can send on{{$}}
 // CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:100{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `send` at {{.*}}.vx:75 on channel 3, made at {{.*}}.vx:95, which only the task from the `spawn` at {{.*}}.vx:106 can receive from{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:103{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:81 on channel 4, made at {{.*}}.vx:94, which only the task from the `spawn` at {{.*}}.vx:103 can send on{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:106{{$}}
 // CHECK-NEXT: {{^}}  the waits form a cycle:{{$}}
-// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:91 waits in `recv` at {{.*}}.vx:50 on channel 1, made at {{.*}}.vx:86, which only the task from the `spawn` at {{.*}}.vx:94 can send on{{$}}
-// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:94 waits in `recv` at {{.*}}.vx:60 on channel 2, made at {{.*}}.vx:87, which only the task from the `spawn` at {{.*}}.vx:91 can send on{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:97 waits in `recv` at {{.*}}.vx:50 on channel 1, made at {{.*}}.vx:92, which only the task from the `spawn` at {{.*}}.vx:100 can send on{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:100 waits in `recv` at {{.*}}.vx:62 on channel 2, made at {{.*}}.vx:93, which only the task from the `spawn` at {{.*}}.vx:97 can send on{{$}}
 // CHECK-NEXT: {{^}}  the waits form a cycle:{{$}}
-// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:97 waits in `send` at {{.*}}.vx:71 on channel 3, made at {{.*}}.vx:89, which only the task from the `spawn` at {{.*}}.vx:100 can receive from{{$}}
-// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:100 waits in `recv` at {{.*}}.vx:77 on channel 4, made at {{.*}}.vx:88, which only the task from the `spawn` at {{.*}}.vx:97 can send on{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:103 waits in `send` at {{.*}}.vx:75 on channel 3, made at {{.*}}.vx:95, which only the task from the `spawn` at {{.*}}.vx:106 can receive from{{$}}
+// CHECK-NEXT: {{^}}    the task from the `spawn` at {{.*}}.vx:106 waits in `recv` at {{.*}}.vx:81 on channel 4, made at {{.*}}.vx:94, which only the task from the `spawn` at {{.*}}.vx:103 can send on{{$}}
 // CHECK-NEXT: {{^}}  the channels of these waits:{{$}}
-// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:86: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
-// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:87: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
-// CHECK-NEXT: {{^}}    channel 3, made at {{.*}}.vx:89: 0 waits in `recv` and 1 in `send`. 1 `Sender` is not dropped.{{$}}
-// CHECK-NEXT: {{^}}    channel 4, made at {{.*}}.vx:88: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 1, made at {{.*}}.vx:92: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 2, made at {{.*}}.vx:93: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 3, made at {{.*}}.vx:95: 0 waits in `recv` and 1 in `send`. 1 `Sender` is not dropped.{{$}}
+// CHECK-NEXT: {{^}}    channel 4, made at {{.*}}.vx:94: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.{{$}}
 // CHECK: Program was killed by signal 6 (SIGABRT
 
 import std::sync::broadcast;
@@ -48,20 +48,24 @@ import std::sync::work_queue;
 // Waits for the reply, and only then changes the setting.
 fn ask(reply : OneshotReceiver<i64>, setting : WatchSender<i64>) -> void {
   match reply.recv() {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       let _sent = setting.send(v);
     }
-    Result<i64, RecvError>::Err(_e) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {}
   }
 }
 
 // Waits for a change of the setting, and only then replies.
 fn answer(setting : WatchReceiver<i64>, reply : OneshotSender<i64>) -> void {
   match setting.recv() {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       let _sent = reply.send(v);
     }
-    Result<i64, RecvError>::Err(_e) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {}
   }
 }
 
@@ -75,10 +79,12 @@ fn announce(jobs : Sender<i64>, news : BroadcastSender<i64>) -> void {
 // Waits for the news, and only then takes the jobs.
 fn work(news : BroadcastReceiver<i64>, jobs : WorkReceiver<i64>) -> void {
   match news.recv() {
-    Result<i64, RecvError>::Ok(_v) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {
       let _job = jobs.recv();
     }
-    Result<i64, RecvError>::Err(_e) => {}
+    Result<i64,
+    RecvError>::Err(_e) => {}
   }
 }
 

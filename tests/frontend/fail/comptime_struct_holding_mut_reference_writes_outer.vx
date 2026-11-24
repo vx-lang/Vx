@@ -26,9 +26,7 @@ fn main() -> i32 {
   let mut outside : i32 = 0i32;
   // CHECK: Error[E3033]{{.*}}cannot be evaluated
   let value = comptime {
-    set_through(Holder {
-      value : &mut outside
-    });
+    set_through(Holder { value : &mut outside });
     7i32
   };
   return value + outside;

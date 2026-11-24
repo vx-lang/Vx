@@ -20,7 +20,7 @@
 
 // CHECK: {{^}}select2 gave 1{{$}}
 // CHECK-NEXT: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
-// CHECK-NEXT: {{^}}  the main code waits in `recv` at {{.*}}.vx:55 on channel 1, made at {{.*}}.vx:54{{$}}
+// CHECK-NEXT: {{^}}  the main code waits in `recv` at {{.*}}.vx:57 on channel 1, made at {{.*}}.vx:56{{$}}
 
 import core::result;
 import core::time;
@@ -43,10 +43,12 @@ fn wait(listener : TcpListener) -> void {
       send_later(tx);
     };
     match select2(&l, &rx) {
-      Result<i32, SelectError>::Ok(i) => {
+      Result<i32,
+      SelectError>::Ok(i) => {
         println!("select2 gave {}", i);
       }
-      Result<i32, SelectError>::Err(_) => {
+      Result<i32,
+      SelectError>::Err(_) => {
         println!("select2 gave Cancelled");
       }
     }
@@ -60,10 +62,12 @@ fn main(root : Root) -> i32 {
   match TcpListener::bind(network, unsafe {
     &String::from_c_str("127.0.0.1:41786")
   }) {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       wait(listener);
     }
-    Result<TcpListener, NetError>::Err(_e) => {
+    Result<TcpListener,
+    NetError>::Err(_e) => {
       println!("bind: Error");
     }
   }

@@ -38,11 +38,7 @@ impl<T> HostOnly for OneshotReceiver<T> {}
 /// A channel for one value.
 fn oneshot<T : Send + Owned>(at : Caller) -> (OneshotSender<T>, OneshotReceiver<T>) {
   let (tx, rx) = channel<T>(1, at);
-  return (OneshotSender<T> {
-    end : tx
-  }, OneshotReceiver<T> {
-    end : rx
-  });
+  return (OneshotSender<T> { end : tx }, OneshotReceiver<T> { end : rx });
 }
 
 impl<T>
@@ -53,7 +49,9 @@ OneshotSender<T> {
     let words = self.end.words;
     if word(words, RECEIVER).load(AtomicOrdering::SeqCst) == 0 {
       return Result<void, SendError<T>>::Err(SendError<T> {
-        value : v, cancelled : false, timed_out : false
+        value : v,
+        cancelled : false,
+        timed_out : false
       });
     }
     // The send number 0 of the channel, and slot 0, which is free.

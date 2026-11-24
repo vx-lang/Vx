@@ -29,12 +29,8 @@ fn take(n : Noisy) -> i64 {
 }
 
 fn main() -> i32 {
-  let a = Noisy {
-    id: 1
-  };
-  let b = Noisy {
-    id: 2
-  };
+  let a = Noisy { id: 1 };
+  let b = Noisy { id: 2 };
   // A `tasks` block that gives a value.
   let n = tasks {
     let h = spawn {

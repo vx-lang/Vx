@@ -106,8 +106,10 @@ fn name(e : NetError) -> *const i8 {
 
 fn report(who : *const i8, result : Result<u64, NetError>) -> void {
   match result {
-    Result<u64, NetError>::Ok(_n) => {}
-    Result<u64, NetError>::Err(e) => {
+    Result<u64,
+    NetError>::Ok(_n) => {}
+    Result<u64,
+    NetError>::Err(e) => {
       println!("{}: Error {}", who, name(e));
     }
   }
@@ -165,10 +167,12 @@ fn short_server(listener : TcpListener) -> Result<u64, NetError> {
   println!("server: read got {} byte, {}", n, one.get(0));
   let mut two = zeros(2);
   match stream.read_exact(&mut two) {
-    Result<u64, NetError>::Ok(m) => {
+    Result<u64,
+    NetError>::Ok(m) => {
       println!("server: read_exact got {} bytes", m);
     }
-    Result<u64, NetError>::Err(e) => {
+    Result<u64,
+    NetError>::Err(e) => {
       println!("server: read_exact gives {}", name(e));
     }
   }
@@ -196,7 +200,8 @@ fn main(root : Root) -> i32 {
   let network = &root.network;
   let lines = TcpListener::bind(network, &address("127.0.0.1:41761"));
   match lines {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       tasks {
         spawn {
           report("client", lines_client(network));
@@ -204,12 +209,14 @@ fn main(root : Root) -> i32 {
         report("server", lines_server(listener));
       }
     }
-    Result<TcpListener, NetError>::Err(e) => {
+    Result<TcpListener,
+    NetError>::Err(e) => {
       println!("bind: Error {}", name(e));
     }
   }
   match TcpListener::bind(network, &address("127.0.0.1:41762")) {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       tasks {
         spawn {
           report("client", short_client(network));
@@ -217,12 +224,14 @@ fn main(root : Root) -> i32 {
         report("server", short_server(listener));
       }
     }
-    Result<TcpListener, NetError>::Err(e) => {
+    Result<TcpListener,
+    NetError>::Err(e) => {
       println!("bind: Error {}", name(e));
     }
   }
   match UdpSocket::bind(network, &address("127.0.0.1:41763")) {
-    Result<UdpSocket, NetError>::Ok(socket) => {
+    Result<UdpSocket,
+    NetError>::Ok(socket) => {
       tasks {
         spawn {
           report("udp", udp_recv(socket));
@@ -230,7 +239,8 @@ fn main(root : Root) -> i32 {
         report("udp", udp_send(network));
       }
     }
-    Result<UdpSocket, NetError>::Err(e) => {
+    Result<UdpSocket,
+    NetError>::Err(e) => {
       println!("udp bind: Error {}", name(e));
     }
   }

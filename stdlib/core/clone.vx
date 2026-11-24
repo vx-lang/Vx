@@ -101,10 +101,12 @@ extern impl<T : Clone, E : Clone> Clone for Result<T, E> {
   /// The result with whichever side it holds cloned.
   fn clone(self : &Result<T, E>) -> Result<T, E> {
     match self {
-      Result<T, E>::Ok(v) => {
+      Result<T,
+      E>::Ok(v) => {
         return Result<T, E>::Ok(v.clone());
       }
-      Result<T, E>::Err(e) => {
+      Result<T,
+      E>::Err(e) => {
         return Result<T, E>::Err(e.clone());
       }
     }

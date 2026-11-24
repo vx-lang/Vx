@@ -30,15 +30,9 @@ impl PartialOrd for Reading {
 }
 
 fn main() -> i32 {
-  let low = Reading {
-    value: 1, valid: true
-  };
-  let high = Reading {
-    value: 5, valid: true
-  };
-  let broken = Reading {
-    value: 3, valid: false
-  };
+  let low = Reading { value: 1, valid: true };
+  let high = Reading { value: 5, valid: true };
+  let broken = Reading { value: 3, valid: false };
   print((low < high) as i32);
   print((low <= high) as i32);
   print((low > high) as i32);

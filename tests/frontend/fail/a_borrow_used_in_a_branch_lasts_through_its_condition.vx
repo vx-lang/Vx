@@ -28,9 +28,7 @@ fn get_ref(s : &S) -> &i32 {
 }
 
 fn in_match() -> i32 {
-  let mut s = S {
-    x : 1
-  };
+  let mut s = S { x : 1 };
   let m = &mut s;
   // CHECK: Error[E4004] at {{.*}}a_borrow_used_in_a_branch_lasts_through_its_condition.vx:[[@LINE+1]]:{{.*}}Cannot borrow 's' because it is already borrowed as mutable
   match get(&s) {
@@ -42,9 +40,7 @@ fn in_match() -> i32 {
 }
 
 fn in_if() -> i32 {
-  let mut s = S {
-    x : 1
-  };
+  let mut s = S { x : 1 };
   let m = &mut s;
   // CHECK: Error[E4004] at {{.*}}a_borrow_used_in_a_branch_lasts_through_its_condition.vx:[[@LINE+1]]:{{.*}}Cannot borrow 's' because it is already borrowed as mutable
   if *get_ref(&s) == 1 {

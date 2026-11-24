@@ -19,9 +19,7 @@ struct Pair {
 }
 
 fn other_field_while_one_is_borrowed() -> i64 {
-  let mut p = Pair {
-    a : 2i64, b : 2i64
-  };
+  let mut p = Pair { a : 2i64, b : 2i64 };
   let r = &p.a;
   p.b = 5i64;
   return *r + p.b;
@@ -36,9 +34,7 @@ fn after_the_last_use() -> i64 {
 }
 
 fn through_a_mutable_reference() -> i64 {
-  let mut p = Pair {
-    a : 1i64, b : 2i64
-  };
+  let mut p = Pair { a : 1i64, b : 2i64 };
   let m = &mut p;
   m.a = 7i64;
   return p.a;

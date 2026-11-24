@@ -63,9 +63,7 @@ fn push_after_a_method_call() -> i64 {
   a.push(1i64);
   let zero : i64 = 0i64;
   let mut s : &i64 = &zero;
-  let c = Counter {
-    n : 0
-  };
+  let c = Counter { n : 0 };
   let n = c.count(&a, if true {
     s = a.get_ref(0);
     0i64

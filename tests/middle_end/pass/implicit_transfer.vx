@@ -22,9 +22,7 @@ fn process(m_host: MyModel) -> MyModel {
     // This access crosses the topology boundary and triggers implicit transfer
     let m_device = m_host;
   }
-  return MyModel {
-    weights: Tensor<f32>([1, 1])
-  };
+  return MyModel { weights: Tensor<f32>([1, 1]) };
 }
 
 // The transfer into the NPU region calls `relocate`.

@@ -28,9 +28,7 @@ fn check(x : i32) -> Result<i32, Failure> {
   if x % 2 == 0 {
     return Result<i32, Failure>::Ok(x / 2);
   }
-  return Result<i32, Failure>::Err(Failure {
-    code: x
-  });
+  return Result<i32, Failure>::Err(Failure { code: x });
 }
 
 fn failed_join(x : i32) -> void {
@@ -63,9 +61,7 @@ fn in_an_if(x : i32, go : bool) -> void {
 }
 
 fn wrap(v : i32) -> Result<Failure, Failure> {
-  return Result<Failure, Failure>::Ok(Failure {
-    code: v + 100
-  });
+  return Result<Failure, Failure>::Ok(Failure { code: v + 100 });
 }
 
 fn a_value_that_drops(x : i32) -> void {

@@ -36,9 +36,7 @@ fn both_point_outside_the_block() -> i32 {
   let empty : Vec<i32> = Vec<i32>::new();
   let mut me_out : &Vec<i32> = &empty;
   if true {
-    let _q = Leak {
-      out : &mut me_out, val : &one
-    };
+    let _q = Leak { out : &mut me_out, val : &one };
   }
   return me_out.len();
 }
@@ -53,9 +51,7 @@ fn all_in_one_block() -> i32 {
     l.push(2);
     let mut me_out : &Vec<i32> = &empty;
     if true {
-      let _q = Leak {
-        out : &mut me_out, val : &l
-      };
+      let _q = Leak { out : &mut me_out, val : &l };
     }
     n = me_out.len();
   }
@@ -70,9 +66,7 @@ fn mut_reference_to_plain_data() -> i32 {
     l.push(1);
     l.push(2);
     l.push(3);
-    let c = Count {
-      n : &mut n, val : &l
-    };
+    let c = Count { n : &mut n, val : &l };
     *c.n = c.val.len();
   }
   return n;

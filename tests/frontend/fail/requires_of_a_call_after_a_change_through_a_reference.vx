@@ -32,11 +32,9 @@ requires x < 5i64
   return x;
 }
 
-// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+7]]:5: this call to 'need' may not meet its precondition `x < 5`
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+5]]:5: this call to 'need' may not meet its precondition `x < 5`
 fn a_call_gets_a_mut_reference() -> i64 {
-  let mut c = Counter {
-    n : 0i64
-  };
+  let mut c = Counter { n : 0i64 };
   if c.n < 5i64 {
     bump(&mut c);
     need(c.n);
@@ -55,11 +53,9 @@ fn a_write_through_a_local_reference() -> i64 {
   return n;
 }
 
-// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+7]]:5: this call to 'need' may not meet its precondition `x < 5`
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+5]]:5: this call to 'need' may not meet its precondition `x < 5`
 fn a_method_with_mut_self() -> i64 {
-  let mut c = Counter {
-    n : 0i64
-  };
+  let mut c = Counter { n : 0i64 };
   if c.n < 5i64 {
     c.bump_self();
     need(c.n);
@@ -105,11 +101,9 @@ fn a_raw_pointer_from_a_mut_reference() -> i64 {
   return n;
 }
 
-// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+7]]:7: this call to 'need' may not meet its precondition `x < 5`
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+5]]:7: this call to 'need' may not meet its precondition `x < 5`
 fn loop_passes_a_mut_reference() -> i64 {
-  let mut c = Counter {
-    n : 0i64
-  };
+  let mut c = Counter { n : 0i64 };
   if c.n < 5i64 {
     for i in 0i64..3i64 {
       need(c.n);
@@ -119,11 +113,9 @@ fn loop_passes_a_mut_reference() -> i64 {
   return c.n;
 }
 
-// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+7]]:7: this call to 'need' may not meet its precondition `x < 5`
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+5]]:7: this call to 'need' may not meet its precondition `x < 5`
 fn loop_calls_a_mut_self_method() -> i64 {
-  let mut c = Counter {
-    n : 0i64
-  };
+  let mut c = Counter { n : 0i64 };
   if c.n < 5i64 {
     for i in 0i64..3i64 {
       need(c.n);

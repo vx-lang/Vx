@@ -21,7 +21,8 @@ struct Timed {
 
 fn timed(id : u64) -> Timed {
   return Timed {
-    id : id, took : Duration::from_secs(id * 10)
+    id : id,
+    took : Duration::from_secs(id * 10)
   };
 }
 

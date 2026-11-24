@@ -29,10 +29,12 @@ fn twice(a : Arc<i64>) -> i64 {
 
 fn receive(rx : &Receiver<Arc<i64>>) -> Arc<i64> {
   match rx.recv() {
-    Result<Arc<i64>, RecvError>::Ok(got) => {
+    Result<Arc<i64>,
+    RecvError>::Ok(got) => {
       return got;
     }
-    Result<Arc<i64>, RecvError>::Err(_e) => {
+    Result<Arc<i64>,
+    RecvError>::Err(_e) => {
       panic("the channel closed");
     }
   }
@@ -41,10 +43,12 @@ fn receive(rx : &Receiver<Arc<i64>>) -> Arc<i64> {
 // The `Arc` that `try_unwrap` gives back when `a` has other owners.
 fn not_the_only_owner(a : Arc<i64>) -> Arc<i64> {
   match a.try_unwrap() {
-    Result<i64, Arc<i64>>::Ok(_v) => {
+    Result<i64,
+    Arc<i64>>::Ok(_v) => {
       panic("try_unwrap gave the value while another owner exists");
     }
-    Result<i64, Arc<i64>>::Err(back) => {
+    Result<i64,
+    Arc<i64>>::Err(back) => {
       return back;
     }
   }
@@ -65,8 +69,10 @@ fn main() -> i32 {
 
   let (tx, rx) = channel<Arc<i64>>(1);
   match tx.send(a.clone()) {
-    Result<void, SendError<Arc<i64>>>::Ok() => {}
-    Result<void, SendError<Arc<i64>>>::Err(_e) => {
+    Result<void,
+    SendError<Arc<i64>>>::Ok() => {}
+    Result<void,
+    SendError<Arc<i64>>>::Err(_e) => {
       println!("the send failed");
     }
   }

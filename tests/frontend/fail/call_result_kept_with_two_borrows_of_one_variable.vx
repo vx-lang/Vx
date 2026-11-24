@@ -45,9 +45,7 @@ fn mutable_and_shared() -> i32 {
 }
 
 fn struct_and_its_field() -> i32 {
-  let mut holder = Holder {
-    n: 5i32
-  };
+  let mut holder = Holder { n: 5i32 };
   // CHECK: Error[E4004]{{.*}}Cannot borrow 'holder' as mutable twice in one call.
   let _result = set_holder_and_field(&mut holder, &mut holder.n);
   return holder.n;

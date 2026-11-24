@@ -51,8 +51,10 @@ fn main() -> i32 {
       spawn {
         for k in one..3 {
           match t.send(task * 10 + k) {
-            Result<void, SendError<i64>>::Ok() => {}
-            Result<void, SendError<i64>>::Err(_) => {
+            Result<void,
+            SendError<i64>>::Ok() => {}
+            Result<void,
+            SendError<i64>>::Err(_) => {
               panic("the receiver is gone");
             }
           }
@@ -62,10 +64,12 @@ fn main() -> i32 {
     drop(tx);
     loop {
       match rx.recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           println!("got {}", v);
         }
-        Result<i64, RecvError>::Err(_) => {
+        Result<i64,
+        RecvError>::Err(_) => {
           break;
         }
       }

@@ -28,24 +28,16 @@ impl Drop for Noisy {
 }
 
 fn replaced() -> void {
-  let mut n = Noisy {
-    id: 1
-  };
-  let old = replace(&mut n, Noisy {
-    id: 2
-  });
+  let mut n = Noisy { id: 1 };
+  let old = replace(&mut n, Noisy { id: 2 });
   print(old.id);
   print(n.id);
   print!(" | ");
 }
 
 fn swapped() -> void {
-  let mut a = Noisy {
-    id: 3
-  };
-  let mut b = Noisy {
-    id: 4
-  };
+  let mut a = Noisy { id: 3 };
+  let mut b = Noisy { id: 4 };
   swap(&mut a, &mut b);
   print(a.id);
   print(b.id);

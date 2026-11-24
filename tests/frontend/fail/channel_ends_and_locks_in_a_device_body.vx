@@ -35,10 +35,12 @@ fn receive_through_a_reference_on_the_gpu(rx : &Receiver<i64>) -> void {
     r[0] = 1.0;
     // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:11: {{.*}} it uses 'rx': 'Receiver<i64>' can wait for the host.
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         r[1] = v as f32;
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         r[1] = 0.0;
       }
     }
@@ -52,10 +54,12 @@ fn a_struct_that_holds_a_channel_end(w : &Waiter) -> void {
     r[0] = 1.0;
     // CHECK-DAG: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:11: {{.*}} it uses 'w': field 'rx' of 'Waiter' has type 'Receiver<i64>', and 'Receiver<i64>' can wait for the host.
     match w.rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         r[1] = v as f32;
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         r[1] = 0.0;
       }
     }

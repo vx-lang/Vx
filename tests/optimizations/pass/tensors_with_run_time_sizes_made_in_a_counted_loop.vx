@@ -76,9 +76,7 @@ fn three_axes(s : &Shape, positions : i32) -> f32 {
 }
 
 fn main() -> i32 {
-  let s = Shape {
-    count: 3, rows: 4, cols: 5
-  };
+  let s = Shape { count: 3, rows: 4, cols: 5 };
   println!("sizes from parameters: {}", from_parameters(3, 4, 5));
   println!("sizes from fields: {}", from_fields(&s));
   println!("three axes: {}", three_axes(&s, 6));

@@ -9,8 +9,6 @@
 import tests::modules::macro_label_left;
 
 fn left_x() -> i64 {
-  let l = Left {
-    x : 5i64
-  };
+  let l = Left { x : 5i64 };
   return l.x;
 }

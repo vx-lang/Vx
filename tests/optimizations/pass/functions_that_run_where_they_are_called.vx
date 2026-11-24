@@ -55,12 +55,8 @@ fn main() -> i32 {
     out[1] = clamp_i32(12, 0, 5);
   }
   let o = transfer(out, Memory::CPU_DRAM);
-  let c = Cell<i32> {
-    v : 4
-  };
-  let d = Cell<i32> {
-    v : 4
-  };
+  let c = Cell<i32> { v : 4 };
+  let d = Cell<i32> { v : 4 };
   println!("device {} {} host {} {} {} {}", o[0], o[1], seven(), clamp_i32(-3, 0, 5), c.nine(), d.get());
   return 0;
 }

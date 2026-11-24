@@ -68,9 +68,7 @@ fn main() -> i32 {
     fill[i] = i as u32;
   }
   let codes = unsafe { tensor_view_1d(p as *const u32, n) };
-  let layer = Layer {
-    codes: &codes
-  };
+  let layer = Layer { codes: &codes };
   let mut y = transfer(Tensor<u32>([n]), Memory::HBM);
   forward(&layer, &mut y, n);
   let r = transfer(y, Memory::CPU_DRAM);

@@ -48,7 +48,14 @@ fn fill(w : &mut Words, v : i64) -> void {
 /// Plain writes to a frame at the depth of the frame of `select2`.
 fn scribble(v : i64) -> i64 {
   let mut w = Words {
-    a : 0, b : 0, c : 0, d : 0, e : 0, f : 0, g : 0, h : 0
+    a : 0,
+    b : 0,
+    c : 0,
+    d : 0,
+    e : 0,
+    f : 0,
+    g : 0,
+    h : 0
   };
   fill(&mut w, v);
   return w.a + w.h;
@@ -57,10 +64,12 @@ fn scribble(v : i64) -> i64 {
 fn hold_and_give_back(s : &Semaphore, count : i64) -> void {
   for _k in 0..count {
     match s.acquire() {
-      Result<Permit, AcquireError>::Ok(_permit) => {
+      Result<Permit,
+      AcquireError>::Ok(_permit) => {
         sleep(Duration::from_millis(1));
       }
-      Result<Permit, AcquireError>::Err(_) => {}
+      Result<Permit,
+      AcquireError>::Err(_) => {}
     }
   }
 }
@@ -76,12 +85,14 @@ fn main() -> i32 {
     };
     for k in 0i64..100i64 {
       match select2(&s, &limit) {
-        Result<i32, SelectError>::Ok(i) => {
+        Result<i32,
+        SelectError>::Ok(i) => {
           if i == 0 {
             gave = gave + 1;
           }
         }
-        Result<i32, SelectError>::Err(_) => {}
+        Result<i32,
+        SelectError>::Err(_) => {}
       }
       scribbled = scribbled + scribble(k);
     }

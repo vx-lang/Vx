@@ -38,11 +38,7 @@ pub fn pick_on_the_gpu(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32
   spawn on(Topology::Device) {
     for b in 0..n across blocks {
       for t in 0..1 across lanes {
-        out[b] = if n > 1 {
-          x[t]
-        } else {
-          0.0
-        };
+        out[b] = if n > 1 { x[t] } else { 0.0 };
       }
     }
   }
@@ -50,16 +46,8 @@ pub fn pick_on_the_gpu(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32
 }
 
 fn pick(out : &mut Tensor<f32, [2]>, x : &Tensor<f32, [4]>, m : &Tensor<f32, [2, 2]>, n : i32) -> void {
-  out[0] = if n > 1 {
-    x[0]
-  } else {
-    0.0
-  };
-  out[1] = if n > 1 {
-    m[1][0]
-  } else {
-    0.0
-  };
+  out[0] = if n > 1 { x[0] } else { 0.0 };
+  out[1] = if n > 1 { m[1][0] } else { 0.0 };
   return;
 }
 

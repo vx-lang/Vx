@@ -74,12 +74,8 @@ fn main() -> i32 {
   println!("clamp 15 to 10: {}", high);
   println!("clamp -4 to 0..10: {}", low);
   println!("ten {}, twenty {}", ten(), twenty());
-  let count = Count {
-    value : 1
-  };
-  let meters = Meters {
-    value : 1.0
-  };
+  let count = Count { value : 1 };
+  let meters = Meters { value : 1.0 };
   println!("sizes {} {}", count.bytes(), meters.bytes());
   return 0;
 }

@@ -46,10 +46,12 @@ fn say(e : RecvError) -> void {
 
 fn show(r : Result<i64, RecvError>) -> void {
   match r {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("recv gave {}", v);
     }
-    Result<i64, RecvError>::Err(e) => {
+    Result<i64,
+    RecvError>::Err(e) => {
       say(e);
     }
   }
@@ -57,8 +59,10 @@ fn show(r : Result<i64, RecvError>) -> void {
 
 fn reply(tx : OneshotSender<i64>, v : i64) -> void {
   match tx.send(v) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(e) => {
       println!("send gave back {}", e.value);
     }
   }

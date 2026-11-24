@@ -46,7 +46,10 @@ impl<T> ReceiverOfAChannel for WorkReceiver<T> {}
 fn work_queue<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, WorkReceiver<T>) {
   let (tx, rx) = channel<T>(n, at);
   let r = WorkReceiver<T> {
-    words : rx.words, data : rx.data, cap : rx.cap, made : rx.made
+    words : rx.words,
+    data : rx.data,
+    cap : rx.cap,
+    made : rx.made
   };
   // The `WorkReceiver` takes over the end that `rx` holds.
   forget(rx);
@@ -77,10 +80,12 @@ WorkReceiver<T> {
       }
       let seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
       match self.take() {
-        Result<T, TryRecvError>::Ok(v) => {
+        Result<T,
+        TryRecvError>::Ok(v) => {
           return Result<T, RecvError>::Ok(v);
         }
-        Result<T, TryRecvError>::Err(e) => {
+        Result<T,
+        TryRecvError>::Err(e) => {
           match e {
             TryRecvError::Closed => {
               break;
@@ -115,7 +120,8 @@ WorkReceiver<T> {
       let slot = word(words, SLOTS + k % self.cap);
       if slot.load(AtomicOrdering::Acquire) == 2 * k + 1 {
         match recvs.compare_exchange(k, k + 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst) {
-          Result<i64, i64>::Ok(_) => {
+          Result<i64,
+          i64>::Ok(_) => {
             let data = self.data;
             let value : T = unsafe { take_slot(data, k % self.cap) };
             slot.store(2 * (k + self.cap), AtomicOrdering::Release);
@@ -123,7 +129,8 @@ WorkReceiver<T> {
             return Result<T, TryRecvError>::Ok(value);
           }
           // Another `WorkReceiver` took the value. Try the next number.
-          Result<i64, i64>::Err(_) => {}
+          Result<i64,
+          i64>::Err(_) => {}
         }
       } else {
         if !pass_a_skip(words, self.cap, k) {
@@ -175,7 +182,10 @@ impl<T> Clone for WorkReceiver<T> {
     word(self.words, RECEIVER).fetch_add(1, AtomicOrdering::SeqCst);
     word(self.words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
     return WorkReceiver<T> {
-      words : self.words, data : self.data, cap : self.cap, made : self.made
+      words : self.words,
+      data : self.data,
+      cap : self.cap,
+      made : self.made
     };
   }
 }

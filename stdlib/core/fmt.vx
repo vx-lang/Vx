@@ -422,11 +422,7 @@ impl ByteBuf {
   unsafe fn new(ptr : *mut i8, cap : i64) -> ByteBuf {
     assert(cap >= 1i64, "ByteBuf needs room for the NUL");
     unsafe { ptr[0i64] = 0i8; }
-    return ByteBuf {
-      ptr : ptr,
-      cap : cap,
-      len : 0i64
-    };
+    return ByteBuf { ptr : ptr, cap : cap, len : 0i64 };
   }
 
   /// How many bytes have been written.

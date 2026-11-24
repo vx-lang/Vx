@@ -29,14 +29,16 @@ fn main() -> i32 {
     *job * factor
   });
   match result {
-    Result<Vec<i64>, RunJobsError>::Ok(scaled) => {
+    Result<Vec<i64>,
+    RunJobsError>::Ok(scaled) => {
       print!("scaled");
       for i in 0..scaled.len() {
         print!(" {}", scaled.get(i));
       }
       println!("");
     }
-    Result<Vec<i64>, RunJobsError>::Err(_e) => {
+    Result<Vec<i64>,
+    RunJobsError>::Err(_e) => {
       // The `tasks` block around the call was cancelled, so not every job ran.
       println!("cancelled");
     }

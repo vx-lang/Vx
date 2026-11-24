@@ -57,13 +57,9 @@ fn main() -> i32 {
   let mut v = Vec<i64>::new();
   v.push(1i64);
   let k = 1i64;
-  let mut c = Cursor {
-    data : &v, pos : 0
-  };
+  let mut c = Cursor { data : &v, pos : 0 };
   let mut out = Vec<&i64>::new();
-  let mut h = Holder {
-    r : &k
-  };
+  let mut h = Holder { r : &k };
   set_r(&mut h, &k);
   let total = *find(&v, &k) + *next(&mut c) + note(&mut out, &k) + *h.r;
   return (total - 4i64) as i32;

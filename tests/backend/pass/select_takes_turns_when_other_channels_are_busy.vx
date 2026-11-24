@@ -20,8 +20,10 @@ fn fill(tx : &Sender<i64>) -> void {
   let first : i64 = 0;
   for i in first..3 {
     match tx.send(i) {
-      Result<void, SendError<i64>>::Ok() => {}
-      Result<void, SendError<i64>>::Err(_e) => {}
+      Result<void,
+      SendError<i64>>::Ok() => {}
+      Result<void,
+      SendError<i64>>::Err(_e) => {}
     }
   }
 }
@@ -39,15 +41,19 @@ fn main() -> i32 {
   let mut order : Tensor<i32, [6]> = [9, 9, 9, 9, 9, 9];
   for k in 0..6 {
     match sel.select() {
-      Result<Selected<i64>, RecvError>::Ok(s) => {
+      Result<Selected<i64>,
+      RecvError>::Ok(s) => {
         order[k] = s.index;
       }
-      Result<Selected<i64>, RecvError>::Err(_e) => {}
+      Result<Selected<i64>,
+      RecvError>::Err(_e) => {}
     }
     // One more event on another channel between two calls.
     match other.send(1) {
-      Result<void, SendError<i64>>::Ok() => {}
-      Result<void, SendError<i64>>::Err(_e) => {}
+      Result<void,
+      SendError<i64>>::Ok() => {}
+      Result<void,
+      SendError<i64>>::Err(_e) => {}
     }
   }
   println!("{} {} {} {} {} {}", order[0], order[1], order[2], order[3], order[4], order[5]);

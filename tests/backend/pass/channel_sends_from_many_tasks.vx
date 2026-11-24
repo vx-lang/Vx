@@ -32,8 +32,10 @@ fn main() -> i32 {
         let first : i64 = 1;
         for i in first..1001 {
           match t.send(i) {
-            Result<void, SendError<i64>>::Ok() => {}
-            Result<void, SendError<i64>>::Err(_) => {
+            Result<void,
+            SendError<i64>>::Ok() => {}
+            Result<void,
+            SendError<i64>>::Err(_) => {
               panic("the receiver is gone");
             }
           }
@@ -43,11 +45,13 @@ fn main() -> i32 {
     drop(tx);
     loop {
       match rx.recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           count = count + 1;
           sum = sum + v;
         }
-        Result<i64, RecvError>::Err(_) => {
+        Result<i64,
+        RecvError>::Err(_) => {
           break;
         }
       }

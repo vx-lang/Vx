@@ -23,15 +23,8 @@ fn touch(value : &mut i32) -> i32 {
 fn main(n : i32) -> i32 {
   let mut outer : i32 = 0i32;
   let value = comptime {
-    let mut holder = Holder {
-      slot : 0i32,
-      escaped : &mut outer
-    };
-    let _ignored = if n > 0i32 {
-      touch(&mut holder.slot)
-    } else {
-      1i32
-    };
+    let mut holder = Holder { slot : 0i32, escaped : &mut outer };
+    let _ignored = if n > 0i32 { touch(&mut holder.slot) } else { 1i32 };
     7i32
   };
   return value;

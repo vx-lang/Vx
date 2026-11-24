@@ -101,11 +101,7 @@ pub fn decode(out : &mut Tensor<f32, [?, ?], Memory::HBM>, q : &Tensor<f32, [?, 
                 x3
               };
               let m0 = st[w][h][0][l];
-              let m1 = if x > m0 {
-                x
-              } else {
-                m0
-              };
+              let m1 = if x > m0 { x } else { m0 };
               let scale = (m0 - m1).exp();
               let weight = (x - m1).exp();
               st[w][h][0][l] = m1;

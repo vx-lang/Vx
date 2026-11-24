@@ -44,11 +44,7 @@ fn copied_reference(n : i32, copy_outer : &mut i32) -> i32 {
   // CHECK: Error[E3033]{{.*}}writes to 'copy_outer'
   let value = comptime {
     let alias = copy_outer;
-    let _ignored = if n > 0i32 {
-      touch(alias)
-    } else {
-      1i32
-    };
+    let _ignored = if n > 0i32 { touch(alias) } else { 1i32 };
     7i32
   };
   return value;
@@ -74,9 +70,7 @@ fn aggregate_field() -> i32 {
   let mut aggregate_outer : i32 = 0i32;
   // CHECK: Error[E3033]{{.*}}writes to 'aggregate_outer'
   let value = comptime {
-    let holder = Holder {
-      value : &mut aggregate_outer
-    };
+    let holder = Holder { value : &mut aggregate_outer };
     let _ignored = touch(holder.value);
     7i32
   };
@@ -88,9 +82,7 @@ fn aggregate_callback() -> i32 {
   let _callback = through_holder;
   // CHECK: Error[E3033]{{.*}}writes to 'callback_outer'
   let value = comptime {
-    let _ignored = _callback(Holder {
-      value : &mut callback_outer
-    });
+    let _ignored = _callback(Holder { value : &mut callback_outer });
     7i32
   };
   return value;
@@ -112,9 +104,7 @@ fn captured_closure(n : i32) -> i32 {
 }
 
 fn member_place() -> i32 {
-  let mut holder = Cell {
-    value : 0i32
-  };
+  let mut holder = Cell { value : 0i32 };
   // CHECK: Error[E3033]{{.*}}writes to 'holder'
   let value = comptime {
     let _ignored = touch(&mut holder.value);

@@ -18,8 +18,10 @@ import std::sync::channel;
 fn send_squares(tx : Sender<i64>, from : i64) -> void {
   for i in from..from + 10 {
     match tx.send(i * i) {
-      Result<void, SendError<i64>>::Ok() => {}
-      Result<void, SendError<i64>>::Err(_e) => {
+      Result<void,
+      SendError<i64>>::Ok() => {}
+      Result<void,
+      SendError<i64>>::Err(_e) => {
         println!("the receiver is gone");
       }
     }
@@ -42,11 +44,13 @@ fn main() -> i32 {
     let mut open = true;
     while open {
       match rx.recv() {
-        Result<i64, RecvError>::Ok(v) => {
+        Result<i64,
+        RecvError>::Ok(v) => {
           count = count + 1;
           sum = sum + v;
         }
-        Result<i64, RecvError>::Err(_e) => {
+        Result<i64,
+        RecvError>::Err(_e) => {
           open = false;
         }
       }

@@ -39,9 +39,7 @@ struct Args {
 }
 
 fn args() -> Args {
-  return Args {
-    current : 0, count : args_count()
-  };
+  return Args { current : 0, count : args_count() };
 }
 
 impl Iterator<Args, *mut i8> for Args {

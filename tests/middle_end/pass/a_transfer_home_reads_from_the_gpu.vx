@@ -100,11 +100,15 @@ enum Held<T> {
 
 fn from_a_match(r : Held<Tensor<f32, [4], Memory::GPU_HBM>>) -> f32 {
   match r {
-    Held<Tensor<f32, [4], Memory::GPU_HBM>>::Full(full) => {
+    Held<Tensor<f32,
+    [4],
+    Memory::GPU_HBM>>::Full(full) => {
       let h = transfer(full, Memory::CPU_DRAM);
       return h[0];
     }
-    Held<Tensor<f32, [4], Memory::GPU_HBM>>::Empty => {
+    Held<Tensor<f32,
+    [4],
+    Memory::GPU_HBM>>::Empty => {
       return 0.0;
     }
   }

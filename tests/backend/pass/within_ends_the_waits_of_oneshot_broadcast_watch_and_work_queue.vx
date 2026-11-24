@@ -28,8 +28,10 @@ import std::sync::work_queue;
 fn is_cancelled(r : Result<i64, RecvError>) -> bool {
   let mut cancelled = false;
   match r {
-    Result<i64, RecvError>::Ok(_v) => {}
-    Result<i64, RecvError>::Err(e) => {
+    Result<i64,
+    RecvError>::Ok(_v) => {}
+    Result<i64,
+    RecvError>::Err(e) => {
       match e {
         RecvError::Cancelled => {
           cancelled = true;
@@ -68,10 +70,12 @@ fn main() -> i32 {
     all_tx.send(2)
   });
   match r {
-    Result<void, SendError<i64>>::Ok() => {
+    Result<void,
+    SendError<i64>>::Ok() => {
       println!("broadcast send sent 2");
     }
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Err(e) => {
       println!("broadcast send gave back {}, cancelled {}", e.value, e.cancelled);
     }
   }

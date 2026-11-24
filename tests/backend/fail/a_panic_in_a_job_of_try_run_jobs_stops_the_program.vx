@@ -38,10 +38,12 @@ fn main() -> i32 {
   }
   let result : Result<Vec<i64>, TryRunJobsError<i64>> = try_run_jobs(&numbers, 3, fails_on_three);
   match result {
-    Result<Vec<i64>, TryRunJobsError<i64>>::Ok(r) => {
+    Result<Vec<i64>,
+    TryRunJobsError<i64>>::Ok(r) => {
       println!("after try_run_jobs: {} results", r.len());
     }
-    Result<Vec<i64>, TryRunJobsError<i64>>::Err(_e) => {
+    Result<Vec<i64>,
+    TryRunJobsError<i64>>::Err(_e) => {
       println!("after try_run_jobs: an error");
     }
   }

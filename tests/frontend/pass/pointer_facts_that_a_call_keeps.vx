@@ -192,12 +192,8 @@ requires initialized(p, n)
 fn main() -> i32 {
   let x = 5i64;
   let p : *const i64 = &x;
-  let r = Offset {
-    k: 1i64
-  };
-  let mut c = Counter {
-    count: 0i64
-  };
+  let r = Offset { k: 1i64 };
+  let mut c = Counter { count: 0i64 };
   let a = through_a_bound(&r, p, 1i64) + after_a_generic_call(p, 1i64);
   let b = after_a_method_call(&mut c, p, 1i64);
   return (a + b) as i32;

@@ -36,10 +36,12 @@ impl<A, B> Either<A, B> {
   fn is_left(self : &Either<A, B>) -> bool {
     let mut r = false;
     match *self {
-      Either<A, B>::Left(_) => {
+      Either<A,
+      B>::Left(_) => {
         r = true;
       }
-      Either<A, B>::Right(_) => {
+      Either<A,
+      B>::Right(_) => {
         r = false;
       }
     }
@@ -48,10 +50,12 @@ impl<A, B> Either<A, B> {
 
   fn left_or(self : Either<A, B>, d : A) -> A {
     match self {
-      Either<A, B>::Left(v) => {
+      Either<A,
+      B>::Left(v) => {
         return v;
       }
-      Either<A, B>::Right(v) => {
+      Either<A,
+      B>::Right(v) => {
         return d;
       }
     }
@@ -59,10 +63,12 @@ impl<A, B> Either<A, B> {
 
   fn right_or(self : Either<A, B>, d : B) -> B {
     match self {
-      Either<A, B>::Left(v) => {
+      Either<A,
+      B>::Left(v) => {
         return d;
       }
-      Either<A, B>::Right(v) => {
+      Either<A,
+      B>::Right(v) => {
         return v;
       }
     }

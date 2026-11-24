@@ -31,9 +31,7 @@ impl Upto {
 }
 
 fn main() -> i32 {
-  let mut it : Upto = Upto {
-    at : 0, end : 4
-  };
+  let mut it : Upto = Upto { at : 0, end : 4 };
   for x in it {
     print(x);
   }

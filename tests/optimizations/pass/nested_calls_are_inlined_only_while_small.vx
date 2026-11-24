@@ -28,7 +28,8 @@ impl Copy for P {}
 
 fn f0(x : P, y : P) -> P {
   return P {
-    a: (x.a + 2 * y.b) % 1000, b: (3 * x.b + y.a) % 1000
+    a: (x.a + 2 * y.b) % 1000,
+    b: (3 * x.b + y.a) % 1000
   };
 }
 
@@ -57,11 +58,7 @@ fn f6(x : P, y : P) -> P {
 }
 
 fn main() -> i32 {
-  let p = f6(P {
-    a: 3, b: 5
-  }, P {
-    a: 7, b: 2
-  });
+  let p = f6(P { a: 3, b: 5 }, P { a: 7, b: 2 });
   print!(p.a);
   print!("\n");
   return 0;

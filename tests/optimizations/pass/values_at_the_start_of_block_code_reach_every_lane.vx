@@ -25,11 +25,7 @@ fn fill_rows(out : &mut Tensor<i32, [?], Memory::HBM>, step : &Tensor<i32, [?], 
     for b in 0..1 across blocks {
       let tokens = step[1];
       let chunk = (tokens + 4095) / 4096 * 128;
-      let need = if k < tokens {
-        k
-      } else {
-        tokens
-      };
+      let need = if k < tokens { k } else { tokens };
       let seen = Tensor<i32, [1], Memory::SMEM>::fill(1);
       for l in 0..256 across lanes {
         out[l] = chunk + need + l;

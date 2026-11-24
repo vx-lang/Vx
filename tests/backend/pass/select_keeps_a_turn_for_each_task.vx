@@ -27,10 +27,12 @@ fn fill(tx : &Sender<i64>, count : i64) -> void {
 
 fn chosen(r : Result<i32, SelectError>) -> i32 {
   match r {
-    Result<i32, SelectError>::Ok(i) => {
+    Result<i32,
+    SelectError>::Ok(i) => {
       return i;
     }
-    Result<i32, SelectError>::Err(_) => {
+    Result<i32,
+    SelectError>::Err(_) => {
       return -1;
     }
   }

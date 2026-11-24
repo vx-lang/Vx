@@ -56,9 +56,7 @@ fn main() -> i32 {
   let d = read_plain_call_first(p);
   let e = unsafe { read_plain_call_first(p) };
   let f = unsafe { read_in_unsafe_fn(p) };
-  let h = Holder<i32> {
-    p : p
-  };
+  let h = Holder<i32> { p : p };
   let g = unsafe { h.get() };
   return a + b + c + d + e + f + g - 49;
 }

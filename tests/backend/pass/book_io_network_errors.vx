@@ -45,19 +45,23 @@ fn main(root : Root) -> i32 {
   let network = &root.network;
   // An address must be `host:port`. This one has no port.
   match TcpStream::connect(network, &address("localhost")) {
-    Result<TcpStream, NetError>::Ok(_stream) => {
+    Result<TcpStream,
+    NetError>::Ok(_stream) => {
       println!("connected");
     }
-    Result<TcpStream, NetError>::Err(e) => {
+    Result<TcpStream,
+    NetError>::Err(e) => {
       describe(e);
     }
   }
   // Port 0 asks the system for any free port.
   match UdpSocket::bind(network, &address("127.0.0.1:0")) {
-    Result<UdpSocket, NetError>::Ok(_socket) => {
+    Result<UdpSocket,
+    NetError>::Ok(_socket) => {
       println!("bound a UDP socket");
     }
-    Result<UdpSocket, NetError>::Err(e) => {
+    Result<UdpSocket,
+    NetError>::Err(e) => {
       describe(e);
     }
   }

@@ -24,12 +24,8 @@ fn main() -> i32 {
   unsafe {
     // The null handles test the public wrappers and their zero-result guard without
     // requiring a fixed port. The Rust FFI tests exercise actual transfers.
-    let mut stream = TcpStream {
-      ptr: 0 as *mut i8
-    };
-    let mut socket = UdpSocket {
-      ptr: 0 as *mut i8
-    };
+    let mut stream = TcpStream { ptr: 0 as *mut i8 };
+    let mut socket = UdpSocket { ptr: 0 as *mut i8 };
     let mut byte : u8 = 0;
     let length : u64 = 1;
     // A null handle is refused, so each call gives an error.

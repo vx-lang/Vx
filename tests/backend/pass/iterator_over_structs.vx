@@ -31,35 +31,25 @@ impl Iterator for Walk {
     if self.left == 0i64 {
       return Option<Point>::None();
     }
-    let p = Point {
-      x : self.left, y : self.left * 10i64
-    };
+    let p = Point { x : self.left, y : self.left * 10i64 };
     self.left = self.left - 1i64;
     return Option<Point>::Some(p);
   }
 }
 
 fn main() -> i32 {
-  let mut a = Walk {
-    left : 3i64
-  };
+  let mut a = Walk { left : 3i64 };
   print(a.count());
   print!(" ");
-  let mut b = Walk {
-    left : 3i64
-  };
+  let mut b = Walk { left : 3i64 };
   let last = b.last().unwrap();
   print(last.x + last.y);
   print!(" ");
-  let mut c = Walk {
-    left : 3i64
-  };
+  let mut c = Walk { left : 3i64 };
   let second = c.nth(1i64).unwrap();
   print(second.x + second.y);
   print!(" ");
-  let mut d = Walk {
-    left : 3i64
-  }.map(| p : Point | p.x + p.y);
+  let mut d = Walk { left : 3i64 }.map(| p : Point | p.x + p.y);
   print(d.sum());
   return 0;
 }

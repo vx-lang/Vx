@@ -37,9 +37,7 @@ fn main() -> i32 {
   print(*from_a_parameter(&v));
   print!("\n");
   // CHECK-NEXT: {{^}}27{{$}}
-  print(*from_a_field_of_a_parameter(Holder {
-    p : &v
-  }));
+  print(*from_a_field_of_a_parameter(Holder { p : &v }));
   print!("\n");
   return 0;
 }

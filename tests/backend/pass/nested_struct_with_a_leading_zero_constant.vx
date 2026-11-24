@@ -19,11 +19,7 @@ fn read(s: Sized<i32, 03>) -> i32 {
   return s.value;
 }
 fn main() -> i32 {
-  let h = Holder<i32, 03> {
-    inner: Sized<i32, 03> {
-      value: 17
-    }
-  };
+  let h = Holder<i32, 03> { inner: Sized<i32, 03> { value: 17 } };
   print(read(h.inner));
   return 0;
 }

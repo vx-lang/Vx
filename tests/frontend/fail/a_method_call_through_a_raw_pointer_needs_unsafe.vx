@@ -26,22 +26,18 @@ impl Counter {
 }
 
 fn gone() -> *const Counter {
-  let c = Counter {
-    n : 7i64
-  };
+  let c = Counter { n : 7i64 };
   return &c as *const Counter;
 }
 
 fn main() -> i32 {
   let q = gone();
   let _old = q.get();
-  let mut c = Counter {
-    n : 1i64
-  };
+  let mut c = Counter { n : 1i64 };
   let p = &mut c as *mut Counter;
   p.add_one();
   return 0;
 }
 
-// CHECK: Error[E5002] at {{.*}}.vx:37:16: Calling `get` through a raw pointer requires an unsafe block
-// CHECK: Error[E5002] at {{.*}}.vx:42:5: Calling `add_one` through a raw pointer requires an unsafe block
+// CHECK: Error[E5002] at {{.*}}.vx:35:16: Calling `get` through a raw pointer requires an unsafe block
+// CHECK: Error[E5002] at {{.*}}.vx:38:5: Calling `add_one` through a raw pointer requires an unsafe block

@@ -110,9 +110,7 @@ impl CPath {
     if is_null(ptr) {
       return Result<CPath, FileError>::Err(FileError::BadPath);
     }
-    return Result<CPath, FileError>::Ok(CPath {
-      ptr : ptr
-    });
+    return Result<CPath, FileError>::Ok(CPath { ptr : ptr });
   }
 }
 
@@ -175,9 +173,7 @@ impl File {
     if status != 0 {
       return Result<File, FileError>::Err(file_error(status, native_code));
     }
-    return Result<File, FileError>::Ok(File {
-      ptr : ptr
-    });
+    return Result<File, FileError>::Ok(File { ptr : ptr });
   }
 
   /// Read up to `buffer.len()` bytes into `buffer` and give how many arrived. 0 means the end of
@@ -226,9 +222,7 @@ impl File {
   /// Unsafe because nothing checks that `path` points at a NUL-terminated string.
   unsafe fn open_c_str(path : *const i8, mode : OpenMode) -> File {
     let ptr = unsafe { vx_file_open(path, open_mode_code(mode)) };
-    File {
-      ptr: ptr
-    }
+    File { ptr: ptr }
   }
 
   /// Read up to `len` bytes into `buffer` and answer how many arrived.

@@ -54,10 +54,12 @@ fn feed(one : OneshotSender<i64>, all : BroadcastSender<i64>, latest : WatchSend
 /// Print what `try_recv` gave, and give false for `Closed`.
 fn took(i : i32, what : *const i8, r : Result<i64, TryRecvError>) -> bool {
   match r {
-    Result<i64, TryRecvError>::Ok(v) => {
+    Result<i64,
+    TryRecvError>::Ok(v) => {
       println!("select4 gave {}: {} gave {}", i, what, v);
     }
-    Result<i64, TryRecvError>::Err(e) => {
+    Result<i64,
+    TryRecvError>::Err(e) => {
       match e {
         TryRecvError::Closed => {
           println!("select4 gave {}: {} gave Closed", i, what);
@@ -89,7 +91,8 @@ fn main() -> i32 {
     while calls < 5 {
       calls = calls + 1;
       match select4(&when(open_one, &one_rx), &when(open_all, &all_rx), &when(open_latest, &latest_rx), &when(open_work, &work_rx)) {
-        Result<i32, SelectError>::Ok(i) => {
+        Result<i32,
+        SelectError>::Ok(i) => {
           if i == 0 {
             open_one = took(i, "oneshot", one_rx.try_recv());
           } else if i == 1 {
@@ -100,7 +103,8 @@ fn main() -> i32 {
             open_work = took(i, "work queue", work_rx.try_recv());
           }
         }
-        Result<i32, SelectError>::Err(_) => {
+        Result<i32,
+        SelectError>::Err(_) => {
           println!("select4 gave Cancelled");
         }
       }
@@ -108,7 +112,8 @@ fn main() -> i32 {
   };
   while open_one || open_all || open_latest || open_work {
     match select4(&when(open_one, &one_rx), &when(open_all, &all_rx), &when(open_latest, &latest_rx), &when(open_work, &work_rx)) {
-      Result<i32, SelectError>::Ok(i) => {
+      Result<i32,
+      SelectError>::Ok(i) => {
         if i == 0 {
           open_one = took(i, "oneshot", one_rx.try_recv());
         } else if i == 1 {
@@ -119,7 +124,8 @@ fn main() -> i32 {
           open_work = took(i, "work queue", work_rx.try_recv());
         }
       }
-      Result<i32, SelectError>::Err(_) => {
+      Result<i32,
+      SelectError>::Err(_) => {
         println!("select4 gave Cancelled");
         open_one = false;
         open_all = false;

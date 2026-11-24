@@ -37,9 +37,7 @@ fn read_with_an_index(p : *const Noisy) -> i32 {
 }
 
 fn main() -> i32 {
-  let o = Noisy {
-    id: 3
-  };
+  let o = Noisy { id: 3 };
   let p = (&o) as *const Noisy;
   return read_with_a_star(p) + read_with_an_index(p);
 }

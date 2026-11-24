@@ -32,9 +32,7 @@ fn owner_moved() -> f32 {
 
 // The struct is moved while a view of its field is still used.
 fn struct_moved() -> f32 {
-  let h = Holder {
-    t : Tensor<f32, [4]>::new()
-  };
+  let h = Holder { t : Tensor<f32, [4]>::new() };
   let t = h.t;
   let s = take_holder(h);
   return t[0] + s;
@@ -87,9 +85,7 @@ fn stored_in_a_variable() -> f32 {
 // A row is stored in a struct field.
 fn stored_in_a_field() -> f32 {
   let q = Tensor<f32, [2, 4]>::new();
-  let h = Holder {
-    t : q[1]
-  };
+  let h = Holder { t : q[1] };
   return h.t[0];
 }
 
@@ -106,11 +102,7 @@ fn passed_by_value() -> f32 {
 // A row chosen by an `if` borrows each tensor it may come from.
 fn chosen_by_if(c : bool) -> f32 {
   let q = Tensor<f32, [2, 4]>::new();
-  let r = if c {
-    q[0]
-  } else {
-    q[1]
-  };
+  let r = if c { q[0] } else { q[1] };
   let s = take(q);
   return r[0] + s;
 }
@@ -197,21 +189,21 @@ fn main() -> i32 {
 }
 
 // CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:29:16: `q` is moved while it is borrowed
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:39:23: `h` is moved while it is borrowed
-// CHECK-DAG: Error[E4009] at {{.*}}tensor_views_borrow_their_owner.vx:47:7: `q[1][0]` is assigned while it is borrowed
-// CHECK-DAG: Error[E4002] at {{.*}}tensor_views_borrow_their_owner.vx:55:11: Cannot access 'q' because it is mutably borrowed.
-// CHECK-DAG: Error[E4010] at {{.*}}tensor_views_borrow_their_owner.vx:63:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
-// CHECK-DAG: Error[E4005] at {{.*}}tensor_views_borrow_their_owner.vx:71:3: this returns a view of `q`, a tensor this function owns
-// CHECK-DAG: Error[E4005] at {{.*}}tensor_views_borrow_their_owner.vx:76:3: this returns a view of `q`, a tensor this function owns
-// CHECK-DAG: Error[E4011] at {{.*}}tensor_views_borrow_their_owner.vx:83:11: this stores a view of `q` in `keep`, which holds a tensor of its own
-// CHECK-DAG: Error[E4011] at {{.*}}tensor_views_borrow_their_owner.vx:91:10: this stores a view of `q` in the field `t`
-// CHECK-DAG: Error[E4011] at {{.*}}tensor_views_borrow_their_owner.vx:103:17: this passes a view of `q` to `first`, which takes a tensor of its own
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:114:16: `q` is moved while it is borrowed
-// CHECK-DAG: Error[E4005] at {{.*}}tensor_views_borrow_their_owner.vx:121:3: `r` is given a value that points at a variable of an inner block
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:134:16: `q` is moved while it is borrowed
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:143:16: `q` is moved while it is borrowed
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:152:16: `q` is moved while it is borrowed
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:161:16: `q` is moved while it is borrowed
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:170:16: `q` is moved while it is borrowed
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:180:16: `q` is moved while it is borrowed
-// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:191:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:37:23: `h` is moved while it is borrowed
+// CHECK-DAG: Error[E4009] at {{.*}}tensor_views_borrow_their_owner.vx:45:7: `q[1][0]` is assigned while it is borrowed
+// CHECK-DAG: Error[E4002] at {{.*}}tensor_views_borrow_their_owner.vx:53:11: Cannot access 'q' because it is mutably borrowed.
+// CHECK-DAG: Error[E4010] at {{.*}}tensor_views_borrow_their_owner.vx:61:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
+// CHECK-DAG: Error[E4005] at {{.*}}tensor_views_borrow_their_owner.vx:69:3: this returns a view of `q`, a tensor this function owns
+// CHECK-DAG: Error[E4005] at {{.*}}tensor_views_borrow_their_owner.vx:74:3: this returns a view of `q`, a tensor this function owns
+// CHECK-DAG: Error[E4011] at {{.*}}tensor_views_borrow_their_owner.vx:81:11: this stores a view of `q` in `keep`, which holds a tensor of its own
+// CHECK-DAG: Error[E4011] at {{.*}}tensor_views_borrow_their_owner.vx:88:25: this stores a view of `q` in the field `t`
+// CHECK-DAG: Error[E4011] at {{.*}}tensor_views_borrow_their_owner.vx:99:17: this passes a view of `q` to `first`, which takes a tensor of its own
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:106:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4005] at {{.*}}tensor_views_borrow_their_owner.vx:113:3: `r` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:126:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:135:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:144:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:153:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:162:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:172:16: `q` is moved while it is borrowed
+// CHECK-DAG: Error[E4007] at {{.*}}tensor_views_borrow_their_owner.vx:183:16: `q` is moved while it is borrowed

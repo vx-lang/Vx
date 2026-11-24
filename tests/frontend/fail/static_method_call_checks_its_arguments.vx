@@ -29,9 +29,7 @@ impl<T> Holder<T> {
 }
 
 fn main() -> i32 {
-  let mut h = Holder<i32> {
-    v : 0,
-  };
+  let mut h = Holder<i32> { v : 0 };
   // The receiver is a parameter like any other; leaving it out is a count mismatch.
   // CHECK-DAG: E3010{{.*}}'Holder<i32>::len'{{.*}}expects 1 arguments, got 0
   let n = Holder<i32>::len();

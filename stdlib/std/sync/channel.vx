@@ -173,10 +173,16 @@ fn channel<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, Receiver<T>) {
     unsafe { words[SLOTS + i] = AtomicI64::new(2 * i); }
   }
   return (Sender<T> {
-    words : words, data : data, cap : n, made : at.location
+    words : words,
+    data : data,
+    cap : n,
+    made : at.location
   },
   Receiver<T> {
-    words : words, data : data, cap : n, made : at.location
+    words : words,
+    data : data,
+    cap : n,
+    made : at.location
   });
 }
 
@@ -303,7 +309,9 @@ Sender<T> {
   fn send_until(self : &Sender<T>, v : T, deadline : Instant, at : Caller) -> Result<void, SendError<T>> {
     if cancelled_at(at) {
       return Result<void, SendError<T>>::Err(SendError<T> {
-        value : v, cancelled : true, timed_out : false
+        value : v,
+        cancelled : true,
+        timed_out : false
       });
     }
     let words = self.words;
@@ -325,14 +333,18 @@ Sender<T> {
         word(words, SKIPS).fetch_add(1, AtomicOrdering::SeqCst);
         notify(words);
         return Result<void, SendError<T>>::Err(SendError<T> {
-          value : v, cancelled : was_cancelled, timed_out : !was_cancelled
+          value : v,
+          cancelled : was_cancelled,
+          timed_out : !was_cancelled
         });
       }
       wait_for_event(words, seen, deadline, WAIT_IN_SEND, at, self.made);
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
     return Result<void, SendError<T>>::Err(SendError<T> {
-      value : v, cancelled : false, timed_out : false
+      value : v,
+      cancelled : false,
+      timed_out : false
     });
   }
 }
@@ -502,9 +514,7 @@ Selector<T> {
     for _i in 0..receivers.len() {
       open.push(true);
     }
-    return Selector<T> {
-      receivers : receivers, open : open
-    };
+    return Selector<T> { receivers : receivers, open : open };
   }
 
   /// The first value from any channel of the list. Wait while each open channel is empty. Give
@@ -523,17 +533,19 @@ Selector<T> {
         return Result<Selected<T>, RecvError>::Err(RecvError::Closed);
       }
       let sources = OpenReceivers<T> {
-        receivers : &self.receivers, open : &self.open
+        receivers : &self.receivers,
+        open : &self.open
       };
       match select_from(&sources, at) {
-        Result<i32, SelectError>::Ok(i) => {
+        Result<i32,
+        SelectError>::Ok(i) => {
           match self.receivers.get_ref(i).try_recv() {
-            Result<T, TryRecvError>::Ok(v) => {
-              return Result<Selected<T>, RecvError>::Ok(Selected<T> {
-                index : i, value : v
-              });
+            Result<T,
+            TryRecvError>::Ok(v) => {
+              return Result<Selected<T>, RecvError>::Ok(Selected<T> { index : i, value : v });
             }
-            Result<T, TryRecvError>::Err(e) => {
+            Result<T,
+            TryRecvError>::Err(e) => {
               match e {
                 TryRecvError::Closed => {
                   self.open.set(i, false);
@@ -543,7 +555,8 @@ Selector<T> {
             }
           }
         }
-        Result<i32, SelectError>::Err(_) => {
+        Result<i32,
+        SelectError>::Err(_) => {
           return Result<Selected<T>, RecvError>::Err(RecvError::Cancelled);
         }
       }
@@ -593,7 +606,10 @@ impl<T> Clone for Sender<T> {
     word(self.words, SENDERS).fetch_add(1, AtomicOrdering::SeqCst);
     word(self.words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
     return Sender<T> {
-      words : self.words, data : self.data, cap : self.cap, made : self.made
+      words : self.words,
+      data : self.data,
+      cap : self.cap,
+      made : self.made
     };
   }
 }

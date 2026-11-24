@@ -51,23 +51,28 @@ fn main() -> i32 {
       // A new deadline at each pass: give up when nothing comes for five seconds.
       let quiet = Deadline::after(Duration::from_secs(5));
       match select3(&when(jobs_open, &jobs), &when(notes_open, &notes), &quiet) {
-        Result<i32, SelectError>::Ok(i) => {
+        Result<i32,
+        SelectError>::Ok(i) => {
           if i == 0 {
             match jobs.try_recv() {
-              Result<i64, TryRecvError>::Ok(_job) => {
+              Result<i64,
+              TryRecvError>::Ok(_job) => {
                 job_count = job_count + 1;
               }
               // The channel is closed: turn it off.
-              Result<i64, TryRecvError>::Err(_) => {
+              Result<i64,
+              TryRecvError>::Err(_) => {
                 jobs_open = false;
               }
             }
           } else if i == 1 {
             match notes.try_recv() {
-              Result<String, TryRecvError>::Ok(_note) => {
+              Result<String,
+              TryRecvError>::Ok(_note) => {
                 note_count = note_count + 1;
               }
-              Result<String, TryRecvError>::Err(_) => {
+              Result<String,
+              TryRecvError>::Err(_) => {
                 notes_open = false;
               }
             }
@@ -78,7 +83,8 @@ fn main() -> i32 {
           }
         }
         // The `tasks` block was cancelled.
-        Result<i32, SelectError>::Err(_) => {
+        Result<i32,
+        SelectError>::Err(_) => {
           jobs_open = false;
           notes_open = false;
         }

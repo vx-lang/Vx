@@ -39,10 +39,7 @@ fn main() -> i32 {
   };
   println!("{}", b);
   let c = comptime {
-    let mut p = Point {
-      x : 1i64,
-      y : 2i64
-    };
+    let mut p = Point { x : 1i64, y : 2i64 };
     p.x = p.y * 10i64;
     p.x + p.y
   };

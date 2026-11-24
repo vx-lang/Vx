@@ -43,9 +43,7 @@ fn set_through_pointers(a : *mut i32, b : *mut i32) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut pair = Pair {
-    a: 0i32, b: 0i32
-  };
+  let mut pair = Pair { a: 0i32, b: 0i32 };
   let _set = set_both(&mut pair.a, &mut pair.b);
   let mut x = 5i32;
   let _sum = add(&x, &x);

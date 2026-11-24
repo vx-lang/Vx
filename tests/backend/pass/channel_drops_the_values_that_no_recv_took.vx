@@ -32,11 +32,11 @@ impl Drop for Noisy {
 }
 
 fn put(tx : &Sender<Noisy>, n : i64) -> void {
-  match tx.send(Noisy {
-    n : n
-  }) {
-    Result<void, SendError<Noisy>>::Ok() => {}
-    Result<void, SendError<Noisy>>::Err(_) => {
+  match tx.send(Noisy { n : n }) {
+    Result<void,
+    SendError<Noisy>>::Ok() => {}
+    Result<void,
+    SendError<Noisy>>::Err(_) => {
       panic("the receiver is gone");
     }
   }
@@ -48,11 +48,13 @@ fn main() -> i32 {
   put(&tx, 2);
   put(&tx, 3);
   match rx.recv() {
-    Result<Noisy, RecvError>::Ok(v) => {
+    Result<Noisy,
+    RecvError>::Ok(v) => {
       println!("took {}", v.n);
       drop(v);
     }
-    Result<Noisy, RecvError>::Err(_) => {
+    Result<Noisy,
+    RecvError>::Err(_) => {
       panic("the channel closed early");
     }
   }

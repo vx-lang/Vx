@@ -36,9 +36,7 @@ fn take(x : Noisy) -> void {
 }
 
 fn in_a_let() -> void {
-  let b = Noisy {
-    n : 2
-  };
+  let b = Noisy { n : 2 };
   let f = || -> void {
     take(b);
   };
@@ -46,9 +44,7 @@ fn in_a_let() -> void {
 }
 
 fn in_a_task() -> void {
-  let c = Noisy {
-    n : 3
-  };
+  let c = Noisy { n : 3 };
   let f = || -> void {
     tasks {
       spawn {

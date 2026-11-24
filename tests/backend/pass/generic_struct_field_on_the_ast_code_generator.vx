@@ -36,9 +36,8 @@ fn main() -> i32 {
   let mut i : i64 = 0;
   while i < 8 {
     v.push(Mixed {
-      a : 1, h : Holder<i64> {
-        x : 100 + i, y : i
-      }
+      a : 1,
+      h : Holder<i64> { x : 100 + i, y : i }
     });
     i = i + 1;
   }
@@ -52,11 +51,7 @@ fn main() -> i32 {
   }
   println!("sum {}", sum);
 
-  let mut o = Mixed {
-    a : 1, h : Holder<i64> {
-      x : 3, y : 4
-    }
-  };
+  let mut o = Mixed { a : 1, h : Holder<i64> { x : 3, y : 4 } };
   o.h.x = 5;
   println!("local {} {}", o.h.x, o.h.y);
   set_x(&mut o);

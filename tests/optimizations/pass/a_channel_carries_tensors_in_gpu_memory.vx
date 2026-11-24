@@ -57,10 +57,16 @@ fn given_back() -> f32 {
   let (tx, _rx) = channel<Tensor<f32, [4], Memory::W>>(1);
   let _ = tx.send(on_gpu(1.0));
   match tx.send_for(on_gpu(7.0), Duration::from_millis(10)) {
-    Result<void, SendError<Tensor<f32, [4], Memory::W>>>::Ok() => {
+    Result<void,
+    SendError<Tensor<f32,
+    [4],
+    Memory::W>>>::Ok() => {
       return 0.0;
     }
-    Result<void, SendError<Tensor<f32, [4], Memory::W>>>::Err(e) => {
+    Result<void,
+    SendError<Tensor<f32,
+    [4],
+    Memory::W>>>::Err(e) => {
       return first_of(&e.value);
     }
   }
@@ -72,16 +78,28 @@ fn try_twice() -> f32 {
   let _ = tx.send(on_gpu(3.0));
   let mut got = 0.0;
   match rx.try_recv() {
-    Result<Tensor<f32, [4], Memory::W>, TryRecvError>::Ok(t) => {
+    Result<Tensor<f32,
+    [4],
+    Memory::W>,
+    TryRecvError>::Ok(t) => {
       got = got + first(t);
     }
-    Result<Tensor<f32, [4], Memory::W>, TryRecvError>::Err(_e) => {}
+    Result<Tensor<f32,
+    [4],
+    Memory::W>,
+    TryRecvError>::Err(_e) => {}
   }
   match rx.try_recv() {
-    Result<Tensor<f32, [4], Memory::W>, TryRecvError>::Ok(t) => {
+    Result<Tensor<f32,
+    [4],
+    Memory::W>,
+    TryRecvError>::Ok(t) => {
       got = got + 100.0 + first(t);
     }
-    Result<Tensor<f32, [4], Memory::W>, TryRecvError>::Err(_e) => {}
+    Result<Tensor<f32,
+    [4],
+    Memory::W>,
+    TryRecvError>::Err(_e) => {}
   }
   return got;
 }
@@ -106,10 +124,16 @@ fn selected() -> f32 {
   let _ = tx1.send(on_gpu(8.0));
   let mut got = 0.0;
   match sel.select() {
-    Result<Selected<Tensor<f32, [4], Memory::W>>, RecvError>::Ok(s) => {
+    Result<Selected<Tensor<f32,
+    [4],
+    Memory::W>>,
+    RecvError>::Ok(s) => {
       got = first_of(&s.value) + s.index as f32;
     }
-    Result<Selected<Tensor<f32, [4], Memory::W>>, RecvError>::Err(_e) => {}
+    Result<Selected<Tensor<f32,
+    [4],
+    Memory::W>>,
+    RecvError>::Err(_e) => {}
   }
   drop(tx0);
   return got;
@@ -127,10 +151,16 @@ fn pipeline() -> f32 {
     };
     for i in 0..5 {
       match rx.recv() {
-        Result<Tensor<f32, [4], Memory::W>, RecvError>::Ok(b) => {
+        Result<Tensor<f32,
+        [4],
+        Memory::W>,
+        RecvError>::Ok(b) => {
           total = total + first(b);
         }
-        Result<Tensor<f32, [4], Memory::W>, RecvError>::Err(_e) => {}
+        Result<Tensor<f32,
+        [4],
+        Memory::W>,
+        RecvError>::Err(_e) => {}
       }
     }
   }
@@ -149,11 +179,15 @@ fn on_the_host() -> f32 {
     };
     for i in 0..5 {
       match rx.recv() {
-        Result<Tensor<f32, [4]>, RecvError>::Ok(b) => {
+        Result<Tensor<f32,
+        [4]>,
+        RecvError>::Ok(b) => {
           let h = b;
           total = total + h[3];
         }
-        Result<Tensor<f32, [4]>, RecvError>::Err(_e) => {}
+        Result<Tensor<f32,
+        [4]>,
+        RecvError>::Err(_e) => {}
       }
     }
   }

@@ -34,9 +34,7 @@ fn add_all(dst : &mut Vec<i64>, src : &Vec<i64>) -> void {
 
 fn changed_after_the_last_use() -> void {
   let x = 1i64;
-  let mut h = Holder {
-    r : &x
-  };
+  let mut h = Holder { r : &x };
   let mut y = 2i64;
   set_r(&mut h, &y);
   println!("h={};", *h.r);

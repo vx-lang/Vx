@@ -75,10 +75,15 @@ fn watch<T : Send + Owned + Clone>(v : T, at : Caller) -> (WatchSender<T>, Watch
     data[0] = v;
   }
   return (WatchSender<T> {
-    words : words, data : data, made : at.location
+    words : words,
+    data : data,
+    made : at.location
   },
   WatchReceiver<T> {
-    words : words, data : data, made : at.location, seen : new_receiver_word(0)
+    words : words,
+    data : data,
+    made : at.location,
+    seen : new_receiver_word(0)
   });
 }
 
@@ -114,7 +119,9 @@ WatchSender<T> {
     let words = self.words;
     if word(words, RECEIVER).load(AtomicOrdering::SeqCst) == 0 {
       return Result<void, SendError<T>>::Err(SendError<T> {
-        value : v, cancelled : false, timed_out : false
+        value : v,
+        cancelled : false,
+        timed_out : false
       });
     }
     let data = self.data;
@@ -141,7 +148,10 @@ WatchSender<T> {
     word(words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
     let version = word(words, WATCH_VERSION).load(AtomicOrdering::SeqCst);
     return WatchReceiver<T> {
-      words : words, data : self.data, made : self.made, seen : new_receiver_word(version)
+      words : words,
+      data : self.data,
+      made : self.made,
+      seen : new_receiver_word(version)
     };
   }
 }
@@ -241,7 +251,10 @@ impl<T> Clone for WatchReceiver<T> {
     word(self.words, RECEIVER).fetch_add(1, AtomicOrdering::SeqCst);
     word(self.words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
     return WatchReceiver<T> {
-      words : self.words, data : self.data, made : self.made, seen : new_receiver_word(word(self.seen, 0).load(AtomicOrdering::Relaxed))
+      words : self.words,
+      data : self.data,
+      made : self.made,
+      seen : new_receiver_word(word(self.seen, 0).load(AtomicOrdering::Relaxed))
     };
   }
 }

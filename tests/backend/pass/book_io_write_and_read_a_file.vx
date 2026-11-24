@@ -67,10 +67,12 @@ fn write_and_read(files : &Files, path : &String) -> Result<i32, FileError> {
 fn main(root : Root) -> i32 {
   let path = unsafe { String::from_c_str(getenv("NOTES")) };
   match write_and_read(&root.files, &path) {
-    Result<i32, FileError>::Ok(_lines) => {
+    Result<i32,
+    FileError>::Ok(_lines) => {
       return 0;
     }
-    Result<i32, FileError>::Err(_e) => {
+    Result<i32,
+    FileError>::Err(_e) => {
       println!("a file call did not work");
       return 1;
     }

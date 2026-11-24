@@ -9,7 +9,7 @@
 // function call would call the function twice, so the compiler refuses it.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E3004] at {{.*}}a_compound_assignment_on_a_struct_needs_a_plain_left_side.vx:47:3: a compound assignment on a struct or an enum reads its left side twice, so the left side must be a variable, a field of one, or `*r`: put the value in a variable, or write `a = a + b`
+// CHECK: Error[E3004] at {{.*}}a_compound_assignment_on_a_struct_needs_a_plain_left_side.vx:41:3: a compound assignment on a struct or an enum reads its left side twice, so the left side must be a variable, a field of one, or `*r`: put the value in a variable, or write `a = a + b`
 // CHECK: 1 error(s) emitted
 
 import core::marker;
@@ -24,9 +24,7 @@ impl Copy for Money {}
 impl Add for Money {
   type Output = Money;
   fn add(self : Money, other : Money) -> Money {
-    return Money {
-      cents : self.cents + other.cents
-    };
+    return Money { cents : self.cents + other.cents };
   }
 }
 
@@ -39,14 +37,8 @@ fn the_wallet(w : &mut Wallet) -> &mut Wallet {
 }
 
 fn main() -> i32 {
-  let mut w = Wallet {
-    cash : Money {
-      cents : 10
-    }
-  };
-  the_wallet(&mut w).cash += Money {
-    cents : 5
-  };
+  let mut w = Wallet { cash : Money { cents : 10 } };
+  the_wallet(&mut w).cash += Money { cents : 5 };
   println!("{}", w.cash.cents);
   return 0;
 }

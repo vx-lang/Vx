@@ -41,13 +41,9 @@ fn add_one(m : &Mutex<i64>) -> void {
 fn main() -> i32 {
   println!("sizes {} {} {}", sizeof<Pair<i8>>(), sizeof<Pair<i64>>(), sizeof<Mutex<i64>>());
 
-  let small = pair_of_box(Box<Pair<i8>>::new(Pair<i8> {
-    a : 3, b : -4
-  }));
+  let small = pair_of_box(Box<Pair<i8>>::new(Pair<i8> { a : 3, b : -4 }));
   println!("small {} {}", small.a, small.b);
-  let large = pair_of_box(Box<Pair<i64>>::new(Pair<i64> {
-    a : 5, b : 6000000000
-  }));
+  let large = pair_of_box(Box<Pair<i64>>::new(Pair<i64> { a : 5, b : 6000000000 }));
   println!("large {} {}", large.a, large.b);
 
   let m = Box<Mutex<i64>>::new(Mutex<i64>::new(41));

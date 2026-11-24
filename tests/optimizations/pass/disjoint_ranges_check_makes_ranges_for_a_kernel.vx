@@ -44,10 +44,12 @@ fn write_rows(out : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles : &DisjointRang
 
 fn say_i32(o : Option<DisjointRanges<Tensor<i32, [?, 2]>>>) -> void {
   match o {
-    Option<DisjointRanges<Tensor<i32, [?, 2]>>>::Some(_d) => {
+    Option<DisjointRanges<Tensor<i32,
+    [?, 2]>>>::Some(_d) => {
       println!("disjoint");
     }
-    Option<DisjointRanges<Tensor<i32, [?, 2]>>>::None => {
+    Option<DisjointRanges<Tensor<i32,
+    [?, 2]>>>::None => {
       println!("overlap");
     }
   }
@@ -56,10 +58,12 @@ fn say_i32(o : Option<DisjointRanges<Tensor<i32, [?, 2]>>>) -> void {
 
 fn say_i64(o : Option<DisjointRanges<Tensor<i64, [?, 2]>>>) -> void {
   match o {
-    Option<DisjointRanges<Tensor<i64, [?, 2]>>>::Some(_d) => {
+    Option<DisjointRanges<Tensor<i64,
+    [?, 2]>>>::Some(_d) => {
       println!("disjoint");
     }
-    Option<DisjointRanges<Tensor<i64, [?, 2]>>>::None => {
+    Option<DisjointRanges<Tensor<i64,
+    [?, 2]>>>::None => {
       println!("overlap");
     }
   }
@@ -68,10 +72,12 @@ fn say_i64(o : Option<DisjointRanges<Tensor<i64, [?, 2]>>>) -> void {
 
 fn say_u64(o : Option<DisjointRanges<Tensor<u64, [?, 2]>>>) -> void {
   match o {
-    Option<DisjointRanges<Tensor<u64, [?, 2]>>>::Some(_d) => {
+    Option<DisjointRanges<Tensor<u64,
+    [?, 2]>>>::Some(_d) => {
       println!("disjoint");
     }
-    Option<DisjointRanges<Tensor<u64, [?, 2]>>>::None => {
+    Option<DisjointRanges<Tensor<u64,
+    [?, 2]>>>::None => {
       println!("overlap");
     }
   }
@@ -117,14 +123,16 @@ fn main() -> i32 {
   table[3][0] = 7;
   table[3][1] = 7;
   match DisjointRanges::check(table) {
-    Option<DisjointRanges<Tensor<i32, [4, 2]>>>::Some(ranges) => {
+    Option<DisjointRanges<Tensor<i32,
+    [4, 2]>>>::Some(ranges) => {
       let tiles = transfer(ranges, Memory::HBM);
       let mut y = transfer(Tensor<f32, [8, 1]>::fill(-1.0), Memory::HBM);
       write_rows(&mut y, &tiles);
       let h = transfer(y, Memory::CPU_DRAM);
       println!("rows: {} {} {} {} {} {} {} {}", h[0][0], h[1][0], h[2][0], h[3][0], h[4][0], h[5][0], h[6][0], h[7][0]);
     }
-    Option<DisjointRanges<Tensor<i32, [4, 2]>>>::None => {
+    Option<DisjointRanges<Tensor<i32,
+    [4, 2]>>>::None => {
       println!("rows: overlap");
     }
   }

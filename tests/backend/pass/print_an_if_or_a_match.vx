@@ -13,17 +13,9 @@
 
 fn main() -> i32 {
   let x = 4;
-  println!("if takes else: {}", if x > 10 {
-    10
-  } else {
-    x
-  });
+  println!("if takes else: {}", if x > 10 { 10 } else { x });
   // CHECK: {{^}}if takes else: 4{{$}}
-  println!("if takes then: {}", if x > 1 {
-    7
-  } else {
-    x
-  });
+  println!("if takes then: {}", if x > 1 { 7 } else { x });
   // CHECK-NEXT: {{^}}if takes then: 7{{$}}
   println!("match: {}", match x {
     4 => {

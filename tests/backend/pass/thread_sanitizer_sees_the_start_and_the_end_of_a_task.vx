@@ -35,12 +35,8 @@ fn multiply_by_eleven(s : &Slot) -> void {
 fn main() -> i32 {
   let mut a : i64 = 0;
   let mut b : i64 = 0;
-  let sa = Slot {
-    p : (&mut a) as *mut i64
-  };
-  let sb = Slot {
-    p : (&mut b) as *mut i64
-  };
+  let sa = Slot { p : (&mut a) as *mut i64 };
+  let sb = Slot { p : (&mut b) as *mut i64 };
   unsafe { *sa.p = 1; *sb.p = 2; }
   tasks {
     spawn {

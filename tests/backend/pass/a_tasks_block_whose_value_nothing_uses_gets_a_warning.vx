@@ -65,10 +65,12 @@ fn used(x : i32) -> i32 {
     Result<i32, i32>::Ok(v)
   };
   match r {
-    Result<i32, i32>::Ok(v) => {
+    Result<i32,
+    i32>::Ok(v) => {
       return v;
     }
-    Result<i32, i32>::Err(e) => {
+    Result<i32,
+    i32>::Err(e) => {
       return -e;
     }
   }

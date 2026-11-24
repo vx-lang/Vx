@@ -62,9 +62,7 @@ fn two_mut_paths_to_one_variable(t : &Table) -> i64 {
 }
 
 fn main() -> i32 {
-  let t = Table {
-    n : 1i64
-  };
+  let t = Table { n : 1i64 };
   return (a_push_while_an_element_is_in_use(&t) + an_assignment_while_a_reference_to_it_is_in_use(&t)
   + two_mut_paths_to_one_variable(&t)) as i32;
 }

@@ -24,9 +24,7 @@ extern impl Show for i64 {
 unsafe extern impl Send for Handle {}
 
 fn main() -> i32 {
-  let t = Ticket {
-    number : 7i64
-  };
+  let t = Ticket { number : 7i64 };
   let n = 41i64;
   print(t.show());
   print!(" ");

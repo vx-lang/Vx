@@ -39,15 +39,9 @@ fn show(what : *const i8, o : Option<Ticket>) -> void {
 }
 
 fn main() -> i32 {
-  let mut desk = Desk {
-    waiting: Option<Ticket>::None()
-  };
-  show("replaced", desk.waiting.replace(Ticket {
-    id: 1
-  }));
-  show("replaced", desk.waiting.replace(Ticket {
-    id: 2
-  }));
+  let mut desk = Desk { waiting: Option<Ticket>::None() };
+  show("replaced", desk.waiting.replace(Ticket { id: 1 }));
+  show("replaced", desk.waiting.replace(Ticket { id: 2 }));
   show("took", desk.waiting.take());
   println!("empty {}", desk.waiting.is_none());
   return 0;

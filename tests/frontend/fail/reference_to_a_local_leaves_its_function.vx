@@ -14,18 +14,16 @@
 // struct, stored through a `&mut` parameter, through a reference variable that was pointed
 // at a parameter first, and read back out of a struct variable's field.
 // CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:26:3: this returns a value that points into this function's stack frame
-// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:33:7: this stores a value that points into this function's stack frame through a reference
-// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:41:3: this returns a value that points into this function's stack frame
-// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:49:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:31:7: this stores a value that points into this function's stack frame through a reference
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:39:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:45:3: this returns a value that points into this function's stack frame
 struct View {
   r : &i32,
 }
 
 fn inside_a_struct(k : i32) -> View {
   let local : i32 = k + 4;
-  return View {
-    r : &local
-  };
+  return View { r : &local };
 }
 
 fn through_a_parameter(out : &mut View, k : i32) -> i32 {
@@ -43,9 +41,7 @@ fn through_a_reassigned_variable(p : &i32, k : i32) -> &i32 {
 
 fn out_of_a_field(k : i32) -> &i32 {
   let local : i32 = k + 4;
-  let v : View = View {
-    r : &local
-  };
+  let v : View = View { r : &local };
   return v.r;
 }
 

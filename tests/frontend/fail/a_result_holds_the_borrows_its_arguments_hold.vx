@@ -96,9 +96,7 @@ fn push_while_an_element_is_used() -> i64 {
 // `r` points where `h.r` points, which is `one`.
 fn assign_what_a_read_reference_points_at() -> i64 {
   let mut one = 1i64;
-  let h = Holder {
-    r : &one
-  };
+  let h = Holder { r : &one };
   let r = get(&h);
   // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:{{.*}}`one` is assigned while it is borrowed
   one = 3i64;
@@ -109,9 +107,7 @@ fn assign_what_a_read_reference_points_at() -> i64 {
 fn assign_what_a_stored_reference_points_at() -> i64 {
   let x = 1i64;
   let mut y = 2i64;
-  let mut h = Holder {
-    r : &x
-  };
+  let mut h = Holder { r : &x };
   let r = put_and_get(&mut h, &y);
   // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:{{.*}}`y` is assigned while it is borrowed
   y = 5i64;
@@ -121,12 +117,8 @@ fn assign_what_a_stored_reference_points_at() -> i64 {
 // `o` borrows `h`, and `h` holds the borrow of `one`. `r` holds it too.
 fn assign_what_a_reference_two_levels_down_points_at() -> i64 {
   let mut one = 1i64;
-  let h = Holder {
-    r : &one
-  };
-  let o = Outer {
-    inner : &h
-  };
+  let h = Holder { r : &one };
+  let o = Outer { inner : &h };
   let r = get_through_two(&o);
   // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:{{.*}}`one` is assigned while it is borrowed
   one = 3i64;

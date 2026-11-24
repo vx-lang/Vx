@@ -29,14 +29,10 @@ fn whole() -> void {
 }
 
 fn field() -> void {
-  let mut origin = P {
-    x : 1, v : Vec<i32>::new()
-  };
+  let mut origin = P { x : 1, v : Vec<i32>::new() };
   take_p(origin);
-  // CHECK-NEXT: Error[E4001] at {{.*}}moved_variable_read_in_an_assignment_to_itself.vx:[[# @LINE + 2]]:17: Use of moved or consumed linear variable: origin
-  origin = P {
-    x : 10, v : origin.v
-  };
+  // CHECK-NEXT: Error[E4001] at {{.*}}moved_variable_read_in_an_assignment_to_itself.vx:[[# @LINE + 1]]:28: Use of moved or consumed linear variable: origin
+  origin = P { x : 10, v : origin.v };
   print(origin.x);
 }
 // CHECK-NEXT: 2 error(s) emitted

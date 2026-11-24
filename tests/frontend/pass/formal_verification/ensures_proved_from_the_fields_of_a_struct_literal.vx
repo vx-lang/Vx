@@ -37,49 +37,42 @@ struct Pair<T> {
 fn make(cap : i32) -> Counter
 requires 0i32 <= cap
 ensures return.n <= return.cap {
-  return Counter {
-    n : 0i32, cap : cap
-  };
+  return Counter { n : 0i32, cap : cap };
 }
 
 fn local(cap : i32) -> i32
 requires 0i32 <= cap
 ensures return <= cap {
-  let c = Counter {
-    n : 0i32, cap : cap
-  };
+  let c = Counter { n : 0i32, cap : cap };
   return c.n;
 }
 
 fn nested() -> Outer
 ensures return.inner.n < return.inner.cap && return.k == 7i64 {
   return Outer {
-    inner : Counter {
-      n : 0i32, cap : 1i32
-    }, k : 7i64
+    inner : Counter { n : 0i32, cap : 1i32 },
+    k : 7i64
   };
 }
 
 fn mixed() -> i64
 ensures return == 3i64 {
   let m = Mixed {
-    enabled : true, scale : 1.5, count : 3i64
+    enabled : true,
+    scale : 1.5,
+    count : 3i64
   };
   return m.count;
 }
 
 fn pair() -> Pair<i64>
 ensures return.first < return.second {
-  return Pair<i64> {
-    first : 1i64, second : 2i64
-  };
+  return Pair<i64> { first : 1i64, second : 2i64 };
 }
 
 fn local_pair() -> i64
 ensures return == 3i64 {
-  let p = Pair<i64> {
-    first : 1i64, second : 2i64
-  };
+  let p = Pair<i64> { first : 1i64, second : 2i64 };
   return p.first + p.second;
 }
 

@@ -168,9 +168,7 @@ fn assign_while_a_struct_holds_a_borrow_if_arm(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
   if k > 0 {
-    let h = Holder {
-      r: &x
-    };
+    let h = Holder { r: &x };
     y = *h.r;
     x = 2;
   }
@@ -181,9 +179,7 @@ fn assign_while_a_struct_holds_a_borrow_if_arm(k : i32) -> i32 {
 fn assign_while_a_struct_holds_a_borrow_if_arm_borrowed_outside(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
-  let h = Holder {
-    r: &x
-  };
+  let h = Holder { r: &x };
   y = *h.r;
   if k > 0 {
     x = 2;

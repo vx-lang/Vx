@@ -28,9 +28,7 @@ impl Graph {
     for k in 0..(n * n) {
       adj.push(0);
     }
-    return Graph {
-      n: n, adj: adj
-    };
+    return Graph { n: n, adj: adj };
   }
 
   fn node_count(self: &Graph) -> i32 {

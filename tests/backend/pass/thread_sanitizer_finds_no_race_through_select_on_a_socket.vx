@@ -60,7 +60,14 @@ fn fill(w : &mut Words, v : i64) -> void {
 /// Plain writes to a frame at the depth of the frame of `select2`.
 fn scribble(v : i64) -> i64 {
   let mut w = Words {
-    a : 0, b : 0, c : 0, d : 0, e : 0, f : 0, g : 0, h : 0
+    a : 0,
+    b : 0,
+    c : 0,
+    d : 0,
+    e : 0,
+    f : 0,
+    g : 0,
+    h : 0
   };
   fill(&mut w, v);
   return w.a + w.h;
@@ -76,10 +83,12 @@ fn send_slowly(tx : Sender<i64>, count : i64) -> void {
 
 fn say(what : *const i8, r : Result<i32, SelectError>) -> void {
   match r {
-    Result<i32, SelectError>::Ok(i) => {
+    Result<i32,
+    SelectError>::Ok(i) => {
       println!("{}: index {}", what, i);
     }
-    Result<i32, SelectError>::Err(_) => {
+    Result<i32,
+    SelectError>::Err(_) => {
       println!("{}: Cancelled", what);
     }
   }
@@ -87,8 +96,10 @@ fn say(what : *const i8, r : Result<i32, SelectError>) -> void {
 
 fn connect(network : &Network) -> void {
   match TcpStream::connect(network, &address("127.0.0.1:41784")) {
-    Result<TcpStream, NetError>::Ok(_s) => {}
-    Result<TcpStream, NetError>::Err(_e) => {
+    Result<TcpStream,
+    NetError>::Ok(_s) => {}
+    Result<TcpStream,
+    NetError>::Err(_e) => {
       println!("connect: Error");
     }
   }
@@ -107,13 +118,15 @@ fn serve(network : &Network, listener : TcpListener) -> void {
     };
     for k in 0i64..50i64 {
       match select2(&l, &rx) {
-        Result<i32, SelectError>::Ok(i) => {
+        Result<i32,
+        SelectError>::Ok(i) => {
           if i == 1 {
             channel_won = channel_won + 1;
             let _v = rx.try_recv();
           }
         }
-        Result<i32, SelectError>::Err(_) => {}
+        Result<i32,
+        SelectError>::Err(_) => {}
       }
       scribbled = scribbled + scribble(k);
     }
@@ -128,10 +141,12 @@ fn serve(network : &Network, listener : TcpListener) -> void {
   sleep(Duration::from_millis(100));
   scribbled = scribbled + scribble(51);
   match l.accept() {
-    Result<TcpStream, NetError>::Ok(_s) => {
+    Result<TcpStream,
+    NetError>::Ok(_s) => {
       println!("accept got the client");
     }
-    Result<TcpStream, NetError>::Err(_e) => {
+    Result<TcpStream,
+    NetError>::Err(_e) => {
       println!("accept: Error");
     }
   }
@@ -142,10 +157,12 @@ fn serve(network : &Network, listener : TcpListener) -> void {
 fn main(root : Root) -> i32 {
   let network = &root.network;
   match TcpListener::bind(network, &address("127.0.0.1:41784")) {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       serve(network, listener);
     }
-    Result<TcpListener, NetError>::Err(_e) => {
+    Result<TcpListener,
+    NetError>::Err(_e) => {
       println!("bind: Error");
     }
   }

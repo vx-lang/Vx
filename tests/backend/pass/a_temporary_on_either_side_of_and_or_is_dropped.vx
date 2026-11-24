@@ -23,9 +23,7 @@ impl Drop for Noisy {
 }
 
 fn n(id : i32) -> Noisy {
-  return Noisy {
-    id: id
-  };
+  return Noisy { id: id };
 }
 
 fn an_and() -> void {

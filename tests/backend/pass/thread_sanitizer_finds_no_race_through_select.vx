@@ -29,9 +29,7 @@ unsafe impl Send for Note {}
 fn note(v : i64) -> Note {
   let p : *mut i64 = alloc(8, 8);
   unsafe { p[0] = v; }
-  return Note {
-    number : p
-  };
+  return Note { number : p };
 }
 
 fn read_and_free(n : Note) -> i64 {
@@ -73,7 +71,14 @@ fn fill(w : &mut Words, v : i64) -> void {
 /// Plain writes to a frame at the depth of the frame of `select2`.
 fn scribble(v : i64) -> i64 {
   let mut w = Words {
-    a : 0, b : 0, c : 0, d : 0, e : 0, f : 0, g : 0, h : 0
+    a : 0,
+    b : 0,
+    c : 0,
+    d : 0,
+    e : 0,
+    f : 0,
+    g : 0,
+    h : 0
   };
   fill(&mut w, v);
   return w.a + w.h;
@@ -82,10 +87,12 @@ fn scribble(v : i64) -> i64 {
 /// The number of the note, or -1 when the channel is closed.
 fn value_of(got : Result<Note, TryRecvError>) -> i64 {
   match got {
-    Result<Note, TryRecvError>::Ok(n) => {
+    Result<Note,
+    TryRecvError>::Ok(n) => {
       return read_and_free(n);
     }
-    Result<Note, TryRecvError>::Err(_) => {
+    Result<Note,
+    TryRecvError>::Err(_) => {
       return -1;
     }
   }
@@ -108,7 +115,8 @@ fn main() -> i32 {
     };
     while open_a || open_b {
       match select2(&when(open_a, &a), &when(open_b, &b)) {
-        Result<i32, SelectError>::Ok(i) => {
+        Result<i32,
+        SelectError>::Ok(i) => {
           scribbled = scribbled + scribble(taken);
           let mut v : i64 = -1;
           if i == 0 {
@@ -123,7 +131,8 @@ fn main() -> i32 {
             sum = sum + v;
           }
         }
-        Result<i32, SelectError>::Err(_) => {
+        Result<i32,
+        SelectError>::Err(_) => {
           open_a = false;
           open_b = false;
         }

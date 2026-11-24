@@ -28,9 +28,7 @@ fn get_secret<T>(_t : T) -> i64 {
 
 fn main() -> i32 {
   let secret : i64 = 42;
-  let h = Holder<i32> {
-    value : 1
-  };
+  let h = Holder<i32> { value : 1 };
   let a = get_secret(0);
   let b = h.get_secret();
   return (a + b) as i32;

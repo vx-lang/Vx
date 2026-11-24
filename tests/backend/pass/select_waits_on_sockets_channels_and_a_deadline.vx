@@ -66,10 +66,12 @@ fn address(s : *const i8) -> String {
 /// The index that a `select` gave, or -1 for a cancel.
 fn index(r : Result<i32, SelectError>) -> i32 {
   match r {
-    Result<i32, SelectError>::Ok(i) => {
+    Result<i32,
+    SelectError>::Ok(i) => {
       return i;
     }
-    Result<i32, SelectError>::Err(_) => {
+    Result<i32,
+    SelectError>::Err(_) => {
       return -1;
     }
   }
@@ -77,8 +79,10 @@ fn index(r : Result<i32, SelectError>) -> i32 {
 
 fn report(who : *const i8, result : Result<u64, NetError>) -> void {
   match result {
-    Result<u64, NetError>::Ok(_n) => {}
-    Result<u64, NetError>::Err(_e) => {
+    Result<u64,
+    NetError>::Ok(_n) => {}
+    Result<u64,
+    NetError>::Err(_e) => {
       println!("{}: Error", who);
     }
   }
@@ -114,10 +118,12 @@ fn server(listener : TcpListener, go : Sender<i64>) -> Result<u64, NetError> {
   let _sent = tx.send(9);
   let i = index(select3(&l, &stream, &rx));
   match rx.try_recv() {
-    Result<i64, TryRecvError>::Ok(v) => {
+    Result<i64,
+    TryRecvError>::Ok(v) => {
       println!("send: select3 gave {}, the channel, with the value {}", i, v);
     }
-    Result<i64, TryRecvError>::Err(_) => {
+    Result<i64,
+    TryRecvError>::Err(_) => {
       println!("send: select3 gave {}, with no value", i);
     }
   }
@@ -151,7 +157,8 @@ fn main(root : Root) -> i32 {
   let network = &root.network;
   let (go_tx, go_rx) = channel<i64>(1);
   match TcpListener::bind(network, &address("127.0.0.1:41781")) {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       tasks {
         spawn {
           report("client", client(network, go_rx));
@@ -159,12 +166,14 @@ fn main(root : Root) -> i32 {
         report("server", server(listener, go_tx));
       }
     }
-    Result<TcpListener, NetError>::Err(_e) => {
+    Result<TcpListener,
+    NetError>::Err(_e) => {
       println!("bind: Error");
     }
   }
   match UdpSocket::bind(network, &address("127.0.0.1:41782")) {
-    Result<UdpSocket, NetError>::Ok(socket) => {
+    Result<UdpSocket,
+    NetError>::Ok(socket) => {
       tasks {
         spawn {
           report("datagram", send_datagram(network));
@@ -172,7 +181,8 @@ fn main(root : Root) -> i32 {
         report("datagram", receive_datagram(socket));
       }
     }
-    Result<UdpSocket, NetError>::Err(_e) => {
+    Result<UdpSocket,
+    NetError>::Err(_e) => {
       println!("udp bind: Error");
     }
   }

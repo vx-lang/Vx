@@ -46,11 +46,7 @@ impl Drop for Guarded {
 
 fn make() -> Outer {
   return Outer {
-    b : Inner {
-      v : Noisy {
-        id : 1
-      }
-    },
+    b : Inner { v : Noisy { id : 1 } },
     n : 0
   };
 }

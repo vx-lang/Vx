@@ -106,8 +106,10 @@ fn name(e : NetError) -> *const i8 {
 
 fn report(who : *const i8, result : Result<u64, NetError>) -> void {
   match result {
-    Result<u64, NetError>::Ok(_n) => {}
-    Result<u64, NetError>::Err(e) => {
+    Result<u64,
+    NetError>::Ok(_n) => {}
+    Result<u64,
+    NetError>::Err(e) => {
       println!("{}: Error {}", who, name(e));
     }
   }
@@ -180,26 +182,32 @@ fn body_server(listener : TcpListener) -> Result<u64, NetError> {
 fn wait_for_a_line(listener : TcpListener) -> void {
   let mut l = listener;
   match l.accept() {
-    Result<TcpStream, NetError>::Ok(stream) => {
+    Result<TcpStream,
+    NetError>::Ok(stream) => {
       let mut input = TcpBufReader::new(stream);
       // The client waits for this byte, so the block returns only after the accept.
       match input.get_mut().write_all(&bytes("r")) {
-        Result<u64, NetError>::Ok(_n) => {}
-        Result<u64, NetError>::Err(e) => {
+        Result<u64,
+        NetError>::Ok(_n) => {}
+        Result<u64,
+        NetError>::Err(e) => {
           println!("cancel: the write gave {}", name(e));
         }
       }
       let mut line = Vec<u8>::new();
       match input.read_line(&mut line) {
-        Result<u64, NetError>::Ok(n) => {
+        Result<u64,
+        NetError>::Ok(n) => {
           println!("cancel: read_line gave {} bytes", n);
         }
-        Result<u64, NetError>::Err(e) => {
+        Result<u64,
+        NetError>::Err(e) => {
           println!("cancel: read_line gave {}", name(e));
         }
       }
     }
-    Result<TcpStream, NetError>::Err(e) => {
+    Result<TcpStream,
+    NetError>::Err(e) => {
       println!("cancel: accept gave {}", name(e));
     }
   }
@@ -211,9 +219,11 @@ fn cancel_a_read_line(network : &Network) -> i32 {
   let listener = TcpListener::bind(network, &address("127.0.0.1:41777"));
   let client = TcpStream::connect(network, &address("127.0.0.1:41777"));
   match listener {
-    Result<TcpListener, NetError>::Ok(l) => {
+    Result<TcpListener,
+    NetError>::Ok(l) => {
       match client {
-        Result<TcpStream, NetError>::Ok(stream) => {
+        Result<TcpStream,
+        NetError>::Ok(stream) => {
           let mut s = stream;
           tasks {
             spawn {
@@ -224,12 +234,14 @@ fn cancel_a_read_line(network : &Network) -> i32 {
             return 0;
           }
         }
-        Result<TcpStream, NetError>::Err(e) => {
+        Result<TcpStream,
+        NetError>::Err(e) => {
           println!("cancel: connect gave {}", name(e));
         }
       }
     }
-    Result<TcpListener, NetError>::Err(e) => {
+    Result<TcpListener,
+    NetError>::Err(e) => {
       println!("cancel: bind gave {}", name(e));
     }
   }
@@ -239,7 +251,8 @@ fn cancel_a_read_line(network : &Network) -> i32 {
 fn main(root : Root) -> i32 {
   let network = &root.network;
   match TcpListener::bind(network, &address("127.0.0.1:41774")) {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       tasks {
         spawn {
           report("long line client", long_line_client(network));
@@ -247,12 +260,14 @@ fn main(root : Root) -> i32 {
         report("long line server", long_line_server(listener));
       }
     }
-    Result<TcpListener, NetError>::Err(e) => {
+    Result<TcpListener,
+    NetError>::Err(e) => {
       println!("long line: bind gave {}", name(e));
     }
   }
   match TcpListener::bind(network, &address("127.0.0.1:41775")) {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       tasks {
         spawn {
           report("drop client", drop_client(network));
@@ -260,12 +275,14 @@ fn main(root : Root) -> i32 {
         report("drop server", drop_server(listener));
       }
     }
-    Result<TcpListener, NetError>::Err(e) => {
+    Result<TcpListener,
+    NetError>::Err(e) => {
       println!("drop: bind gave {}", name(e));
     }
   }
   match TcpListener::bind(network, &address("127.0.0.1:41776")) {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       tasks {
         spawn {
           report("body client", body_client(network));
@@ -273,7 +290,8 @@ fn main(root : Root) -> i32 {
         report("body server", body_server(listener));
       }
     }
-    Result<TcpListener, NetError>::Err(e) => {
+    Result<TcpListener,
+    NetError>::Err(e) => {
       println!("body: bind gave {}", name(e));
     }
   }

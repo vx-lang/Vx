@@ -31,9 +31,7 @@ Box<T> {
       panic("Box: out of memory");
     }
     unsafe { *p = val; }
-    return Box<T> {
-      ptr : p
-    };
+    return Box<T> { ptr : p };
   }
 }
 

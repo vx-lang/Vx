@@ -23,9 +23,7 @@ impl<T>
 Counter<T> {
   fn make(n : T, at : Caller) -> Counter<T> {
     show_caller(4, at);
-    return Counter<T> {
-      n : n
-    };
+    return Counter<T> { n : n };
   }
 
   fn get(self : &Counter<T>, at : Caller) -> &T {

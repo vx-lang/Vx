@@ -27,16 +27,20 @@ import std::time;
 
 fn send_two(tx : Sender<i64>) -> void {
   match tx.send(1) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {
       println!("the first send did not send");
     }
   }
   match tx.send(2) {
-    Result<void, SendError<i64>>::Ok() => {
+    Result<void,
+    SendError<i64>>::Ok() => {
       println!("send gave Ok");
     }
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Err(e) => {
       println!("send gave back {}, cancelled {}", e.value, e.cancelled);
     }
   }
@@ -63,10 +67,12 @@ fn leave_early(rx : &Receiver<i64>, tx : Sender<i64>) -> i64 {
 fn receive_two(rx : Receiver<i64>) -> void {
   for _i in 0..2 {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         println!("recv gave {}", v);
       }
-      Result<i64, RecvError>::Err(_e) => {
+      Result<i64,
+      RecvError>::Err(_e) => {
         println!("recv gave no value");
       }
     }
@@ -83,8 +89,10 @@ fn main() -> i32 {
       receive_two(rx);
     };
     match tx2.send(3) {
-      Result<void, SendError<i64>>::Ok() => {}
-      Result<void, SendError<i64>>::Err(_e) => {
+      Result<void,
+      SendError<i64>>::Ok() => {}
+      Result<void,
+      SendError<i64>>::Err(_e) => {
         println!("the send of 3 did not send");
       }
     }

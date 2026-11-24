@@ -13,8 +13,8 @@
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 //
-// DROPS-DAG: drop in leaves: b, before the return on line 42
-// DROPS-DAG: drop in leaves: l, before the return on line 42
+// DROPS-DAG: drop in leaves: b, before the return on line 40
+// DROPS-DAG: drop in leaves: l, before the return on line 40
 //
 // CHECK: {{^}}task sees 6{{$}}
 // CHECK-NEXT: {{^}}drop loud 2{{$}}
@@ -34,9 +34,7 @@ fn leaves(leave : bool) -> i32 {
   return tasks {
     let h = spawn {
       let b = Tensor<f32, [4]>::fill(6.0);
-      let l = Loud {
-        id: 2
-      };
+      let l = Loud { id: 2 };
       if leave {
         println!("task sees {}", b[0]);
         return l.id;

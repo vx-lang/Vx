@@ -54,9 +54,7 @@ struct Holder {
 }
 
 fn ok_some() -> void {
-  let _r = Result<Option<Noisy>, Noisy>::Ok(Option<Noisy>::Some(Noisy {
-    id: 11
-  }));
+  let _r = Result<Option<Noisy>, Noisy>::Ok(Option<Noisy>::Some(Noisy { id: 11 }));
 }
 
 fn ok_none() -> void {
@@ -64,16 +62,12 @@ fn ok_none() -> void {
 }
 
 fn err_noisy() -> void {
-  let _r = Result<Option<Noisy>, Noisy>::Err(Noisy {
-    id: 22
-  });
+  let _r = Result<Option<Noisy>, Noisy>::Err(Noisy { id: 22 });
 }
 
 fn err_holder() -> void {
   let _r = Result<u64, Holder>::Err(Holder {
-    code: Option<Noisy>::Some(Noisy {
-      id: 5
-    })
+    code: Option<Noisy>::Some(Noisy { id: 5 })
   });
 }
 

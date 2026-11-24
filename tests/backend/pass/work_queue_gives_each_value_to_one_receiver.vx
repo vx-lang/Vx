@@ -52,10 +52,12 @@ fn say(e : RecvError) -> void {
 
 fn show(r : Result<i64, RecvError>) -> void {
   match r {
-    Result<i64, RecvError>::Ok(v) => {
+    Result<i64,
+    RecvError>::Ok(v) => {
       println!("recv gave {}", v);
     }
-    Result<i64, RecvError>::Err(e) => {
+    Result<i64,
+    RecvError>::Err(e) => {
       say(e);
     }
   }
@@ -65,11 +67,13 @@ fn show(r : Result<i64, RecvError>) -> void {
 fn work(rx : WorkReceiver<i64>, count : &AtomicI64, sum : &AtomicI64) -> void {
   loop {
     match rx.recv() {
-      Result<i64, RecvError>::Ok(v) => {
+      Result<i64,
+      RecvError>::Ok(v) => {
         count.fetch_add(1, AtomicOrdering::SeqCst);
         sum.fetch_add(v, AtomicOrdering::SeqCst);
       }
-      Result<i64, RecvError>::Err(e) => {
+      Result<i64,
+      RecvError>::Err(e) => {
         say(e);
         return;
       }
@@ -79,8 +83,10 @@ fn work(rx : WorkReceiver<i64>, count : &AtomicI64, sum : &AtomicI64) -> void {
 
 fn send_now(tx : &Sender<i64>, v : i64) -> void {
   match tx.send(v) {
-    Result<void, SendError<i64>>::Ok() => {}
-    Result<void, SendError<i64>>::Err(_e) => {
+    Result<void,
+    SendError<i64>>::Ok() => {}
+    Result<void,
+    SendError<i64>>::Err(_e) => {
       println!("the send of {} did not send", v);
     }
   }
@@ -99,10 +105,12 @@ fn say_try(e : TryRecvError) -> void {
 
 fn try_once(rx : &WorkReceiver<i64>) -> void {
   match rx.try_recv() {
-    Result<i64, TryRecvError>::Ok(v) => {
+    Result<i64,
+    TryRecvError>::Ok(v) => {
       println!("try_recv gave {}", v);
     }
-    Result<i64, TryRecvError>::Err(e) => {
+    Result<i64,
+    TryRecvError>::Err(e) => {
       say_try(e);
     }
   }
@@ -157,10 +165,12 @@ fn main() -> i32 {
   show(rx.recv_for(Duration::from_millis(20)));
   send_now(&tx, 1);
   match tx.send_for(2, Duration::from_millis(20)) {
-    Result<void, SendError<i64>>::Ok() => {
+    Result<void,
+    SendError<i64>>::Ok() => {
       println!("send_for sent 2");
     }
-    Result<void, SendError<i64>>::Err(e) => {
+    Result<void,
+    SendError<i64>>::Err(e) => {
       println!("send_for gave back {}, timed out {}", e.value, e.timed_out);
     }
   }

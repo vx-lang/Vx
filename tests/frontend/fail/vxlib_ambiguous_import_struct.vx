@@ -22,9 +22,7 @@ import sa;
 import sb;
 
 fn main() -> i32 {
-  let v = Val {
-    a : 1
-  };
+  let v = Val { a : 1 };
   return v.a;
 }
 

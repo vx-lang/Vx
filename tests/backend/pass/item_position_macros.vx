@@ -74,12 +74,8 @@ stamp_const!(forty 40);
 outer!(2);
 
 fn main() -> i32 {
-  let a = Apple {
-    weight : 5
-  };
-  let b = Pear {
-    weight : 1.5
-  };
+  let a = Apple { weight : 5 };
+  let b = Pear { weight : 1.5 };
   print(a.zero() + b.zero());
   print!(" ");
   print(forty() + from_outer());

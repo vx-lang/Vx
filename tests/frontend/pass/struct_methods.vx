@@ -45,9 +45,7 @@ struct Point {
 
 impl Point {
   fn new(x: i32, y: i32) -> Point {
-    return Point {
-      x: x, y: y
-    };
+    return Point { x: x, y: y };
   }
 
   fn manhattan_distance(self: &Point) -> i32 {
@@ -55,9 +53,7 @@ impl Point {
   }
 
   fn add(self: &Point, other: &Point) -> Point {
-    return Point {
-      x: self.x + other.x, y: self.y + other.y
-    };
+    return Point { x: self.x + other.x, y: self.y + other.y };
   }
 }
 

@@ -14,7 +14,7 @@
 // so the call is refused. In `into_a_local_then_return` it points at a local, which is
 // fine until that local is returned.
 // CHECK-DAG: Error[E4005] at {{.*}}closure_using_a_local_is_passed_with_a_reference.vx:30:3: this call is given a value that points into this function's stack frame, and a reference through `out`
-// CHECK-DAG: Error[E4005] at {{.*}}closure_using_a_local_is_passed_with_a_reference.vx:39:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at {{.*}}closure_using_a_local_is_passed_with_a_reference.vx:37:3: this returns a value that points into this function's stack frame
 import core::ops;
 
 struct Holder {
@@ -32,9 +32,7 @@ fn into_callers(out : &mut Holder, k : i32) -> i32 {
 }
 
 fn into_a_local_then_return(k : i32) -> Holder {
-  let mut h : Holder = Holder {
-    f : | x : i32 | x
-  };
+  let mut h : Holder = Holder { f : | x : i32 | x };
   put(&mut h, | x : i32 | x + k);
   return h;
 }

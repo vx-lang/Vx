@@ -20,9 +20,7 @@ fn take(x : Noisy) -> i32 {
 }
 
 fn after_an_unsafe_block() -> i32 {
-  let t = Noisy {
-    id: 1
-  };
+  let t = Noisy { id: 1 };
   print(take(t));
   unsafe { let t = Noisy { id: 2 }; print(t.id); }
   // CHECK: Error[E4001] at {{.*}}a_let_in_an_inner_block_gives_no_value_back.vx:[[# @LINE + 1]]:10: Use of moved or consumed linear variable: t
@@ -30,16 +28,12 @@ fn after_an_unsafe_block() -> i32 {
 }
 
 fn in_a_loop() -> i32 {
-  let t = Noisy {
-    id: 3
-  };
+  let t = Noisy { id: 3 };
   let mut i = 0;
   // CHECK: Error[E4001] at {{.*}}a_let_in_an_inner_block_gives_no_value_back.vx:[[# @LINE + 1]]:3: `t` is moved inside this loop and not given a new value before the loop goes round again
   while i < 2 {
     print(take(t));
-    let t = Noisy {
-      id: 4
-    };
+    let t = Noisy { id: 4 };
     print(t.id);
     i = i + 1;
   }

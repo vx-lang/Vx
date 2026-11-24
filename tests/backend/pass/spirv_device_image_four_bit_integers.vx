@@ -39,11 +39,7 @@ fn main() -> i32 {
   let mut gs = transfer(unsafe { Tensor<u4, [8]>::uninit() }, Memory::DEV_HBM);
   spawn on(Topology::Dev) {
     for i in 0..8 {
-      gx[i] = if ga[i] < (0 as i4) {
-        (ga[i] as i32) * 10
-      } else {
-        1
-      };
+      gx[i] = if ga[i] < (0 as i4) { (ga[i] as i32) * 10 } else { 1 };
       gs[i] = gb[i] + (9 as u4);
     }
   }

@@ -114,11 +114,7 @@ fn main() -> i32 {
             }
           };
           let empty = w == 2 || (w == 1 && i == 9) || (w == 3 && i == 0) || high;
-          ix[w][i] = if empty {
-            -1
-          } else {
-            100 + i
-          };
+          ix[w][i] = if empty { -1 } else { 100 + i };
         }
         let chosen = lanes::argmax(&vs[w], &ix[w], 32);
         let fewer = lanes::argmax(&vs[w], &ix[w], 5);
@@ -135,16 +131,8 @@ fn main() -> i32 {
       let mut ws = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
       let mut ix = unsafe { Tensor<i32, [64], Memory::SMEM>::uninit() };
       for i in 0..64 across lanes {
-        vs[i] = if i == 7 || i == 20 {
-          50.0
-        } else {
-          ((i * 7) % 11) as f32
-        };
-        ws[i] = if i == 40 {
-          60.0
-        } else {
-          vs[i]
-        };
+        vs[i] = if i == 7 || i == 20 { 50.0 } else { ((i * 7) % 11) as f32 };
+        ws[i] = if i == 40 { 60.0 } else { vs[i] };
         ix[i] = 100 + i;
       }
       let u = lanes::argmax_unordered(&vs, &ix, 32);

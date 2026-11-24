@@ -52,11 +52,9 @@ fn two_closures_change_one_local() -> void {
   add_two();
 }
 
-// CHECK: Error[E4009] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+8]]:7: `log.count` is assigned while it is borrowed, and the borrow is used after the assignment. The closure 'peek' reads it, so it holds it until the last use of 'peek'.
+// CHECK: Error[E4009] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+6]]:7: `log.count` is assigned while it is borrowed, and the borrow is used after the assignment. The closure 'peek' reads it, so it holds it until the last use of 'peek'.
 fn write_to_a_struct_that_a_closure_reads() -> void {
-  let mut log = Log {
-    count: 0
-  };
+  let mut log = Log { count: 0 };
   let peek = || -> i64 {
     log.count
   };
@@ -64,11 +62,9 @@ fn write_to_a_struct_that_a_closure_reads() -> void {
   print(peek());
 }
 
-// CHECK: Error[E4001] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+9]]:9: Use of moved or consumed linear variable: log
+// CHECK: Error[E4001] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+7]]:9: Use of moved or consumed linear variable: log
 fn use_of_a_struct_that_a_closure_moved() -> void {
-  let log = Log {
-    count: 0
-  };
+  let log = Log { count: 0 };
   let eat = || -> i64 {
     take(log)
   };

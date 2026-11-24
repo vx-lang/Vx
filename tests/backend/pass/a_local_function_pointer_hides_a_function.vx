@@ -27,9 +27,7 @@ fn declared() -> i32 {
 
 fn main() -> i32 {
   let k : i32 = 10;
-  let r : Rules = Rules {
-    add : | x : i32 | x + k
-  };
+  let r : Rules = Rules { add : | x : i32 | x + k };
   let add = r.add.func;
   print(add(r.add.env, 4));
   print!(" ");

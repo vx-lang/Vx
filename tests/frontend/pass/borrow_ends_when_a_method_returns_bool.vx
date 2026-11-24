@@ -24,12 +24,8 @@ impl Num {
 }
 
 fn main() -> i32 {
-  let a = Num {
-    v : 1i32
-  };
-  let mut b = Num {
-    v : 1i32
-  };
+  let a = Num { v : 1i32 };
+  let mut b = Num { v : 1i32 };
   let same = a.same_as(&b);
   b.v = 2i32;
   if same {

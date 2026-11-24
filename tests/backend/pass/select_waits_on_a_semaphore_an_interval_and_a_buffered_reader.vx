@@ -55,10 +55,12 @@ fn pause() -> void {
 /// The index that a `select` gave, or -1 for a cancel.
 fn index(r : Result<i32, SelectError>) -> i32 {
   match r {
-    Result<i32, SelectError>::Ok(i) => {
+    Result<i32,
+    SelectError>::Ok(i) => {
       return i;
     }
-    Result<i32, SelectError>::Err(_) => {
+    Result<i32,
+    SelectError>::Err(_) => {
       return -1;
     }
   }
@@ -67,11 +69,13 @@ fn index(r : Result<i32, SelectError>) -> i32 {
 /// Takes the permit, says so on `told`, and gives the permit back 0.1 seconds later.
 fn hold(s : &Semaphore, told : Sender<i64>) -> void {
   match s.acquire() {
-    Result<Permit, AcquireError>::Ok(_permit) => {
+    Result<Permit,
+    AcquireError>::Ok(_permit) => {
       let _sent = told.send(1);
       pause();
     }
-    Result<Permit, AcquireError>::Err(_) => {
+    Result<Permit,
+    AcquireError>::Err(_) => {
       println!("semaphore: acquire gave an error");
     }
   }
@@ -131,8 +135,10 @@ fn bytes(s : *const i8) -> Vec<u8> {
 
 fn report(who : *const i8, result : Result<u64, NetError>) -> void {
   match result {
-    Result<u64, NetError>::Ok(_n) => {}
-    Result<u64, NetError>::Err(_e) => {
+    Result<u64,
+    NetError>::Ok(_n) => {}
+    Result<u64,
+    NetError>::Err(_e) => {
       println!("{}: Error", who);
     }
   }
@@ -172,7 +178,8 @@ fn server(listener : TcpListener, go : Sender<i64>) -> Result<u64, NetError> {
 fn reader_step(network : &Network) -> void {
   let (go_tx, go_rx) = channel<i64>(1);
   match TcpListener::bind(network, &address("127.0.0.1:41785")) {
-    Result<TcpListener, NetError>::Ok(listener) => {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
       tasks {
         spawn {
           report("client", client(network, go_rx));
@@ -180,7 +187,8 @@ fn reader_step(network : &Network) -> void {
         report("server", server(listener, go_tx));
       };
     }
-    Result<TcpListener, NetError>::Err(_e) => {
+    Result<TcpListener,
+    NetError>::Err(_e) => {
       println!("bind: Error");
     }
   }

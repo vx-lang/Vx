@@ -14,14 +14,10 @@ struct Point {
 fn point_for(n : i32) -> Point {
   return match n {
     0 => {
-      return Point {
-        x: 7
-      };
+      return Point { x: 7 };
     }
     1 => {
-      return Point {
-        x: 8
-      };
+      return Point { x: 8 };
     }
   };
 }

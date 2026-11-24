@@ -10,7 +10,7 @@
 // `ptr_of_mut` reads a `*mut f32` out of a struct behind a `&mut`, so the result keeps a
 // mutable borrow of `w`. A second call in the same struct literal is error E4004.
 //
-// CHECK: E4004{{.*}}:31:{{.*}}Cannot borrow 'w' because it is already borrowed as mutable
+// CHECK: E4004{{.*}}:30:{{.*}}Cannot borrow 'w' because it is already borrowed as mutable
 // CHECK-NOT: E4004
 
 struct Weights {
@@ -27,9 +27,7 @@ fn ptr_of_mut(w : &mut Weights) -> *mut f32 {
 }
 
 fn views(w : &mut Weights) -> Views {
-  return Views {
-    a: ptr_of_mut(w), b: ptr_of_mut(w)
-  };
+  return Views { a: ptr_of_mut(w), b: ptr_of_mut(w) };
 }
 
 fn main() -> i32 {

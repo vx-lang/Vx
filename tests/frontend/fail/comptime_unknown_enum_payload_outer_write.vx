@@ -21,11 +21,7 @@ fn main(n : i32) -> i32 {
   let mut enum_outer : i32 = 0i32;
   // CHECK: Error[E3033]{{.*}}writes to 'enum_outer'
   let value = comptime {
-    let _ignored = if n > 0i32 {
-      Maybe::Value(touch(&mut enum_outer))
-    } else {
-      Maybe::Empty
-    };
+    let _ignored = if n > 0i32 { Maybe::Value(touch(&mut enum_outer)) } else { Maybe::Empty };
     7i32
   };
   return value;

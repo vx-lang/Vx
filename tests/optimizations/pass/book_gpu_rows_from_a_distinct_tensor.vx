@@ -46,11 +46,13 @@ fn main() -> i32 {
   let x = transfer(xh, Memory::HBM);
   let mut y = transfer(Tensor<f32, [8, 64]>::fill(1.0), Memory::HBM);
   match Distinct::check(tokens) {
-    Option<Distinct<Tensor<i32, [?]>>>::Some(rows) => {
+    Option<Distinct<Tensor<i32,
+    [?]>>>::Some(rows) => {
       let on_gpu = transfer(rows, Memory::HBM);
       add_to_rows(&mut y, &on_gpu, &x);
     }
-    Option<Distinct<Tensor<i32, [?]>>>::None => {
+    Option<Distinct<Tensor<i32,
+    [?]>>>::None => {
       println!("a token is in the list twice");
     }
   }

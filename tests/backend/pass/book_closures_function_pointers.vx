@@ -51,9 +51,7 @@ fn main() -> i32 {
   let g : fn(i64) -> i64 = double;
   println!("g {}", g(4i64));
 
-  let s = Step {
-    op : double
-  };
+  let s = Step { op : double };
   let op = s.op;
   println!("step {}", op(3i64));
 

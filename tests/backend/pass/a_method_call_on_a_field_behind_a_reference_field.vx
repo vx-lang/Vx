@@ -38,12 +38,8 @@ fn add_through_a_local(h : &mut Handle) -> void {
 }
 
 fn main() -> i32 {
-  let c = Counter {
-    count : AtomicI64::new(0)
-  };
-  let mut h = Handle {
-    counter : &c
-  };
+  let c = Counter { count : AtomicI64::new(0) };
+  let mut h = Handle { counter : &c };
   add_through_the_handle(&mut h);
   println!("after an add through the handle: {}", c.count.load(AtomicOrdering::SeqCst));
   println!("read through the handle: {}", read_through_the_handle(&h));

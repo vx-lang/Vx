@@ -31,9 +31,7 @@ fn shift(p : &mut Pair) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut w = Wrapper {
-    v : Vec<i64>::new()
-  };
+  let mut w = Wrapper { v : Vec<i64>::new() };
   w.v.push(1i64);
   // `v` is a field of `Wrapper`, which has no invariant.
   w.v = Vec<i64>::new();
@@ -43,9 +41,7 @@ fn main() -> i32 {
   unsafe { w.v.data[1] = 4i64; }
   let mut i = Interval::new();
   i.widen();
-  let mut p = Pair {
-    a : 1i64, b : 2i64
-  };
+  let mut p = Pair { a : 1i64, b : 2i64 };
   shift(&mut p);
   let b = &mut p.b;
   *b = 10i64;

@@ -22,9 +22,7 @@ struct Holder<U> {
 impl<U> Pick for Holder<U> {}
 
 fn main() -> i32 {
-  let h = Holder<i64> {
-    value : 4i64
-  };
+  let h = Holder<i64> { value : 4i64 };
   let x : f64 = h.other(2.5f64);
   print((x * 2.0f64) as i64 + 2i64);
   return 0;

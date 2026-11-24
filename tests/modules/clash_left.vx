@@ -13,9 +13,7 @@ struct Point {
 }
 
 fn left_point() -> Point {
-  return Point {
-    x : 1i64
-  };
+  return Point { x : 1i64 };
 }
 
 fn left_x() -> i64 {

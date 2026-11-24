@@ -41,11 +41,17 @@ fn fits() -> f32 {
   let _ = tx.send(transfer(Tensor<f32, [128]>::fill(2.0), Memory::W));
   let mut got = 0.0;
   match rx.recv() {
-    Result<Tensor<f32, [128], Memory::W>, RecvError>::Ok(b) => {
+    Result<Tensor<f32,
+    [128],
+    Memory::W>,
+    RecvError>::Ok(b) => {
       let h = transfer(b, Memory::CPU_DRAM);
       got = h[0];
     }
-    Result<Tensor<f32, [128], Memory::W>, RecvError>::Err(_e) => {}
+    Result<Tensor<f32,
+    [128],
+    Memory::W>,
+    RecvError>::Err(_e) => {}
   }
   return got;
 }

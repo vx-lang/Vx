@@ -25,14 +25,8 @@ struct Outer {
 }
 
 fn main() -> i32 {
-  let mut o = Outer {
-    inner: Inner {
-      n: 1, m: 2i64
-    }, k: 3
-  };
-  o.inner = Inner {
-    n: 5, m: 6i64
-  };
+  let mut o = Outer { inner: Inner { n: 1, m: 2i64 }, k: 3 };
+  o.inner = Inner { n: 5, m: 6i64 };
   print(o.inner.n);
   print!(" ");
   print(o.inner.m);

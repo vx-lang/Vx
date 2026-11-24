@@ -23,14 +23,10 @@ struct Point {
 fn point_for(n : i32) -> Point {
   return match n {
     0 => {
-      return Point {
-        x: 1, y: 2
-      };
+      return Point { x: 1, y: 2 };
     }
     _ => {
-      return Point {
-        x: 3, y: 4
-      };
+      return Point { x: 3, y: 4 };
     }
   };
 }
@@ -64,9 +60,7 @@ fn main() -> i32 {
   // CHECK-NEXT: {{^}}enum: 42{{$}}
   // VALUES-NEXT: {{^}}enum: 42{{$}}
 
-  let q = Option<Point>::Some(Point {
-    x: 5, y: 6
-  });
+  let q = Option<Point>::Some(Point { x: 5, y: 6 });
   print!("unwrap a struct: ");
   print(q.unwrap().y);
   print!("

@@ -57,14 +57,14 @@ fn main() -> i32 {
   }
   print!(" ");
 
-  let o = Option<Pair<i64, i64>>::Some(Pair<i64, i64> {
-    a : 3i64, b : 4i64
-  });
+  let o = Option<Pair<i64, i64>>::Some(Pair<i64, i64> { a : 3i64, b : 4i64 });
   match o {
-    Option<Pair<i64, i64>>::Some(p) => {
+    Option<Pair<i64,
+    i64>>::Some(p) => {
       print(p.a + p.b);
     }
-    Option<Pair<i64, i64>>::None => {
+    Option<Pair<i64,
+    i64>>::None => {
       print(0);
     }
   }

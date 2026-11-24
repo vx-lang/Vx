@@ -22,10 +22,12 @@ fn f(fail : bool) -> Result<void, i32> {
 
 fn code(r : Result<void, i32>) -> i32 {
   match r {
-    Result<void, i32>::Ok(_) => {
+    Result<void,
+    i32>::Ok(_) => {
       return 0;
     }
-    Result<void, i32>::Err(e) => {
+    Result<void,
+    i32>::Err(e) => {
       return e;
     }
   }

@@ -35,9 +35,7 @@ unsafe impl Send for Note {}
 fn note(v : i64) -> Note {
   let p : *mut i64 = alloc(8, 8);
   unsafe { p[0] = v; }
-  return Note {
-    number : p
-  };
+  return Note { number : p };
 }
 
 fn read(n : &Note) -> i64 {
@@ -62,10 +60,12 @@ fn sum_news(rx : BroadcastReceiver<Note>) -> void {
   let mut sum : i64 = 0;
   loop {
     match rx.recv() {
-      Result<Note, RecvError>::Ok(n) => {
+      Result<Note,
+      RecvError>::Ok(n) => {
         sum = sum + read(&n);
       }
-      Result<Note, RecvError>::Err(_e) => {
+      Result<Note,
+      RecvError>::Err(_e) => {
         println!("a broadcast receiver got the sum {}", sum);
         return;
       }
@@ -76,10 +76,12 @@ fn sum_news(rx : BroadcastReceiver<Note>) -> void {
 fn do_work(rx : WorkReceiver<Note>, total : &AtomicI64) -> void {
   loop {
     match rx.recv() {
-      Result<Note, RecvError>::Ok(n) => {
+      Result<Note,
+      RecvError>::Ok(n) => {
         total.fetch_add(read(&n), AtomicOrdering::SeqCst);
       }
-      Result<Note, RecvError>::Err(_e) => {
+      Result<Note,
+      RecvError>::Err(_e) => {
         return;
       }
     }
@@ -90,10 +92,12 @@ fn watch_last(rx : WatchReceiver<Note>) -> void {
   let mut last : i64 = 0;
   loop {
     match rx.recv() {
-      Result<Note, RecvError>::Ok(n) => {
+      Result<Note,
+      RecvError>::Ok(n) => {
         last = read(&n);
       }
-      Result<Note, RecvError>::Err(_e) => {
+      Result<Note,
+      RecvError>::Err(_e) => {
         println!("the watch receiver saw {} last", last);
         return;
       }

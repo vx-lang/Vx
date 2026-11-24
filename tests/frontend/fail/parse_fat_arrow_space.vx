@@ -7,7 +7,8 @@ fn main() -> i32 {
   let mut out = 0;
   match x {
     1 = > out = 10;
-    , _ => out = 20;
+    ,
+    _ => out = 20;
   }
 }
 

@@ -28,9 +28,7 @@ impl S {
 }
 
 fn main() -> i32 {
-  let mut s = S {
-    x : 1
-  };
+  let mut s = S { x : 1 };
   print(s.reset());
   return 0;
 }

@@ -141,9 +141,7 @@ impl CAddress {
     if is_null(ptr) {
       return Result<CAddress, NetError>::Err(NetError::BadAddress);
     }
-    return Result<CAddress, NetError>::Ok(CAddress {
-      ptr : ptr
-    });
+    return Result<CAddress, NetError>::Ok(CAddress { ptr : ptr });
   }
 }
 
@@ -178,9 +176,7 @@ impl TcpStream {
     if status != 0 {
       return Result<TcpStream, NetError>::Err(net_error(status));
     }
-    return Result<TcpStream, NetError>::Ok(TcpStream {
-      ptr : ptr
-    });
+    return Result<TcpStream, NetError>::Ok(TcpStream { ptr : ptr });
   }
 
   /// Read up to `len` bytes into `buffer` and give how many arrived. 0 means that the peer
@@ -328,9 +324,7 @@ impl UdpSocket {
     if status != 0 {
       return Result<UdpSocket, NetError>::Err(net_error(status));
     }
-    return Result<UdpSocket, NetError>::Ok(UdpSocket {
-      ptr : ptr
-    });
+    return Result<UdpSocket, NetError>::Ok(UdpSocket { ptr : ptr });
   }
 
   /// Receive one datagram into `buffer` and give its length. A datagram longer than `len` is
@@ -425,9 +419,7 @@ impl TcpListener {
     if status != 0 {
       return Result<TcpListener, NetError>::Err(net_error(status));
     }
-    return Result<TcpListener, NetError>::Ok(TcpListener {
-      ptr : ptr
-    });
+    return Result<TcpListener, NetError>::Ok(TcpListener { ptr : ptr });
   }
 
   /// Listen on `addr`, written as `host:port`. The caller needs the network right, a
@@ -447,9 +439,7 @@ impl TcpListener {
     if status != 0 {
       return Result<TcpStream, NetError>::Err(net_error(status));
     }
-    return Result<TcpStream, NetError>::Ok(TcpStream {
-      ptr : ptr
-    });
+    return Result<TcpStream, NetError>::Ok(TcpStream { ptr : ptr });
   }
 }
 
@@ -493,7 +483,10 @@ impl TcpBufReader {
   /// A reader of `stream`.
   fn new(stream : TcpStream) -> TcpBufReader {
     return TcpBufReader {
-      stream : stream, buffer : unsafe { Vec<u8>::zeroed(NET_BUFFER_SIZE) }, start : 0, end : 0
+      stream : stream,
+      buffer : unsafe { Vec<u8>::zeroed(NET_BUFFER_SIZE) },
+      start : 0,
+      end : 0
     };
   }
 
@@ -603,7 +596,9 @@ impl TcpBufWriter {
   /// A writer to `stream`.
   fn new(stream : TcpStream) -> TcpBufWriter {
     return TcpBufWriter {
-      stream : stream, buffer : unsafe { Vec<u8>::zeroed(NET_BUFFER_SIZE) }, used : 0
+      stream : stream,
+      buffer : unsafe { Vec<u8>::zeroed(NET_BUFFER_SIZE) },
+      used : 0
     };
   }
 

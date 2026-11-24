@@ -33,15 +33,11 @@ fn main() -> i32 {
   // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:18: this `&mut` can change the field `capacity` of `Vec`. `Vec` has an invariant, so only code in `vec.vx` can change its fields{{$}}
   let c = &mut v.capacity;
   *c = 5;
-  let mut w = Wrapper {
-    v : Vec<i64>::new()
-  };
+  let mut w = Wrapper { v : Vec<i64>::new() };
   // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:7: this assignment changes the field `len` of `Vec`.
   w.v.len = 3;
   // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:11: this struct literal builds a `Vec`. `Vec` has an invariant, so only code in `vec.vx` can build it from its fields{{$}}
-  let u = Vec<i64> {
-    data : v.data, len : 0, capacity : 0
-  };
+  let u = Vec<i64> { data : v.data, len : 0, capacity : 0 };
   let mut i = Interval::new();
   // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: this assignment changes the field `lo` of `Interval`. `Interval` has an invariant, so only code in `interval_with_an_invariant.vx` can change its fields{{$}}
   i.lo = 5i64;

@@ -89,10 +89,17 @@ fn broadcast<T : Send + Owned + Clone>(n : i64, at : Caller) -> (BroadcastSender
     unsafe { words[BROADCAST_SLOTS + 2 * i] = AtomicI64::new(2 * i); }
   }
   return (BroadcastSender<T> {
-    words : words, data : data, cap : n, made : at.location
+    words : words,
+    data : data,
+    cap : n,
+    made : at.location
   },
   BroadcastReceiver<T> {
-    words : words, data : data, cap : n, made : at.location, next : new_receiver_word(0)
+    words : words,
+    data : data,
+    cap : n,
+    made : at.location,
+    next : new_receiver_word(0)
   });
 }
 
@@ -162,7 +169,9 @@ BroadcastSender<T> {
       if receivers == 0 {
         unlock_channel(words, BROADCAST_LOCK);
         return Result<void, SendError<T>>::Err(SendError<T> {
-          value : v, cancelled : false, timed_out : false
+          value : v,
+          cancelled : false,
+          timed_out : false
         });
       }
       let k = word(words, SENDS).load(AtomicOrdering::SeqCst);
@@ -184,7 +193,9 @@ BroadcastSender<T> {
       wait_for_event(words, seen, deadline, WAIT_IN_SEND, at, self.made);
     }
     return Result<void, SendError<T>>::Err(SendError<T> {
-      value : v, cancelled : cancelled, timed_out : !cancelled
+      value : v,
+      cancelled : cancelled,
+      timed_out : !cancelled
     });
   }
 
@@ -197,7 +208,11 @@ BroadcastSender<T> {
     word(words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
     unlock_channel(words, BROADCAST_LOCK);
     return BroadcastReceiver<T> {
-      words : words, data : self.data, cap : self.cap, made : self.made, next : new_receiver_word(k)
+      words : words,
+      data : self.data,
+      cap : self.cap,
+      made : self.made,
+      next : new_receiver_word(k)
     };
   }
 }
@@ -227,10 +242,12 @@ BroadcastReceiver<T> {
       }
       let seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
       match self.try_recv() {
-        Result<T, TryRecvError>::Ok(v) => {
+        Result<T,
+        TryRecvError>::Ok(v) => {
           return Result<T, RecvError>::Ok(v);
         }
-        Result<T, TryRecvError>::Err(e) => {
+        Result<T,
+        TryRecvError>::Err(e) => {
           match e {
             TryRecvError::Closed => {
               break;
@@ -306,7 +323,10 @@ impl<T> Clone for BroadcastSender<T> {
     word(self.words, SENDERS).fetch_add(1, AtomicOrdering::SeqCst);
     word(self.words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
     return BroadcastSender<T> {
-      words : self.words, data : self.data, cap : self.cap, made : self.made
+      words : self.words,
+      data : self.data,
+      cap : self.cap,
+      made : self.made
     };
   }
 }
@@ -327,7 +347,11 @@ impl<T> Clone for BroadcastReceiver<T> {
     word(words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
     unlock_channel(words, BROADCAST_LOCK);
     return BroadcastReceiver<T> {
-      words : words, data : self.data, cap : self.cap, made : self.made, next : new_receiver_word(k)
+      words : words,
+      data : self.data,
+      cap : self.cap,
+      made : self.made,
+      next : new_receiver_word(k)
     };
   }
 }

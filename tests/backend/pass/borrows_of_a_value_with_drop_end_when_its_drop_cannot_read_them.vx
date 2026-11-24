@@ -32,9 +32,7 @@ impl Drop for Reader {
 
 fn moved_away() -> void {
   let mut x = 1;
-  let rd = Reader {
-    r : &x
-  };
+  let rd = Reader { r : &x };
   drop(rd);
   x = 5;
   println!("moved={};", x);
@@ -49,10 +47,7 @@ fn in_a_struct_with_a_vec() -> void {
   let mut x = 2;
   let mut items = Vec<&i32>::new();
   items.push(&x);
-  let b = Bag {
-    items : items,
-    first : &x
-  };
+  let b = Bag { items : items, first : &x };
   print!("first={}; ", *b.first);
   x = 6;
   println!("vec={};", x);
@@ -66,9 +61,7 @@ fn main() -> i32 {
   moved_away();
   in_a_struct_with_a_vec();
   let x = 7;
-  let r = shared_from(Reader {
-    r : &x
-  });
+  let r = shared_from(Reader { r : &x });
   println!("shared={};", *r);
   return 0;
 }

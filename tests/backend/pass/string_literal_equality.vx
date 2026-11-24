@@ -39,10 +39,12 @@ fn code(s : *const i8) -> i32 {
     "hello" => {
       out = 1;
     }
-    , "help" => {
+    ,
+    "help" => {
       out = 2;
     }
-    , _ => {
+    ,
+    _ => {
       out = 3;
     }
   }
@@ -64,7 +66,8 @@ fn kind(n : i32) -> i32 {
     "hello" => {
       1
     }
-    , other => {
+    ,
+    other => {
       if other == "bye" {
         2
       } else {

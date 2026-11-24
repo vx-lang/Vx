@@ -38,13 +38,16 @@ fn main() -> i32 {
       send_later(tx);
     };
     match select2(&limit, &rx) {
-      Result<i32, SelectError>::Ok(i) => {
+      Result<i32,
+      SelectError>::Ok(i) => {
         if i == 1 {
           match rx.try_recv() {
-            Result<i64, TryRecvError>::Ok(v) => {
+            Result<i64,
+            TryRecvError>::Ok(v) => {
               println!("select2 gave 1, the value {}", v);
             }
-            Result<i64, TryRecvError>::Err(_) => {
+            Result<i64,
+            TryRecvError>::Err(_) => {
               println!("select2 gave 1, with no value");
             }
           }
@@ -52,7 +55,8 @@ fn main() -> i32 {
           println!("select2 gave {}: the deadline", i);
         }
       }
-      Result<i32, SelectError>::Err(_) => {
+      Result<i32,
+      SelectError>::Err(_) => {
         println!("cancelled");
       }
     }

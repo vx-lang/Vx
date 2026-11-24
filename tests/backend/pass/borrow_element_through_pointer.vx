@@ -48,12 +48,8 @@ fn main() -> i32 {
   print!(" ");
 
   let mut pts = Vec<Pt>::new();
-  pts.push(Pt {
-    x : 1, y : 2i64, z : 3
-  });
-  pts.push(Pt {
-    x : 40, y : 5i64, z : 7
-  });
+  pts.push(Pt { x : 1, y : 2i64, z : 3 });
+  pts.push(Pt { x : 40, y : 5i64, z : 7 });
   let r : *const Vec<Pt> = &pts;
   let e : &Pt = unsafe { &(*r).data[1] };
   print((*e).x + (*e).z);
@@ -64,9 +60,7 @@ fn main() -> i32 {
   *f = 31;
   let l : &i32 = unsafe { &(*m).len };
   let len = *l;
-  let mut s = Slot<i64> {
-    value : 5i64, count : 0
-  };
+  let mut s = Slot<i64> { value : 5i64, count : 0 };
   let n : *mut Slot<i64> = &mut s;
   let g : &mut i32 = unsafe { &mut (*n).count };
   *g = 39;
