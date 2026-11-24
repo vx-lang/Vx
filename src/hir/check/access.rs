@@ -2035,7 +2035,9 @@ impl<'a> TypeChecker<'a> {
                 if let Expr::Identifier(id) = &**inner {
                     self.borrowed_name = Some(id.span);
                 }
-                let inner_ty = self.check_expr_type_flag(inner, false);
+                // `&r.unwrap()` borrows the value that the call gives, and the call moves `r`.
+                let inner_is_a_call = matches!(&**inner, Expr::MethodCall(_));
+                let inner_ty = self.check_expr_type_flag(inner, inner_is_a_call);
                 self.borrowed_name = old_borrowed;
                 self.allow_cross_topology = old_allow;
                 // Quiet when a reference to a reference is what was asked for, as in

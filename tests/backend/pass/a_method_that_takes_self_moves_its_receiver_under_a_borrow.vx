@@ -1,0 +1,66 @@
+//===- a_method_that_takes_self_moves_its_receiver_under_a_borrow.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `unwrap()` takes `self` by value, so it moves the value out of the `Result`. The program drops
+// the value once, at the end of the statement, and does not drop it again with the `Result`. This
+// holds when the program only borrows the result, as in `show(&r.unwrap())`, when it calls a
+// method on the result, as in `s.unwrap().id()`, and inside `println!`. The drop of a `Noisy`
+// prints its id.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped
+// CHECK: {{^}}show 1{{$}}
+// CHECK-NEXT: {{^}}dropped 1{{$}}
+// CHECK-NEXT: {{^}}dropped 2{{$}}
+// CHECK-NEXT: {{^}}id 2{{$}}
+// CHECK-NEXT: {{^}}printed 3{{$}}
+// CHECK-NEXT: {{^}}dropped 3{{$}}
+// CHECK-NEXT: {{^}}end{{$}}
+
+import core::result;
+
+struct Noisy {
+  id : i64,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+impl Noisy {
+  fn id(self : &Noisy) -> i64 {
+    return self.id;
+  }
+}
+
+fn show(n : &Noisy) -> void {
+  println!("show {}", n.id);
+}
+
+fn id_of(n : &Noisy) -> i64 {
+  return n.id;
+}
+
+fn main() -> i32 {
+  let r : Result<Noisy, i32> = Result<Noisy, i32>::Ok(Noisy {
+    id: 1
+  });
+  show(&r.unwrap());
+  let s : Result<Noisy, i32> = Result<Noisy, i32>::Ok(Noisy {
+    id: 2
+  });
+  let k = s.unwrap().id();
+  println!("id {}", k);
+  let t : Result<Noisy, i32> = Result<Noisy, i32>::Ok(Noisy {
+    id: 3
+  });
+  println!("printed {}", id_of(&t.unwrap()));
+  println!("end");
+  return 0;
+}
