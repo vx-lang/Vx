@@ -183,6 +183,8 @@ impl TransformerWeightOffsets {
 
 struct Tokenizer {
   ptr : *mut i8,
+
+  invariant true,
 }
 
 // The handle may move to another task. It is not `Sync` until the Rust side is known to

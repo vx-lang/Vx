@@ -10,7 +10,7 @@ two questions:
 1. Can a Vx type be a capability that other code cannot make or copy?
 1. What else does Vx need, so that a bug cannot become remote code execution?
 
-The short answers: yes, Vx has the rules for it today, with four gaps that small checker rules
+The short answers: yes, Vx has the rules for it today, with five gaps that small changes
 close. And no, it is not enough yet, because any module can open files and sockets with no
 capability (section 5).
 
@@ -69,7 +69,7 @@ without `login`, or to use one value twice:
 | An `AdminCap` moved into a task | Compiles, and the value moves. A second use, or a move into two tasks, gets E4001 |
 | A generic function that uses its `T` parameter twice | E4001 |
 
-## 3. Close the four gaps
+## 3. Close the gaps
 
 - **#3746 and #3754.** Only the file that declares a struct or an enum can write a plain `impl` of
   it, with or without a trait. An impl that must be in another file, because of an import cycle or
@@ -84,6 +84,9 @@ without `login`, or to use one value twice:
   cannot be `safe`. Each call then needs `unsafe`.
 - **#3751.** A closure whose body moves a captured value runs once. A second call is E4001. This
   is a memory bug as well as a capability bug.
+- **#3848.** Each type of `core` and `std` that holds a raw pointer, such as `File`, `TcpStream`,
+  `String` or `Location`, has `invariant true`. Before, safe code could build a `TcpStream` from
+  the pointer of a `File`. The compiler still writes the `Location` of a `Caller` argument.
 
 ## 4. Trusted code
 

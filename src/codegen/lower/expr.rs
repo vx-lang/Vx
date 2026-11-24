@@ -2007,6 +2007,7 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             name,
             fields,
             type_id: _,
+            made_by_the_compiler: _,
             span: _,
         } = self;
         let base_name = name.split('<').next().unwrap_or(name).to_string();

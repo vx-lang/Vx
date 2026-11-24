@@ -16,6 +16,8 @@ import std::alloc;
 /// Dropping it drops the value, then frees the allocation.
 struct Box<T> {
   ptr : *mut T,
+
+  invariant true,
 }
 
 // A `Box<T>` owns its `T`s, so it crosses tasks as a `T` does.

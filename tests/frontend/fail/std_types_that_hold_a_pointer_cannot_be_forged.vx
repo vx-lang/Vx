@@ -1,0 +1,60 @@
+//===- std_types_that_hold_a_pointer_cannot_be_forged.vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Each library type below holds a raw pointer that its library frees or reads through. Safe code
+// that builds such a value, or changes its pointer, could make the library free memory that it
+// does not own. So each type has an invariant, and only its own file can build it or change its
+// fields (E8014). Other files can still read the fields.
+import core::ops;
+import core::panic;
+import std::box;
+import std::fs;
+import std::net;
+import std::string;
+import std::sync::arc;
+import std::sync::channel;
+
+fn add_one(_env : *mut i8, x : i64) -> i64 {
+  return x + 1;
+}
+
+fn main() -> i32 {
+  let s = String::new();
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:16: this struct literal builds a `File`. `File` has an invariant, so only code in `fs.vx` can build it from its fields{{$}}
+  let forged = File {
+    ptr : s.ptr
+  };
+  let mut file = forged;
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:8: this assignment changes the field `ptr` of `File`. `File` has an invariant, so only code in `fs.vx` can change its fields{{$}}
+  file.ptr = s.ptr;
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:16: this struct literal builds a `TcpStream`. `TcpStream` has an invariant, so only code in `net.vx` can build it from its fields{{$}}
+  let stream = TcpStream {
+    ptr : file.ptr
+  };
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:14: this struct literal builds a `String`. `String` has an invariant, so only code in `string.vx` can build it from its fields{{$}}
+  let copy = String {
+    ptr : s.ptr
+  };
+  let real = Box<i64>::new(1i64);
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:15: this struct literal builds a `Box`. `Box` has an invariant, so only code in `box.vx` can build it from its fields{{$}}
+  let boxed = Box<i64> {
+    ptr : real.ptr
+  };
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:17: this struct literal builds a `Closure1`. `Closure1` has an invariant, so only code in `ops.vx` can build it from its fields{{$}}
+  let closure = Closure1<i64, i64> {
+    env : s.ptr, func : add_one
+  };
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:18: this struct literal builds a `Location`. `Location` has an invariant, so only code in `panic.vx` can build it from its fields{{$}}
+  let location = Location {
+    file : s.ptr as *const i8, line : 1, column : 1
+  };
+  println!("{} {} {} {}", stream.ptr == copy.ptr, boxed.ptr == real.ptr, closure.env == s.ptr,
+  location.line);
+  return 0;
+}

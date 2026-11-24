@@ -47,6 +47,8 @@ struct BroadcastSender<T> {
   cap : i64,
   // The line that made the channel, for the deadlock report.
   made : Location,
+
+  invariant true,
 }
 
 /// An end of a broadcast channel that receives. Each receiver gets each value that was sent after
@@ -58,6 +60,8 @@ struct BroadcastReceiver<T> {
   made : Location,
   // The number of the next value that this receiver reads, in a word of its own.
   next : *mut AtomicI64,
+
+  invariant true,
 }
 
 unsafe impl<T : Send> Send for BroadcastSender<T> {}

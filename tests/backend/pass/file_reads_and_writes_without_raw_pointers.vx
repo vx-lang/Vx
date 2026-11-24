@@ -37,8 +37,8 @@ extern {
 /// `text` with a NUL byte after it.
 fn with_a_nul(text : *const i8) -> String {
   let length = unsafe { string_length(text) };
-  let s = String {
-    ptr : unsafe { vx_string_with_len(i64::from(length + 1)) }
+  let s = unsafe {
+    String::from_raw(vx_string_with_len(i64::from(length + 1)))
   };
   let p = unsafe { vx_string_as_mut_ptr(s.ptr) };
   for i in 0..length {
