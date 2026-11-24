@@ -6,10 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// A channel end or a lock stays on the host (M6 in
-// docs/discussions/waiting_tasks_channels_and_task_errors.md). A GPU does not promise that a
-// block of threads makes progress, so a kernel that waits for the host while the host waits for
-// the kernel never ends. A `spawn on` body for a device that names one gets E6038.
+// Only the host can use a value of a `HostOnly` type. A `spawn on` body for a device that names
+// one gets E6038. A channel end, a lock and a semaphore are `HostOnly` because they can wait for
+// the host (M6 in docs/discussions/waiting_tasks_channels_and_task_errors.md). A GPU does not
+// promise that a block of threads makes progress. So a kernel that waits for the host while the
+// host waits for the kernel never ends.
 //
 //===----------------------------------------------------------------------===//
 
@@ -77,7 +78,7 @@ impl TypeChecker<'_> {
             | Type::Pinned(inner, _) => self.host_only_part(inner, visiting),
             Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..) => {
                 if self.implements_host_only(ty) {
-                    return Some(format!("'{ty}' can only be used on the host"));
+                    return Some(format!("only the host can use '{ty}'"));
                 }
                 let (name, args) = match ty {
                     Type::GenericInstance(base, args) => match base.as_ref() {

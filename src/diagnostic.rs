@@ -794,10 +794,10 @@ pub enum DiagnosticCode {
     /// `thread`.
     E6037,
     /// A `spawn on` body for a device that uses a value of a `HostOnly` type, or a value that holds
-    /// one. Channel ends and locks are `HostOnly`: a wait on the device for the host can wait
-    /// forever, because a GPU does not promise that its threads make progress. Use the value before
-    /// the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on the host, so it can use
-    /// them.
+    /// one. A channel end, a lock and a semaphore are `HostOnly` because they can wait for the host.
+    /// A GPU does not promise that its threads make progress, so such a wait can wait forever. Use
+    /// the value before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on the
+    /// host, so it can use the value.
     E6038,
     /// A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile
     /// time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run
