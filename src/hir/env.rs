@@ -2038,6 +2038,37 @@ impl<'a> TypeChecker<'a> {
         path.replace("/", "_").replace(".", "_")
     }
 
+    /// The names that the tensor dimensions in `t` use.
+    fn dimension_names(t: &Type, out: &mut Vec<crate::symbol::Symbol>) {
+        match t {
+            Type::Tensor(_, dims, _) => {
+                for d in dims.iter().filter_map(|d| d.as_static()) {
+                    crate::syntax::expr::visit_expr(d, &mut |e| {
+                        if let Expr::Identifier(id) = e {
+                            out.push(id.name.clone());
+                        }
+                    });
+                }
+            }
+            Type::Pointer(i, ..)
+            | Type::Ref(i, _)
+            | Type::Pinned(i, _)
+            | Type::Verified(i)
+            | Type::Distinct(i)
+            | Type::DisjointRanges(i)
+            | Type::Borrow { inner: i, .. } => Self::dimension_names(i, out),
+            Type::GenericInstance(b, args) => {
+                Self::dimension_names(b, out);
+                args.iter().for_each(|a| Self::dimension_names(a, out));
+            }
+            Type::Function(ps, r, _) | Type::Closure(ps, r) => {
+                ps.iter().for_each(|a| Self::dimension_names(a, out));
+                Self::dimension_names(r, out);
+            }
+            _ => {}
+        }
+    }
+
     pub fn check_function(&mut self, func: &mut Function) {
         if !func.generics.is_empty() {
             return;
@@ -2201,7 +2232,40 @@ impl<'a> TypeChecker<'a> {
         let prev_in_unsafe_fn = std::mem::replace(&mut self.in_unsafe_fn, func.is_unsafe);
         let prev_written_unsafe = std::mem::take(&mut self.in_written_unsafe_block);
         let prev_unsafe_op_seen = std::mem::take(&mut self.unsafe_op_seen);
+        // A generic body is checked at its first call, inside the caller's scopes. The body must
+        // not see the caller's variables, so only the base scope stays.
+        let outer_scopes = self.scopes.split_off(1);
+        let outer_moved = self.borrow.moved_vars.split_off(1);
+        let outer_mutable = self.borrow.mutable_vars.split_off(1);
+        let outer_bound = self.borrow.bound_behind_ref.split_off(1);
+        let outer_consteval = self.consteval.env.split_off(1);
+        // Nor is the body inside a closure of the caller, so its variables are not captures.
+        let outer_closure_depths = std::mem::take(&mut self.mono.closure_depths);
+        let outer_captures = std::mem::take(&mut self.mono.closure_captures_stack);
+        let outer_capture_uses = std::mem::take(&mut self.mono.closure_capture_uses);
         self.push_scope();
+        // A dimension in the signature can name a variable of the caller, as `n` in
+        // `Tensor<f32, [n, m]>`. The body sees that variable, and what is known about its value.
+        let mut dims = Vec::new();
+        for (_, t) in &func.params {
+            Self::dimension_names(t, &mut dims);
+        }
+        Self::dimension_names(&func.return_type, &mut dims);
+        for name in dims {
+            if let Some(v) = outer_scopes.iter().rev().find_map(|s| s.get(&name)) {
+                self.scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), v.clone());
+            }
+            if let Some(v) = outer_consteval.iter().rev().find_map(|s| s.get(&name)) {
+                self.consteval
+                    .env
+                    .last_mut()
+                    .unwrap()
+                    .insert(name, v.clone());
+            }
+        }
 
         let prev_top = self.active_topology.clone();
         self.set_active_topology(func.topology.clone());
@@ -2411,6 +2475,15 @@ impl<'a> TypeChecker<'a> {
         self.refuse_a_returned_channel_end(&func.return_type);
 
         self.pop_scope();
+        assert_eq!(self.scopes.len(), 1, "a function body left a scope open");
+        self.scopes.extend(outer_scopes);
+        self.borrow.moved_vars.extend(outer_moved);
+        self.borrow.mutable_vars.extend(outer_mutable);
+        self.borrow.bound_behind_ref.extend(outer_bound);
+        self.consteval.env.extend(outer_consteval);
+        self.mono.closure_depths = outer_closure_depths;
+        self.mono.closure_captures_stack = outer_captures;
+        self.mono.closure_capture_uses = outer_capture_uses;
         self.traffic.memory_placements = prev_placements;
         self.traffic.call_sites = prev_call_sites;
         self.traffic.channel_rooms = prev_channel_rooms;
