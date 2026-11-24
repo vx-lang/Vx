@@ -11,11 +11,11 @@
 //
 // EXPECT: 100
 fn first_of_row(q : &Tensor<f32, [2, 4]>, i : i32) -> f32 {
-  return mlir!(inputs : (%a = q[i] : memref<?xf32>), returns : f32, dialects : ["arith", "memref"]) {
-    %c0 = arith.constant 0 : index
-    %x = memref.load %a[%c0] : memref<?xf32>
-    macro.yield %x : f32
-  };
+  return unsafe { mlir!(inputs : (%a = q[i] : memref<?xf32>), returns : f32, dialects : ["arith", "memref"]) {
+      %c0 = arith.constant 0 : index
+      %x = memref.load %a[%c0] : memref<?xf32>
+      macro.yield %x : f32
+    } };
 }
 
 fn main() -> i32 {

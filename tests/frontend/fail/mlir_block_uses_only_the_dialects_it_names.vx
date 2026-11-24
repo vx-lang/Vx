@@ -13,20 +13,20 @@
 // The block uses `math.ctpop`, but its list names only `linalg`.
 fn count_ones(x : i32) -> i32 {
   // CHECK-DAG: E8010{{.*}}vx:[[@LINE+1]]:{{.*}}uses `%r = math.ctpop %a : i32`, but its `dialects` list does not name `math`
-  return mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["linalg"]) {
-    %r = math.ctpop %a : i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["linalg"]) {
+      %r = math.ctpop %a : i32
+      macro.yield %r : i32
+    } };
 }
 
 // The list names a dialect that does not exist, and not `math`.
 fn count_zeros(x : i32) -> i32 {
   // CHECK-DAG: E8010{{.*}}vx:[[@LINE+2]]:{{.*}}names `no_such_dialect`, which is not a dialect
   // CHECK-DAG: E8010{{.*}}vx:[[@LINE+1]]:{{.*}}uses `%r = math.ctlz %a : i32`, but its `dialects` list does not name `math`
-  return mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["no_such_dialect"]) {
-    %r = math.ctlz %a : i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["no_such_dialect"]) {
+      %r = math.ctlz %a : i32
+      macro.yield %r : i32
+    } };
 }
 
 fn main() -> i32 {

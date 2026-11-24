@@ -12,7 +12,8 @@
 //
 // `vxc --no-trusted-code tests` makes each use of trusted code in the package `tests` an error:
 // an `unsafe impl`, an `extern impl`, an `extern` function, an `unsafe fn`, an `unsafe` block,
-// one that a macro writes too, and an `mlir!` block. This file is not in the package, so its
+// one that a macro writes too, and an `mlir!` block that the compiler cannot verify. An `mlir!`
+// block that the compiler verifies is not trusted code. This file is not in the package, so its
 // own `unsafe` block is not an error. Without the flag, the program runs.
 import tests::modules::a_package_with_trusted_code;
 
@@ -30,9 +31,10 @@ fn main() -> i32 {
 // CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:31:11: {{.*}}and this is `unsafe fn first`
 // CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:32:10: {{.*}}and this is an `unsafe` block
 // CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:37:5: {{.*}}and this is an `unsafe` block
-// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:42:16: {{.*}}and this is an `mlir!` block
-// CHECK: Semantic check failed on '{{.*}}no_trusted_code_in_a_package.vx': 7 error(s) emitted
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:51:10: {{.*}}and this is an `unsafe` block
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:52:11: {{.*}}and this is an `mlir!` block
+// CHECK: Semantic check failed on '{{.*}}no_trusted_code_in_a_package.vx': 8 error(s) emitted
 
-// ALLOWED: {{^}}17{{$}}
+// ALLOWED: {{^}}19{{$}}
 
 // NAME: `--no-trusted-code test` names no package. Give the package with `--package test=DIR`

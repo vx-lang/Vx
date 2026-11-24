@@ -23,28 +23,28 @@
 // CHECK-DAG: __vx_gpu_only_warp_max{{.*}}runs only on a GPU
 
 fn grid_size() on Topology::GPU -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
-    %g = gpu.grid_dim x
-    %r = "arith.index_cast"(%g) : (index) -> i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+      %g = gpu.grid_dim x
+      %r = "arith.index_cast"(%g) : (index) -> i32
+      macro.yield %r : i32
+    } };
 }
 
 fn fast_exp(x : f32) on Topology::GPU -> f32 {
-  return mlir!( inputs : (%x = x : f32), returns : f32, dialects : ["llvm", "arith"]) {
-    %r = llvm.call_intrinsic "llvm.nvvm.ex2.approx.ftz.f"(%x) : (f32) -> f32
-    macro.yield %r : f32
-  };
+  return unsafe { mlir!( inputs : (%x = x : f32), returns : f32, dialects : ["llvm", "arith"]) {
+      %r = llvm.call_intrinsic "llvm.nvvm.ex2.approx.ftz.f"(%x) : (f32) -> f32
+      macro.yield %r : f32
+    } };
 }
 
 fn shfl_down(v : f32, delta : i32) on Topology::GPU -> f32 {
-  return mlir!( inputs : (%v = v : f32, %d = delta : i32), returns : f32, dialects : ["gpu", "arith"]) {
-    %w = "arith.constant"() {
-      value = 32 : i32
-    } : () -> i32
-    %r, %ok = gpu.shuffle down %v, %d, %w : f32
-    macro.yield %r : f32
-  };
+  return unsafe { mlir!( inputs : (%v = v : f32, %d = delta : i32), returns : f32, dialects : ["gpu", "arith"]) {
+      %w = "arith.constant"() {
+        value = 32 : i32
+      } : () -> i32
+      %r, %ok = gpu.shuffle down %v, %d, %w : f32
+      macro.yield %r : f32
+    } };
 }
 
 fn warp_sum(v : f32) on Topology::GPU -> f32 {

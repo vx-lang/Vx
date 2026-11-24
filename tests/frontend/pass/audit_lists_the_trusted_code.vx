@@ -9,8 +9,9 @@
 // RUN: vxc %s --audit-library 2>&1 | FileCheck %s --check-prefix=LIBRARY --implicit-check-not='core and std'
 //
 // `vxc --audit` lists each use of trusted code in the program: an `unsafe impl`, an `extern impl`,
-// an `unsafe fn`, an `unsafe` block and an `mlir!` block. A last line counts the trusted code of
-// `core` and `std`. `--audit-library` lists that code too, and prints no count.
+// an `unsafe fn`, an `unsafe` block and an `mlir!` block that the compiler does not verify. It
+// leaves out the block in `twice`, which the compiler verifies. A last line counts the trusted code
+// of `core` and `std`. `--audit-library` lists that code too, and prints no count.
 import std::vec;
 
 trait Show {
@@ -34,8 +35,15 @@ unsafe fn first(p : *const i64) -> i64 {
 }
 
 fn ones(x : i32) -> i32 {
-  return mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["math"]) {
-    %r = math.ctpop %a : i32
+  return unsafe { mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["llvm"]) {
+      %r = llvm.intr.ctpop(%a) : (i32) -> i32
+      macro.yield %r : i32
+    } };
+}
+
+fn twice(x : i32) -> i32 {
+  return mlir!(inputs : (%a = x : i32), returns : i32, dialects : ["arith"]) {
+    %r = arith.addi %a, %a : i32
     macro.yield %r : i32
   };
 }
@@ -45,16 +53,17 @@ fn main() -> i32 {
   let n = 41i64;
   let p = &n as *const i64;
   let x = unsafe { first(p) };
-  return (x.show() + ones(3) as i64 + v.len() as i64) as i32;
+  return (x.show() + ones(3) as i64 + twice(0) as i64 + v.len() as i64) as i32;
 }
 
-// CHECK: audit_lists_the_trusted_code.vx:24:8: trusted code: `unsafe impl Send for Handle`, a claim that the compiler does not check
-// CHECK-NEXT: audit_lists_the_trusted_code.vx:26:8: trusted code: `extern impl Show for i64`, an impl outside the file of its type
-// CHECK-NEXT: audit_lists_the_trusted_code.vx:32:11: trusted code: `unsafe fn first`
-// CHECK-NEXT: audit_lists_the_trusted_code.vx:33:10: trusted code: an `unsafe` block
-// CHECK-NEXT: audit_lists_the_trusted_code.vx:37:16: trusted code: an `mlir!` block
-// CHECK-NEXT: audit_lists_the_trusted_code.vx:47:11: trusted code: an `unsafe` block
+// CHECK: audit_lists_the_trusted_code.vx:25:8: trusted code: `unsafe impl Send for Handle`, a claim that the compiler does not check
+// CHECK-NEXT: audit_lists_the_trusted_code.vx:27:8: trusted code: `extern impl Show for i64`, an impl outside the file of its type
+// CHECK-NEXT: audit_lists_the_trusted_code.vx:33:11: trusted code: `unsafe fn first`
+// CHECK-NEXT: audit_lists_the_trusted_code.vx:34:10: trusted code: an `unsafe` block
+// CHECK-NEXT: audit_lists_the_trusted_code.vx:38:10: trusted code: an `unsafe` block
+// CHECK-NEXT: audit_lists_the_trusted_code.vx:38:25: trusted code: an `mlir!` block
+// CHECK-NEXT: audit_lists_the_trusted_code.vx:55:11: trusted code: an `unsafe` block
 // CHECK-NEXT: core and std: {{.*}}`unsafe` blocks{{.*}} in the modules that this program uses, not listed. `--audit-library` lists them
 
 // LIBRARY: stdlib/core/clone.vx:{{[0-9]+}}:{{[0-9]+}}: trusted code: `extern impl Clone for Ordering`, an impl outside the file of its type
-// LIBRARY: audit_lists_the_trusted_code.vx:24:8: trusted code: `unsafe impl Send for Handle`
+// LIBRARY: audit_lists_the_trusted_code.vx:25:8: trusted code: `unsafe impl Send for Handle`

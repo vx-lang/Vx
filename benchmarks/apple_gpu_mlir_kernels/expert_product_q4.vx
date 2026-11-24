@@ -92,7 +92,7 @@ fn mm_mlir(y : &mut Tensor<f32, [?, ?], Memory::HBM>, w : &Tensor<u32, [?], Memo
       for tb in 0..tiles across blocks {
         let mut sw = unsafe { Tensor<f16, [2048], Memory::SMEM>::uninit() };
         let mut sx = unsafe { Tensor<f16, [1024], Memory::SMEM>::uninit() };
-        let _d = mlir!( threads : 128, inputs : (%sw = &mut sw : memref<2048xf16, 3>, %sx = &mut sx : memref<1024xf16, 3>, %y = y : memref<?x?xf32>, %w = w : memref<?xi32>, %sc = scales : memref<?xf16>, %x = x : memref<?x?xf32>, %list = list : memref<?xi32>, %bases = bases : memref<?xi32>, %stride = stride : i32, %cols = cols : i32, %rb = rb : i32, %tb = tb : i32), returns : i32, dialects : ["arith", "memref", "scf", "gpu", "vector"], ensures : [writes_only(sw), writes_only(sx), reads_only(w), reads_only(scales), reads_only(x), reads_only(list), reads_only(bases), writes_only(y[tb * 32..tb * 32 + 32][rb * 64..rb * 64 + 64])]) {
+        let _d = unsafe { mlir!( threads : 128, inputs : (%sw = &mut sw : memref<2048xf16, 3>, %sx = &mut sx : memref<1024xf16, 3>, %y = y : memref<?x?xf32>, %w = w : memref<?xi32>, %sc = scales : memref<?xf16>, %x = x : memref<?x?xf32>, %list = list : memref<?xi32>, %bases = bases : memref<?xi32>, %stride = stride : i32, %cols = cols : i32, %rb = rb : i32, %tb = tb : i32), returns : i32, dialects : ["arith", "memref", "scf", "gpu", "vector"], ensures : [writes_only(sw), writes_only(sx), reads_only(w), reads_only(scales), reads_only(x), reads_only(list), reads_only(bases), writes_only(y[tb * 32..tb * 32 + 32][rb * 64..rb * 64 + 64])]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -314,7 +314,7 @@ fn mm_mlir(y : &mut Tensor<f32, [?, ?], Memory::HBM>, w : &Tensor<u32, [?], Memo
           gpu.subgroup_mma_store_matrix %res#6, %y[%yr1, %yc2] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
           gpu.subgroup_mma_store_matrix %res#7, %y[%yr1, %yc3] {leadDimension = 0 : index} : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
           macro.yield %tb : i32
-        };
+        } };
       }
     }
   }

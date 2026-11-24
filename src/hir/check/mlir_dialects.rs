@@ -70,7 +70,7 @@ pub(crate) const KNOWN_DIALECTS: &[&str] = &[
 /// The operation that a line of MLIR starts, and its dialect: `math.ctpop` and `math` for
 /// `%r = math.ctpop %a : i64` and for `%r = "math.ctpop"(%a)`. `None` for a line that starts
 /// no operation, such as `}` or `^bb0(%x: f32):`.
-fn line_op(line: &str) -> Option<(&str, &str)> {
+pub(crate) fn line_op(line: &str) -> Option<(&str, &str)> {
     let mut rest = line.split("//").next()?.trim();
     // The results come first: `%r =`, `%a, %b =` or `%r:2 =`.
     if rest.starts_with('%') {

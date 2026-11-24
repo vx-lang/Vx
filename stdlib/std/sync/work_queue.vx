@@ -23,6 +23,7 @@ import core::result;
 import core::sync::atomic;
 import core::time;
 import std::sync::channel;
+import std::sync::select;
 import std::sync::wait;
 import std::time;
 
@@ -136,6 +137,36 @@ WorkReceiver<T> {
       }
     }
     return Result<T, TryRecvError>::Err(TryRecvError::Empty);
+  }
+}
+
+// A `select` can wait until a value is in the queue, or the queue is closed. Many
+// `WorkReceiver`s share the queue, so another one can take the value after the `select`. Then
+// `try_recv` gives `Empty`, and the caller calls `select` again.
+impl<T> WaitSource for WorkReceiver<T> {
+  fn is_ready(self : &WorkReceiver<T>) -> bool {
+    let words = self.words;
+    let _events = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    let recvs = word(words, RECVS);
+    loop {
+      let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+      let k = recvs.load(AtomicOrdering::SeqCst);
+      if word(words, SLOTS + k % self.cap).load(AtomicOrdering::Acquire) == 2 * k + 1 {
+        return true;
+      }
+      if !pass_a_skip(words, self.cap, k) {
+        return closed && recvs.load(AtomicOrdering::SeqCst) >= word(words, SENDS).load(AtomicOrdering::SeqCst);
+      }
+    }
+    return false;
+  }
+
+  fn watch(self : &WorkReceiver<T>, w : &Waiter) -> void {
+    watch_channel(self.words, self.made, w);
+  }
+
+  fn unwatch(self : &WorkReceiver<T>, w : &Waiter) -> void {
+    unwatch_channel(self.words, w);
   }
 }
 

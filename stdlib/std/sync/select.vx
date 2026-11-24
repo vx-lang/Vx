@@ -27,6 +27,8 @@ import std::vec;
 extern {
   /// Until `vx_unwatch`, `vx_wake_watchers(key)` adds 1 to `waiter` and wakes it.
   fn vx_watch(key : *mut i64, waiter : *mut i64) -> void;
+  /// `vx_watch`, and the deadlock report names the source: its kind, and the line that made it.
+  fn vx_watch_source(key : *mut i64, waiter : *mut i64, kind : i32, made_file : *const i8, made_line : i32) -> void;
   /// Undo one `vx_watch` of the same pair.
   fn vx_unwatch(key : *mut i64, waiter : *mut i64) -> void;
   /// Add 1 to each waiter that watches `key`, and wake it.
@@ -37,7 +39,16 @@ extern {
   fn vx_select_chose(next : i64) -> void;
   /// For a test: sleep for `VX_TEST_SELECT_PAUSE_MS`, when it is set.
   fn vx_test_select_pause() -> void;
+  /// Until `vx_unwatch_fd`, the I/O poller adds 1 to `waiter` and wakes it when a read of `fd`
+  /// does not wait.
+  fn vx_watch_fd(fd : i32, waiter : *mut i64) -> void;
+  /// Undo one `vx_watch_fd` of the same pair.
+  fn vx_unwatch_fd(fd : i32, waiter : *mut i64) -> void;
 }
+
+// The kinds of source that the deadlock report names. The key of a channel is its `WAKE` word.
+const SOURCE_CHANNEL : i32 = 1;
+const SOURCE_SEMAPHORE : i32 = 2;
 
 /// The word that one `select` waits on. A source wakes it.
 struct Waiter {
@@ -54,6 +65,34 @@ impl Waiter {
   /// Undo one `watch_key`. After it, `wake_watchers(key)` does not touch this waiter.
   fn unwatch_key(self : &Waiter, key : &AtomicI64) -> void {
     unsafe { vx_unwatch(key.as_ptr(), self.word.as_ptr()); }
+  }
+
+  /// Add 1 to `count`, and then watch `key`. A source with many waits counts its watchers, and
+  /// calls `wake_watchers(key)` only when `count` is not 0. Its `is_ready` reads its state with
+  /// `SeqCst` after this, so that it sees each change whose wake missed the watch. The deadlock
+  /// report names the source by `kind` and by the line `made`.
+  fn watch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64, kind : i32, made : Location) -> void {
+    count.fetch_add(1, AtomicOrdering::SeqCst);
+    unsafe {
+      vx_watch_source(key.as_ptr(), self.word.as_ptr(), kind, made.file, made.line);
+    }
+  }
+
+  /// Undo `watch_counted`.
+  fn unwatch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64) -> void {
+    self.unwatch_key(key);
+    count.fetch_sub(1, AtomicOrdering::SeqCst);
+  }
+
+  /// Until `unwatch_fd`, the I/O poller wakes this waiter when a read of the file descriptor
+  /// `fd` does not wait. A socket calls it in `watch`.
+  fn watch_fd(self : &Waiter, fd : i32) -> void {
+    unsafe { vx_watch_fd(fd, self.word.as_ptr()); }
+  }
+
+  /// Undo one `watch_fd`. After it, the poller does not touch this waiter.
+  fn unwatch_fd(self : &Waiter, fd : i32) -> void {
+    unsafe { vx_unwatch_fd(fd, self.word.as_ptr()); }
   }
 }
 
@@ -523,6 +562,23 @@ impl Deadline {
     return Deadline {
       at : t
     };
+  }
+}
+
+// An `Interval` is ready when its next tick is due. Then `tick` does not wait. The impl is here,
+// because this file imports `std::time`, so `time.vx` cannot import this file.
+extern impl WaitSource for Interval {
+  fn is_ready(self : &Interval) -> bool {
+    return past_deadline(self.due(self.last + 1));
+  }
+
+  // The `select` waits until the earliest deadline, so an `Interval` needs no watch.
+  fn watch(self : &Interval, _w : &Waiter) -> void {}
+
+  fn unwatch(self : &Interval, _w : &Waiter) -> void {}
+
+  fn deadline(self : &Interval) -> Instant {
+    return self.due(self.last + 1);
   }
 }
 

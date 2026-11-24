@@ -1238,6 +1238,22 @@ impl<'a> TypeChecker<'a> {
                     self.lookup(&resolved_name).cloned()
                 {
                     if struct_name.starts_with("Closure_") {
+                        // A call uses up a closure that runs once.
+                        let once = self.mono.closures_that_run_once.get(&struct_name).cloned();
+                        if let (Some(moved), false) = (once, self.speculating) {
+                            if self.is_moved(&resolved_name) {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E4001,
+                                    format!(
+                                        "`{resolved_name}` already ran. It moves `{moved}`, a \
+                                         value that it captures, so it can run only once"
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
+                            } else {
+                                self.consume(&resolved_name);
+                            }
+                        }
                         let call_name = format!("{}_call", struct_name);
                         if let Some(func) = self
                             .mono
