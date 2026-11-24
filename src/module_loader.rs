@@ -222,9 +222,37 @@ impl ModuleLoader {
         Ok(programs)
     }
 
+    /// A `main` that takes a `Root` makes the `Root` of the program, so only a file that `vxc`
+    /// compiles can declare one. An imported file that declares one is an error.
+    fn refuse_a_root_main_outside_the_program(
+        &self,
+        programs: &[Program],
+    ) -> Result<(), ModuleError> {
+        for program in programs {
+            if self.roots.contains(&program.module_path)
+                || !program
+                    .functions
+                    .iter()
+                    .any(crate::parser::decl::makes_the_root)
+            {
+                continue;
+            }
+            let file = match self.paths.get(&program.module_path) {
+                Some(path) => path.display().to_string(),
+                None => program.module_path.to_string(),
+            };
+            return Err(ModuleError::Resolution(format!(
+                "{file} declares `fn main(root : Root)`, but only a file that vxc compiles can \
+                 declare it. Such a `main` makes the `Root` of the program"
+            )));
+        }
+        Ok(())
+    }
+
     /// Parse again each module that declares or sees a name another module also declares, with
     /// that name renamed where it is not the declaration the whole compile keeps.
     fn rename_clashes(&self, programs: &mut [Program]) -> Result<(), ModuleError> {
+        self.refuse_a_root_main_outside_the_program(programs)?;
         let plan =
             crate::name_clashes::plan(programs, &self.roots).map_err(ModuleError::Resolution)?;
         for program in programs.iter_mut() {

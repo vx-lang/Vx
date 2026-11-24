@@ -9,8 +9,12 @@
 // File::open accepts named modes, not raw integer values.
 // CHECK: Error[E3003]{{.*}}'File::open'. Expected OpenMode, got i32
 import std::fs;
+import std::string;
+
+fn open_with_a_number(files : &Files, path : &String) -> void {
+  let _file = File::open(files, path, 3);
+}
 
 fn main() -> i32 {
-  unsafe { let _file = File::open("unused", 3); }
   return 0;
 }

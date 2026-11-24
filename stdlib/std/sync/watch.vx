@@ -39,6 +39,8 @@ struct WatchSender<T> {
   data : *mut T,
   // The line that made the channel, for the deadlock report.
   made : Location,
+
+  invariant true,
 }
 
 /// An end of a watch channel that receives. Clone it to watch the value in many tasks.
@@ -48,6 +50,8 @@ struct WatchReceiver<T> {
   made : Location,
   // The version of the value that this receiver saw last, in a word of its own.
   seen : *mut AtomicI64,
+
+  invariant true,
 }
 
 unsafe impl<T : Send> Send for WatchSender<T> {}

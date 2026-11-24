@@ -305,6 +305,9 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_moe_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_q4_kernels_match_loops_on_the_cpu.vx", // needs --machine
+        "optimizations/pass/std_nn_top_k_long_matches_a_loop_on_the_cpu.vx", // needs --machine
+        // needs --machine
+        "optimizations/pass/a_lane_loop_in_a_loop_of_the_block_can_change_its_own_variable.vx",
         // needs --machine
         "optimizations/pass/methods_that_return_a_reference_to_a_tensor_field.vx",
         // needs --machine

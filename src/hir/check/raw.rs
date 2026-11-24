@@ -1399,6 +1399,54 @@ impl<'a> TypeChecker<'a> {
         Some(names)
     }
 
+    /// Before an assignment of `value` to an integer field such as `c.n`: as `name_the_old_value`
+    /// does for a variable, gives the old value of the field a new name in each fact. A fact about
+    /// another field, such as `c.cap`, stays true. A fact that names `c` in another way ends.
+    /// Returns the fact `c.n == value`, with the old value on the right, or `None` inside when the
+    /// prover cannot model `value`. `None` when the write must end each fact about `c`.
+    pub(crate) fn name_the_old_value_of_a_field(
+        &mut self,
+        place: &Expr,
+        ty: &Type,
+        value: &Expr,
+    ) -> Option<Option<Expr>> {
+        let (root, path) = field_path(place).filter(|(_, path)| !path.is_empty())?;
+        let int = match ty {
+            Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool => e,
+            _ => return None,
+        };
+        // A change inside a call ends the facts after the call, and a raw pointer keeps no facts.
+        if !self.fact_change_frames.is_empty()
+            || matches!(self.lookup(root.as_ref()), Some((Type::Pointer(..), _)))
+        {
+            return None;
+        }
+        let old = Expr::Identifier(IdentifierExpr {
+            name: format!("$old_{}", self.old_values.len()).into(),
+            span: Span::default(),
+        });
+        self.old_values.push(int.clone());
+        for c in self.consteval.constraints.iter_mut() {
+            if expr_mentions(c, root.as_ref()) {
+                *c = substitute_field(c, &root, &path, &old);
+                if names_more_than_other_fields(c, &root, &path) {
+                    *c = no_fact();
+                }
+            }
+        }
+        self.pointer_facts.forget(root.as_ref());
+        let fact = crate::hir::prover::is_modelled(value).then(|| {
+            Expr::RelationalOp(RelationalOpExpr {
+                lhs: Box::new(place.clone()),
+                op: RelationalOp::Eq,
+                rhs: Box::new(substitute_field(value, &root, &path, &old)),
+                span: Span::default(),
+                operand_ty: None,
+            })
+        });
+        Some(fact)
+    }
+
     /// The fact `place == value` after `name_the_old_value` gave the old value its new name in
     /// `names`. In `x = x + 1`, the `x` on the right is the old value.
     pub(crate) fn fact_of_an_assignment(
@@ -1646,6 +1694,93 @@ pub(crate) fn no_fact() -> Expr {
 /// Does the expression mention identifier `name` anywhere? Conservative: an expression
 /// shape the walk does not enumerate counts as mentioning it, so an unknown container
 /// neutralizes rather than preserves.
+/// `c.a.n` as the variable `c` and the fields `[a, n]`, and `c` as `c` and no fields. `None` for
+/// any other place.
+fn field_path(e: &Expr) -> Option<(crate::symbol::Symbol, Vec<crate::symbol::Symbol>)> {
+    match e {
+        Expr::Identifier(id) => Some((id.name.clone(), Vec::new())),
+        Expr::MemberAccess(m) => {
+            let (root, mut path) = field_path(&m.base)?;
+            path.push(m.member.clone());
+            Some((root, path))
+        }
+        _ => None,
+    }
+}
+
+/// `e` with `with` in place of each read of the field `path` of `root`.
+fn substitute_field(
+    e: &Expr,
+    root: &crate::symbol::Symbol,
+    path: &[crate::symbol::Symbol],
+    with: &Expr,
+) -> Expr {
+    if let Expr::MemberAccess(_) = e {
+        if field_path(e).is_some_and(|(r, p)| r == *root && p == path) {
+            return with.clone();
+        }
+    }
+    let sub = |x: &Expr| Box::new(substitute_field(x, root, path, with));
+    match e {
+        Expr::BinaryOp(b) => {
+            let mut b = b.clone();
+            b.lhs = sub(&b.lhs);
+            b.rhs = sub(&b.rhs);
+            Expr::BinaryOp(b)
+        }
+        Expr::RelationalOp(r) => {
+            let mut r = r.clone();
+            r.lhs = sub(&r.lhs);
+            r.rhs = sub(&r.rhs);
+            Expr::RelationalOp(r)
+        }
+        Expr::LogicalOp(l) => {
+            let mut l = l.clone();
+            l.lhs = sub(&l.lhs);
+            l.rhs = sub(&l.rhs);
+            Expr::LogicalOp(l)
+        }
+        Expr::UnaryOp(u) => {
+            let mut u = u.clone();
+            u.expr = sub(&u.expr);
+            Expr::UnaryOp(u)
+        }
+        Expr::AsCast(c) => {
+            let mut c = c.clone();
+            c.expr = sub(&c.expr);
+            Expr::AsCast(c)
+        }
+        _ => e.clone(),
+    }
+}
+
+/// Whether `e` names `root` other than through a field that does not overlap the field `path`.
+/// After a write to `c.n`, a fact about `c.cap` stays true, and a fact about `c` or `c.n.x` does
+/// not.
+fn names_more_than_other_fields(
+    e: &Expr,
+    root: &crate::symbol::Symbol,
+    path: &[crate::symbol::Symbol],
+) -> bool {
+    let more = |x: &Expr| names_more_than_other_fields(x, root, path);
+    match e {
+        Expr::MemberAccess(_) => match field_path(e) {
+            Some((r, p)) if r == *root => {
+                let n = p.len().min(path.len());
+                p[..n] == path[..n]
+            }
+            Some(_) => false,
+            None => expr_mentions(e, root.as_ref()),
+        },
+        Expr::BinaryOp(b) => more(&b.lhs) || more(&b.rhs),
+        Expr::RelationalOp(r) => more(&r.lhs) || more(&r.rhs),
+        Expr::LogicalOp(l) => more(&l.lhs) || more(&l.rhs),
+        Expr::UnaryOp(u) => more(&u.expr),
+        Expr::AsCast(c) => more(&c.expr),
+        _ => expr_mentions(e, root.as_ref()),
+    }
+}
+
 pub(crate) fn expr_mentions(e: &Expr, name: &str) -> bool {
     match e {
         Expr::Identifier(id) => id.name.as_ref() == name,

@@ -1,0 +1,39 @@
+//===- a_generic_function_cannot_read_a_variable_of_its_caller.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The compiler checks a generic function's body at its first call. The body must not see the
+// variables of the caller, so `secret` is undefined in each body below.
+
+struct Holder<T> {
+  value : T,
+}
+
+impl<T> Holder<T> {
+  fn get_secret(self : &Holder<T>) -> i64 {
+    // CHECK-DAG: Error[E2001] at {{.*}}a_generic_function_cannot_read_a_variable_of_its_caller.vx:[[@LINE+1]]:12: Undefined variable 'secret'
+    return secret;
+  }
+}
+
+fn get_secret<T>(_t : T) -> i64 {
+  // CHECK-DAG: Error[E2001] at {{.*}}a_generic_function_cannot_read_a_variable_of_its_caller.vx:[[@LINE+1]]:10: Undefined variable 'secret'
+  return secret;
+}
+
+fn main() -> i32 {
+  let secret : i64 = 42;
+  let h = Holder<i32> {
+    value : 1
+  };
+  let a = get_secret(0);
+  let b = h.get_secret();
+  return (a + b) as i32;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 2 error(s) emitted

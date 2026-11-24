@@ -89,9 +89,9 @@ fn pause() -> void {
 }
 
 /// Connects, and then waits for a value on `go` before each of its next steps.
-fn client(go : Receiver<i64>) -> Result<u64, NetError> {
+fn client(network : &Network, go : Receiver<i64>) -> Result<u64, NetError> {
   pause();
-  let mut stream = TcpStream::connect(&address("127.0.0.1:41781"))?;
+  let mut stream = TcpStream::connect(network, &address("127.0.0.1:41781"))?;
   let _first = go.recv();
   pause();
   let _sent = stream.write_all(&bytes("hi"))?;
@@ -131,9 +131,9 @@ fn server(listener : TcpListener, go : Sender<i64>) -> Result<u64, NetError> {
   return Result<u64, NetError>::Ok(0);
 }
 
-fn send_datagram() -> Result<u64, NetError> {
+fn send_datagram(network : &Network) -> Result<u64, NetError> {
   pause();
-  let mut socket = UdpSocket::bind(&address("127.0.0.1:41783"))?;
+  let mut socket = UdpSocket::bind(network, &address("127.0.0.1:41783"))?;
   return socket.send_to(&bytes("ping"), &address("127.0.0.1:41782"));
 }
 
@@ -147,13 +147,14 @@ fn receive_datagram(socket : UdpSocket) -> Result<u64, NetError> {
   return Result<u64, NetError>::Ok(n);
 }
 
-fn main() -> i32 {
+fn main(root : Root) -> i32 {
+  let network = &root.network;
   let (go_tx, go_rx) = channel<i64>(1);
-  match TcpListener::bind(&address("127.0.0.1:41781")) {
+  match TcpListener::bind(network, &address("127.0.0.1:41781")) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
-          report("client", client(go_rx));
+          report("client", client(network, go_rx));
         };
         report("server", server(listener, go_tx));
       }
@@ -162,11 +163,11 @@ fn main() -> i32 {
       println!("bind: Error");
     }
   }
-  match UdpSocket::bind(&address("127.0.0.1:41782")) {
+  match UdpSocket::bind(network, &address("127.0.0.1:41782")) {
     Result<UdpSocket, NetError>::Ok(socket) => {
       tasks {
         spawn {
-          report("datagram", send_datagram());
+          report("datagram", send_datagram(network));
         };
         report("datagram", receive_datagram(socket));
       }

@@ -32,11 +32,13 @@ extern {
 
 // Reads the input to its end, and sends the count of bytes.
 fn count_the_input(tx : Sender<i64>) -> void {
-  let mut input = unsafe { File::open(getenv("INPUT"), OpenMode::Read()) };
+  let mut input = unsafe {
+    File::open_c_str(getenv("INPUT"), OpenMode::Read())
+  };
   let mut byte : u8 = 0;
   let mut count : i64 = 0;
   loop {
-    let n = unsafe { input.read((&mut byte) as *mut u8, 1) };
+    let n = unsafe { input.read_raw((&mut byte) as *mut u8, 1) };
     if n == 0 {
       break;
     }

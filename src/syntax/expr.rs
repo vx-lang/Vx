@@ -599,6 +599,9 @@ pub struct StructInitExpr {
     /// whose identity isn't a plain module symbol. Lets consumers (e.g. the flat-HIR lowerer) map the
     /// construction to its registry layout without re-resolving the name (#199).
     pub type_id: Option<crate::gid::TypeId>,
+    /// True for a literal that the checker writes, such as the `Location` of a `Caller` argument.
+    /// The parser never sets it, so E8014 can let the compiler build a type with an invariant.
+    pub made_by_the_compiler: bool,
     pub span: Span,
 }
 impl StructInitExpr {
@@ -607,6 +610,7 @@ impl StructInitExpr {
             name,
             fields,
             type_id: None,
+            made_by_the_compiler: false,
             span,
         }
     }
@@ -1932,6 +1936,7 @@ impl Expr {
                         .map(|(n, ex)| (n.clone(), ex.substitute(mapping)))
                         .collect(),
                     type_id: e.type_id,
+                    made_by_the_compiler: e.made_by_the_compiler,
                     span: e.span,
                 })
             }

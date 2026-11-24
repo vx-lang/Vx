@@ -8,6 +8,8 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 **Status:** partial implementation. The proposed `std::io::Error` is deferred until file operations can return it. The existing `std::fs::File` can open, read, write, seek, and close a host file through Rust FFI. This document records what a Vx caller must do to read a file today and the work needed to make ordinary file reading safe and convenient.
 
+**Update (2026-11-23):** `File::open`, `File::read` and `File::write` are now safe. `open` takes the right to open files (a `&Files`, which `main` gets in its `Root`), a `String` path and an `OpenMode`, and gives a `Result<File, FileError>`. `read` and `write` take a `Vec<u8>` and give a `Result<u64, FileError>`. The raw-pointer methods are now `open_c_str`, `read_raw` and `write_raw`. The example below uses them.
+
 File I/O belongs in host `std`, not device-portable `core`. The purity rule in [the core library plan](core_library.md) forbids `extern` in `core`; host `std::fs` may call the operating system. The intended end state is for Vx to own the file API and its implementation above those operating-system calls, without the Rust file bridge. The [roadmap](../../ROADMAP.md) marks native file I/O complete, but that checkmark describes the basic host path, not an end-user file API.
 
 ## Current implementation status
@@ -15,8 +17,8 @@ File I/O belongs in host `std`, not device-portable `core`. The purity rule in [
 - `std::io` currently exposes raw standard-stream calls. The [error contract](io_error_contract.md) records the proposed portable category, operation, optional native code, and deferred message; those public types are not implemented.
 - There is no public Vx I/O error type or public error test yet. Rust bridge tests cover every supported error-kind mapping, unknown-code fallback, a real nonblocking `WouldBlock` read, native-code preservation, and a synthetic error with no native code through the shared error conversion path. Add a public Vx error test when the file API returns the proposed type.
 - `File::open` accepts `OpenMode::Read`, `OpenMode::Write`, or `OpenMode::ReadWriteCreate`. The raw bridge reports an unknown mode integer and aborts before checking the path, even if the path is null. A null return would look like an ordinary open failure. Callers that declare `vx_file_open` directly must pass one of the three valid mode codes; unknown values previously opened with read/write/create. Combinations such as append and exclusive create are still unspecified.
-- The Rust bridge has separate fallible byte-transfer calls. They return a byte count on success and capture the native code and portable category on failure. Rust tests cover short reads and writes, EOF, empty requests, failed reads and writes, invalid pointers and lengths, and preservation of the native code. A Vx backend test calls both bridge functions directly to check their status and output types across success and failure. `std::fs::File` does not expose these calls yet: Vx currently fails to generate valid code for `Result<u64, std::io::Error>`, whose variants carry differently shaped values. Keep that compiler work separate from the file API.
-- `std::fs::File` still has raw-pointer methods and returns a `File` or a byte count, rather than a fallible result. `File` now implements `Drop`, so its handle is released automatically. The Rust file bridge still handles host calls and can turn a read failure into a zero byte count.
+- The Rust bridge has separate fallible byte-transfer calls. They return a byte count on success and capture the native code and portable category on failure. Rust tests cover short reads and writes, EOF, empty requests, failed reads and writes, invalid pointers and lengths, and preservation of the native code. A Vx backend test calls both bridge functions directly to check their status and output types across success and failure. `File::read` and `File::write` use them, and `File::open` uses the fallible open call `vx_file_try_open`.
+- The raw-pointer methods of `std::fs::File` give a `File` or a byte count, rather than a fallible result. `File` now implements `Drop`, so its handle is released automatically. The Rust file bridge still handles host calls and can turn a read failure into a zero byte count.
 
 The next step is to make Vx's `Result<u64, std::io::Error>` code generation work, then connect the fallible bridge calls to `File` methods. The raw-pointer and ownership work below is still needed before file reading can be safe for ordinary callers. Replacing the Rust bridge can follow as a separate backend change while keeping the public error contract.
 
@@ -36,10 +38,10 @@ extern {
 
 fn main() -> i32 {
   unsafe {
-    let mut file = File::open("/path/to/example.parquet", OpenMode::Read());
+    let mut file = File::open_c_str("/path/to/example.parquet", OpenMode::Read());
     let buffer = malloc(4);
 
-    let count = file.read(buffer, 4);
+    let count = file.read_raw(buffer, 4);
     print!("Bytes read: ");
     print!(count);
     print!("\nHeader: ");
@@ -55,9 +57,9 @@ fn main() -> i32 {
 
 On a valid Parquet file, the first four bytes are `PAR1`. A four-byte read is useful for demonstrating the API; it does not establish that the rest of the file is valid Parquet.
 
-The example uses one broad `unsafe` block for brevity. `File::open` takes a raw pointer to a NUL-terminated path, `File::read` takes a raw pointer and a separately supplied byte count, and a raw pointer retained after `File` drops can dangle. `malloc` and `free` are declared locally only to provide a four-byte buffer: `std::fs` does not allocate one for the caller. The repository also exposes C allocation functions in `std::alloc`, but callers still have to manage the buffer. `print!` and `seek` do not themselves need an unsafe block.
+The example uses one broad `unsafe` block for brevity. `File::open_c_str` takes a raw pointer to a NUL-terminated path, `File::read_raw` takes a raw pointer and a separately supplied byte count, and a raw pointer retained after `File` drops can dangle. `malloc` and `free` are declared locally only to provide a four-byte buffer: `std::fs` does not allocate one for the caller. The repository also exposes C allocation functions in `std::alloc`, but callers still have to manage the buffer. `print!` and `seek` do not themselves need an unsafe block.
 
-There is no reliable failure path in this example. `File::open` returns a `File` containing a null pointer when opening fails, but Vx cannot test that pointer for null (Vx#714). `read` returns zero for end of file, a null file or buffer, and an I/O error. The Rust FFI currently converts a read error to zero with `unwrap_or(0)`. A short read is possible and must be handled separately when an exact number of bytes is required. The `File` handle now closes when dropped; the caller must still free the raw buffer on every exit path. See [`stdlib/std/fs.vx`](../../stdlib/std/fs.vx) and the Rust [file FFI](../../stdlib/rust_core/src/ffi/macros.rs).
+There is no reliable failure path in this example. `File::open_c_str` returns a `File` containing a null pointer when opening fails, but Vx cannot test that pointer for null (Vx#714). `read_raw` returns zero for end of file, a null file or buffer, and an I/O error. The Rust FFI currently converts a read error to zero with `unwrap_or(0)`. A short read is possible and must be handled separately when an exact number of bytes is required. The `File` handle now closes when dropped; the caller must still free the raw buffer on every exit path. See [`stdlib/std/fs.vx`](../../stdlib/std/fs.vx) and the Rust [file FFI](../../stdlib/rust_core/src/ffi/macros.rs).
 
 ## Target caller experience
 
