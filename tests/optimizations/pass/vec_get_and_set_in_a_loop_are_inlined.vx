@@ -9,8 +9,14 @@
 // the message for a bad index stays a call to `vec_index_out_of_bounds`. Before, that code was
 // inside `get` and `set`, and they were too large for LLVM to inline.
 //
+// The second RUN line gives `opt` a fixed x86 CPU, so that LLVM can vectorize. It checks that
+// the loop in `sum_get` adds 4 values at a time. `fill_set` stays a scalar loop.
+//
 // RUN: vxc %s -O3 --emit-llvm 2>&1 | mlir-translate --mlir-to-llvmir | opt -passes='default<O3>' -S | FileCheck %s
-// RUN: vxc %s -O3 --emit-llvm --legacy-codegen 2>&1 | mlir-translate --mlir-to-llvmir | opt -passes='default<O3>' -S | FileCheck %s
+// RUN: vxc %s -O3 --emit-llvm 2>&1 | mlir-translate --mlir-to-llvmir | opt -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64-v3 -passes='default<O3>' -S | FileCheck %s --check-prefix=VEC
+// VEC-LABEL: define {{.*}} @sum_get(
+// VEC: call i64 @llvm.vector.reduce.add.v4i64(
+// VEC: {{^}}}
 // CHECK-LABEL: define {{.*}} @sum_get(
 // CHECK-NOT: call {{.*}}Vec$i64$get
 // CHECK: call void @vec_index_out_of_bounds(
