@@ -1,0 +1,311 @@
+//===- lane_values_stay_in_registers_between_lane_loops.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tile in shared memory whose elements each belong to one lane: every access is `t[w][..][l]`
+// or `t[..][l]`, in a lane loop whose index `l` is the lane, and `w` is the number of the
+// subgroup. Then the GPU kernel keeps the elements in the registers of their lanes, through lane
+// loops one after another, and the tile takes no shared memory. A lane reduction of a row reads
+// the registers. In the other cases, the tile stays in shared memory. The loops that index such a
+// tile are unrolled, so the registers need no local memory. The AST code generator does not unroll
+// them yet, so it may put some of those elements in local memory.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --implicit-check-not=local_depot < %t.ptx
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s < %t.ast.ptx
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+
+import core::num;
+
+// The PTX has the kernels in the order of their names. `block_rows`, `decode` and `three_rows`
+// have no tile in shared memory, and read no shared memory. The others keep their tiles there.
+// CHECK-LABEL: .entry another_lane(
+// CHECK: .shared .align 16 .b8 {{.*}}[512];
+// CHECK-LABEL: .entry block_rows(
+// CHECK-NOT: .shared
+// CHECK-LABEL: .entry block_sum_of_a_row(
+// CHECK: .shared .align 16 .b8 {{.*}}[1024];
+// CHECK-LABEL: .entry decode(
+// CHECK-NOT: .shared
+// CHECK: shfl.sync.bfly
+// CHECK-NOT: .shared
+// CHECK-LABEL: .entry three_rows(
+// CHECK-NOT: .shared
+// CHECK: shfl.sync.bfly
+// CHECK-NOT: .shared
+// CHECK-LABEL: .entry two_passes_each(
+// CHECK: .shared .align 16 .b8 {{.*}}[1024];
+// CHECK-LABEL: .entry wider_than_the_lanes(
+// CHECK: .shared .align 16 .b8 {{.*}}[768];
+
+// Flash decoding: each subgroup takes 4 heads, and each lane keeps 2 elements of the query and 2
+// output sums of each head, with the running maximum and sum of the scores, for all the tokens.
+pub fn decode(out : &mut Tensor<f32, [?, ?], Memory::HBM>, q : &Tensor<f32, [?, ?], Memory::HBM>, kv : &Tensor<f32, [?, ?], Memory::HBM>, tokens : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut qr = unsafe {
+        Tensor<f32, [2, 4, 2, 32], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 4, 2, 32], Memory::SMEM>::uninit()
+      };
+      let mut st = unsafe {
+        Tensor<f32, [2, 4, 2, 32], Memory::SMEM>::uninit()
+      };
+      let mut row = unsafe { Tensor<f32, [2, 2, 32], Memory::SMEM>::uninit() };
+      let mut part = unsafe {
+        Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          for h in 0..4 {
+            for e in 0..2 {
+              qr[w][h][e][l] = q[w * 4 + h][e * 32 + l];
+              acc[w][h][e][l] = 0.0;
+            }
+            st[w][h][0][l] = -1000000.0;
+            st[w][h][1][l] = 0.0;
+          }
+        }
+        for t in 0..tokens {
+          for l in 0..32 across lanes {
+            for e in 0..2 {
+              row[w][e][l] = kv[t][e * 32 + l];
+            }
+            for h in 0..4 {
+              let mut p : f32 = 0.0;
+              for e in 0..2 {
+                p = p + qr[w][h][e][l] * row[w][e][l];
+              }
+              part[w][h][l] = p;
+            }
+          }
+          let x0 = lanes::sum(&part[w][0], 32);
+          let x1 = lanes::sum(&part[w][1], 32);
+          let x2 = lanes::sum(&part[w][2], 32);
+          let x3 = lanes::sum(&part[w][3], 32);
+          for l in 0..32 across lanes {
+            for h in 0..4 {
+              let x = if h == 0 {
+                x0
+              } else if h == 1 {
+                x1
+              } else if h == 2 {
+                x2
+              } else {
+                x3
+              };
+              let m0 = st[w][h][0][l];
+              let m1 = if x > m0 { x } else { m0 };
+              let scale = (m0 - m1).exp();
+              let weight = (x - m1).exp();
+              st[w][h][0][l] = m1;
+              st[w][h][1][l] = st[w][h][1][l] * scale + weight;
+              for e in 0..2 {
+                acc[w][h][e][l] = acc[w][h][e][l] * scale + weight * row[w][e][l];
+              }
+            }
+          }
+        }
+        for l in 0..32 across lanes {
+          for h in 0..4 {
+            for e in 0..2 {
+              out[w * 4 + h][e * 32 + l] = acc[w][h][e][l] / st[w][h][1][l];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The code of a block: lane `l` of 64 keeps `t[m][l]` for each `m`.
+pub fn block_rows(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut t = unsafe { Tensor<f32, [4, 64], Memory::SMEM>::uninit() };
+      for l in 0..64 across lanes {
+        for m in 0..4 {
+          t[m][l] = x[m * 64 + l];
+        }
+      }
+      for l in 0..64 across lanes {
+        let mut s : f32 = 0.0;
+        for m in 0..4 {
+          s = s + t[m][l] * t[m][l];
+        }
+        out[l] = s;
+      }
+    }
+  }
+  return;
+}
+
+// Each lane keeps 3 elements of `t`, a number of places that is not a power of two. The place of
+// each element is still a number, so the elements need no local memory.
+pub fn three_rows(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut t = unsafe { Tensor<f32, [2, 3, 32], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          for m in 0..3 {
+            t[w][m][l] = (w * 100 + m * 32 + l) as f32;
+          }
+        }
+        let s = lanes::sum(&t[w][1], 32);
+        for l in 0..32 across lanes {
+          out[w][l] = s + t[w][0][l] + t[w][2][l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// A lane reduction in the code of a block reads `t[0]` from shared memory, so `t` stays there,
+// 1024 bytes.
+pub fn block_sum_of_a_row(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut t = unsafe { Tensor<f32, [4, 64], Memory::SMEM>::uninit() };
+      for l in 0..64 across lanes {
+        for m in 0..4 {
+          t[m][l] = (m * 64 + l) as f32;
+        }
+      }
+      let s = lanes::sum(&t[0], 64);
+      for l in 0..64 across lanes {
+        out[l] = s + t[1][l];
+      }
+    }
+  }
+  return;
+}
+
+// The rows of `t` have 48 elements, and the lane loop has 32 lanes. `t` stays in shared memory,
+// 768 bytes.
+pub fn wider_than_the_lanes(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut t = unsafe { Tensor<f32, [2, 2, 48], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          for m in 0..2 {
+            t[w][m][l] = (w * 100 + m * 32 + l) as f32;
+          }
+        }
+        for l in 0..32 across lanes {
+          out[w][l] = t[w][0][l] + t[w][1][l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Each subgroup has two passes, `w` and `w + 2`, so a lane has two rows of `t`. `t` stays in
+// shared memory, 1024 bytes.
+pub fn two_passes_each(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut t = unsafe { Tensor<f32, [4, 2, 32], Memory::SMEM>::uninit() };
+      for w in 0..4 across subgroups(2) {
+        for l in 0..32 across lanes {
+          for m in 0..2 {
+            t[w][m][l] = (w * 100 + m * 32 + l) as f32;
+          }
+        }
+        for l in 0..32 across lanes {
+          out[w][l] = t[w][0][l] + t[w][1][l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Lane `l` reads the element of lane `31 - l`, so `t` stays in shared memory, 512 bytes.
+pub fn another_lane(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut t = unsafe { Tensor<f32, [2, 2, 32], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          for m in 0..2 {
+            t[w][m][l] = (w * 100 + m * 32 + l) as f32;
+          }
+        }
+        for l in 0..32 across lanes {
+          out[w][l] = t[w][0][31 - l] + t[w][1][l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// On the CPU: the output of heads 0, 3 and 7 against a reference in Python.
+// OUT: decode 0.27565786 0.32589012 0.27827442
+// OUT-NEXT: block_rows 5 6 9
+// OUT-NEXT: two passes 32 664
+// OUT-NEXT: another lane 63 263
+// OUT-NEXT: block sum 2081 2016
+// OUT-NEXT: three rows 1584 5046
+// OUT-NEXT: wider 32 232
+fn main() -> i32 {
+  let mut hq = Tensor<f32, [8, 64]>::fill(0.0);
+  for i in 0..8 {
+    for j in 0..64 {
+      hq[i][j] = ((i * 7 + j * 3) % 5) as f32 * 0.1;
+    }
+  }
+  let mut hkv = Tensor<f32, [3, 64]>::fill(0.0);
+  for t in 0..3 {
+    for j in 0..64 {
+      hkv[t][j] = ((t * 5 + j) % 7) as f32 * 0.1;
+    }
+  }
+  let q = transfer(hq, Memory::HBM);
+  let kv = transfer(hkv, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [8, 64]>::fill(0.0), Memory::HBM);
+  decode(&mut out, &q, &kv, 3);
+  let ho = transfer(out, Memory::CPU_DRAM);
+  println!("decode {} {} {}", ho[0][0], ho[3][17], ho[7][63]);
+  let mut hx = Tensor<f32, [256]>::fill(0.0);
+  for i in 0..256 {
+    hx[i] = (i % 3) as f32;
+  }
+  let x = transfer(hx, Memory::HBM);
+  let mut sq = transfer(Tensor<f32, [64]>::fill(0.0), Memory::HBM);
+  block_rows(&mut sq, &x);
+  let hs = transfer(sq, Memory::CPU_DRAM);
+  println!("block_rows {} {} {}", hs[0], hs[1], hs[2]);
+  let mut tp = transfer(Tensor<f32, [4, 32]>::fill(0.0), Memory::HBM);
+  two_passes_each(&mut tp);
+  let ht = transfer(tp, Memory::CPU_DRAM);
+  println!("two passes {} {}", ht[0][0], ht[3][16]);
+  let mut al = transfer(Tensor<f32, [2, 32]>::fill(0.0), Memory::HBM);
+  another_lane(&mut al);
+  let ha = transfer(al, Memory::CPU_DRAM);
+  println!("another lane {} {}", ha[0][0], ha[1][0]);
+  let mut bs = transfer(Tensor<f32, [64]>::fill(0.0), Memory::HBM);
+  block_sum_of_a_row(&mut bs);
+  let hb = transfer(bs, Memory::CPU_DRAM);
+  println!("block sum {} {}", hb[1], hb[0] - 64.0);
+  let mut tr = transfer(Tensor<f32, [2, 32]>::fill(0.0), Memory::HBM);
+  three_rows(&mut tr);
+  let h3 = transfer(tr, Memory::CPU_DRAM);
+  println!("three rows {} {}", h3[0][0], h3[1][31]);
+  let mut wd = transfer(Tensor<f32, [2, 32]>::fill(0.0), Memory::HBM);
+  wider_than_the_lanes(&mut wd);
+  let hw = transfer(wd, Memory::CPU_DRAM);
+  println!("wider {} {}", hw[0][0], hw[1][0]);
+  return 0;
+}

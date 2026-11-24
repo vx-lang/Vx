@@ -54,15 +54,22 @@ the same in each run.
 | The same work on each element of a tensor | an `across` loop in a `spawn on` region |
 | A sum, a maximum or a sort over the lanes of a block | `lanes::sum`, `lanes::max`, `lanes::sort` |
 | Many passes that add to the same element of a tensor | `atomic_fetch_add_u32` and the other atomics on elements |
+| Each pass writes at a row that a tensor gives it | a `Distinct` tensor of rows ([Rows from a tensor of indices](gpu.md#rows-from-a-tensor-of-indices)) |
+| Each pass writes the rows of a range that a table gives it | a `DisjointRanges` table ([Rows from a table of ranges](gpu.md#rows-from-a-table-of-ranges)) |
 | A copy into a tile while the lanes work | `lanes::copy_async` |
+| A copy of a tile to or from shared memory | `lanes::copy` |
+| The same value in each element of a tile in shared memory | `lanes::fill` |
+| Each row of a tile in shared memory times a value of its own | `lanes::scale_rows` |
+| A part of a tensor in the L2 cache before the lanes read it | `lanes::prefetch` |
 | A faster `exp` or `tanh` in a GPU kernel | `fast_exp`, `fast_tanh` ([Exact and fast math](exact-and-fast-math.md)) |
 | Work on several devices at the same time | a task for each device, with a `spawn on` in each task |
 | The result of one task | `join()` on its handle |
 | Values from many tasks | a channel |
 | A counter or a flag that tasks share | an atomic |
 | A change to more than one value at a time | a `Mutex` |
-| Values from more than one channel | a `Selector` |
+| Values from more than one channel, or a channel and a time limit | `select2` to `select6`, or a `Selector` |
 | A value that lives longer than its `tasks` block | an `Arc` |
+| At most `n` tasks that do one thing at the same time | a `Semaphore` |
 
 Use a channel when you are not sure. A channel moves each value to one owner, so two tasks never
 change the same data. A task can borrow the locals of the function around it, so most programs
@@ -156,7 +163,8 @@ of each kernel, and the result must be the same as on the GPU.
 | a multi-thread tokio runtime | `VX_TASK_RUNTIME=shared`, with no change to the program |
 | `async fn` and `.await` | a normal function: `recv()`, `join()` and `lock()` wait in place |
 | `tokio::sync::mpsc` | `std::sync::channel` |
-| `tokio::select!` | `Selector` |
+| `tokio::select!` | `select2` to `select6` from `std::sync::select` |
+| `tokio::sync::Semaphore` | `std::sync::semaphore::Semaphore` |
 | `AtomicU64` with `Ordering::Relaxed` | `AtomicU64` with `AtomicOrdering::Relaxed` |
 
 Vx has no `async`. [Why Vx has no `async`](tasks.md#why-vx-has-no-async) explains this.

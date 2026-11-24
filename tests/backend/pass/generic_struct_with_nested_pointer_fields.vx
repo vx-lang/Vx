@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 // Read scalar fields and pointer targets from nested generic structs.
-// REQUIRES: flat-codegen
 // EXPECT: 5 1 17 31
 
 struct Node {

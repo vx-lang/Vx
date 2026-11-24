@@ -1,0 +1,64 @@
+//===- a_loop_that_a_break_leaves_can_finish.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `loop` that a `break` can leave can finish, so it does not end a function body. The
+// `break` can be in the loop's body, in an `if` or a `match` there, or in an `unsafe` block.
+// A `while` loop stops when its condition is false, so it can finish too.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::option;
+
+// CHECK: Error[E3028] at {{.*}}a_loop_that_a_break_leaves_can_finish.vx:[[@LINE+2]]:3: 'never_with_a_break' is declared `-> !`, so it must never return, but its body can finish
+fn never_with_a_break() -> ! {
+  loop {
+    break;
+  }
+}
+
+// CHECK: Error[E3028] at {{.*}}a_loop_that_a_break_leaves_can_finish.vx:[[@LINE+2]]:3: 'break_in_an_if' returns i64 but its body can finish without returning a value
+fn break_in_an_if(c : bool) -> i64 {
+  loop {
+    if c {
+      break;
+    }
+  }
+}
+
+// CHECK: Error[E3028] at {{.*}}a_loop_that_a_break_leaves_can_finish.vx:[[@LINE+2]]:3: 'break_in_a_match' returns i64 but its body can finish without returning a value
+fn break_in_a_match(o : Option<i64>) -> i64 {
+  loop {
+    match o {
+      Option<i64>::Some(v) => {
+        return v;
+      }
+      Option<i64>::None => {
+        break;
+      }
+    }
+  }
+}
+
+// CHECK: Error[E3028] at {{.*}}a_loop_that_a_break_leaves_can_finish.vx:[[@LINE+2]]:3: 'break_in_an_unsafe_block' returns i64 but its body can finish without returning a value
+fn break_in_an_unsafe_block() -> i64 {
+  loop {
+    unsafe { break; }
+  }
+}
+
+// CHECK: Error[E3028] at {{.*}}a_loop_that_a_break_leaves_can_finish.vx:[[@LINE+2]]:3: 'a_while_loop' returns i64 but its body can finish without returning a value
+fn a_while_loop(c : bool) -> i64 {
+  while c {
+    println!("waiting");
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 5 error(s) emitted

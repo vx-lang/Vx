@@ -1,0 +1,22 @@
+//===- extern_unsafe_impl.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An impl of `Send` outside the file of its type is `unsafe extern impl`, in that order.
+
+struct Holder {
+  place : *mut i64,
+}
+
+extern unsafe impl Send for Holder {}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error at {{.*}}extern_unsafe_impl.vx:16:1: write `unsafe extern impl`, not `extern unsafe impl`

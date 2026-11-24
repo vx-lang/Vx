@@ -16,12 +16,12 @@
 fn peek(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32
 ensures reads_only(t)
 {
-  return mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32,
-  dialects : ["memref", "arith"], ensures : [reads_only(t)]) {
-    %k = arith.index_cast %i : i32 to index
-    %v = memref.load %t[%k] : memref<?xi32>
-    macro.yield %v : i32
-  };
+  return unsafe { mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32,
+    dialects : ["memref", "arith"], ensures : [reads_only(t)]) {
+      %k = arith.index_cast %i : i32 to index
+      %v = memref.load %t[%k] : memref<?xi32>
+      macro.yield %v : i32
+    } };
 }
 
 fn peek_twice(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32

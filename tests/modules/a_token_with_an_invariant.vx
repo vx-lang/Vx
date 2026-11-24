@@ -1,0 +1,24 @@
+//===- a_token_with_an_invariant.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares `Token`, a struct with an invariant. An `mlir!` block in this file can make a value of
+// `Token`.
+
+struct Token {
+  number : i64,
+
+  invariant 0i64 <= number,
+}
+
+fn token_from_mlir() -> Token {
+  unsafe {
+    return mlir!(inputs : (), returns : Token, dialects : ["llvm"]) {
+      %u = llvm.mlir.undef : !llvm.struct<(i64)>
+      macro.yield %u : !llvm.struct<(i64)>
+    };
+  }
+}

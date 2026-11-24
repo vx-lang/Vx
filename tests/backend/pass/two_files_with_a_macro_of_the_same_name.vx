@@ -1,0 +1,23 @@
+//===- two_files_with_a_macro_of_the_same_name.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// macro_label_left.vx and macro_label_right.vx each declare a macro `label`, and each calls its
+// own. A file calls only its own macros and the macros of the files that it imports. So each call
+// uses the macro of its own file.
+import tests::modules::macro_label_left;
+import tests::modules::macro_label_right;
+
+fn main() -> i32 {
+  let l = Left { x : 0i64 };
+  let r = Right { x : 0i64 };
+  print(l.label());
+  print!(" ");
+  print(r.label());
+  return 0;
+}
+
+// EXPECT: 1 2

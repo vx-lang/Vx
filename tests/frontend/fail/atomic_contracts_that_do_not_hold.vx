@@ -29,22 +29,22 @@
 fn add_one(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32
 ensures atomic(t)
 {
-  return mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
-    %k = arith.index_cast %i : i32 to index
-    %one = arith.constant 1 : i32
-    %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
-    macro.yield %old : i32
-  };
+  return unsafe { mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
+      %k = arith.index_cast %i : i32 to index
+      %one = arith.constant 1 : i32
+      %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
+      macro.yield %old : i32
+    } };
 }
 
 // The same function with no contract.
 fn add_one_plain(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32 {
-  return mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"]) {
-    %k = arith.index_cast %i : i32 to index
-    %one = arith.constant 1 : i32
-    %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
-    macro.yield %old : i32
-  };
+  return unsafe { mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"]) {
+      %k = arith.index_cast %i : i32 to index
+      %one = arith.constant 1 : i32
+      %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
+      macro.yield %old : i32
+    } };
 }
 
 fn names_no_parameter(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> i32
@@ -80,12 +80,12 @@ ensures atomic(t)
 fn passes_it_to_a_block_without_a_clause(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32
 ensures atomic(t)
 {
-  return mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"]) {
-    %k = arith.index_cast %i : i32 to index
-    %one = arith.constant 1 : i32
-    %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
-    macro.yield %old : i32
-  };
+  return unsafe { mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"]) {
+      %k = arith.index_cast %i : i32 to index
+      %one = arith.constant 1 : i32
+      %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
+      macro.yield %old : i32
+    } };
 }
 
 fn passes_it_to_a_function_without_a_contract(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32
@@ -95,25 +95,25 @@ ensures atomic(t)
 }
 
 fn block_names_no_input(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32 {
-  return mlir!( inputs : (%i = i : i32), returns : i32, dialects : ["arith"], ensures : [atomic(t)]) {
-    macro.yield %i : i32
-  };
+  return unsafe { mlir!( inputs : (%i = i : i32), returns : i32, dialects : ["arith"], ensures : [atomic(t)]) {
+      macro.yield %i : i32
+    } };
 }
 
 fn block_loads_the_atomic_tensor(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32 {
-  return mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
-    %k = arith.index_cast %i : i32 to index
-    %v = memref.load %t[%k] : memref<?xi32>
-    macro.yield %v : i32
-  };
+  return unsafe { mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
+      %k = arith.index_cast %i : i32 to index
+      %v = memref.load %t[%k] : memref<?xi32>
+      macro.yield %v : i32
+    } };
 }
 
 fn block_writes_a_tensor_it_does_not_name(t : &Tensor<i32, [?], Memory::HBM>, u : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32 {
-  return mlir!( inputs : (%t = t : memref<?xi32>, %u = u : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
-    %k = arith.index_cast %i : i32 to index
-    memref.store %i, %u[%k] : memref<?xi32>
-    macro.yield %i : i32
-  };
+  return unsafe { mlir!( inputs : (%t = t : memref<?xi32>, %u = u : memref<?xi32>, %i = i : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
+      %k = arith.index_cast %i : i32 to index
+      memref.store %i, %u[%k] : memref<?xi32>
+      macro.yield %i : i32
+    } };
 }
 
 pub fn reads_the_counter_in_the_loop(count : &Tensor<i32, [?], Memory::HBM>, out : &mut Tensor<i32, [?], Memory::HBM>) -> void {

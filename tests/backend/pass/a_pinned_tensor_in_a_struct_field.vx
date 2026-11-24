@@ -10,7 +10,14 @@
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=DROP
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=DROP
 // CHECK: {{^}}corner 2 last 5{{$}}
+//
+// The drop of the field frees through the plugin of the memory the pin names. A machine with
+// no device backend allocates that memory with `malloc`, so the program above would pass even
+// when the drop says nothing about the pin; the DROP lines pin it where devices do not matter.
+// DROP: vx.drop %{{.*}} {field, placed = 500 : i32}
 
 Memory CPU_DRAM {}
 Memory GPU_HBM {

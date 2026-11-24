@@ -85,14 +85,14 @@ unsafe fn vec_take<T>(data : *mut T, index : i32) -> T {
 ///
 /// Only the functions of this file can change the fields, so the invariant holds in each other
 /// file.
-struct Vec<T>
-invariant 0i32 <= self.len && self.len <= self.capacity
-invariant valid(self.data, self.capacity as i64)
-invariant initialized(self.data, self.len as i64)
-{
+struct Vec<T> {
   data : *mut T,
   len : i32,
   capacity : i32,
+
+  invariant 0i32 <= len && len <= capacity,
+  invariant valid(data, capacity as i64),
+  invariant initialized(data, len as i64),
 }
 
 // A `Vec<T>` owns its `T`s, so it crosses tasks as a `T` does.
@@ -172,6 +172,45 @@ Vec<T> {
     }
     unsafe { self.data[self.len] = val; }
     self.len = self.len + 1;
+    return 0;
+  }
+
+  /// A vector of `len` elements whose bytes are all zero, made with one allocation and one fill.
+  ///
+  /// Unsafe because all-zero bytes must be a valid `T`. They are for a number, but not for a type
+  /// that holds a reference.
+  unsafe fn zeroed(len : i32) -> Vec<T> {
+    let mut v = Vec<T>::with_capacity(len);
+    unsafe { write_bytes(v.data, 0u8, len as usize); }
+    v.len = len;
+    return v;
+  }
+
+  /// Copy `count` values from `src` to the end of the vector in one copy. The buffer grows at
+  /// most once.
+  ///
+  /// Unsafe because `src` must have `count` values to read, outside this vector. The vector gets
+  /// copies of their bits, so for a type that is not `Copy`, the caller must not drop the
+  /// originals.
+  unsafe fn extend_from_raw(self : &mut Vec<T>, src : *const T, count : i32) -> i32 {
+    let needed = (self.len as i64) + (count as i64);
+    if count < 0 || needed > 2147483647i64 {
+      panic("Vec: extend_from_raw got a negative count, or a length that does not fit in an i32");
+    }
+    if needed > self.capacity as i64 {
+      let doubled = (self.capacity as i64) * 2;
+      let mut new_cap = needed;
+      if doubled > needed && doubled <= 2147483647i64 {
+        new_cap = doubled;
+      }
+      let ptr : *mut i8 = self.data;
+      self.data = vec_grow(ptr, self.capacity as i64, new_cap, sizeof<T>());
+      self.capacity = new_cap as i32;
+    }
+    unsafe {
+      copy_nonoverlapping(src, add_mut(self.data, self.len as usize), count as usize);
+    }
+    self.len = needed as i32;
     return 0;
   }
 

@@ -698,21 +698,21 @@ impl<'a> Parser<'a> {
                 span,
             }))
         } else if self.check(&TokenType::LeftBrace) {
-            let is_struct_init = matches!(
-                (
-                    self.tokens.get(self.pos).map(|t| &t.kind),
-                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
-                ),
-                (Some(TokenType::LeftBrace), Some(TokenType::RightBrace), _)
-                    | (
-                        Some(TokenType::LeftBrace),
-                        Some(TokenType::Identifier(_)),
-                        Some(TokenType::Colon),
-                    )
+            let after = |n: usize| self.tokens.get(self.pos + n).map(|t| &t.kind);
+            let has_fields = matches!(
+                (after(1), after(2)),
+                (Some(TokenType::Identifier(_)), Some(TokenType::Colon))
             );
-
-            if is_struct_init {
+            let empty = after(1) == Some(&TokenType::RightBrace);
+            let before_block = self.block_follows_here();
+            // A block cannot start with `name :`, so this can only be a struct literal.
+            if has_fields && before_block {
+                return Err(self.error(&format!(
+                    "a struct literal cannot come directly before a block. Put it in \
+                     parentheses: `({call_name} {{ .. }})`"
+                )));
+            }
+            if (has_fields || empty) && !before_block {
                 self.advance(); // consume '{'
                 let mut fields = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -1069,6 +1069,8 @@ impl<'a> Parser<'a> {
                     lowering: None,
                     is_async,
                     shared: false,
+                    read_only_source: false,
+                    source_borrowed_for_call: false,
                     span: Span {
                         line: peeked_token.line,
                         column: peeked_token.column,
@@ -1116,6 +1118,71 @@ impl<'a> Parser<'a> {
                     type_args: None,
                     args: vec![inner],
                     span: Span::default(),
+                })
+            }
+            // `Distinct::check(t)` and `DisjointRanges::check(t)` check the values of `t` and
+            // call `core::distinct`.
+            TokenType::Distinct | TokenType::DisjointRanges
+                if self.peek_n(1).kind == TokenType::DoubleColon =>
+            {
+                let claim = if peeked_token.kind == TokenType::Distinct {
+                    "Distinct"
+                } else {
+                    "DisjointRanges"
+                };
+                self.advance();
+                self.advance();
+                match &self.advance().kind {
+                    TokenType::Identifier(s) if *s == "check" => {}
+                    _ => return Err(self.error(&format!("Expected 'check' after '{claim}::'"))),
+                }
+                self.consume(
+                    &TokenType::LeftParen,
+                    &format!("Expected '(' after {claim}::check"),
+                )?;
+                let mut args = Vec::new();
+                if !self.check(&TokenType::RightParen) {
+                    args.push(self.parse_expr()?);
+                    while self.match_token(&TokenType::Comma) {
+                        args.push(self.parse_expr()?);
+                    }
+                }
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                self.uses_distinct_check = true;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: format!("{claim}::check").into(),
+                    type_args: None,
+                    args,
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
+                })
+            }
+            TokenType::Distinct | TokenType::DisjointRanges => {
+                let name = if peeked_token.kind == TokenType::Distinct {
+                    "Distinct"
+                } else {
+                    "DisjointRanges"
+                };
+                self.advance();
+                self.consume(&TokenType::LeftParen, &format!("Expected '(' after {name}"))?;
+                let inner = self.parse_expr()?;
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: name.to_string().into(),
+                    type_args: None,
+                    args: vec![inner],
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
                 })
             }
             TokenType::Grad => {
@@ -1270,7 +1337,12 @@ impl<'a> Parser<'a> {
                                 name: s.to_string().into(),
                                 token_tree,
                                 block_tree,
-                                span: Span::default(),
+                                span: crate::syntax::Span {
+                                    line: token.line,
+                                    column: token.column,
+                                    length: token.length,
+                                    expansion: self.expansion(),
+                                },
                             })
                         } else {
                             let span = crate::syntax::Span {
@@ -1316,7 +1388,10 @@ impl<'a> Parser<'a> {
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
                         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                            // A statement that a desugaring puts before this one goes in the block.
+                            let mark = self.prefix_stmts.len();
                             let stmt = self.parse_statement()?;
+                            stmts.extend(self.prefix_stmts.drain(mark..));
                             // Only a last expression with no `;` is the block's value. A last
                             // statement that ends with `;` stays one of the block's statements.
                             if self.check(&TokenType::RightBrace) {
@@ -1412,7 +1487,10 @@ impl<'a> Parser<'a> {
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
                         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                            // A statement that a desugaring puts before this one goes in the block.
+                            let mark = self.prefix_stmts.len();
                             let stmt = self.parse_statement()?;
+                            stmts.extend(self.prefix_stmts.drain(mark..));
                             if self.check(&TokenType::RightBrace) {
                                 if let Statement::ExprStmt(ExprStmtStmt {
                                     expr: e,
@@ -1445,6 +1523,15 @@ impl<'a> Parser<'a> {
                     }
                     TokenType::Unknown('"') => {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
+                    }
+                    TokenType::UnknownEscape(c, _) => {
+                        return Err(self.error_at(
+                            &token,
+                            &format!(
+                                "this string has the escape `\\{c}`, which Vx does not know. A \
+                                 string can use `\\n`, `\\t`, `\\r`, `\\\"` and `\\\\`"
+                            ),
+                        ))
                     }
                     _ => {
                         return Err(self.error_at(
@@ -1556,7 +1643,7 @@ impl<'a> Parser<'a> {
         let if_span = self.next_span();
         self.advance();
         let is_comptime = self.match_token(&TokenType::Comptime);
-        let cond = self.parse_expr()?;
+        let cond = self.parse_expr_before_block()?;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut then_block = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {

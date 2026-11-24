@@ -38,12 +38,10 @@ pub struct MeliorGenerator<'c> {
     pub(crate) env: HashMap<crate::symbol::Symbol, (Value<'c, 'c>, Type<'c>)>,
     pub(crate) ast_env: HashMap<crate::symbol::Symbol, syntax::Type>,
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
-    /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
+    /// not control.
     pub(crate) owned_tensors: std::collections::HashSet<crate::symbol::Symbol>,
     /// The `printMemref*` helpers declared so far; each is declared on its first use.
     pub(crate) declared_tensor_prints: std::collections::HashSet<&'static str>,
-    /// Locals whose element pointer the function takes: a view through it can share their memory.
-    pub(crate) pointer_taken: std::collections::HashSet<crate::symbol::Symbol>,
     /// The locals of the function being lowered that are borrowed with `&x`. Each gets a stack
     /// slot, so every borrow of it is the same address.
     pub(crate) address_taken: std::collections::HashSet<crate::symbol::Symbol>,
@@ -76,6 +74,7 @@ pub struct MeliorGenerator<'c> {
     pub(crate) enum_generics: HashMap<crate::symbol::Symbol, Vec<crate::symbol::Symbol>>,
     pub(crate) functions: HashMap<crate::symbol::Symbol, (Type<'c>, Vec<Type<'c>>)>,
     pub(crate) syntax_functions: HashMap<crate::symbol::Symbol, syntax::Function>,
+    extern_return_types: HashMap<crate::symbol::Symbol, syntax::Type>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
     /// The program's `const` tables by name; `generate_module` adds each one's global.
@@ -326,7 +325,7 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
     }
     match ty_text {
         "f4E2M1FN" => Some(4),
-        "f8E4M3FN" | "f8E5M2" => Some(8),
+        "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" => Some(8),
         "f16" | "bf16" => Some(16),
         "f32" => Some(32),
         "f64" => Some(64),
@@ -338,7 +337,7 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
 pub(crate) fn is_float_text(ty_text: &str) -> bool {
     matches!(
         ty_text,
-        "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16" | "f32" | "f64"
+        "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16" | "f32" | "f64"
     )
 }
 
@@ -1092,7 +1091,6 @@ impl<'c> MeliorGenerator<'c> {
             ast_env: HashMap::new(),
             owned_tensors: std::collections::HashSet::new(),
             declared_tensor_prints: std::collections::HashSet::new(),
-            pointer_taken: std::collections::HashSet::new(),
             address_taken: std::collections::HashSet::new(),
             memories: HashMap::new(),
             transfer_impls: HashMap::new(),
@@ -1103,6 +1101,7 @@ impl<'c> MeliorGenerator<'c> {
             enum_generics: HashMap::new(),
             functions: HashMap::new(),
             syntax_functions: HashMap::new(),
+            extern_return_types: HashMap::new(),
             enzyme_decls: std::collections::HashSet::new(),
             string_counter: 0,
             const_tables: HashMap::new(),
@@ -1354,6 +1353,8 @@ impl<'c> MeliorGenerator<'c> {
             }
         }
         for ext in &program.externs {
+            self.extern_return_types
+                .insert(ext.name.clone(), ext.return_type.clone());
             let ret_ty = self.lower_type(&ext.return_type)?;
             let mut arg_tys = Vec::new();
             for (_, ty) in &ext.params {
@@ -1386,6 +1387,8 @@ impl<'c> MeliorGenerator<'c> {
 
         for module_prog in sorted_modules.iter().copied() {
             for ext in &module_prog.externs {
+                self.extern_return_types
+                    .insert(ext.name.clone(), ext.return_type.clone());
                 let ret_ty = self.lower_type(&ext.return_type)?;
                 let mut arg_tys = Vec::new();
                 for (_, ty) in &ext.params {
@@ -1535,16 +1538,60 @@ impl<'c> MeliorGenerator<'c> {
         Ok(())
     }
 
+    /// A stack slot that holds the value of a parameter, in the function's first block.
+    fn emit_param_slot(
+        &self,
+        val: Value<'c, 'c>,
+        ty: melior::ir::Type<'c>,
+        block: &melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<Value<'c, 'c>, LowerError> {
+        use melior::ir::attribute::{IntegerAttribute, TypeAttribute};
+        use melior::ir::operation::OperationBuilder;
+        use melior::ir::Identifier;
+        let one = block
+            .append_operation(
+                OperationBuilder::new("llvm.mlir.constant", self.loc())
+                    .add_results(&[self.i32_ty])
+                    .add_attributes(&[(
+                        Identifier::new(self.context, "value"),
+                        IntegerAttribute::new(self.i32_ty, 1).into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let slot = block
+            .append_operation(
+                OperationBuilder::new("llvm.alloca", self.loc())
+                    .add_operands(&[one])
+                    .add_results(&[self.ptr_ty])
+                    .add_attributes(&[(
+                        Identifier::new(self.context, "elem_type"),
+                        TypeAttribute::new(ty).into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        block.append_operation(
+            OperationBuilder::new("llvm.store", self.loc())
+                .add_operands(&[val, slot])
+                .build()?,
+        );
+        Ok(slot)
+    }
+
     pub(crate) fn generate_function(
         &mut self,
         func: &Function,
     ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
+        // Without this, a local such as `v` kept the type it had in an earlier function.
+        self.ast_env.clear();
         self.allocs.clear();
         self.started_slots.clear();
         self.function_file = func.file.as_ref().map(|f| f.to_string());
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
-        self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
         self.address_taken = syntax::locals_with_address_taken(&func.body);
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type)?;
@@ -1602,9 +1649,17 @@ impl<'c> MeliorGenerator<'c> {
 
         // Map arguments into the environment, past the return slot when there is one.
         for (i, (name, ast_ty)) in func.params.iter().enumerate() {
-            let arg_val = current_block.argument(i + slot_args)?.into();
-            self.env
-                .insert(name.to_string().into(), (arg_val, arg_tys[i + slot_args]));
+            let arg_val: Value = current_block.argument(i + slot_args)?.into();
+            let arg_ty = arg_tys[i + slot_args];
+            // A borrowed struct needs one address for all its borrows, as a local does.
+            // Without a slot, each `&x` copied `x` to a new place.
+            if self.address_taken.contains(name) && arg_ty.to_string().contains("!llvm.struct") {
+                let slot = self.emit_param_slot(arg_val, arg_ty, &current_block)?;
+                self.env.insert(name.to_string().into(), (slot, arg_ty));
+                self.allocs.insert(name.to_string());
+            } else {
+                self.env.insert(name.to_string().into(), (arg_val, arg_ty));
+            }
             self.ast_env.insert(name.to_string().into(), ast_ty.clone());
         }
         // The caller's buffer is block argument 0; `return` writes into it. Cleared with
@@ -2279,26 +2334,31 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    /// Byte size + alignment of a type for `sizeof<T>()`, computed the way the layout pass does
-    /// (`crate::layout::LayoutComputer::struct_layout`): a scalar by its element, any pointer/borrow
-    /// 8, and a nominal struct (or a monomorphized generic instance of one) as the aligned sum of its
-    /// recursively-sized fields. Name-keyed, because the generator holds struct decls by name, not
-    /// GID. `None` for an unmodelled type (tensor, closure, generic scalar, data-carrying enum) — the
-    /// caller falls back to a conservative default. This replaces `SizeOfExpr::lower`'s old hardcoded
-    /// `8` for aggregates, which under-sized a `Vec<struct>`'s element buffer (a `Vec<Vec<T>>` UB). (#242)
+    /// Byte size + alignment of a type for `sizeof<T>()`: a scalar by its element, any pointer/borrow
+    /// 8, a tensor by its memref descriptor, and a nominal struct (or a monomorphized generic
+    /// instance of one) as the aligned sum of its recursively-sized fields, as the layout pass does
+    /// (`crate::layout::LayoutComputer::struct_layout`). An enum is sized from the type that it
+    /// lowers to (`enum_size_align`), because this generator stores an enum as a tag and a slot
+    /// that the layout pass does not know. Only a tensor needs its own case: it lowers to a memref,
+    /// which is not an LLVM type. `None` for an unmodelled type (closure, generic scalar), and the
+    /// caller falls back to 8.
     pub(crate) fn type_size_align(&self, ty: &syntax::Type, depth: u32) -> Option<(usize, usize)> {
         use crate::layout::scalar_size_align;
         if depth > 32 {
             return None; // guard against a pathological/cyclic nesting
+        }
+        if let Some(size_align) = self.enum_size_align(ty) {
+            return Some(size_align);
         }
         match ty {
             syntax::Type::Scalar(e) => scalar_size_align(e),
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => {
                 Some((8, 8))
             }
-            syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => {
-                self.type_size_align(inner, depth)
-            }
+            syntax::Type::Pinned(inner, _)
+            | syntax::Type::Verified(inner)
+            | syntax::Type::Distinct(inner)
+            | syntax::Type::DisjointRanges(inner) => self.type_size_align(inner, depth),
             // A tensor is held as its memref descriptor. A rank-0 tensor is a plain number.
             syntax::Type::Tensor(_, dims, _) if !dims.is_empty() => {
                 Some((crate::layout::tensor_descriptor_bytes(dims.len()), 8))
@@ -2341,6 +2401,33 @@ impl<'c> MeliorGenerator<'c> {
             }
             _ => None,
         }
+    }
+
+    /// Byte size and alignment of an enum: the size of the type that it lowers to, a tag and a
+    /// payload slot. `None` when `ty` is not an enum. An enum that does not lower, or whose
+    /// lowered type has no size here, is a compiler bug: the caller's default of 8 bytes is the
+    /// wrong size that this function exists to replace, so it panics instead.
+    fn enum_size_align(&self, ty: &syntax::Type) -> Option<(usize, usize)> {
+        let name = match ty {
+            syntax::Type::GenericInstance(base, _) => match &**base {
+                syntax::Type::Struct(name, _) => name.to_string(),
+                _ => return None,
+            },
+            syntax::Type::Struct(name, _) => name.split('<').next()?.to_string(),
+            _ => return None,
+        };
+        if !self.enums.contains_key(name.as_str()) {
+            return None;
+        }
+        let lowered = self
+            .lower_type_str(ty)
+            .unwrap_or_else(|e| panic!("sizeof: the enum {name} does not lower: {e:?}"));
+        let size_align = llvm_type_size_align(&lowered);
+        assert!(
+            size_align.is_some(),
+            "sizeof: the enum {name} lowers to {lowered}, which has no known size"
+        );
+        size_align
     }
 
     /// Byte size and alignment of a struct with these field types, in order.
@@ -2400,6 +2487,11 @@ impl<'c> MeliorGenerator<'c> {
                 let ty = match mapping {
                     Some(m) => ty.substitute(m),
                     None => ty.clone(),
+                };
+                // At run time a `Distinct` tensor is its tensor.
+                let ty = match ty {
+                    syntax::Type::Distinct(inner) | syntax::Type::DisjointRanges(inner) => *inner,
+                    ty => ty,
                 };
                 let mut lowered = self.lower_type_str(&ty)?;
                 // A tensor is its descriptor, as in a struct field, so its shape travels with it.
@@ -2589,7 +2681,9 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
             }
-            syntax::Type::Verified(inner) => return self.lower_type(inner),
+            syntax::Type::Verified(inner)
+            | syntax::Type::Distinct(inner)
+            | syntax::Type::DisjointRanges(inner) => return self.lower_type(inner),
             syntax::Type::Pinned(inner, _top) => {
                 let inner_ty_str = self.lower_type(inner)?.to_string();
                 inner_ty_str
@@ -2900,6 +2994,27 @@ impl<'c> MeliorGenerator<'c> {
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<syntax::Type> {
         match expr {
+            Expr::StringLiteral(_) => Some(syntax::Type::Pointer(
+                Box::new(syntax::Type::Scalar(syntax::ElementType::I8)),
+                None,
+                false,
+            )),
+            Expr::IndexAccess(ix) => {
+                let mut base = self.infer_ast_type(&ix.base)?;
+                if let syntax::Type::Borrow { inner, .. } | syntax::Type::Ref(inner, _) = base {
+                    base = *inner;
+                }
+                match base {
+                    syntax::Type::Pointer(inner, ..) => Some(*inner),
+                    syntax::Type::Tensor(el, dims, place) if dims.len() > 1 => {
+                        Some(syntax::Type::Tensor(el, dims[1..].to_vec(), place))
+                    }
+                    syntax::Type::Tensor(el, dims, _) if dims.len() == 1 => {
+                        Some(syntax::Type::Scalar(el))
+                    }
+                    _ => None,
+                }
+            }
             // A cast's value has the target type by definition (`my_closure as ||->i32`), and the
             // indirect-call path needs it in `ast_env` to rebuild the callee signature.
             Expr::AsCast(c) => Some(c.target_ty.clone()),
@@ -2908,6 +3023,8 @@ impl<'c> MeliorGenerator<'c> {
             // to a type the checker already computed -- and a redundant annotation then decides
             // which code is generated. The flat path's inference already sees through it.
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // A `spawn` block that gives a value has the type of its tail expression too.
+            Expr::SpawnOn(s) => self.infer_ast_type(s.ret.as_deref()?),
             // An `if` that gives a value has the type of its first branch's last expression.
             Expr::If(i) => match i.then_block.last()? {
                 syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
@@ -3043,17 +3160,19 @@ impl<'c> MeliorGenerator<'c> {
                     let dims = dims.into_iter().map(syntax::Dim::Static).collect();
                     return Some(syntax::Type::Tensor(el_ty, dims, None));
                 }
-                // `tensor_view_2d(p, rows, cols)` over literal extents is a statically shaped
-                // view, which is how the checker types it. Recovering it here is what keeps an
-                // unannotated binding and a redundantly annotated one generating the same code;
-                // run-time extents stay unshaped, as they are for the checker too.
-                if name == "tensor_view_2d" && fc.args.len() == 3 {
-                    let dims: Vec<Expr> = fc.args[1..3]
+                // `tensor_view_1d(p, len)` or `tensor_view_2d(p, rows, cols)` over literal
+                // extents is a statically shaped view, which is how the checker types it.
+                // Recovering it here is what keeps an unannotated binding and a redundantly
+                // annotated one generating the same code; run-time extents stay unshaped, as
+                // they are for the checker too.
+                let view_rank = crate::syntax::expr::tensor_view_rank(&name);
+                if let Some(rank) = view_rank.filter(|r| fc.args.len() == r + 1) {
+                    let dims: Vec<Expr> = fc.args[1..rank + 1]
                         .iter()
                         .filter(|a| matches!(a, Expr::Number(_)))
                         .cloned()
                         .collect();
-                    if dims.len() == 2 {
+                    if dims.len() == rank {
                         let el_ty = match self.infer_ast_type(&fc.args[0]) {
                             Some(syntax::Type::Pointer(inner, _, _)) => match *inner {
                                 syntax::Type::Scalar(e) => Some(e),
@@ -3070,10 +3189,11 @@ impl<'c> MeliorGenerator<'c> {
                 self.syntax_functions
                     .get(&fc.name)
                     .map(|decl| decl.return_type.clone())
+                    .or_else(|| self.extern_return_types.get(&fc.name).cloned())
             }
             // `transfer(x, space)` relocates x but preserves its shape, so a slice of a
             // transferred tensor (`q[i]` inside a spawn) can still recover its static dims.
-            // The transfer of a borrowed tensor is a new tensor in `space`, not a borrow.
+            // The transfer of a tensor, owned or borrowed, is a new tensor in `space`.
             Expr::Transfer(e) => match self.infer_ast_type(&e.expr)? {
                 syntax::Type::Borrow { inner, .. } => match *inner {
                     syntax::Type::Tensor(el, dims, _) => Some(syntax::Type::Tensor(
@@ -3083,6 +3203,11 @@ impl<'c> MeliorGenerator<'c> {
                     )),
                     _ => None,
                 },
+                syntax::Type::Tensor(el, dims, _) => Some(syntax::Type::Tensor(
+                    el,
+                    dims,
+                    Some(syntax::Placement::at(e.space.clone())),
+                )),
                 other => Some(other),
             },
             Expr::Dereference(d) => match self.infer_ast_type(&d.expr)? {
@@ -3262,7 +3387,10 @@ pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
     match ty {
         syntax::Type::Tensor(_, dims, _) => Some(dims.len()),
         // `Pinned<T, ..>` and `Verified<T>` are a tensor with a claim about it.
-        syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => tensor_field_rank(inner),
+        syntax::Type::Pinned(inner, _)
+        | syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner) => tensor_field_rank(inner),
         syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
             tensor_field_rank(inner)
         }
@@ -3317,7 +3445,9 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
     }
     match ty {
         syntax::Type::Tensor(_, _, placement) => Some(placement.clone()),
-        syntax::Type::Verified(inner) => owned_tensor(inner),
+        syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner) => owned_tensor(inner),
         syntax::Type::Pinned(inner, top) => match owned_tensor(inner)? {
             Some(p) => Some(Some(p)),
             None => {
@@ -3334,7 +3464,10 @@ pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement
 pub(crate) fn written_placement(ty: &syntax::Type) -> Option<&syntax::Placement> {
     match ty {
         syntax::Type::Tensor(_, _, placement) => placement.as_ref(),
-        syntax::Type::Verified(inner) | syntax::Type::Pinned(inner, _) => written_placement(inner),
+        syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner)
+        | syntax::Type::Pinned(inner, _) => written_placement(inner),
         _ => None,
     }
 }
@@ -3356,4 +3489,29 @@ pub(crate) fn on_chip(space: Option<crate::arch::AddressSpace>) -> bool {
         space,
         Some(crate::arch::AddressSpace::Workgroup | crate::arch::AddressSpace::Private)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::llvm_type_size_align;
+
+    /// An enum whose variants carry one kind of payload lowers to a tag and that payload. The tag
+    /// is padded to the alignment of the payload.
+    #[test]
+    fn a_tag_and_one_payload_take_the_size_of_both() {
+        assert_eq!(
+            llvm_type_size_align("!llvm.struct<(i32, i64)>"),
+            Some((16, 8))
+        );
+    }
+
+    /// An enum whose variants carry different kinds of payload lowers to a tag and a slot of
+    /// bytes, written as an array of its most strictly aligned unit.
+    #[test]
+    fn a_tag_and_a_byte_slot_take_the_size_of_both() {
+        assert_eq!(
+            llvm_type_size_align("!llvm.struct<(i32, array<2 x i64>)>"),
+            Some((24, 8))
+        );
+    }
 }

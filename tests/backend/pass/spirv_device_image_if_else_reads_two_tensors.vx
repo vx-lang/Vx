@@ -1,0 +1,76 @@
+//===- spirv_device_image_if_else_reads_two_tensors.vx - an if/else on two tensors -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// The two branches of each `if`/`else` below are the same code on two
+// different tensors. The rewrite that outlines a region used to merge such
+// branches into one block that takes the tensor as an argument. A SPIR-V image
+// cannot pass a tensor between blocks, so both regions ran on the host.
+//
+// CHECK-NOT: cannot become a `spirv64` device image
+// CHECK-DAG: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}format=spirv\00
+// CHECK-DAG: @vx_npu_kernel_1_str("vx_npu_kernel_1\00{{.*}}format=spirv\00
+// EXPECT: [[-4,   -3,   -2,   -1,   104,   105,   106,   107],
+// EXPECT:  [-4,   -3,   -2,   -1,   114,   115,   116,   117]]
+// EXPECT: [[100,   101,   102,   103,   0,   1,   2,   3],
+// EXPECT:  [110,   111,   112,   113,   0,   1,   2,   3]]
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 1 GiB, bandwidth: 100 GB/s, managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 10 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 10 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [2, 8]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [2, 8]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [2, 8]>::uninit() };
+  let mut p = unsafe { Tensor<f32, [2, 8]>::uninit() };
+  for i in 0..2 {
+    for j in 0..8 {
+      a[i][j] = (j as f32) - 4.0;
+      b[i][j] = 100.0 + (j as f32) + (i as f32) * 10.0;
+      o[i][j] = 0.0;
+      p[i][j] = 0.0;
+    }
+  }
+  let ga = transfer(a, Memory::DEV_HBM);
+  let gb = transfer(b, Memory::DEV_HBM);
+  let mut go = transfer(o, Memory::DEV_HBM);
+  let mut gp = transfer(p, Memory::DEV_HBM);
+
+  // A negative `a` comes from `a`, the rest from `b`.
+  spawn on(Topology::Dev) {
+    for i in 0..2 {
+      for j in 0..8 {
+        if ga[i][j] < 0.0 {
+          go[i][j] = ga[i][j];
+        } else {
+          go[i][j] = gb[i][j];
+        }
+      }
+    }
+  }
+  // The same choice the other way round, as an `if` expression.
+  spawn on(Topology::Dev) {
+    for i in 0..2 {
+      for j in 0..8 {
+        gp[i][j] = if ga[i][j] < 0.0 { gb[i][j] } else { ga[i][j] };
+      }
+    }
+  }
+
+  print(transfer(go, Memory::CPU_DRAM));
+  print(transfer(gp, Memory::CPU_DRAM));
+  return 0;
+}

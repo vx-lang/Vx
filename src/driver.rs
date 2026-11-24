@@ -115,6 +115,10 @@ pub struct DriverOptions {
     #[arg(long = "audit", overrides_with = "action")]
     pub audit: bool,
 
+    /// With the audit, also list each use of trusted code in `core` and `std`
+    #[arg(long = "audit-library")]
+    pub audit_library: bool,
+
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
     /// flat-HIR bodies link in the flat codegen — all without parsing the library's source (#265 step
@@ -135,6 +139,12 @@ pub struct DriverOptions {
     /// imports that start with `name`. Can be given more than once.
     #[arg(long = "package", value_name = "NAME=DIR", value_parser = parse_package)]
     pub packages: Vec<(String, PathBuf)>,
+
+    /// Refuse trusted code in the package NAME: each `unsafe` block or `unsafe fn`, `mlir!`
+    /// block, `extern` function, `extern impl` and `unsafe impl` in it is an error. Can be given
+    /// more than once.
+    #[arg(long = "no-trusted-code", value_name = "NAME")]
+    pub no_trusted_code: Vec<String>,
 
     /// Read the standard library from DIR instead of from beside the compiler. Can be given more
     /// than once; the directories are searched in order.
@@ -373,7 +383,7 @@ impl CompilerDriver {
             options.action = Action::EmitPtx;
         } else if options.emit_msl {
             options.action = Action::EmitMsl;
-        } else if options.audit {
+        } else if options.audit || options.audit_library {
             options.action = Action::Audit;
         } else if options.compile {
             options.action = Action::EmitObj;
@@ -568,7 +578,12 @@ impl CompilerDriver {
         }
 
         let compile = || -> Result<Option<(String, Option<String>)>, String> {
-            let (programs, interfaces) = self.load_modules(filename, sched)?;
+            let (mut programs, interfaces) = self.load_modules(filename, sched)?;
+            crate::hir::check::audit::mark_refused_packages(
+                &mut programs,
+                &self.options.no_trusted_code,
+                &self.options.packages,
+            )?;
             if !interfaces.is_empty() {
                 eprintln!(
                     "[parallel-frontend] an import resolved to a .vxlib interface, which the \
@@ -749,6 +764,25 @@ impl CompilerDriver {
         // per-compilation by `GlobalAstEnv`, so there is no process-global state to reset --
         // declarations cannot leak between compilations by construction.
         let (mut program_arr, auto_interfaces) = self.load_and_expand(filename)?;
+        crate::hir::check::audit::mark_refused_packages(
+            &mut program_arr,
+            &self.options.no_trusted_code,
+            &self.options.packages,
+        )?;
+        let refused: Vec<_> = program_arr
+            .iter()
+            .flat_map(crate::hir::check::audit::refused_trusted_code)
+            .collect();
+        if !refused.is_empty() {
+            for d in &refused {
+                eprintln!("{d}");
+            }
+            return Err(format!(
+                "Semantic check failed on '{}': {} error(s) emitted",
+                filename,
+                refused.len()
+            ));
+        }
 
         if self.options.action == Action::ParseOnly {
             return self.handle_parse_only(&program_arr, filename);
@@ -857,14 +891,9 @@ impl CompilerDriver {
             program_arr.push(Self::native_host_program());
         }
 
-        let mut global_macros = std::collections::HashMap::new();
-        for m in &program_arr {
-            for mac in &m.macros {
-                global_macros.insert(mac.name.clone(), mac.rules.clone());
-            }
-        }
+        let macros = crate::parser::MacroTable::new(&program_arr);
         let trait_defaults = crate::resolver::collect_trait_defaults(program_arr.iter());
-        let expander = MacroExpander::new(&global_macros, &trait_defaults);
+        let expander = MacroExpander::new(&macros, &trait_defaults);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));
@@ -919,6 +948,8 @@ impl CompilerDriver {
             // is a declaration like any other and the triple is derived the
             // same way for it as for a host file (#342).
             transfer_impls: Vec::new(),
+            macro_call_sites: Vec::new(),
+            no_trusted_code: None,
             topologies: vec![crate::arch::TopologyDecl {
                 name: crate::symbol::Symbol::from("Host"),
                 descriptor: crate::arch::TopologyDescriptor {
@@ -1124,6 +1155,8 @@ impl CompilerDriver {
             topologies: Vec::new(),
             memories: Vec::new(),
             transfer_impls: Vec::new(),
+            macro_call_sites: Vec::new(),
+            no_trusted_code: None,
         })
     }
 
@@ -1405,11 +1438,23 @@ impl CompilerDriver {
         }
 
         if let Some(mut trusted) = checker.trusted.take() {
+            use crate::hir::check::audit;
+            let mut library = std::collections::BTreeMap::new();
             for p in std::iter::once(&*ast).chain(other_asts.values()) {
-                trusted.extend(crate::hir::check::audit::trusted_declarations(p));
+                trusted.extend(audit::trusted_declarations(p));
+                for (kind, item) in audit::trusted_code(p) {
+                    if audit::is_library(p) && !self.options.audit_library {
+                        *library.entry(kind).or_insert(0) += 1;
+                    } else {
+                        trusted.insert(item);
+                    }
+                }
             }
             for item in &trusted {
                 println!("{item}");
+            }
+            if let Some(line) = audit::library_count_line(&library) {
+                println!("{line}");
             }
         }
 
@@ -1773,7 +1818,7 @@ impl CompilerDriver {
                 crate::intern_mode::timed("mlir_print", || println!("{}", module.as_operation()));
             }
             Action::RunJit => {
-                let mlir_str = format!("{}", module.as_operation());
+                let mlir_str = module_text_with_locations(&module)?;
                 let out = crate::jit::execute_mlir_streams(
                     &mlir_str,
                     self.options.program_args.clone(),
@@ -1822,53 +1867,22 @@ impl CompilerDriver {
                     p
                 });
 
-                // `grad`, `vjp` and `jvp` are calls that the Enzyme pass in `opt` fills in.
-                // The execution engine below never runs it, so such a program is built the
-                // way `run-jit` builds one.
-                let mlir_str = format!("{}", module.as_operation());
-                if mlir_str.contains("__enzyme_") {
-                    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-                    let obj = crate::jit::compile_mlir_to_object(
-                        &mlir_str,
-                        temp_dir.path(),
-                        self.options.opt_level,
-                        self.options.disable_llvm_optimizations,
-                        false,
-                    )?;
-                    std::fs::copy(&obj, &output_path)
-                        .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
-                    return Ok(());
-                }
-
-                // One resolution, shared with the JIT. This arm used to build its own list from
-                // bare filenames, which MLIR resolves against the process CWD, so it looked for
-                // `libmlir_runner_utils` in the repo root; and for the dispatch plugin under
-                // `target/jit/`, which the build never writes. Both failed by printing to stderr
-                // and producing no object.
-                let engine =
-                    crate::jit::ObjectEmitter::new(&module, self.options.opt_level as usize)?;
-
-                // Whether an object was actually written is the only thing that says this
-                // succeeded. `dump_to_object_file` returns nothing and the arm returned `Ok(())`
-                // regardless, so emit-obj reported success in three distinct failure modes: a
-                // library it could not load, a symbol it could not resolve, and a module the
-                // verifier rejected. Anything gating on the exit status learned nothing.
-                let existed_before = output_path.exists();
-                let mtime_before = std::fs::metadata(&output_path)
-                    .and_then(|m| m.modified())
-                    .ok();
-                engine.dump_to_object_file(output_path.to_str().unwrap())?;
-                let wrote = match std::fs::metadata(&output_path) {
-                    Ok(m) => m.len() > 0 && (!existed_before || m.modified().ok() != mtime_before),
-                    Err(_) => false,
-                };
-                if !wrote {
-                    return Err(format!(
-                        "emit-obj produced no object at '{}'; the module could not be compiled \
-                         (see the diagnostics above)",
-                        output_path.display()
-                    ));
-                }
+                // Built as `run-jit` builds a program. MLIR's execution engine, used before, gave
+                // each function an exported wrapper `_mlir_<name>`, after the program's symbols
+                // were hidden. The engine's machine code shared stack slots also at `-O0`, as
+                // `llc` does only from `-O1` up, so `llc` runs at `-O2` or higher.
+                let mlir_str = module_text_with_locations(&module)?;
+                let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let obj = crate::jit::compile_mlir_to_object_with_codegen_level(
+                    &mlir_str,
+                    temp_dir.path(),
+                    self.options.opt_level,
+                    Some(self.options.opt_level.max(2)),
+                    self.options.disable_llvm_optimizations,
+                    false,
+                )?;
+                std::fs::copy(&obj, &output_path)
+                    .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
                 crate::jit::set_macos_minimum_version(output_path.to_str().unwrap())?;
             }
             _ => {}
@@ -2193,6 +2207,15 @@ impl CompilerDriver {
     }
 }
 
+/// The module as text with its source locations, so that `mlir-translate` can make DWARF.
+fn module_text_with_locations(module: &melior::ir::Module) -> Result<String, String> {
+    use melior::ir::operation::{OperationLike, OperationPrintingFlags};
+    module
+        .as_operation()
+        .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
+        .map_err(|e| format!("could not print the MLIR module: {e}"))
+}
+
 fn get_optimization_pipeline(
     opt_level: u8,
     llvm_lower: bool,
@@ -2202,6 +2225,10 @@ fn get_optimization_pipeline(
     let mut passes = vec![];
 
     if opt_level > 0 || llvm_lower {
+        // First, because a pass that rewrites with patterns folds every op that it visits. MLIR
+        // would fold a conversion of a constant to an fp8 or fp4 type with rules of its own:
+        // it rounds `100 as f8e8m0` to the nearest value, 128, where `as f8e8m0` rounds down.
+        passes.push("vx-expand-narrow-floats".to_string());
         // Before the task lowering takes the address of each task body. See the pass.
         passes.push("vx-count-callbacks".to_string());
         // Before the lowerings, so that they reuse a program's own `malloc` and `free` rather
@@ -2240,11 +2267,15 @@ fn get_optimization_pipeline(
     if llvm_lower {
         // LLVM has no fp8 or fp4 type, so their conversions become integer operations first.
         passes.push("vx-expand-narrow-floats".to_string());
-        // A conversion to bf16 becomes integer operations that round exactly. Left to LLVM, an
-        // x86 CPU with AVX512-BF16 converts with `vcvtneps2bf16`, which flushes a subnormal to
-        // zero.
-        passes.push("arith-expand{include-bf16=true include-f8e8m0=true}".to_string());
+        passes.push("arith-expand{include-f8e8m0=true}".to_string());
+        // `vx-to-llvm` compiles each NVIDIA GPU kernel, which converts to bf16 with one
+        // `cvt.rn.bf16.f32`. After it, a conversion to bf16 on the CPU becomes integer operations
+        // that round exactly. Left to LLVM, an x86 CPU with AVX512-BF16 converts with
+        // `vcvtneps2bf16`, which flushes a subnormal to zero.
         passes.push("vx-to-llvm".to_string());
+        // `vx-to-llvm` expands a lane matmul on the CPU, which converts fp8 tiles to f32.
+        passes.push("vx-expand-narrow-floats".to_string());
+        passes.push("arith-expand{include-bf16=true}".to_string());
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
         passes.push("expand-strided-metadata".to_string());

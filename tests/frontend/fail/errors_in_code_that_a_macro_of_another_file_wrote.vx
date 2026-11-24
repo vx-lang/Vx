@@ -1,0 +1,42 @@
+//===- errors_in_code_that_a_macro_of_another_file_wrote.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An error in code that a macro of another file wrote points at the macro call in this file. An
+// error in code that a macro of this file wrote points at that code in the macro.
+import tests::modules::macros_that_write_code_with_errors;
+
+struct Here {
+  x : i64,
+}
+
+macro_rules add_another_wrong_method {
+  ($t : ident) => {
+    impl $t {
+      fn also_wrong(self : &Self) -> i32 {
+        return false;
+      }
+    }
+  };
+}
+
+add_wrong_method!(Here);
+add_another_wrong_method!(Here);
+
+fn main() -> i32 {
+  let _a = make_token!();
+  let _b = make_token_through_another_macro!();
+  make_token!();
+  return 0;
+}
+
+// CHECK: Error[E8014] at {{.*}}errors_in_code_that_a_macro_of_another_file_wrote.vx:32:12: this struct literal builds a `Token`.
+// CHECK: Error[E8014] at {{.*}}errors_in_code_that_a_macro_of_another_file_wrote.vx:33:12: this struct literal builds a `Token`.
+// CHECK: Error[E8014] at {{.*}}errors_in_code_that_a_macro_of_another_file_wrote.vx:34:3: this struct literal builds a `Token`.
+// CHECK: Error[E3002] at {{.*}}errors_in_code_that_a_macro_of_another_file_wrote.vx:28:1: Type mismatch on return. Expected i32, got bool
+// CHECK: Error[E3002] at {{.*}}errors_in_code_that_a_macro_of_another_file_wrote.vx:22:9: Type mismatch on return. Expected i32, got bool

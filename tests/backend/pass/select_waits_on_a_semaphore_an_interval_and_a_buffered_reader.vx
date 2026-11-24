@@ -1,0 +1,203 @@
+//===- select_waits_on_a_semaphore_an_interval_and_a_buffered_reader.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Semaphore`, an `Interval` and a `TcpBufReader` are sources of `select`. Each `select` has a
+// `Deadline` of 3 seconds too, and each step prints that the `select` returned before it. At the
+// deadline, the other source can be ready too, so the index alone would not show a lost wake.
+//
+// - A task holds the one permit for 0.1 seconds. The `select` gets ready when it drops it.
+// - The tick of an `Interval` gets due after 0.1 seconds, with no event, and then `tick` does
+//   not wait.
+// - The client writes two lines at once. After `read_line` takes the first, the second is in
+//   the buffer of the reader and not in the socket, so the reader is ready. Then the reader
+//   gets ready again when the client writes one more line.
+//
+// The port number is fixed, because `std::net` cannot give the port of a listener yet.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}semaphore: select2 gave 0 before the deadline, and try_acquire got the permit{{$}}
+// CHECK-NEXT: {{^}}interval: select3 gave 1 before the deadline, and tick did not wait{{$}}
+// CHECK-NEXT: {{^}}reader: read_line got 2 bytes{{$}}
+// CHECK-NEXT: {{^}}reader: select2 gave 0 before the deadline, for the buffer{{$}}
+// CHECK-NEXT: {{^}}reader: read_line got 2 bytes{{$}}
+// CHECK-NEXT: {{^}}reader: select2 gave 0 before the deadline, for the socket{{$}}
+// CHECK-NEXT: {{^}}reader: read_line got 2 bytes{{$}}
+
+import core::option;
+import core::result;
+import core::time;
+import std::net;
+import std::string;
+import std::sync::channel;
+import std::sync::select;
+import std::sync::semaphore;
+import std::time;
+import std::vec;
+
+/// ` before the deadline`, or ` at the deadline` when `limit` is ready.
+fn when_done(limit : &Deadline) -> *const i8 {
+  if limit.is_ready() {
+    return " at the deadline";
+  }
+  return " before the deadline";
+}
+
+fn pause() -> void {
+  sleep(Duration::from_millis(100));
+}
+
+/// The index that a `select` gave, or -1 for a cancel.
+fn index(r : Result<i32, SelectError>) -> i32 {
+  match r {
+    Result<i32,
+    SelectError>::Ok(i) => {
+      return i;
+    }
+    Result<i32,
+    SelectError>::Err(_) => {
+      return -1;
+    }
+  }
+}
+
+/// Takes the permit, says so on `told`, and gives the permit back 0.1 seconds later.
+fn hold(s : &Semaphore, told : Sender<i64>) -> void {
+  match s.acquire() {
+    Result<Permit,
+    AcquireError>::Ok(_permit) => {
+      let _sent = told.send(1);
+      pause();
+    }
+    Result<Permit,
+    AcquireError>::Err(_) => {
+      println!("semaphore: acquire gave an error");
+    }
+  }
+}
+
+fn semaphore_step() -> void {
+  let s = Semaphore::new(1);
+  let (tx, rx) = channel<i64>(1);
+  let limit = Deadline::after(Duration::from_secs(3));
+  tasks {
+    spawn {
+      hold(&s, tx);
+    };
+    let _held = rx.recv();
+    let i = index(select2(&s, &limit));
+    match s.try_acquire() {
+      Option<Permit>::Some(_p) => {
+        println!("semaphore: select2 gave {}{}, and try_acquire got the permit", i, when_done(&limit));
+      }
+      Option<Permit>::None => {
+        println!("semaphore: select2 gave {}{}, and try_acquire got no permit", i, when_done(&limit));
+      }
+    }
+  };
+}
+
+fn interval_step() -> void {
+  let mut ticks = Interval::new(Duration::from_millis(100));
+  let (_tx, rx) = channel<i64>(1);
+  let limit = Deadline::after(Duration::from_secs(3));
+  let i = index(select3(&rx, &ticks, &limit));
+  let done = when_done(&limit);
+  let before = Instant::now();
+  let _due = ticks.tick();
+  let waited = Instant::now().ns - before.ns;
+  if waited < 50000000 {
+    println!("interval: select3 gave {}{}, and tick did not wait", i, done);
+  } else {
+    println!("interval: select3 gave {}{}, and tick waited", i, done);
+  }
+}
+
+fn address(s : *const i8) -> String {
+  return unsafe { String::from_c_str(s) };
+}
+
+/// The bytes of `s`, without its NUL.
+fn bytes(s : *const i8) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  let mut i = 0i64;
+  while unsafe { s[i] } != 0i8 {
+    v.push(unsafe { s[i] } as u8);
+    i = i + 1i64;
+  }
+  return v;
+}
+
+fn report(who : *const i8, result : Result<u64, NetError>) -> void {
+  match result {
+    Result<u64,
+    NetError>::Ok(_n) => {}
+    Result<u64,
+    NetError>::Err(_e) => {
+      println!("{}: Error", who);
+    }
+  }
+}
+
+/// Writes two lines at once, and one more line after a value on `go`.
+fn client(network : &Network, go : Receiver<i64>) -> Result<u64, NetError> {
+  let mut stream = TcpStream::connect(network, &address("127.0.0.1:41785"))?;
+  let _two = stream.write_all(&bytes("a\nb\n"))?;
+  let _go = go.recv();
+  pause();
+  return stream.write_all(&bytes("c\n"));
+}
+
+fn read_one_line(reader : &mut TcpBufReader) -> Result<u64, NetError> {
+  let mut line = Vec<u8>::new();
+  let n = reader.read_line(&mut line)?;
+  println!("reader: read_line got {} bytes", n);
+  return Result<u64, NetError>::Ok(n);
+}
+
+fn server(listener : TcpListener, go : Sender<i64>) -> Result<u64, NetError> {
+  let mut l = listener;
+  let stream = l.accept()?;
+  let mut reader = TcpBufReader::new(stream);
+  let _first = read_one_line(&mut reader)?;
+  let limit = Deadline::after(Duration::from_secs(3));
+  let first = index(select2(&reader, &limit));
+  println!("reader: select2 gave {}{}, for the buffer", first, when_done(&limit));
+  let _second = read_one_line(&mut reader)?;
+  let _go = go.send(1);
+  let second = index(select2(&reader, &limit));
+  println!("reader: select2 gave {}{}, for the socket", second, when_done(&limit));
+  return read_one_line(&mut reader);
+}
+
+fn reader_step(network : &Network) -> void {
+  let (go_tx, go_rx) = channel<i64>(1);
+  match TcpListener::bind(network, &address("127.0.0.1:41785")) {
+    Result<TcpListener,
+    NetError>::Ok(listener) => {
+      tasks {
+        spawn {
+          report("client", client(network, go_rx));
+        };
+        report("server", server(listener, go_tx));
+      };
+    }
+    Result<TcpListener,
+    NetError>::Err(_e) => {
+      println!("bind: Error");
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  let network = &root.network;
+  semaphore_step();
+  interval_step();
+  reader_step(network);
+  return 0;
+}

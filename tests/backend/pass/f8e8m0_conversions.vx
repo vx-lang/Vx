@@ -1,0 +1,106 @@
+//===- f8e8m0_conversions.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `as` to and from f8e8m0, which holds the powers of two from 2^-127 to 2^127, and NaN.
+// `x as f8e8m0` rounds down: it gives the largest power of two that is at most x. `sweep` checks
+// each power of two p, 1.5 p, and the largest f64 below 2 p.
+//
+// EXPECT: f8e8m0 0 wrong
+// 0 and a value below 2^-127 give 2^-127. A value above 2^127, and infinity, give 2^127.
+// EXPECT: true true true true
+// A value below 0 and NaN give NaN, and -0 gives 2^-127.
+// EXPECT: NaN NaN true
+// 100 gives 64. 2147483647 gives 2^30, where f32 would round it up to 2^31 first. A constant
+// rounds down too: MLIR alone would fold `100 as f8e8m0` to 128.
+// EXPECT: 64 1073741800 128 2
+// A literal rounds down, and arithmetic with a written result type happens in f32.
+// EXPECT: 2 0.5 1
+
+fn to_e8m0(x : f64) -> f32 {
+  return (x as f8e8m0) as f32;
+}
+
+// For each power of two p that f8e8m0 holds, from 2^-127 to 2^127: p, 1.5 p and the largest f64
+// below 2 p all give p. Counts the conversions that give something else.
+fn sweep() -> i32 {
+  let mut p : f64 = 1.0;
+  for i in 0..127 {
+    p = p / 2.0;
+  }
+  let mut wrong = 0;
+  for e in 0..255 {
+    let below_twice = 2.0 * p - p / 4503599627370496.0;
+    if to_e8m0(p) != p as f32 {
+      wrong = wrong + 1;
+    }
+    if to_e8m0(1.5 * p) != p as f32 {
+      wrong = wrong + 1;
+    }
+    if to_e8m0(below_twice) != p as f32 {
+      wrong = wrong + 1;
+    }
+    p = p * 2.0;
+  }
+  return wrong;
+}
+
+fn main() -> i32 {
+  print!("f8e8m0 ");
+  print(sweep());
+  print!(" wrong\n");
+
+  let mut tiny : f64 = 1.0;
+  for i in 0..127 {
+    tiny = tiny / 2.0;
+  }
+  let mut inf : f64 = 2.0;
+  for i in 0..2000 {
+    inf = inf * 2.0;
+  }
+  let zero : f32 = 0.0;
+  let neg : f32 = -2.0;
+  let nan = zero / zero;
+  // 0 and a value below 2^-127 give 2^-127. A value above 2^127, and infinity, give 2^127.
+  print(to_e8m0(0.0) == tiny as f32);
+  print!(" ");
+  print(to_e8m0(tiny / 8.0) == tiny as f32);
+  print!(" ");
+  print(to_e8m0(inf) * (tiny as f32) == 1.0);
+  print!(" ");
+  print(to_e8m0(1.0e300) * (tiny as f32) == 1.0);
+  print!("\n");
+  // A value below 0 and NaN give NaN.
+  print((neg as f8e8m0) as f32);
+  print!(" ");
+  print((nan as f8e8m0) as f32);
+  print!(" ");
+  print(((zero * neg) as f8e8m0) as f32 == tiny as f32);
+  print!("\n");
+  // Integers. f32 would round 2147483647 up to 2^31, so the conversion goes through f64.
+  let i : i32 = 100;
+  let j : i32 = 2147483647;
+  let k : u8 = 255;
+  print((i as f8e8m0) as f32);
+  print!(" ");
+  print((j as f8e8m0) as f32);
+  print!(" ");
+  print((k as f8e8m0) as f32);
+  print!(" ");
+  let s : f8e8m0 = 3.0;
+  print(s as i32);
+  print!("\n");
+  // A literal rounds down too. Arithmetic needs a written result type, and happens in f32.
+  let t : f8e8m0 = 0.75;
+  let product : f32 = s * t;
+  print(s);
+  print!(" ");
+  print(t);
+  print!(" ");
+  print(product);
+  print!("\n");
+  return 0;
+}

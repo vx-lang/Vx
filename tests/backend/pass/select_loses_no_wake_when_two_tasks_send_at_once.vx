@@ -1,0 +1,87 @@
+//===- select_loses_no_wake_when_two_tasks_send_at_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tasks each send 2000 values on a channel with room for one. The main code takes them with
+// `select2` in a loop, so a send often comes while the `select` watches its channels. A lost
+// wake leaves the `select` waiting with a value in a channel, and the deadlock report stops the
+// program. When a channel is closed, `when` turns it off.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=4 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the first channel gave 2000 values with the sum 1999000{{$}}
+// CHECK-NEXT: {{^}}the second channel gave 2000 values with the sum 1999000{{$}}
+
+import std::sync::channel;
+import std::sync::select;
+
+fn send_all(tx : Sender<i64>, count : i64) -> void {
+  for k in 0..count {
+    let _sent = tx.send(k);
+  }
+}
+
+fn main() -> i32 {
+  let (tx_a, a) = channel<i64>(1);
+  let (tx_b, b) = channel<i64>(1);
+  let mut open_a = true;
+  let mut open_b = true;
+  let mut count_a : i64 = 0;
+  let mut count_b : i64 = 0;
+  let mut sum_a : i64 = 0;
+  let mut sum_b : i64 = 0;
+  tasks {
+    spawn {
+      send_all(tx_a, 2000);
+    };
+    spawn {
+      send_all(tx_b, 2000);
+    };
+    while open_a || open_b {
+      match select2(&when(open_a, &a), &when(open_b, &b)) {
+        Result<i32,
+        SelectError>::Ok(i) => {
+          if i == 0 {
+            match a.try_recv() {
+              Result<i64,
+              TryRecvError>::Ok(v) => {
+                count_a = count_a + 1;
+                sum_a = sum_a + v;
+              }
+              Result<i64,
+              TryRecvError>::Err(_) => {
+                open_a = false;
+              }
+            }
+          } else {
+            match b.try_recv() {
+              Result<i64,
+              TryRecvError>::Ok(v) => {
+                count_b = count_b + 1;
+                sum_b = sum_b + v;
+              }
+              Result<i64,
+              TryRecvError>::Err(_) => {
+                open_b = false;
+              }
+            }
+          }
+        }
+        Result<i32,
+        SelectError>::Err(_) => {
+          println!("cancelled");
+          open_a = false;
+          open_b = false;
+        }
+      }
+    }
+  };
+  println!("the first channel gave {} values with the sum {}", count_a, sum_a);
+  println!("the second channel gave {} values with the sum {}", count_b, sum_b);
+  return 0;
+}

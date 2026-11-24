@@ -1,0 +1,81 @@
+//===- a_block_sort_on_the_gpu_keeps_the_keys_after_its_count.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A block of 256 lanes sorts the first `n` of 512 keys in shared memory, up or down. The keys at
+// `n` and after must not change. On a GPU the sort exchanges keys through the tile itself, and it
+// used to leave the largest keys or `i64::MAX` there. The CPU copy of the kernel never did, so
+// this test needs a GPU.
+//
+// REQUIRES: nvidia-gpu
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: up 512: in order true, same keys true, keys after n kept true
+// CHECK-NEXT: up 500: in order true, same keys true, keys after n kept true
+// CHECK-NEXT: up 257: in order true, same keys true, keys after n kept true
+// CHECK-NEXT: up 256: in order true, same keys true, keys after n kept true
+// CHECK-NEXT: up 64: in order true, same keys true, keys after n kept true
+// CHECK-NEXT: down 500: in order true, same keys true, keys after n kept true
+// CHECK-NEXT: down 64: in order true, same keys true, keys after n kept true
+
+// Key `i` of 1000 values from -499000 to 500000, with repeats. The kernel computes it too.
+fn key(i : i32) -> i64 {
+  return (((i * 7919) % 1000) as i64 - 499) * 1000;
+}
+
+fn check(n : i32, down : bool) -> i32 {
+  let mut out = transfer(Tensor<i64, [512]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut keys = unsafe { Tensor<i64, [512], Memory::SMEM>::uninit() };
+      for t in 0..512 across lanes(256) {
+        keys[t] = (((t * 7919) % 1000) as i64 - 499) * 1000;
+      }
+      if down {
+        lanes::sort_descending(&mut keys, n);
+      } else {
+        lanes::sort(&mut keys, n);
+      }
+      for t in 0..512 across lanes(256) {
+        out[t] = keys[t];
+      }
+    }
+  }
+  let u = transfer(out, Memory::CPU_DRAM);
+  let mut ordered = true;
+  for i in 1..n {
+    if down {
+      ordered = ordered && u[i - 1] >= u[i];
+    } else {
+      ordered = ordered && u[i - 1] <= u[i];
+    }
+  }
+  // The sum and the sum of squares of all 512 keys stay the same.
+  let mut sum : i64 = 0;
+  let mut squares : i64 = 0;
+  for i in 0..512 {
+    sum = sum + u[i] - key(i);
+    squares = squares + u[i] / 1000 * (u[i] / 1000) - key(i) / 1000 * (key(i) / 1000);
+  }
+  let mut kept = true;
+  for i in n..512 {
+    kept = kept && u[i] == key(i);
+  }
+  let name = if down { "down" } else { "up" };
+  println!("{} {}: in order {}, same keys {}, keys after n kept {}", name, n, ordered, sum == 0 && squares == 0, kept);
+  return 0;
+}
+
+fn main() -> i32 {
+  check(512, false);
+  check(500, false);
+  check(257, false);
+  check(256, false);
+  check(64, false);
+  check(500, true);
+  check(64, true);
+  return 0;
+}

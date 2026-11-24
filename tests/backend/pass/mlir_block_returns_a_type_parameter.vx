@@ -18,16 +18,16 @@ struct Slot<T> {
 
 impl<T> Slot<T> {
   fn get(self : &Slot<T>) -> *mut T {
-    return mlir!( inputs : (%p = self.p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
-      macro.yield %p : !llvm.ptr
-    };
+    return unsafe { mlir!( inputs : (%p = self.p : !llvm.ptr), returns : *mut T, dialects : ["llvm"]) {
+        macro.yield %p : !llvm.ptr
+      } };
   }
 }
 
 fn same<T>(x : T) -> T {
-  return mlir!( inputs : (%a = x : i32), returns : T, dialects : ["arith"]) {
-    macro.yield %a : i32
-  };
+  return unsafe { mlir!( inputs : (%a = x : i32), returns : T, dialects : ["arith"]) {
+      macro.yield %a : i32
+    } };
 }
 
 fn main() -> i32 {

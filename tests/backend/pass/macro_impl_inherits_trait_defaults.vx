@@ -37,10 +37,16 @@ macro_rules stamp {
   };
 }
 
-stamp!(i32);
+struct Number {
+  value : i32,
+}
+
+impl Copy for Number {}
+
+stamp!(Number);
 
 fn main() -> i32 {
-  let a : i32 = 1;
+  let a = Number { value : 1 };
   print(a.value());
   print!(" ");
   print(a.doubled());

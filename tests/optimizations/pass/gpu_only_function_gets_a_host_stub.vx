@@ -23,13 +23,13 @@
 // CHECK-NEXT: llvm.unreachable
 
 fn shfl_down(v : f32, delta : i32) on Topology::GPU -> f32 {
-  return mlir!( inputs : (%v = v : f32, %d = delta : i32), returns : f32, dialects : ["gpu", "arith"]) {
-    %w = "arith.constant"() {
-      value = 32 : i32
-    } : () -> i32
-    %r, %ok = gpu.shuffle down %v, %d, %w : f32
-    macro.yield %r : f32
-  };
+  return unsafe { mlir!( inputs : (%v = v : f32, %d = delta : i32), returns : f32, dialects : ["gpu", "arith"]) {
+      %w = "arith.constant"() {
+        value = 32 : i32
+      } : () -> i32
+      %r, %ok = gpu.shuffle down %v, %d, %w : f32
+      macro.yield %r : f32
+    } };
 }
 
 fn main() -> i32 {

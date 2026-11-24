@@ -1,0 +1,38 @@
+//===- a_method_call_through_a_raw_pointer_in_unsafe.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// In an `unsafe` block, a method call through a raw pointer reads and changes the value that
+// the pointer points at.
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn get(self : &Self) -> i64 {
+    return self.n;
+  }
+
+  fn add_one(self : &mut Self) -> void {
+    self.n = self.n + 1i64;
+  }
+}
+
+fn main() -> i32 {
+  let mut c = Counter { n : 1i64 };
+  let p = &mut c as *mut Counter;
+  unsafe { p.add_one(); p.add_one(); p.add_one(); }
+  let q = &c as *const Counter;
+  let n = unsafe { q.get() };
+  println!("{} {}", n, c.n);
+  return 0;
+}
+
+// CHECK: {{^}}4 4{{$}}

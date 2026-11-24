@@ -102,14 +102,14 @@ ensures !frees(p)
   return f(p);
 }
 
-// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:17: `gives_it_to_an_mlir_block` says `!frees(p)`, but its body can free memory through `p`: it gives `p` to an `mlir!` block
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:26: `gives_it_to_an_mlir_block` says `!frees(p)`, but its body can free memory through `p`: it gives `p` to an `mlir!` block
 fn gives_it_to_an_mlir_block(p : *const i64) -> i64
 ensures !frees(p)
 {
-  return mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
-    %v = llvm.load %p : !llvm.ptr -> i64
-    macro.yield %v : i64
-  };
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %v = llvm.load %p : !llvm.ptr -> i64
+      macro.yield %v : i64
+    } };
 }
 
 // CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+1]]:4: `gets_a_vector` says `!frees(v)`, but its body can free memory through `v`: it gets `v` by value, so it drops it or moves it

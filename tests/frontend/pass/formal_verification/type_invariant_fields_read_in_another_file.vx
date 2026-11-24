@@ -17,11 +17,11 @@ struct Wrapper {
   v : Vec<i64>,
 }
 
-struct Pair
-invariant self.a <= self.b
-{
+struct Pair {
   a : i64,
   b : i64,
+
+  invariant a <= b,
 }
 
 fn shift(p : &mut Pair) -> i32 {

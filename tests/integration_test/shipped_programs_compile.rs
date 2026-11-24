@@ -264,7 +264,9 @@ fn core_depends_on_no_host_symbols() {
         let text = std::fs::read_to_string(file).expect("cannot read a core module");
         for (n, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("").trim();
-            if code.starts_with("extern") {
+            // An `extern impl` is an impl in another file than its type, not a block of C
+            // functions.
+            if code.starts_with("extern") && !code.starts_with("extern impl") {
                 offenders.push(format!("  {rel}:{}  an extern block", n + 1));
             }
             if code.starts_with("import std::") {

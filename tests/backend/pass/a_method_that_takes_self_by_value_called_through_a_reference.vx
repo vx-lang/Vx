@@ -1,0 +1,59 @@
+//===- a_method_that_takes_self_by_value_called_through_a_reference.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A method that takes `self` by value gets a copy of a `Copy` value, also through a `&`, a
+// `&mut` or a raw pointer in `unsafe`. So the value that the reference points at does not change.
+
+struct Point {
+  x : i64,
+}
+
+impl Copy for Point {}
+
+trait Bump {
+  fn bumped(self : Self) -> i64;
+}
+
+impl Bump for Point {
+  fn bumped(self : Self) -> i64 {
+    let mut p = self;
+    p.x = p.x + 1i64;
+    return p.x;
+  }
+}
+
+extern impl Bump for i64 {
+  fn bumped(self : Self) -> i64 {
+    return self + 1i64;
+  }
+}
+
+fn main() -> i32 {
+  let p = Point { x : 7i64 };
+  let r = &p;
+  println!("{} {}", r.bumped(), p.x);
+  let mut q = Point { x : 20i64 };
+  let m = &mut q;
+  println!("{}", m.bumped());
+  println!("{}", q.x);
+  let n = 41i64;
+  let s = &n;
+  println!("{} {}", s.bumped(), n);
+  let raw = &p as *const Point;
+  let from_raw = unsafe { raw.bumped() };
+  println!("{}", from_raw);
+  return 0;
+}
+
+// CHECK: {{^}}8 7{{$}}
+// CHECK-NEXT: {{^}}21{{$}}
+// CHECK-NEXT: {{^}}20{{$}}
+// CHECK-NEXT: {{^}}42 41{{$}}
+// CHECK-NEXT: {{^}}8{{$}}

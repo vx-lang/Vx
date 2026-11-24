@@ -1,0 +1,163 @@
+//===- spirv_subgroups_sum_reverse_and_multiply_rows.vx ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Kernels for an Intel GPU (`arch: spirv64`) with subgroups of 32 lanes. Each
+// SPIR-V image asks for that size. `row_sums` adds a row with `lanes::sum` and
+// finds its largest element with `lanes::max`, which shuffle values between the
+// lanes. `reverse_rows` reads the element of
+// another lane after a lane loop, so a missing wait of the subgroup gives other
+// numbers. `multiply` is a lane matmul with 8 columns, in which lane `l` reads
+// column `l % 8`. LLVM's optimizations wrote that as an integer of 3 bits, which
+// the SPIR-V backend got wrong for lanes 8 and up. Its tile `sa` holds bf16,
+// which SPIR-V has only with an extension, so the image keeps it as i16.
+// tests/integration_test/spirv_images_on_pocl.rs runs the images on the CPU
+// with pocl and compares the output with this one.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --implicit-check-not=Warning
+// CHECK-COUNT-3: format=spirv
+// EXPECT: sum of row 0: 2016, sum of row 13: 55264, largest of row 13: 1758
+// EXPECT: rows reversed: 16 of 16
+// EXPECT: product: 1 -5 6, sum of all 124
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+Memory SMEM {
+  within: Memory::DEV_HBM, capacity: 64 KiB, managed: explicit, scope: sm
+}
+Topology Simd {
+  arch: spirv64,
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::SMEM
+}
+
+fn row_sums(y : &mut Tensor<f32, [16], Memory::DEV_HBM>, big : &mut Tensor<f32, [16], Memory::DEV_HBM>, w : &Tensor<f32, [1024], Memory::DEV_HBM>) -> void {
+  spawn on(Topology::Simd) {
+    for rb in 0..4 across blocks {
+      let mut part = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      for s in 0..4 across subgroups {
+        for l in 0..32 across lanes {
+          let r = rb * 4 + s;
+          part[s][l] = w[r * 64 + l] + w[r * 64 + l + 32];
+        }
+        let t = lanes::sum(&part[s], 32);
+        let m = lanes::max(&part[s], 32);
+        y[rb * 4 + s] = t;
+        big[rb * 4 + s] = m;
+      }
+    }
+  }
+  return;
+}
+
+fn reverse_rows(out : &mut Tensor<f32, [512], Memory::DEV_HBM>, x : &Tensor<f32, [512], Memory::DEV_HBM>) -> void {
+  spawn on(Topology::Simd) {
+    for rb in 0..4 across blocks {
+      let mut row = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      for s in 0..4 across subgroups {
+        for l in 0..32 across lanes {
+          row[s][l] = x[(rb * 4 + s) * 32 + l];
+        }
+        for l in 0..32 across lanes {
+          out[(rb * 4 + s) * 32 + l] = row[s][31 - l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn multiply(c : &mut Tensor<f32, [4, 16, 8], Memory::DEV_HBM>) -> void {
+  spawn on(Topology::Simd) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe {
+        Tensor<bf16, [4, 16, 16], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe { Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [4, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..4 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..16 {
+              sa[w][i][k] = ((i * 3 + k * 5) % 7 - 3) as bf16;
+            }
+            for j in 0..8 {
+              sb[w][i][j] = ((i * 2 + j) % 5 - 2) as f32;
+            }
+          }
+        }
+        acc[w] = (sa[w] as f32) @ sb[w];
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c[w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  // Row r of w holds r * 64, r * 64 + 1, and so on, so it sums to 4096 * r + 2016.
+  // Lane l adds elements l and l + 32 of its row, so the largest sum of row 13 is 863 + 895.
+  let mut hw = Tensor<f32, [1024]>::fill(0.0);
+  for i in 0..1024 {
+    hw[i] = i as f32;
+  }
+  let w = transfer(hw, Memory::DEV_HBM);
+  let mut y = transfer(Tensor<f32, [16]>::fill(0.0), Memory::DEV_HBM);
+  let mut big = transfer(Tensor<f32, [16]>::fill(0.0), Memory::DEV_HBM);
+  row_sums(&mut y, &mut big, &w);
+  let hy = transfer(y, Memory::CPU_DRAM);
+  let hbig = transfer(big, Memory::CPU_DRAM);
+  println!("sum of row 0: {}, sum of row 13: {}, largest of row 13: {}", hy[0], hy[13], hbig[13]);
+
+  let mut hx = Tensor<f32, [512]>::fill(0.0);
+  for i in 0..512 {
+    hx[i] = (i * 7 % 101) as f32;
+  }
+  let x = transfer(hx, Memory::DEV_HBM);
+  let mut out = transfer(Tensor<f32, [512]>::fill(0.0), Memory::DEV_HBM);
+  reverse_rows(&mut out, &x);
+  let ho = transfer(out, Memory::CPU_DRAM);
+  let mut reversed = 0;
+  for r in 0..16 {
+    let mut same = true;
+    for l in 0..32 {
+      if ho[r * 32 + l] != hx[r * 32 + 31 - l] {
+        same = false;
+      }
+    }
+    if same {
+      reversed = reversed + 1;
+    }
+  }
+  println!("rows reversed: {} of 16", reversed);
+
+  // Each of the 4 tiles is the same product, so the sum of all is 4 times 31.
+  let mut c = transfer(Tensor<f32, [4, 16, 8]>::fill(0.0), Memory::DEV_HBM);
+  multiply(&mut c);
+  let h = transfer(c, Memory::CPU_DRAM);
+  let mut all = 0.0;
+  for t in 0..4 {
+    for i in 0..16 {
+      for j in 0..8 {
+        all = all + h[t][i][j];
+      }
+    }
+  }
+  println!("product: {} {} {}, sum of all {}", h[0][0][0], h[0][15][7], h[0][6][3], all);
+  return 0;
+}

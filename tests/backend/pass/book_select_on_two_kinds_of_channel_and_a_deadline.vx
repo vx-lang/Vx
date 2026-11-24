@@ -1,0 +1,97 @@
+//===- book_select_on_two_kinds_of_channel_and_a_deadline.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): `select3` takes jobs and notes
+// from two channels of different types, until both are closed, or until nothing comes for five
+// seconds.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}3 jobs and 2 notes{{$}}
+
+// ANCHOR: program
+import core::time;
+import std::string;
+import std::sync::channel;
+import std::sync::select;
+import std::time;
+
+fn send_jobs(tx : Sender<i64>) -> void {
+  let first : i64 = 0;
+  for job in first..3 {
+    let _sent = tx.send(job);
+  }
+}
+
+fn send_notes(tx : Sender<String>) -> void {
+  for _i in 0..2 {
+    let _sent = tx.send(String::new());
+  }
+}
+
+fn main() -> i32 {
+  let (jobs_tx, jobs) = channel<i64>(1);
+  let (notes_tx, notes) = channel<String>(1);
+  let mut jobs_open = true;
+  let mut notes_open = true;
+  let mut job_count = 0;
+  let mut note_count = 0;
+  tasks {
+    spawn {
+      send_jobs(jobs_tx);
+    };
+    spawn {
+      send_notes(notes_tx);
+    };
+    while jobs_open || notes_open {
+      // A new deadline at each pass: give up when nothing comes for five seconds.
+      let quiet = Deadline::after(Duration::from_secs(5));
+      match select3(&when(jobs_open, &jobs), &when(notes_open, &notes), &quiet) {
+        Result<i32,
+        SelectError>::Ok(i) => {
+          if i == 0 {
+            match jobs.try_recv() {
+              Result<i64,
+              TryRecvError>::Ok(_job) => {
+                job_count = job_count + 1;
+              }
+              // The channel is closed: turn it off.
+              Result<i64,
+              TryRecvError>::Err(_) => {
+                jobs_open = false;
+              }
+            }
+          } else if i == 1 {
+            match notes.try_recv() {
+              Result<String,
+              TryRecvError>::Ok(_note) => {
+                note_count = note_count + 1;
+              }
+              Result<String,
+              TryRecvError>::Err(_) => {
+                notes_open = false;
+              }
+            }
+          } else {
+            println!("nothing came for five seconds");
+            jobs_open = false;
+            notes_open = false;
+          }
+        }
+        // The `tasks` block was cancelled.
+        Result<i32,
+        SelectError>::Err(_) => {
+          jobs_open = false;
+          notes_open = false;
+        }
+      }
+    }
+  };
+  println!("{} jobs and {} notes", job_count, note_count);
+  return 0;
+}
+// ANCHOR_END: program

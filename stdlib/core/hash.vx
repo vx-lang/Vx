@@ -252,7 +252,7 @@ impl Hasher for SipHasher13 {
 
 /// Hashes the seconds and then the nanoseconds. It is here and not in `core::time`, so that
 /// `core::ops`, which imports `core::time` for `Drop::wait_limit`, does not load `core::num`.
-impl Hash for Duration {
+extern impl Hash for Duration {
   fn hash<H : Hasher>(self : &Duration, state : &mut H) -> i32 {
     let _secs = state.write_u64(self.secs);
     return state.write_u32(self.nanos);

@@ -1,0 +1,68 @@
+//===- writes_through_a_const_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `*const` pointer only allows reading, and so does a view of memory from one. Each write in
+// `writes` is error E4006: an assignment, a `&mut` borrow, and a call of a method that takes
+// `&mut self`. A view keeps the rule when another variable takes it. The functions after
+// `writes` read through a `*const` pointer, or write through a `*mut` one, and are correct.
+//
+// CHECK: E4006{{.*}}:35:{{.*}}assigns to memory through `p`, a `*const` pointer
+// CHECK: E4006{{.*}}:36:{{.*}}assigns to memory through `p`, a `*const` pointer
+// CHECK: E4006{{.*}}:37:{{.*}}assigns to memory through `s`, a `*const` pointer
+// CHECK: E4006{{.*}}:38:{{.*}}makes a `&mut` borrow of memory through `p`, a `*const` pointer
+// CHECK: E4006{{.*}}:41:{{.*}}assigns to memory through `v`, a view of memory from a `*const` pointer
+// CHECK: E4006{{.*}}:42:{{.*}}makes a `&mut` borrow of memory through `v`, a view
+// CHECK: E4006{{.*}}:43:{{.*}}`add_scalar` takes `&mut self`, and this calls it on memory through `v`, a view
+// CHECK: E4006{{.*}}:45:{{.*}}assigns to memory through `w`, a view
+// CHECK-NOT: E4006
+
+import std::tensor;
+
+struct Pair {
+  a : f32,
+  b : f32,
+}
+
+fn writes(p : *const f32, s : *const Pair) -> void {
+  unsafe {
+    // One error on each line.
+    *p = 1.0;
+    p[1] = 2.0;
+    (*s).a = 3.0;
+    let r = &mut *p;
+  }
+  let mut v = unsafe { tensor_view_2d(p, 2, 2) };
+  v[0][0] = 4.0;
+  let m = &mut v;
+  v[1].add_scalar(5.0);
+  let mut w = v;
+  w[0][1] = 6.0;
+}
+
+fn reads(p : *const f32, s : *const Pair) -> f32 {
+  let v = unsafe { tensor_view_2d(p, 2, 2) };
+  return unsafe { *p + p[1] + (*s).b } + v[1][1];
+}
+
+fn writes_through_mut(p : *mut f32, q : *const f32) -> void {
+  unsafe {
+    *p = 1.0;
+    p[1] = 2.0;
+    let r = &mut *p;
+    let to_mut = q as *mut f32;
+    *to_mut = 3.0;
+  }
+  let mut v = unsafe { tensor_view_2d(p, 2, 2) };
+  v[0][0] = 4.0;
+  v[1].add_scalar(5.0);
+}
+
+fn main() -> i32 {
+  return 0;
+}

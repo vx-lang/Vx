@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::lexer::OwnedTokenType;
+use crate::symbol::Symbol;
 use crate::syntax::*;
 use crate::syntax::{Delimiter, Span};
 use std::collections::HashMap;
@@ -21,8 +22,133 @@ use std::collections::HashMap;
 /// The macros that `expand_macro_call` expands itself, with no `macro_rules!`.
 pub const BUILT_IN_MACROS: [&str; 6] = ["mlir", "vec", "print", "eprint", "println", "eprintln"];
 
+/// The `macro_rules` of a program. A module can call the macros that it defines and the macros
+/// of the modules that it imports. So the expansion of a module depends only on its imports.
+#[derive(Debug, Default)]
+pub struct MacroTable {
+    /// The rules of each macro, by module path and then by macro name. A name defined twice in
+    /// one module has two entries.
+    defined: HashMap<Symbol, HashMap<Symbol, Vec<Vec<MacroRule>>>>,
+    /// The modules that each module imports, by module path.
+    imports: HashMap<Symbol, Vec<Symbol>>,
+    /// The file name of each module, for a message.
+    files: HashMap<Symbol, String>,
+}
+
+impl MacroTable {
+    pub fn new<'p>(modules: impl IntoIterator<Item = &'p VxModule>) -> Self {
+        let mut table = Self::default();
+        for m in modules {
+            let defined = table.defined.entry(m.module_path.clone()).or_default();
+            for mac in &m.macros {
+                defined
+                    .entry(mac.name.clone())
+                    .or_default()
+                    .push(mac.rules.clone());
+            }
+            let mut imports: Vec<Symbol> = Vec::new();
+            for import in &m.imports {
+                let path: Vec<&str> = import.path.iter().map(|s| s.as_ref()).collect();
+                let name = Symbol::from(path.join("::").as_str());
+                if name != m.module_path && !imports.contains(&name) {
+                    imports.push(name);
+                }
+            }
+            table.imports.insert(m.module_path.clone(), imports);
+            let file = m.file.as_deref().unwrap_or(m.module_path.as_ref());
+            let file = std::path::Path::new(file)
+                .file_name()
+                .map_or(file.to_string(), |n| n.to_string_lossy().into_owned());
+            table.files.insert(m.module_path.clone(), file);
+        }
+        table
+    }
+
+    fn file<'s>(&'s self, module: &'s Symbol) -> &'s str {
+        self.files
+            .get(module)
+            .map_or(module.as_ref(), |f| f.as_str())
+    }
+
+    /// The rules of the macro `name` that `module` can call: one in the module itself or in a
+    /// module that it imports. More than one is an error, as is none.
+    fn rules<'s>(
+        &'s self,
+        module: &'s Symbol,
+        name: &str,
+    ) -> Result<(&'s Symbol, &'s [MacroRule]), String> {
+        let visible = std::iter::once(module).chain(self.imports.get(module).into_iter().flatten());
+        let mut found: Vec<(&Symbol, &[MacroRule])> = Vec::new();
+        for m in visible {
+            for rules in self
+                .defined
+                .get(m)
+                .and_then(|d| d.get(name))
+                .into_iter()
+                .flatten()
+            {
+                found.push((m, rules.as_slice()));
+            }
+        }
+        match found.as_slice() {
+            [(home, rules)] => Ok((*home, *rules)),
+            [] => {
+                let mut elsewhere: Vec<&Symbol> = self
+                    .defined
+                    .iter()
+                    .filter(|(m, d)| *m != module && d.contains_key(name))
+                    .map(|(m, _)| m)
+                    .collect();
+                elsewhere.sort();
+                let Some(m) = elsewhere.first() else {
+                    return Err(format!("Macro {name} not found"));
+                };
+                // A root file has its path as its module path, and no import can name it.
+                let import = match m.contains('/') || m.ends_with(".vx") {
+                    true => String::new(),
+                    false => format!(" Add `import {m};`."),
+                };
+                Err(format!(
+                    "Macro {name} not found. `{}` defines it, and `{}` does not import \
+                     `{}`.{import}",
+                    self.file(m),
+                    self.file(module),
+                    self.file(m),
+                ))
+            }
+            _ => {
+                let mut files: Vec<&str> = found.iter().map(|(m, _)| self.file(m)).collect();
+                files.sort();
+                files.dedup();
+                let places = match files.as_slice() {
+                    [one] => format!("`{one}` defines it {} times", found.len()),
+                    [rest @ .., last] => format!(
+                        "it is in {} and `{last}`",
+                        rest.iter()
+                            .map(|f| format!("`{f}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    [] => unreachable!("a macro that is found is in a file"),
+                };
+                Err(format!(
+                    "`{}` can call more than one macro `{name}`: {places}. Give each macro its \
+                     own name.",
+                    self.file(module)
+                ))
+            }
+        }
+    }
+}
+
 pub struct MacroExpander<'a> {
-    pub macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
+    pub macros: &'a MacroTable,
+    /// The module that this expander expands. Its macros and those of its imports are the
+    /// macros that it can call.
+    module: Symbol,
+    /// For each expansion, by its id less 1: where to report the code that it wrote. See
+    /// `Program::macro_call_sites`.
+    call_sites: std::cell::RefCell<Vec<Option<Span>>>,
     /// The trait methods that carry a default body, across every module. Held here because
     /// filling them in is the last thing expansion does, and it has to be the last thing:
     /// an impl a macro produced is entitled to the defaults, and nothing before expansion
@@ -138,12 +264,11 @@ fn interleave_format_args(
 }
 
 impl<'a> MacroExpander<'a> {
-    pub fn new(
-        macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
-        trait_defaults: &'a crate::resolver::TraitDefaults,
-    ) -> Self {
+    pub fn new(macros: &'a MacroTable, trait_defaults: &'a crate::resolver::TraitDefaults) -> Self {
         Self {
             macros,
+            module: Symbol::from(""),
+            call_sites: std::cell::RefCell::new(Vec::new()),
             trait_defaults,
             expansions: std::cell::Cell::new(0),
         }
@@ -214,10 +339,8 @@ impl<'a> MacroExpander<'a> {
         &self,
         call: &stmt::MacroCallStmt,
     ) -> Result<crate::syntax::Program, String> {
-        let rules = self
-            .macros
-            .get(call.name.as_ref())
-            .ok_or_else(|| format!("Macro {} not found", call.name))?;
+        let (home, rules) = self.macros.rules(&self.module, call.name.as_ref())?;
+        let call_site = self.call_site(home, call.span);
         for rule in rules {
             self.validate_matcher(call.name.as_ref(), &rule.matcher)?;
         }
@@ -233,7 +356,7 @@ impl<'a> MacroExpander<'a> {
         };
         for rule in rules {
             if let Ok(captures) = self.match_rule(&rule.matcher, &input_tokens) {
-                let mut transcribed = self.transcribe(&rule.transcriber, &captures)?;
+                let mut transcribed = self.transcribe(&rule.transcriber, &captures, call_site)?;
                 transcribed.push(crate::lexer::OwnedToken {
                     kind: OwnedTokenType::Eof,
                     line: 0,
@@ -252,7 +375,11 @@ impl<'a> MacroExpander<'a> {
     }
 
     pub fn expand_module(&self, module: &mut VxModule) -> Result<(), String> {
-        Self::new(self.macros, self.trait_defaults).expand_module_from_zero(module)
+        let mut expander = Self::new(self.macros, self.trait_defaults);
+        expander.module = module.module_path.clone();
+        expander.expand_module_from_zero(module)?;
+        module.macro_call_sites = expander.call_sites.take();
+        Ok(())
     }
 
     fn expand_module_from_zero(&self, module: &mut VxModule) -> Result<(), String> {
@@ -331,7 +458,7 @@ impl<'a> MacroExpander<'a> {
     fn expand_stmt(&self, mut stmt: stmt::Statement) -> Result<Vec<stmt::Statement>, String> {
         if let stmt::Statement::MacroCall(call) = stmt {
             let expanded_expr =
-                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
+                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree, call.span)?;
             let recursively_expanded = self.expand_expr(expanded_expr)?;
             return Ok(vec![stmt::Statement::ExprStmt(stmt::ExprStmtStmt {
                 expr: recursively_expanded,
@@ -393,7 +520,7 @@ impl<'a> MacroExpander<'a> {
     fn expand_expr(&self, mut expr: expr::Expr) -> Result<expr::Expr, String> {
         if let expr::Expr::MacroCall(call) = expr {
             let expanded =
-                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
+                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree, call.span)?;
             return self.expand_expr(expanded);
         }
         // Traverse and expand
@@ -494,6 +621,7 @@ impl<'a> MacroExpander<'a> {
                     new_body.extend(self.expand_stmt(s)?);
                 }
                 u.stmts = new_body;
+                block_value_from_mlir(&mut u.stmts, &mut u.ret);
             }
             expr::Expr::TaskBlock(u) => {
                 if let Some(ret) = &mut u.ret {
@@ -505,6 +633,7 @@ impl<'a> MacroExpander<'a> {
                     new_body.extend(self.expand_stmt(s)?);
                 }
                 u.stmts = new_body;
+                block_value_from_mlir(&mut u.stmts, &mut u.ret);
             }
             expr::Expr::ComptimeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
@@ -516,6 +645,7 @@ impl<'a> MacroExpander<'a> {
                     new_body.extend(self.expand_stmt(s)?);
                 }
                 u.stmts = new_body;
+                block_value_from_mlir(&mut u.stmts, &mut u.ret);
             }
             expr::Expr::Closure(c) => {
                 *c.body = self.expand_expr(take_expr(&mut c.body))?;
@@ -602,6 +732,7 @@ impl<'a> MacroExpander<'a> {
         name: &str,
         tt: &TokenTree,
         block_tree: &Option<TokenTree>,
+        span: Span,
     ) -> Result<expr::Expr, String> {
         if name == "mlir" {
             return self.expand_mlir_macro(tt, block_tree);
@@ -617,10 +748,8 @@ impl<'a> MacroExpander<'a> {
             return self.expand_println_macro(tt, name == "eprintln");
         }
 
-        let rules = self
-            .macros
-            .get(name)
-            .ok_or_else(|| format!("Macro {} not found", name))?;
+        let (home, rules) = self.macros.rules(&self.module, name)?;
+        let call_site = self.call_site(home, span);
         for rule in rules {
             self.validate_matcher(name, &rule.matcher)?;
         }
@@ -638,7 +767,7 @@ impl<'a> MacroExpander<'a> {
 
         for rule in rules {
             if let Ok(captures) = self.match_rule(&rule.matcher, &input_tokens) {
-                let mut transcribed = self.transcribe(&rule.transcriber, &captures)?;
+                let mut transcribed = self.transcribe(&rule.transcriber, &captures, call_site)?;
                 // IMPORTANT: The parser expects an EOF token at the end!
                 transcribed.push(crate::lexer::OwnedToken {
                     kind: OwnedTokenType::Eof,
@@ -798,10 +927,26 @@ impl<'a> MacroExpander<'a> {
         Ok(captures)
     }
 
+    /// Where to report the code that a call at `span` of a macro of `home` writes: the call,
+    /// when another module declares the macro. A call in code that an expansion wrote is reported
+    /// where that code is reported.
+    fn call_site(&self, home: &Symbol, span: Span) -> Option<Span> {
+        if *home == self.module {
+            return None;
+        }
+        let outer = span
+            .expansion
+            .checked_sub(1)
+            .and_then(|i| self.call_sites.borrow().get(i as usize).copied().flatten());
+        Some(outer.unwrap_or(span))
+    }
+
+    /// The tokens of one expansion. `call_site` is where to report the code that they make.
     fn transcribe(
         &self,
         transcriber: &[TokenTree],
         captures: &HashMap<crate::symbol::Symbol, Vec<crate::lexer::OwnedToken>>,
+        call_site: Option<Span>,
     ) -> Result<Vec<crate::lexer::OwnedToken>, String> {
         let mut tokens = Vec::new();
         let mut transcriber_tokens = Vec::new();
@@ -876,6 +1021,13 @@ impl<'a> MacroExpander<'a> {
         // what keeps their nodes apart.
         let id = self.expansions.get() + 1;
         self.expansions.set(id);
+        let mut call_sites = self.call_sites.borrow_mut();
+        call_sites.push(call_site);
+        assert_eq!(
+            call_sites.len(),
+            id as usize,
+            "one call site for each expansion"
+        );
         for tok in &mut tokens {
             tok.expansion = id;
         }
@@ -965,6 +1117,7 @@ impl<'a> MacroExpander<'a> {
         let mut returns = None;
         let mut dialects = Vec::new();
         let mut ensures = Vec::new();
+        let mut threads = None;
 
         let tokens = match tt {
             TokenTree::Delimited(_, inner) => {
@@ -993,7 +1146,8 @@ impl<'a> MacroExpander<'a> {
                 crate::lexer::TokenType::Ensures => "ensures".to_string(),
                 _ => {
                     return Err(
-                        "Expected 'inputs', 'clobbers', 'returns', 'dialects' or 'ensures'"
+                        "Expected 'inputs', 'clobbers', 'returns', 'dialects', 'ensures' or \
+                         'threads'"
                             .to_string(),
                     )
                 }
@@ -1135,6 +1289,19 @@ impl<'a> MacroExpander<'a> {
                         .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
                         .map_err(|e| e.format("", None))?;
                 }
+                // Every thread of a threadgroup of at least this many runs the block.
+                "threads" => match &parser.advance().kind {
+                    crate::lexer::TokenType::Number(n) => match n.parse::<u32>() {
+                        Ok(n) if n > 0 => threads = Some(n),
+                        _ => {
+                            return Err(format!(
+                                "`threads` of an mlir! block is a number of threads above 0, \
+                                 not '{n}'"
+                            ))
+                        }
+                    },
+                    _ => return Err("`threads` of an mlir! block is a number".to_string()),
+                },
                 _ => return Err(format!("Unknown field '{}' in mlir! macro", field_name)),
             }
 
@@ -1152,7 +1319,14 @@ impl<'a> MacroExpander<'a> {
             let mut current_col = 0;
 
             for tok in t {
-                let text = tok.kind.to_string();
+                // A string goes to MLIR with MLIR's escapes. One with an escape that Vx does not
+                // know, such as `\0A`, is already as it was written.
+                let text = match &tok.kind {
+                    crate::lexer::TokenTypeBase::StringLiteral(s) => {
+                        format!("\"{}\"", mlir_escaped(s))
+                    }
+                    kind => kind.to_string(),
+                };
                 // A delimiter synthesized when the token tree was built carries no position.
                 // Laying one out by column drove the rest of its line hundreds of columns to
                 // the right, and the block stopped parsing (Vx#414).
@@ -1207,8 +1381,47 @@ impl<'a> MacroExpander<'a> {
             returns,
             dialects,
             ensures,
+            threads,
             block_str,
             span,
         }))
     }
+}
+
+/// The parser reads `mlir!(..) { .. }` at the start of a statement as a macro statement, so a
+/// block that ends with one has it as its last statement and no value. A last `mlir!` block with a
+/// result and no `;` is the value of the block, as any other last expression is.
+fn block_value_from_mlir(stmts: &mut Vec<stmt::Statement>, ret: &mut Option<Box<expr::Expr>>) {
+    if ret.is_some() {
+        return;
+    }
+    if let Some(stmt::Statement::ExprStmt(stmt::ExprStmtStmt {
+        expr: expr::Expr::InlineMlir(m),
+        has_semi: false,
+        ..
+    })) = stmts.last()
+    {
+        if m.returns.is_some() {
+            let Some(stmt::Statement::ExprStmt(e)) = stmts.pop() else {
+                unreachable!("matched above")
+            };
+            *ret = Some(Box::new(e.expr));
+        }
+    }
+}
+
+/// `s` as an MLIR string literal writes it, without the quotes.
+fn mlir_escaped(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => out.push_str(&format!("\\{:02X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }

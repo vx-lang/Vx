@@ -140,6 +140,23 @@ pub extern "C" fn print_u64(val: u64) -> i32 {
     0
 }
 
+/// An `i128` or a `u128`, as its low and its high 64 bits. The caller splits the value, because
+/// a 128-bit integer has no calling convention that every target agrees on.
+#[no_mangle]
+pub extern "C" fn print_i128(low: u64, high: u64) -> i32 {
+    lines::print(&format!(
+        "{}",
+        (((high as u128) << 64) | low as u128) as i128
+    ));
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn print_u128(low: u64, high: u64) -> i32 {
+    lines::print(&format!("{}", ((high as u128) << 64) | low as u128));
+    0
+}
+
 /// A `bool`, widened to an `i32` by the caller: prints `true` or `false`, as Rust does.
 #[no_mangle]
 pub extern "C" fn print_bool(val: i32) -> i32 {

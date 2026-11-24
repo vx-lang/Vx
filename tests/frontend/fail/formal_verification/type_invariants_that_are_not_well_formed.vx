@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 //
-// An invariant of a struct can use `self`, its fields at any depth, numbers, operators and the
-// pointer clauses. The first and the last invariant of `Holder` are well formed. Each other one
-// gets E8013.
+// An invariant of a struct can use its fields at any depth, numbers, operators and the pointer
+// clauses. The first and the last invariant of `Holder` are well formed. Each other one gets
+// E8013.
 
 const LIMIT : i64 = 10;
 
@@ -28,25 +28,42 @@ fn positive(n : i64) -> bool {
   return n > 0i64;
 }
 
-struct Holder
-invariant self.pair.a <= self.pair.b && self.size >= 0i64
-// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:21: this invariant of `Holder` is not well formed: `Pair` has no field `c`{{$}}
-invariant self.pair.c > 0i64
-// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:23: this invariant of `Holder` is not well formed: it names `LIMIT`, and an invariant can name only `self` and its fields{{$}}
-invariant self.size < LIMIT
-// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:21: this invariant of `Holder` is not well formed: `i64` is not a struct, so it has no field `bits`{{$}}
-invariant self.size.bits > 0i64
-// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:21: this invariant of `Holder` is not well formed: it calls the method `sum`, and an invariant can call only `valid`, `initialized` and `overlaps`{{$}}
-invariant self.pair.sum() > 0i64
-// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:11: this invariant of `Holder` is not well formed: it calls `positive`, and an invariant can call only `valid`, `initialized` and `overlaps`{{$}}
-invariant positive(self.size)
-// CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:11: this invariant of `Holder` is not well formed: `valid` takes 2 arguments{{$}}
-invariant valid(self.data)
-invariant valid(self.data, self.size) && initialized(self.data, self.size)
-{
+fn make_pair() -> Pair {
+  return Pair { a : 1i64, b : 2i64 };
+}
+
+struct Holder {
   pair : Pair,
   size : i64,
   data : *mut i64,
+
+  invariant pair.a <= pair.b && size >= 0i64,
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:18: this invariant of `Holder` is not well formed: `Pair` has no field `c`{{$}}
+  invariant pair.c > 0i64,
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:20: this invariant of `Holder` is not well formed: it names `LIMIT`, and an invariant can name only the fields of `Holder`{{$}}
+  invariant size < LIMIT,
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:18: this invariant of `Holder` is not well formed: `i64` is not a struct, so it has no field `bits`{{$}}
+  invariant size.bits > 0i64,
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:18: this invariant of `Holder` is not well formed: it calls the method `sum`, and an invariant can call only `valid`, `initialized` and `overlaps`{{$}}
+  invariant pair.sum() > 0i64,
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:13: this invariant of `Holder` is not well formed: it calls `positive`, and an invariant can call only `valid`, `initialized` and `overlaps`{{$}}
+  invariant positive(size),
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:13: this invariant of `Holder` is not well formed: `valid` takes 2 arguments{{$}}
+  invariant valid(data),
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:20: this invariant of `Holder` is not well formed: an invariant can use the fields of `Holder` at any depth, numbers, operators, `as` and the pointer clauses `valid`, `initialized` and `overlaps`{{$}}
+  invariant size > if true {
+    1i64
+  } else {
+    2i64
+  },
+  // A field or an element of a value that is not a field.
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:13: this invariant of `Holder` is not well formed: it calls `make_pair`, and an invariant can call only `valid`, `initialized` and `overlaps`{{$}}
+  invariant make_pair().a > 0i64,
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:13: this invariant of `Holder` is not well formed: an invariant can use the fields of `Holder` at any depth, numbers, operators, `as` and the pointer clauses `valid`, `initialized` and `overlaps`{{$}}
+  invariant [1i64, 2i64][0] <= size,
+  // CHECK: Error[E8013] at {{.*}}.vx:[[@LINE+1]]:19: this invariant of `Holder` is not well formed: it reads a part of a value that is not a field of `Holder`{{$}}
+  invariant (size + 1i64).bits > 0i64,
+  invariant valid(data, size) && initialized(data, size),
 }
 
 fn main() -> i32 {

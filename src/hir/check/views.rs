@@ -63,6 +63,16 @@ impl View {
     }
 }
 
+/// `outer` followed by `inner`, where a range at the end of `outer` takes the first index of
+/// `inner` into itself (see `places::RANGE_INDEX`).
+fn joined_path(outer: &[String], inner: &[String]) -> Vec<String> {
+    let mut path = outer.to_vec();
+    for element in inner {
+        crate::hir::places::push_path_element(&mut path, element.clone());
+    }
+    path
+}
+
 impl<'a> TypeChecker<'a> {
     /// The view `expr` makes, when it makes one, and its value is a tensor: a field or index
     /// chain, `t.reshape(..)` without `PadMode::Pad`, a view variable, or an `if` or `match` whose value is one of
@@ -118,7 +128,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(outer) = self.borrow.views.get(root.as_str()) {
             let extend = |list: &[(String, Vec<String>)]| {
                 list.iter()
-                    .map(|(o, p)| (o.clone(), p.iter().chain(&path).cloned().collect()))
+                    .map(|(o, p)| (o.clone(), joined_path(p, &path)))
                     .collect()
             };
             return View {
@@ -139,7 +149,7 @@ impl<'a> TypeChecker<'a> {
                 .borrow
                 .borrowed_by(&root)
                 .into_iter()
-                .map(|(o, p)| (o, p.into_iter().chain(path.iter().cloned()).collect()))
+                .map(|(o, p)| (o, joined_path(&p, &path)))
                 .collect();
             return View {
                 owners: vec![(root, path)],
@@ -294,7 +304,7 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    /// `tensor_view_2d(..)`, or a variable bound to one.
+    /// `tensor_view_1d(..)` or `tensor_view_2d(..)`, or a variable bound to one.
     fn is_foreign_view(&self, expr: &Expr) -> bool {
         match crate::syntax::expr::bare_unsafe_value(expr) {
             Expr::Identifier(id) => self.borrow.foreign_views.contains_key(&id.name),

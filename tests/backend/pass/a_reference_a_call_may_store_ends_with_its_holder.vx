@@ -8,7 +8,6 @@
 // A borrow that a call may store in another argument lasts until that argument's last use, and
 // a `&mut` whose target holds no reference, such as a `Vec<i64>`, stores none.
 //
-// REQUIRES: flat-codegen
 // Only because the older code generator cannot lower a `Vec<&i64>`.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error

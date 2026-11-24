@@ -16,6 +16,7 @@
 // ANCHOR: program
 import core::result;
 import std::net;
+import std::string;
 
 // Prints why a network call did not work.
 fn describe(e : NetError) -> void {
@@ -35,22 +36,32 @@ fn describe(e : NetError) -> void {
   }
 }
 
-fn main() -> i32 {
+// A `String` that holds `text`.
+fn address(text : *const i8) -> String {
+  return unsafe { String::from_c_str(text) };
+}
+
+fn main(root : Root) -> i32 {
+  let network = &root.network;
   // An address must be `host:port`. This one has no port.
-  match unsafe { TcpStream::connect("localhost") } {
-    Result<TcpStream, NetError>::Ok(_stream) => {
+  match TcpStream::connect(network, &address("localhost")) {
+    Result<TcpStream,
+    NetError>::Ok(_stream) => {
       println!("connected");
     }
-    Result<TcpStream, NetError>::Err(e) => {
+    Result<TcpStream,
+    NetError>::Err(e) => {
       describe(e);
     }
   }
   // Port 0 asks the system for any free port.
-  match unsafe { UdpSocket::bind("127.0.0.1:0") } {
-    Result<UdpSocket, NetError>::Ok(_socket) => {
+  match UdpSocket::bind(network, &address("127.0.0.1:0")) {
+    Result<UdpSocket,
+    NetError>::Ok(_socket) => {
       println!("bound a UDP socket");
     }
-    Result<UdpSocket, NetError>::Err(e) => {
+    Result<UdpSocket,
+    NetError>::Err(e) => {
       describe(e);
     }
   }

@@ -1,0 +1,66 @@
+//===- a_field_write_ends_the_facts_about_that_field.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A write to a field ends each fact about the old value of that field. It also ends each fact
+// that reads the field in another way, as the index of `s.t[s.n]` does, and each fact about a
+// value that a `&mut` reference can change. So none of these `ensures` can be proved.
+
+struct Counter {
+  n : i32,
+  cap : i32,
+}
+
+struct Outer {
+  inner : Counter,
+  k : i32,
+}
+
+struct Table {
+  n : i64,
+  t : Tensor<i32, [4]>,
+}
+
+fn same_field(c : &mut Counter) -> void
+requires c.n == 0i32
+ensures c.n == 0i32 {
+  c.n = 1i32;
+}
+
+fn an_index(s : &mut Table) -> void
+requires s.t[s.n] == 5i32
+ensures s.t[s.n] == 5i32 {
+  s.n = s.n + 1i64;
+}
+
+fn nested_field(o : &mut Outer) -> void
+requires o.inner.n == 3i32
+ensures o.inner.n == 3i32 {
+  o.inner.n = 7i32;
+}
+
+fn through_a_reference(c0 : Counter) -> i32
+ensures return == 0i32 {
+  let mut c = c0;
+  if c.n == 0i32 {
+    let r = &mut c;
+    r.n = 5i32;
+    return c.n;
+  }
+  return 0i32;
+}
+
+fn main() -> i32 {
+  let c = Counter { n : 0i32, cap : 5i32 };
+  return through_a_reference(c);
+}
+
+// CHECK: Error[E8001] at {{.*}}.vx:29:4: Function 'same_field' cannot prove postcondition
+// CHECK: Error[E8001] at {{.*}}.vx:35:4: Function 'an_index' cannot prove postcondition
+// CHECK: Error[E8001] at {{.*}}.vx:41:4: Function 'nested_field' cannot prove postcondition
+// CHECK: Error[E8001] at {{.*}}.vx:53:5: Function 'through_a_reference' cannot prove postcondition

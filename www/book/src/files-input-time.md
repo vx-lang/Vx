@@ -4,7 +4,8 @@ A program often needs text, files, the clock or the network. This chapter shows 
 standard library for these jobs: `std::string`, `std::fs`, `std::io`, `std::time` and `std::net`.
 
 Many of these functions take a raw pointer, such as a string literal or a buffer. The compiler
-cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block.
+cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block. Files and
+the network types also have safe methods, which take a `String` and a `Vec<u8>`.
 [Unsafe and FFI](unsafe-and-ffi.md) explains raw pointers.
 
 Each complete program in this chapter is also a test of the compiler. You can find it under
@@ -39,17 +40,34 @@ gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
 ## Files
 
-`File::open(path, mode)` opens a file. `path` is a text that ends with a zero byte, such as a
-string literal. The mode is one of the three values of `OpenMode`:
+To open a file, a call needs the right to open files: a `&Files`. Only `main` gets it. A `main`
+written `fn main(root : Root) -> i32` gets the rights of the program in `root`. It passes
+`&root.files` to `File::open`, or to a function that calls it. Only `std::fs` can make a `Files`,
+so a function that gets no `&Files` cannot open a file.
+
+`File::open(files, path, mode)` opens the file at the `String` `path`. The mode is one of the
+three values of `OpenMode`:
 
 - `OpenMode::Read()` opens a file that exists, for reading.
 - `OpenMode::Write()` makes the file, or makes an existing file empty, for writing.
 - `OpenMode::ReadWriteCreate()` opens the file for both, and makes it if it does not exist. It
   keeps the bytes that the file has.
 
-`write(buffer, len)` writes `len` bytes from a buffer and gives how many it wrote. `read(buffer, len)` reads up to `len` bytes into a buffer and gives how many it read. 0 means the end of the
+`write(bytes)` writes the bytes of a `Vec<u8>` and gives how many it wrote. `read(buffer)` reads
+up to `buffer.len()` bytes into a `Vec<u8>` and gives how many it read. 0 means the end of the
 file. `seek(offset, whence)` moves the position of the next read or write, and gives the new
 position. `whence` is 0 for the start of the file, 1 for the current position and 2 for the end.
+
+`open`, `read` and `write` give a `Result`. When a call does not work, its `Err` holds a
+`FileError`:
+
+- `NotFound`: no file has the path, or a folder of the path is missing.
+- `PermissionDenied`: the system does not let the program open the file in the mode.
+- `BadPath`: the path holds a zero byte.
+- `Os(code)`: another failure, with the error number of the system.
+
+The `?` operator gives the error to the caller
+([Errors, Option and Result](errors.md)).
 
 `File` implements `Drop`, so a file closes at the end of its scope. You do not close it by hand.
 [Ownership and borrowing](ownership.md) explains `Drop`.
@@ -70,11 +88,12 @@ the file ends at byte 14
 byte 4 is 116, the letter t
 ```
 
-`write_text` copies the literal into a `Vec<u8>`, because `write` takes a pointer to `u8` bytes.
-`out` closes at the end of `write_text`. So `main` reads all 14 bytes.
+`write_text` copies the literal into a `Vec<u8>`, because `write` takes bytes. `out` closes at the
+end of `write_text`. So `write_and_read` reads all 14 bytes.
 
-A failed `open` gives a `File` that does nothing: each later `read` and `write` gives 0. A missing
-file and an empty file look the same. So check the count that `read` and `write` give.
+`File` also has methods that take raw pointers, for trusted code that gets a path from C:
+`open_c_str`, `read_raw` and `write_raw`. They need `unsafe`, and they need no `&Files`. A failed
+`open_c_str` gives a `File` that does nothing: each later `read_raw` and `write_raw` gives 0.
 
 ## Standard input and output
 
@@ -111,7 +130,35 @@ When `vxc program.vx` runs a program, the program gets no standard input
 
 `std::time` measures time. `Instant::now()` reads a clock that never goes back. `elapsed()` gives
 the time since a reading, as a `Duration`. The difference `later - earlier` of two readings is a
-`Duration` too. `sleep(d)` stops the thread for at least the `Duration` `d`.
+`Duration` too. `sleep(d)` pauses the task for at least the `Duration` `d`. It is a wait, as a
+`recv` is: in the shared runtime, other tasks run on the thread of the task while it sleeps. A
+cancel of the `tasks` block, or the limit of `within`, ends the sleep early
+([Cancellation](tasks.md#cancellation)). `sleep` gives `true` when the whole time passed, and
+`false` when it ended early. `sleep_until(at)` sleeps until the `Instant` `at`.
+
+For periodic work, use an `Interval`. `Interval::new(period)` makes one, and each `tick()` waits
+for the next tick. Tick `k` is due `k` periods after `Interval::new`. So a late tick does not move
+the ticks after it, and the ticks do not drift. `tick()` gives the time when the tick was due, or
+`None` after a cancel:
+
+```rust
+let mut every_second = Interval::new(Duration::from_secs(1));
+loop {
+  match every_second.tick() {
+    Option<Instant>::Some(_due) => {
+      // The periodic work.
+    }
+    Option<Instant>::None => {
+      break;
+    }
+  }
+}
+```
+
+When the work takes longer than a period, the program misses ticks. The next `tick()` then comes
+at once, and `Interval` skips the missed ticks: the ticks after it are due on time again. `Interval` does not
+give the missed ticks in a burst, because a burst gives more work to a program that is already
+late. Go's `time.Ticker` also skips missed ticks.
 
 `Duration` comes from `core::time`. `Duration::from_secs`, `from_millis`, `from_micros` and
 `from_nanos` make one. `as_secs`, `as_millis` and `as_nanos` give its length, and `subsec_millis`
@@ -138,18 +185,35 @@ The program does not print the time that it slept, because that time is differen
 connection. `UdpSocket` sends and receives UDP datagrams, which are single messages. Each address
 is a text of the form `host:port`, for example `"127.0.0.1:7878"`.
 
+To open a connection or to bind an address, a call needs the right to use the network: a
+`&Network`. As for files, only `main` gets it, in `root`. `main` passes `&root.network` to
+`TcpStream::connect`, `TcpListener::bind` and `UdpSocket::bind`, or to a function that calls them. Only `std::net` can make a `Network`, so a
+function that gets no `&Network` cannot open a connection. A connection that `accept` gives needs
+no other right.
+
+The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
+The length of the vector is the size of the buffer. Each type also has methods that take raw
+pointers. Their names end in `_c_str` or `_raw`.
+
+A string literal is a raw pointer to its bytes. `String::from_c_str("..")` makes a `String` from
+it. That call is `unsafe`, because nothing checks that the pointer ends in a NUL byte. A literal
+always does, but Vx has no safe way yet to make a `String` or a `Vec<u8>` from a literal. So the
+examples below use `unsafe` only for that.
+
 Each call that can fail gives a `Result`. Its `Err` holds a `NetError`, which says why the call
 failed:
 
-- `BadAddress`: the address is not `host:port`, or the host has no address.
+- `BadAddress`: the address is not `host:port`, holds a NUL byte, or names a host that has no
+  address.
 - `Refused`: nothing listens at the address.
-- `Reset`: the other end closed the connection.
+- `Reset`: the other end reset the connection, or closed it while a write waited.
+- `Closed`: the other end closed the connection before `read_exact` got all its bytes.
 - `InUse`: another socket uses the address.
 - `Cancelled`: the program cancelled the `tasks` block of the task while the call waited.
 - `Os(code)`: another failure, with the error number of the system.
 
-This program makes two calls. The address of the first has no port. Port 0 in the second asks the
-system for any free port (`book_io_network_errors.vx`):
+The address of the first call in this program has no port. Port 0 in the second asks the system
+for any free port (`book_io_network_errors.vx`):
 
 ```rust
 {{#include ../../../tests/backend/pass/book_io_network_errors.vx:program}}
@@ -165,19 +229,55 @@ bound a UDP socket
 The sockets close at the end of their scope, as a `File` does.
 
 A server calls `accept()` on a `TcpListener`. `accept` waits until a client connects, and gives a
-`TcpStream`. `read` and `write` on the stream work as they do on a `File`. This function sends one
-byte back to the client. `?` gives the `Err` to the caller:
+`TcpStream`. `read(&mut buffer)` reads up to `buffer.len()` bytes and gives the count. 0 means that
+the other end closed the connection. `write(&buffer)` writes bytes and gives the count. This
+function sends one byte back to the client. `?` gives the `Err` to the caller:
 
 ```vx
 fn echo_one_byte(listener : TcpListener) -> Result<u64, NetError> {
   let mut server = listener;
   let mut client = server.accept()?;
-  let mut byte : u8 = 0;
-  let got = unsafe { client.read((&mut byte) as *mut u8, 1) };
-  let _count = got?;
-  return unsafe { client.write((&byte) as *const u8, 1) };
+  let mut buffer = Vec<u8>::new();
+  buffer.push(0u8);
+  let _count = client.read(&mut buffer)?;
+  return client.write(&buffer);
 }
 ```
 
 TCP is a stream of bytes. A message can arrive in parts, so a `read` can give fewer bytes than the
-other end wrote. To get a whole message, read in a loop until you have all of its bytes.
+other end wrote, and a `write` can take fewer bytes than you gave. `read_exact` reads until the
+buffer is full, and `write_all` writes all bytes of the buffer. When the connection closes before
+the buffer is full, `read_exact` gives `Closed`.
+
+`TcpBufReader` and `TcpBufWriter` hold a `TcpStream` and a buffer of 4096 bytes. `read_line(&mut line)` on a `TcpBufReader` adds the next line, with its newline, to the end of `line`, and gives the
+count of bytes. 0 means that the connection closed. A line has no length limit, so a client that
+never sends a newline makes `line` grow until the memory runs out. After `read_line`, the reader can
+hold the start of the next data, for example the body after a header. So read it with `read` or
+`read_exact` on the reader, not on its `TcpStream`.
+
+`write` on a `TcpBufWriter` adds bytes to the buffer, and `flush()` sends them in one write. A
+`TcpBufWriter` flushes at the end of its scope too, but then it cannot report an error. In a
+cancelled `tasks` block, that flush gives `Cancelled`, and the bytes are lost. `get_mut()` on either
+type gives the `TcpStream`, for example to write a reply.
+
+In this program, a client task sends two lines, and the server reads them
+(`book_io_network_lines.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_io_network_lines.vx:program}}
+```
+
+It prints:
+
+```text
+line 1 has 11 bytes
+line 2 has 12 bytes
+the client closed the connection
+```
+
+Each wait in `accept`, `read_line` or `flush` is a normal call. On the shared runtime, it parks
+only the task that waits, so the other task runs on the same OS thread
+([Tasks](tasks.md#why-vx-has-no-async)).
+
+A `UdpSocket` has `recv(&mut buffer)`, which waits for one datagram and gives its length, and
+`send_to(&buffer, &addr)`, which sends one datagram.

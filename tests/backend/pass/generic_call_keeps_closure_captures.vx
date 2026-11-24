@@ -1,0 +1,25 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// EXPECT: generic calls keep closure captures
+// Importing the library closure types must not change a generic argument's type.
+import core::ops;
+
+struct Captured {
+  value : i32,
+}
+impl Copy for Captured {}
+
+fn apply<F>(f : F, value : i32) -> i32 {
+  return f(value);
+}
+
+fn main() -> i32 {
+  let captured = Captured { value : 10 };
+  let extra : i32 = 20;
+  let add = | value : i32 | captured.value + extra + value;
+  assert(apply(add, 12) == 42, "generic call preserves both captures");
+  println!("generic calls keep closure captures");
+  return 0;
+}

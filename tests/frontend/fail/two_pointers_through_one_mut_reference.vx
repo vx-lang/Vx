@@ -1,0 +1,35 @@
+//===- two_pointers_through_one_mut_reference.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `ptr_of_mut` reads a `*mut f32` out of a struct behind a `&mut`, so the result keeps a
+// mutable borrow of `w`. A second call in the same struct literal is error E4004.
+//
+// CHECK: E4004{{.*}}:30:{{.*}}Cannot borrow 'w' because it is already borrowed as mutable
+// CHECK-NOT: E4004
+
+struct Weights {
+  dev : *mut f32
+}
+
+struct Views {
+  a : *mut f32,
+  b : *mut f32
+}
+
+fn ptr_of_mut(w : &mut Weights) -> *mut f32 {
+  return w.dev;
+}
+
+fn views(w : &mut Weights) -> Views {
+  return Views { a: ptr_of_mut(w), b: ptr_of_mut(w) };
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,66 @@
+//===- select_sees_a_send_that_comes_before_its_watch.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `select` searches its sources, and when none is ready, it watches them. A send that comes
+// between the search and the watch wakes no one, because no `select` watches the channel yet.
+// So the `select` searches again after the watch, and must find the value there.
+//
+// VX_TEST_SELECT_PAUSE_MS holds the `select` for 0.3 seconds between the search and the watch,
+// and a task sends after 0.1 seconds. Without the second search, the `select` waits until its
+// `Deadline` of 3 seconds. Then both sources are ready, and the search starts at the `Deadline`,
+// so the `select` gives it. The pause stops the thread, so the shared runtime has two workers.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 VX_TEST_SELECT_PAUSE_MS=300 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TEST_SELECT_PAUSE_MS=300 vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=2 VX_TEST_SELECT_PAUSE_MS=300 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}select2 gave 1, the value 5{{$}}
+
+import core::time;
+import std::sync::channel;
+import std::sync::select;
+import std::time;
+
+fn send_later(tx : Sender<i64>) -> void {
+  sleep(Duration::from_millis(100));
+  let _sent = tx.send(5);
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let keep_open = tx.clone();
+  let limit = Deadline::after(Duration::from_secs(3));
+  tasks {
+    spawn {
+      send_later(tx);
+    };
+    match select2(&limit, &rx) {
+      Result<i32,
+      SelectError>::Ok(i) => {
+        if i == 1 {
+          match rx.try_recv() {
+            Result<i64,
+            TryRecvError>::Ok(v) => {
+              println!("select2 gave 1, the value {}", v);
+            }
+            Result<i64,
+            TryRecvError>::Err(_) => {
+              println!("select2 gave 1, with no value");
+            }
+          }
+        } else {
+          println!("select2 gave {}: the deadline", i);
+        }
+      }
+      Result<i32,
+      SelectError>::Err(_) => {
+        println!("cancelled");
+      }
+    }
+  };
+  drop(keep_open);
+  return 0;
+}

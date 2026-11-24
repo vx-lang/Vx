@@ -1,0 +1,95 @@
+//===- select_keeps_a_turn_for_each_task.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `select` starts its search after the last choice of its own task. Two tasks take turns:
+// task X calls `select2` on two channels that both have values, and task Y calls `select3` on
+// three channels where only the last has values. X must give 0, 1, 0 though Y chose index 2
+// between its calls. On the shared runtime with one worker, both tasks run on one thread.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-DAG: {{^}}X chose 0 1 0{{$}}
+// CHECK-DAG: {{^}}Y chose 2 2 2{{$}}
+
+import std::sync::channel;
+import std::sync::select;
+
+fn fill(tx : &Sender<i64>, count : i64) -> void {
+  for k in 0..count {
+    let _sent = tx.send(k);
+  }
+}
+
+fn chosen(r : Result<i32, SelectError>) -> i32 {
+  match r {
+    Result<i32,
+    SelectError>::Ok(i) => {
+      return i;
+    }
+    Result<i32,
+    SelectError>::Err(_) => {
+      return -1;
+    }
+  }
+}
+
+fn take(i : i32, first : &Receiver<i64>, second : &Receiver<i64>) -> void {
+  if i == 0 {
+    let _value = first.try_recv();
+  } else {
+    let _value = second.try_recv();
+  }
+}
+
+fn task_x(ping : Sender<i64>, pong : Receiver<i64>) -> void {
+  let (tx_a, a) = channel<i64>(3);
+  let (tx_b, b) = channel<i64>(3);
+  fill(&tx_a, 3);
+  fill(&tx_b, 3);
+  let first = chosen(select2(&a, &b));
+  take(first, &a, &b);
+  let _sent = ping.send(1);
+  let _got = pong.recv();
+  let second = chosen(select2(&a, &b));
+  take(second, &a, &b);
+  let _sent2 = ping.send(2);
+  let _got2 = pong.recv();
+  let third = chosen(select2(&a, &b));
+  println!("X chose {} {} {}", first, second, third);
+}
+
+fn task_y(ping : Receiver<i64>, pong : Sender<i64>) -> void {
+  let (_tx_c, c) = channel<i64>(1);
+  let (_tx_d, d) = channel<i64>(1);
+  let (tx_e, e) = channel<i64>(3);
+  fill(&tx_e, 3);
+  let mut picks : i64 = 0;
+  for _round in 0..2 {
+    let _got = ping.recv();
+    let i = chosen(select3(&c, &d, &e));
+    let _value = e.try_recv();
+    picks = picks * 10 + (i as i64);
+    let _sent = pong.send(1);
+  }
+  let last = chosen(select3(&c, &d, &e));
+  println!("Y chose {} {} {}", picks / 10, picks % 10, last);
+}
+
+fn main() -> i32 {
+  let (ping_tx, ping_rx) = channel<i64>(1);
+  let (pong_tx, pong_rx) = channel<i64>(1);
+  tasks {
+    spawn {
+      task_x(ping_tx, pong_rx);
+    };
+    spawn {
+      task_y(ping_rx, pong_tx);
+    };
+  };
+  return 0;
+}

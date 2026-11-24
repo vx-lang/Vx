@@ -19,7 +19,7 @@ fn main() -> i32 {
   print!(" ");
   print(library_double(3i64));
   print!(" ");
-  let five = 5i64;
+  let five = Amount { value : 5i64 };
   print(five.double());
   return 0;
 }

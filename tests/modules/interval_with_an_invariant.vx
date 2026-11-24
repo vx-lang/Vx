@@ -19,13 +19,13 @@ impl Counter {
   }
 }
 
-struct Interval
-invariant 0i64 <= self.lo && self.lo <= self.hi
-{
+struct Interval {
   lo : i64,
   hi : i64,
   count : Counter,
   items : Vec<i64>,
+
+  invariant 0i64 <= lo && lo <= hi,
 }
 
 impl Interval {

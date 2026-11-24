@@ -23,7 +23,9 @@ extern {
   /// Allocate a NUL-terminated copy and hand out its raw pointer. The caller owns it and
   /// releases it with `vx_string_free_c_str`; `String::as_c_str` does not, and leaks.
   fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
-  /// Release what `vx_string_as_c_str` returned. Nothing in Vx calls this yet.
+  /// `vx_string_as_c_str`, but null when the string holds a NUL byte. `std::net` uses it.
+  fn vx_string_try_as_c_str(ptr : *mut i8) -> *const i8;
+  /// Release what `vx_string_as_c_str` or `vx_string_try_as_c_str` returned.
   fn vx_string_free_c_str(ptr : *const i8) -> i32;
   /// The Rust core behind `String::drop`.
   fn vx_string_drop(ptr : *mut i8) -> i32;

@@ -83,8 +83,8 @@ requires c.n < 5i64
 fn a_clobber() -> i64 {
   let mut n = 0i64;
   if n < 5i64 {
-    let _w = mlir!(inputs : (), clobbers : [n], returns : void, dialects : []) {
-    };
+    let _w = unsafe { mlir!(inputs : (), clobbers : [n], returns : void, dialects : []) {
+      } };
     need(n);
   }
   return n;

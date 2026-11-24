@@ -55,10 +55,18 @@ macro_rules size_of {
   };
 }
 
+struct Count {
+  value : i32,
+}
+
+struct Meters {
+  value : f64,
+}
+
 constant!(ten, 10);
 constant!(twenty, 2 * 10);
-size_of!(i32, 4);
-size_of!(f64, 8);
+size_of!(Count, 4);
+size_of!(Meters, 8);
 
 fn main() -> i32 {
   let high = clamp!(15, 10);
@@ -66,9 +74,9 @@ fn main() -> i32 {
   println!("clamp 15 to 10: {}", high);
   println!("clamp -4 to 0..10: {}", low);
   println!("ten {}, twenty {}", ten(), twenty());
-  let a : i32 = 1;
-  let b : f64 = 1.0;
-  println!("sizes {} {}", a.bytes(), b.bytes());
+  let count = Count { value : 1 };
+  let meters = Meters { value : 1.0 };
+  println!("sizes {} {}", count.bytes(), meters.bytes());
   return 0;
 }
 // ANCHOR_END: program

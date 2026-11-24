@@ -15,12 +15,12 @@
 fn bump(c : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> void
 ensures atomic(c)
 {
-  mlir!( inputs : (%c = c : memref<?xi32>), dialects : ["memref", "arith"], ensures : [atomic(c)]) {
-    %k = arith.constant 0 : index
-    %one = arith.constant 1 : i32
-    %old = memref.atomic_rmw addi %one, %c[%k] : (i32, memref<?xi32>) -> i32
-    macro.yield
-  };
+  unsafe { mlir!( inputs : (%c = c : memref<?xi32>), dialects : ["memref", "arith"], ensures : [atomic(c)]) {
+      %k = arith.constant 0 : index
+      %one = arith.constant 1 : i32
+      %old = memref.atomic_rmw addi %one, %c[%k] : (i32, memref<?xi32>) -> i32
+      macro.yield
+    } };
   return;
 }
 
@@ -28,13 +28,13 @@ fn scribble(c : &Tensor<i32, [?], Memory::HBM>, u : &Tensor<i32, [?], Memory::HB
 ensures atomic(c)
 {
   bump(c);
-  // CHECK: Error[E8007] at {{.*}}a_tensor_that_no_clause_names_is_only_read.vx:[[# @LINE + 1]]:25: no clause of `scribble` names `u`, so it may only read an element or a field of `u`, or pass it to an `mlir!` block with `ensures : [reads_only(u)]`, or to a function that says `reads_only` for that argument
-  mlir!( inputs : (%u = u : memref<?xi32>), dialects : ["memref", "arith"]) {
-    %k = arith.constant 0 : index
-    %z = arith.constant 7 : i32
-    memref.store %z, %u[%k] : memref<?xi32>
-    macro.yield
-  };
+  // CHECK: Error[E8007] at {{.*}}a_tensor_that_no_clause_names_is_only_read.vx:[[# @LINE + 1]]:34: no clause of `scribble` names `u`, so it may only read an element or a field of `u`, or pass it to an `mlir!` block with `ensures : [reads_only(u)]`, or to a function that says `reads_only` for that argument
+  unsafe { mlir!( inputs : (%u = u : memref<?xi32>), dialects : ["memref", "arith"]) {
+      %k = arith.constant 0 : index
+      %z = arith.constant 7 : i32
+      memref.store %z, %u[%k] : memref<?xi32>
+      macro.yield
+    } };
   return;
 }
 

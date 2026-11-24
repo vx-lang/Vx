@@ -10,7 +10,6 @@
 // `count(&mut h, &y)`, `h` keeps `y` borrowed. `ensures !keeps(x)` says that the call stores `x`
 // nowhere, so the borrow of `x` ends with the call.
 //
-// REQUIRES: flat-codegen
 // Only because the older code generator cannot lower a `Vec<&i64>`.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error

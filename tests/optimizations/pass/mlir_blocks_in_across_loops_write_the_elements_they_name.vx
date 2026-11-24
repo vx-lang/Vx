@@ -1,0 +1,128 @@
+// An `mlir!` block in an `across` loop may write a tensor that a `writes_only` clause names. The
+// race check reads the clause as element writes, so the passes of the loop write different
+// elements. The GPU must give the values of the CPU.
+//
+// - `one_element_per_lane`: each lane writes `out[b * 32 + l]`.
+// - `a_range_per_block`: each block writes the 32 elements `out[b * 32..b * 32 + 32]`.
+// - `the_whole_tile_of_a_block`: a block writes its own tile `t`, which no other block sees.
+// - `one_tile_element_per_lane`: each lane writes `t[l]` through a `memref.subview`.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>%t.ast.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.ast.gpu
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// GPU-COUNT-4: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 4 x 1 x 1
+// CHECK: {{^}}one element per lane: 0 101 331{{$}}
+// CHECK-NEXT: {{^}}a range per block: 0 66 254{{$}}
+// CHECK-NEXT: {{^}}the whole tile of a block: 0 1001 3031{{$}}
+// CHECK-NEXT: {{^}}one tile element per lane: 31 31 3{{$}}
+
+pub fn one_element_per_lane(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes(32) {
+        let _v = unsafe { mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(out[b * 32 + l])]) {
+            %c32 = arith.constant 32 : i32
+            %c100 = arith.constant 100 : i32
+            %r = arith.muli %b, %c32 : i32
+            %i = arith.addi %r, %l : i32
+            %h = arith.muli %b, %c100 : i32
+            %v = arith.addi %h, %l : i32
+            %k = arith.index_cast %i : i32 to index
+            memref.store %v, %o[%k] : memref<?xi32>
+            macro.yield %v : i32
+          } };
+      }
+    }
+  }
+  return;
+}
+
+pub fn a_range_per_block(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      let _v = unsafe { mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "scf"], ensures : [writes_only(out[b * 32..b * 32 + 32])]) {
+          %c32 = arith.constant 32 : i32
+          %r = arith.muli %b, %c32 : i32
+          %lo = arith.index_cast %r : i32 to index
+          %c0 = arith.constant 0 : index
+          %c1 = arith.constant 1 : index
+          %n = arith.constant 32 : index
+          scf.for %j = %c0 to %n step %c1 {
+            %k = arith.addi %lo, %j : index
+            %ki = arith.index_cast %k : index to i32
+            %v = arith.addi %ki, %ki : i32
+            memref.store %v, %o[%k] : memref<?xi32>
+          }
+          macro.yield %r : i32
+        } };
+    }
+  }
+  return;
+}
+
+pub fn the_whole_tile_of_a_block(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      let mut t = unsafe { Tensor<i32, [32], Memory::SMEM>::uninit() };
+      let _v = unsafe { mlir!( inputs : (%t = &mut t : memref<32xi32, 3>, %b = b : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(t)]) {
+          %c0 = arith.constant 0 : index
+          memref.store %b, %t[%c0] : memref<32xi32, 3>
+          macro.yield %b : i32
+        } };
+      for l in 0..32 across lanes(32) {
+        out[b * 32 + l] = t[0] * 1000 + l;
+      }
+    }
+  }
+  return;
+}
+
+pub fn one_tile_element_per_lane(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      let mut t = unsafe { Tensor<i32, [32], Memory::SMEM>::uninit() };
+      for l in 0..32 across lanes(32) {
+        let _v = unsafe { mlir!( inputs : (%t = &mut t : memref<32xi32, 3>, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(t[l])]) {
+            %k = arith.index_cast %l : i32 to index
+            %s = memref.subview %t[%k] [1] [1] : memref<32xi32, 3> to memref<1xi32, strided<[1], offset: ?>, 3>
+            %c0 = arith.constant 0 : index
+            memref.store %l, %s[%c0] : memref<1xi32, strided<[1], offset: ?>, 3>
+            macro.yield %l : i32
+          } };
+      }
+      for l in 0..32 across lanes(32) {
+        out[b * 32 + l] = t[31 - l] + b;
+      }
+    }
+  }
+  return;
+}
+
+fn show(h : &Tensor<i32, [?]>) -> void {
+  println!(" {} {} {}", h[0], h[33], h[127]);
+  return;
+}
+
+fn main() -> i32 {
+  let mut a = transfer(Tensor<i32>([128]), Memory::HBM);
+  one_element_per_lane(&mut a);
+  let mut b = transfer(Tensor<i32>([128]), Memory::HBM);
+  a_range_per_block(&mut b);
+  let mut c = transfer(Tensor<i32>([128]), Memory::HBM);
+  the_whole_tile_of_a_block(&mut c);
+  let mut d = transfer(Tensor<i32>([128]), Memory::HBM);
+  one_tile_element_per_lane(&mut d);
+  print!("one element per lane:");
+  show(&transfer(&a, Memory::CPU_DRAM));
+  print!("a range per block:");
+  show(&transfer(&b, Memory::CPU_DRAM));
+  print!("the whole tile of a block:");
+  show(&transfer(&c, Memory::CPU_DRAM));
+  print!("one tile element per lane:");
+  show(&transfer(&d, Memory::CPU_DRAM));
+  return 0;
+}

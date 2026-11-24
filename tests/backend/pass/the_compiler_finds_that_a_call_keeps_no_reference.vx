@@ -10,7 +10,6 @@
 // outlives `local`, and after `count(&mut h, &y)` the variable `y` is free. It finds this also
 // through a call of `note`, for an instance of a generic function, and for a method.
 //
-// REQUIRES: flat-codegen
 // Only because the older code generator cannot lower a `Vec<&i64>`.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error

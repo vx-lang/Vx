@@ -1,0 +1,24 @@
+//===- a_struct_literal_before_a_block.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// In the condition of an `if`, a `{` after a name starts the block. So a struct literal there
+// must be inside parentheses, as in Rust.
+
+struct Point {
+  x : i64,
+}
+
+fn main() -> i32 {
+  if Point { x : 1i64 }.x == 1i64 {
+    println!("one");
+  }
+  return 0;
+}
+
+// CHECK: Error at {{.*}}a_struct_literal_before_a_block.vx:18:12: a struct literal cannot come directly before a block. Put it in parentheses: `(Point { .. })`

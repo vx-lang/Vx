@@ -1,0 +1,69 @@
+//===- a_name_before_an_empty_block.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Where a block follows an expression, a name and `{}` are the name and an empty block, as in
+// Rust. A struct literal there must be inside parentheses or a call.
+
+struct Point {
+  x : i64,
+}
+
+fn is_one(p : Point) -> bool {
+  return p.x == 1i64;
+}
+
+fn needs(ok : bool) -> void
+requires ok {}
+
+fn gives() -> void
+ensures true {}
+
+trait Nothing {
+  fn nothing(self : Self) -> void
+  ensures true {}
+}
+
+impl Nothing for Point {}
+
+fn _spin() -> void {
+  loop invariant true {}
+}
+
+fn main() -> i32 {
+  let ok = true;
+  let never = false;
+  let n = 3i64;
+  if ok {} else {
+    println!("the else of a true condition ran");
+  }
+  if never {} else {
+    println!("else");
+  }
+  while never {}
+  while never invariant ok {}
+  for i in 0..n {}
+  for i in 0..n invariant ok {}
+  if (Point { x : 1i64 }).x == 1i64 {
+    println!("a struct literal in parentheses");
+  }
+  if is_one(Point { x : 1i64 }) {
+    println!("a struct literal in a call");
+  }
+  needs(true);
+  gives();
+  let p = Point { x : 2i64 };
+  p.nothing();
+  return 0;
+}
+
+// CHECK-NOT: true condition
+// CHECK: {{^}}else{{$}}
+// CHECK-NEXT: {{^}}a struct literal in parentheses{{$}}
+// CHECK-NEXT: {{^}}a struct literal in a call{{$}}

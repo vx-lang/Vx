@@ -1,0 +1,36 @@
+//===- an_unreachable_in_an_mlir_block_survives_inlining.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `mlir!` block in `unreachable_unchecked` is only `llvm.unreachable`. At `-O1` and above,
+// the compiler inlines small functions, and MLIR's inliner lost the `llvm.unreachable` of such
+// a block. The block now stays a call, so the `llvm.unreachable` is still in the program.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %s -O1 --action emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s -O1 --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s
+// OUT: {{^}}1{{$}}
+// CHECK: llvm.unreachable
+
+unsafe fn unreachable_unchecked() -> void {
+  mlir!( inputs : (), dialects : ["llvm"]) {
+    llvm.unreachable
+  };
+}
+
+fn pick(x : i32) -> i32 {
+  if x > 0 {
+    return 1;
+  }
+  unsafe { unreachable_unchecked(); }
+  return 2;
+}
+
+fn main() -> i32 {
+  println!("{}", pick(5));
+  return 0;
+}

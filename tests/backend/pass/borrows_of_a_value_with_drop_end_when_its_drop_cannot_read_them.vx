@@ -9,7 +9,6 @@
 // away, or when its `drop` cannot read the references: a `Vec<&i32>` only frees its buffer.
 // A function may return a shared reference that a value dropped as it returns holds.
 //
-// REQUIRES: flat-codegen
 // Only because the older code generator cannot lower a `Vec<&i32>`.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error

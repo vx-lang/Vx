@@ -1,0 +1,101 @@
+//===- a_tasks_block_whose_value_nothing_uses_drops_its_failure.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Nothing uses the value of these `tasks` blocks, so a failure drops at the end of the
+// statement, as a call result does. A value that the block gives when it does not fail drops
+// once.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not='{{^drop [0-9]}}'
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not='{{^drop [0-9]}}'
+
+import core::result;
+
+struct Failure {
+  code : i32,
+}
+
+impl Drop for Failure {
+  fn drop(self : &mut Failure) -> void {
+    println!("drop {}", self.code);
+  }
+}
+
+fn check(x : i32) -> Result<i32, Failure> {
+  if x % 2 == 0 {
+    return Result<i32, Failure>::Ok(x / 2);
+  }
+  return Result<i32, Failure>::Err(Failure { code: x });
+}
+
+fn failed_join(x : i32) -> void {
+  tasks {
+    let h = spawn {
+      Result<i32, Failure>::Ok(check(x)? + 1)
+    };
+    let v = h.join();
+    Result<i32, Failure>::Ok(v)
+  };
+  println!("failed_join {} ends", x);
+}
+
+fn question_mark(x : i32) -> void {
+  tasks {
+    let v = check(x)?;
+    Result<i32, Failure>::Ok(v)
+  };
+  println!("question_mark {} ends", x);
+}
+
+fn in_an_if(x : i32, go : bool) -> void {
+  if go {
+    tasks {
+      let v = check(x)?;
+      Result<i32, Failure>::Ok(v)
+    }
+  }
+  println!("in_an_if {} ends", x);
+}
+
+fn wrap(v : i32) -> Result<Failure, Failure> {
+  return Result<Failure, Failure>::Ok(Failure { code: v + 100 });
+}
+
+fn a_value_that_drops(x : i32) -> void {
+  tasks {
+    let h = spawn {
+      Result<i32, Failure>::Ok(check(x)? + 1)
+    };
+    let v = h.join();
+    wrap(v)
+  };
+  println!("a_value_that_drops {} ends", x);
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}failed_join 8 ends{{$}}
+  // CHECK-NEXT: {{^}}drop 7{{$}}
+  // CHECK-NEXT: {{^}}failed_join 7 ends{{$}}
+  failed_join(8);
+  failed_join(7);
+  // CHECK-NEXT: {{^}}question_mark 8 ends{{$}}
+  // CHECK-NEXT: {{^}}drop 9{{$}}
+  // CHECK-NEXT: {{^}}question_mark 9 ends{{$}}
+  question_mark(8);
+  question_mark(9);
+  // CHECK-NEXT: {{^}}in_an_if 8 ends{{$}}
+  // CHECK-NEXT: {{^}}drop 11{{$}}
+  // CHECK-NEXT: {{^}}in_an_if 11 ends{{$}}
+  in_an_if(8, true);
+  in_an_if(11, true);
+  // CHECK-NEXT: {{^}}drop 105{{$}}
+  // CHECK-NEXT: {{^}}a_value_that_drops 8 ends{{$}}
+  // CHECK-NEXT: {{^}}drop 13{{$}}
+  // CHECK-NEXT: {{^}}a_value_that_drops 13 ends{{$}}
+  a_value_that_drops(8);
+  a_value_that_drops(13);
+  return 0;
+}

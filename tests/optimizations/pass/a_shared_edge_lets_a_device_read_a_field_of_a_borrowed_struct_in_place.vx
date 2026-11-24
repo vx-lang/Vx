@@ -1,0 +1,196 @@
+//===- a_shared_edge_lets_a_device_read_a_field_of_a_borrowed_struct_in_place.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The machine below declares both directions `: shared`. A transfer of a tensor that the program
+// reaches through a `&` parameter, such as `layer.codes` with `layer : &Layer`, can skip its copy
+// as a `&` parameter can: nothing can change the tensor until the function returns. So when the
+// program only reads the copy, the compiler reads the tensor in place. A transfer to the GPU then
+// waits for the GPU before the function returns (`VX_CTRL_WAIT`, 5).
+//
+// - `field_in_place` gives the GPU `layer.codes`, a `&Tensor` field of a `&` parameter.
+// - `owned_field_in_place` gives it `holder.t`, a tensor that a `&` parameter holds.
+// - `local_copies` gives it a local tensor, which is not reached through a parameter. It copies.
+// - `local_struct_copies` gives it `l.codes`, where `l` is a local struct that holds a `&` to a
+//   local tensor. The tensor is freed when the function ends, so it copies.
+// - `owned_parameter_copies` gives it a parameter that the function owns, with no `&` on the way.
+//   The function could change it, so it copies.
+// - `mut_parameter_copies` has a parameter declared `mut`, which can point at something else
+//   later. It copies.
+// - `gpu_field_to_cpu` reads `layer.w`, a `&Tensor` field in GPU memory, on the CPU in place. It
+//   waits for the GPU launches that write it first (`VX_CTRL_WAIT_FOR_TENSORS`, 6).
+//
+// The AST code generator copies whenever the copy goes to a function call, and warns.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,OUT --implicit-check-not="copies a tensor" --implicit-check-not="copies the tensor"
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefixes=AST,OUT --implicit-check-not="copies a tensor" --implicit-check-not="copies the tensor"
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=FIELD
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=OWNED
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=GPU
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=GPU
+//
+// FLAT: Warning in function `owned_parameter_copies`: this transfer copies the tensor. The device can read it in place only when it is a `&` parameter of this function or reached through one, or a view of memory from a `*const` pointer.
+// FLAT: Warning in function `mut_parameter_copies`: this transfer copies the tensor.
+// FLAT: Warning in function `local_struct_copies`: this transfer copies the tensor.
+// FLAT: Warning in function `local_copies`: this transfer copies the tensor.
+// The AST code generator's warnings come in the order of its module.
+// AST: .vx:158:{{[0-9]+}}: this transfer copies the tensor.
+// AST: .vx:133:{{[0-9]+}}: a transfer to device memory copies a tensor, because the call to `sum_on_device` can change the copy or keep it.
+// AST: .vx:166:{{[0-9]+}}: this transfer copies the tensor.
+// AST: .vx:150:{{[0-9]+}}: this transfer copies the tensor.
+// AST: .vx:140:{{[0-9]+}}: this transfer copies the tensor.
+// AST: .vx:125:{{[0-9]+}}: a transfer to device memory copies a tensor, because the call to `sum_on_device` can change the copy or keep it.
+//
+// OUT: field=10;
+// OUT-NEXT: owned_field=10;
+// OUT-NEXT: local=8;
+// OUT-NEXT: local_struct=12;
+// OUT-NEXT: owned_parameter=10;
+// OUT-NEXT: mut_parameter=10;
+// OUT-NEXT: gpu_field=4;
+//
+// In `field_in_place` and `owned_field_in_place`, the two transfers are of `out`, to the GPU and
+// back.
+// FIELD-LABEL: llvm.func hidden @field_in_place(
+// FIELD: %[[FIVE:[0-9]+]] = llvm.mlir.constant(5 : i32) : i32
+// FIELD-NOT: llvm.func
+// FIELD: llvm.call @vx_plugin_alloc_and_transfer(
+// FIELD-NOT: llvm.func
+// FIELD: llvm.call @vx_plugin_alloc_and_transfer(
+// FIELD-NOT: vx_plugin_alloc_and_transfer
+// FIELD-NOT: llvm.func
+// FIELD: llvm.call @vx_plugin_control(%[[FIVE]],
+// FIELD-NEXT: llvm.return
+//
+// OWNED-LABEL: llvm.func hidden @owned_field_in_place(
+// OWNED: %[[FIVE:[0-9]+]] = llvm.mlir.constant(5 : i32) : i32
+// OWNED-NOT: llvm.func
+// OWNED: llvm.call @vx_plugin_alloc_and_transfer(
+// OWNED-NOT: llvm.func
+// OWNED: llvm.call @vx_plugin_alloc_and_transfer(
+// OWNED-NOT: vx_plugin_alloc_and_transfer
+// OWNED-NOT: llvm.func
+// OWNED: llvm.call @vx_plugin_control(%[[FIVE]],
+// OWNED-NEXT: llvm.return
+//
+// GPU-LABEL: llvm.func hidden @gpu_field_to_cpu(
+// GPU: %[[SIX:[0-9]+]] = llvm.mlir.constant(6 : i32) : i32
+// GPU-NOT: llvm.func
+// GPU: llvm.call @vx_plugin_control(%[[SIX]],
+// GPU-NOT: vx_plugin_transfer_device_to_host
+// GPU-NOT: vx_plugin_alloc_and_transfer
+// GPU: llvm.return
+
+Memory CPU_DRAM {}
+Memory HBM {
+  capacity: 1 GiB, managed: explicit, scope: device
+}
+Topology Gpu {
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : shared,
+  transfer Memory::HBM -> Memory::CPU_DRAM : shared
+}
+
+struct Layer {
+  codes : &Tensor<f32, [?]>,
+}
+
+struct GpuLayer {
+  w : &Tensor<f32, [?], Memory::HBM>,
+}
+
+struct Holder {
+  t : Tensor<f32, [?]>,
+}
+
+// Sums the 4 elements of `t` on the device into `out[0]`.
+fn sum_on_device(out : &mut Tensor<f32, [1], Memory::HBM>, t : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Gpu) {
+    let mut s = 0.0;
+    for i in 0..4 {
+      s = s + t[i];
+    }
+    out[0] = s;
+  }
+}
+
+fn field_in_place(layer : &Layer) -> f32 {
+  let g = transfer(layer.codes, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn owned_field_in_place(holder : &Holder) -> f32 {
+  let g = transfer(&holder.t, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn local_copies(n : f32) -> f32 {
+  let local = Tensor<f32, [4]>::fill(n);
+  let g = transfer(&local, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn local_struct_copies(n : f32) -> f32 {
+  let local = Tensor<f32, [4]>::fill(n);
+  let l = Layer { codes: &local };
+  let g = transfer(l.codes, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn owned_parameter_copies(t : Tensor<f32, [?]>) -> f32 {
+  let g = transfer(&t, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn mut_parameter_copies(mut layer : &Layer, other : &Layer) -> f32 {
+  let g = transfer(layer.codes, Memory::HBM);
+  layer = other;
+  let mut out = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  sum_on_device(&mut out, &g);
+  let back = transfer(out, Memory::CPU_DRAM);
+  return back[0];
+}
+
+fn gpu_field_to_cpu(layer : &GpuLayer) -> f32 {
+  let h = transfer(layer.w, Memory::CPU_DRAM);
+  return h[3];
+}
+
+fn main() -> i32 {
+  let mut codes = Tensor<f32, [4]>::fill(0.0);
+  for i in 0..4 {
+    codes[i] = i as f32 + 1.0;
+  }
+  let layer = Layer { codes: &codes };
+  let holder = Holder { t: codes.clone() };
+  println!("field={};", field_in_place(&layer));
+  println!("owned_field={};", owned_field_in_place(&holder));
+  println!("local={};", local_copies(2.0));
+  println!("local_struct={};", local_struct_copies(3.0));
+  println!("owned_parameter={};", owned_parameter_copies(codes.clone()));
+  println!("mut_parameter={};", mut_parameter_copies(&layer, &layer));
+  let g = transfer(codes.clone(), Memory::HBM);
+  let gpu_layer = GpuLayer { w: &g };
+  println!("gpu_field={};", gpu_field_to_cpu(&gpu_layer));
+  return 0;
+}

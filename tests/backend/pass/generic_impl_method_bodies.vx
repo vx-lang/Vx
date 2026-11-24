@@ -32,7 +32,7 @@ trait Eq2 {
   fn eq2(self : Self, other : Self) -> bool;
 }
 
-impl Eq2 for i32 {
+extern impl Eq2 for i32 {
   fn eq2(self : i32, other : i32) -> bool {
     return self == other;
   }

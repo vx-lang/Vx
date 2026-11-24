@@ -41,12 +41,9 @@ fn parse(src: &str) -> Program {
     // Expand macros (`print!`/`println!` -> `Expr::Print`/`Expr::Println`, plus any user macros)
     // before name resolution, exactly as the real pipeline does — otherwise a `MacroCall` reaches
     // resolution and panics.
-    let mut global_macros = std::collections::HashMap::new();
-    for mac in &program.macros {
-        global_macros.insert(mac.name.clone(), mac.rules.clone());
-    }
+    let macros = vxc::parser::MacroTable::new(std::iter::once(&program));
     let trait_defaults = vxc::resolver::collect_trait_defaults(std::iter::once(&program));
-    let expander = vxc::parser::MacroExpander::new(&global_macros, &trait_defaults);
+    let expander = vxc::parser::MacroExpander::new(&macros, &trait_defaults);
     expander
         .expand_module(&mut program)
         .expect("macro expansion failed");
@@ -1198,7 +1195,7 @@ fn flat_matches_ast_inline_mlir() {
     // tensors are linear and passed by value, so each call gets fresh ones.
     assert_parity(
         "fn same(a : Tensor<f32, [2, 2]>, b : Tensor<f32, [2, 2]>) -> i32 { \
-           let r = mlir!(inputs : (%lhs = a : memref<2x2xf32>, %rhs = b : memref<2x2xf32>), \
+           let r = unsafe { mlir!(inputs : (%lhs = a : memref<2x2xf32>, %rhs = b : memref<2x2xf32>), \
            clobbers : [], returns : bool, dialects : [\"linalg\", \"arith\", \"memref\"]) { \
            %t = arith.constant 1 : i1 \n %acc = memref.alloca() : memref<i1> \n \
            memref.store %t, %acc[] : memref<i1> \n \
@@ -1208,7 +1205,7 @@ fn flat_matches_ast_inline_mlir() {
            ins(%lhs, %rhs : memref<2x2xf32>, memref<2x2xf32>) outs(%acc : memref<i1>) { \
              ^bb0(%p : f32, %q : f32, %o : i1): \n %c = arith.cmpf oeq, %p, %q : f32 \n \
              %n = arith.andi %o, %c : i1 \n linalg.yield %n : i1 } \n \
-           %v = memref.load %acc[] : memref<i1> \n func.return %v : i1 }; \
+           %v = memref.load %acc[] : memref<i1> \n func.return %v : i1 } }; \
            if r { return 1; } return 0; }\n\
          fn main() -> i32 { let a = Tensor<f32, [2, 2]>::fill(1.0); \
            let b = Tensor<f32, [2, 2]>::fill(1.0); let s = same(a, b); \
@@ -1219,9 +1216,9 @@ fn flat_matches_ast_inline_mlir() {
     // A void block with a `clobbers` list: the stdlib's `fill` shape.
     assert_parity(
         "fn fill(t : &mut Tensor<f32, [?, ?]>, v : f32) -> void { \
-           mlir!(inputs : (%m = t : memref<?x?xf32>, %x = v : f32), clobbers : [t], \
+           unsafe { mlir!(inputs : (%m = t : memref<?x?xf32>, %x = v : f32), clobbers : [t], \
            dialects : [\"linalg\"]) { linalg.fill ins(%x : f32) outs(%m : memref<?x?xf32>) \n \
-           macro.yield }; }\n\
+           macro.yield } }; }\n\
          fn main() -> i32 { let mut t = Tensor<f32, [2, 3]>::fill(0.0); fill(&mut t, 7.0); \
            return (t[1][2] as i32) * 6; }",
         42,
@@ -4473,7 +4470,7 @@ fn flat_matches_ast_shape_query() {
 /// reads a position only the [4, 5] shape has, and 1.0 + 7.0 is the exit code.
 #[test]
 fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
-    let dir = std::env::temp_dir().join("vx_mono_shapes");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx_mono_shapes");
     let _ = std::fs::create_dir_all(&dir);
     let src = dir.join("mono_shapes.vx");
     std::fs::write(

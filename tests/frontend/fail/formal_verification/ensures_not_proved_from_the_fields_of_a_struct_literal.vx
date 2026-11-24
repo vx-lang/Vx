@@ -1,0 +1,81 @@
+//===- ensures_not_proved_from_the_fields_of_a_struct_literal.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The facts of a struct literal must not prove a condition that can be false:
+// - `wrong_value`: the fact `return.n == 0` does not prove `return.n == 1`.
+// - `a_field_write`: the write to `c.n` ends the fact `c.n == 0`.
+// - `a_changed_variable`: `c.n` is the value of `x` at the `let`, not the value after `x = 5`.
+// - `a_hidden_local`: in `Counter { n : c.n + 1i32, .. }`, `c` is the earlier `c`. So the
+//   literal gives no fact `c.n == c.n + 1`, which would prove anything.
+// - `a_call_in_a_field`: `change_limit` changes `limit`, and its result is below the old `limit`.
+//   So the call in a field gives no fact about the new `limit`.
+
+struct Counter {
+  n : i32,
+  cap : i32,
+}
+
+fn wrong_value() -> Counter
+ensures return.n == 1i32 {
+  return Counter { n : 0i32, cap : 4i32 };
+}
+
+fn a_field_write() -> i32
+ensures return == 0i32 {
+  let mut c = Counter { n : 0i32, cap : 4i32 };
+  c.n = 5i32;
+  return c.n;
+}
+
+fn a_changed_variable() -> i32
+ensures return == 5i32 {
+  let mut x = 0i32;
+  let c = Counter { n : x, cap : 4i32 };
+  x = 5i32;
+  return c.n;
+}
+
+fn a_hidden_local() -> i32
+ensures return == 1i32 {
+  let c = Counter { n : 1i32, cap : 4i32 };
+  let c = Counter { n : c.n + 1i32, cap : c.cap };
+  return c.n;
+}
+
+fn change_limit(limit : i32, target : &mut i32) -> i32
+requires limit > 0
+ensures return >= 0 && return < limit {
+  *target = 0;
+  return limit - 1;
+}
+
+fn consume_index(limit : i32, index : i32) -> i32
+requires limit > 0 && index >= 0 && index < limit {
+  return index;
+}
+
+fn a_call_in_a_field(k : i32) -> i32
+requires k > 1 {
+  let mut limit = k;
+  let c = Counter {
+    n : change_limit(limit, &mut limit),
+    cap : 4i32
+  };
+  return consume_index(limit, c.n);
+}
+
+fn main() -> i32 {
+  return a_call_in_a_field(4);
+}
+
+// CHECK: Error[E8001] at {{.*}}.vx:26:3: Function 'wrong_value' cannot prove postcondition
+// CHECK: Error[E8001] at {{.*}}.vx:33:3: Function 'a_field_write' cannot prove postcondition
+// CHECK: Error[E8001] at {{.*}}.vx:41:3: Function 'a_changed_variable' cannot prove postcondition
+// CHECK: Error[E8001] at {{.*}}.vx:48:3: Function 'a_hidden_local' cannot prove postcondition
+// CHECK: Error[E8006] at {{.*}}.vx:70:10: this call to 'consume_index' may not meet its precondition

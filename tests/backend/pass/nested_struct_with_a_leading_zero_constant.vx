@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 // Read a nested struct by value with the constant argument written as 03 throughout.
 // Compilation must use flat code generation.
-// REQUIRES: flat-codegen
 // EXPECT: 17
 
 struct Sized<T, const N: i32> {

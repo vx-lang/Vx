@@ -1,0 +1,124 @@
+//===- lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::copy(&mut y, &tile, [r, c])` writes the part of `y` at `[r, c]` with the shape of the
+// tile. Two blocks or two subgroups must not write the same element of `y`. One of the first two
+// arguments must be a tile in shared memory, the first must be `&mut`, and the place has one
+// integer for each dimension. Every lane of the block must get to the copy. Each function below
+// breaks one rule.
+//
+// RUN: not vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:32:{{.*}}two passes of this block loop may write the same element of `y`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:46:{{.*}}two passes of this block loop may write the same element of `y`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:65:{{.*}}two passes of this subgroup loop may write the same element of `y`: an index of the write must fix `w`
+// CHECK: Error[E3003] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:76:{{.*}}`lanes::copy` copies a tile in shared memory or in registers with a size that is a number, into the first argument or out of the second.
+// CHECK: Error[E3003] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:90:{{.*}}the first argument of `lanes::copy` must borrow a tensor as `&mut`, such as `&mut tiles[0]` or a parameter `c : &mut Tensor<..>`, but it is `&Tensor<f32, [?, ?], Memory::HBM>`
+// CHECK: Error[E3003] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:104:{{.*}}the third argument of `lanes::copy` is the place of the tile, written as a list of 2 integers such as `[r, c]`
+// CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:119:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `t`
+// CHECK: Error[E6032] at {{.*}}lane_copies_out_of_tiles_with_wrong_arguments_or_races.vx:119:{{.*}}`lanes::copy` must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane loops.
+
+// Both blocks write rows 0 to 3.
+pub fn two_blocks_write_the_same_part(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        tile[t / 4][t % 4] = b as f32;
+      }
+      lanes::copy(y, &tile, [0, 0]);
+    }
+  }
+  return;
+}
+
+// Block 0 writes rows 0 to 3, and block 1 rows 2 to 5.
+pub fn two_blocks_write_parts_that_meet(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        tile[t / 4][t % 4] = b as f32;
+      }
+      lanes::copy(y, &tile, [2 * b, 0]);
+    }
+  }
+  return;
+}
+
+// Subgroup 0 writes rows 0 to 7, and subgroup 1 rows 4 to 11.
+pub fn two_subgroups_write_parts_that_meet(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut part = unsafe {
+        Tensor<f32, [2, 8, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        for j in 0..32 across lanes {
+          for i in 0..8 {
+            part[w][i][j] = 1.0;
+          }
+        }
+        lanes::copy(y, &part[w], [4 * w, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// Neither argument is in shared memory.
+pub fn no_tile_in_shared_memory(y : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      lanes::copy(y, x, [0, 0]);
+    }
+  }
+  return;
+}
+
+// The tensor that the copy writes is borrowed with `&`, not `&mut`.
+pub fn into_a_tensor_that_is_not_mut(x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        tile[t / 4][t % 4] = 1.0;
+      }
+      lanes::copy(x, &tile, [0, 0]);
+    }
+  }
+  return;
+}
+
+// A place with one number for a tile with two dimensions.
+pub fn place_of_one_number(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        tile[t / 4][t % 4] = 1.0;
+      }
+      lanes::copy(y, &tile, [0]);
+    }
+  }
+  return;
+}
+
+// A copy in a lane loop, where each lane would copy the whole tile.
+pub fn copy_in_a_lane_loop(y : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        tile[t / 4][t % 4] = 1.0;
+      }
+      for t in 0..16 across lanes(32) {
+        lanes::copy(y, &tile, [0, 0]);
+      }
+    }
+  }
+  return;
+}

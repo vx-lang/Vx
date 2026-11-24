@@ -7,10 +7,8 @@
 //===----------------------------------------------------------------------===//
 // A `Vec<Mixed>` sizes its buffer by the size of `Mixed`, and `Mixed` holds `Holder<i64>` by
 // value. If the compiler gets the size of `Holder<i64>` wrong, the pushes write past the
-// buffer. The AST code generator also corrupts the heap on this program, so only the default
-// code generator runs it.
+// buffer.
 //
-// REQUIRES: flat-codegen
 // EXPECT: 103
 
 import std::vec;

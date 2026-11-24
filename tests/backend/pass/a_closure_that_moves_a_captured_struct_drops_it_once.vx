@@ -7,17 +7,15 @@
 //===----------------------------------------------------------------------===//
 // A closure whose body passes a captured struct by value takes the struct. The function that
 // gets the struct drops it, and the code around the closure does not drop it again. Each case
-// prints "drop" once, before "end of main".
+// prints "drop" once, before "end of main". Such a closure runs only once, so each case keeps it
+// in a `let` and calls it there.
 //
-// - `as_argument`: the closure is an argument of a call.
-// - `in_a_let`: the closure is in a variable.
+// - `in_a_let`: the body moves the struct.
 // - `in_a_task`: a task in the closure moves the struct, as with a channel end.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=drop
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=drop
-// CHECK: {{^}}take 1{{$}}
-// CHECK-NEXT: {{^}}drop 1{{$}}
-// CHECK-NEXT: {{^}}take 2{{$}}
+// CHECK: {{^}}take 2{{$}}
 // CHECK-NEXT: {{^}}drop 2{{$}}
 // CHECK-NEXT: {{^}}take 3{{$}}
 // CHECK-NEXT: {{^}}drop 3{{$}}
@@ -37,17 +35,6 @@ fn take(x : Noisy) -> void {
   println!("take {}", x.n);
 }
 
-fn call(f : || -> void) -> void {
-  f();
-}
-
-fn as_argument() -> void {
-  let a = Noisy { n : 1 };
-  call(|| -> void {
-    take(a);
-  });
-}
-
 fn in_a_let() -> void {
   let b = Noisy { n : 2 };
   let f = || -> void {
@@ -58,17 +45,17 @@ fn in_a_let() -> void {
 
 fn in_a_task() -> void {
   let c = Noisy { n : 3 };
-  call(|| -> void {
+  let f = || -> void {
     tasks {
       spawn {
         take(c);
       };
     };
-  });
+  };
+  f();
 }
 
 fn main() -> i32 {
-  as_argument();
   in_a_let();
   in_a_task();
   println!("end of main");

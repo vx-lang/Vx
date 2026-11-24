@@ -1,0 +1,49 @@
+//===- a_method_call_on_a_field_behind_a_reference_field.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `h.counter` is a reference, so `h.counter.count` is a field of the `Counter` that it points to,
+// not a part of `h`. A method call on that field must change the `Counter`, on both code
+// generators. Before the fix, `--legacy-codegen` added 1 to the reference in `h` itself.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}after an add through the handle: 1{{$}}
+// CHECK-NEXT: {{^}}read through the handle: 1{{$}}
+// CHECK-NEXT: {{^}}after an add through a local: 2{{$}}
+import core::sync::atomic;
+
+struct Counter {
+  count : AtomicI64,
+}
+
+struct Handle {
+  counter : &Counter,
+}
+
+fn add_through_the_handle(h : &mut Handle) -> void {
+  h.counter.count.fetch_add(1, AtomicOrdering::SeqCst);
+}
+
+fn read_through_the_handle(h : &Handle) -> i64 {
+  return h.counter.count.load(AtomicOrdering::SeqCst);
+}
+
+fn add_through_a_local(h : &mut Handle) -> void {
+  let c : &Counter = h.counter;
+  c.count.fetch_add(1, AtomicOrdering::SeqCst);
+}
+
+fn main() -> i32 {
+  let c = Counter { count : AtomicI64::new(0) };
+  let mut h = Handle { counter : &c };
+  add_through_the_handle(&mut h);
+  println!("after an add through the handle: {}", c.count.load(AtomicOrdering::SeqCst));
+  println!("read through the handle: {}", read_through_the_handle(&h));
+  add_through_a_local(&mut h);
+  println!("after an add through a local: {}", c.count.load(AtomicOrdering::SeqCst));
+  return 0;
+}
