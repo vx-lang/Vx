@@ -2929,6 +2929,194 @@ fn nn_top_k_rows<M : Memory>(ids : &mut Tensor<i32, [?, ?], Memory::M>, weights 
   return;
 }
 
+/// The key of a score at position `i` of its row, from the bits of the score, for
+/// `nn_top_k_long`. A larger score gives a larger key. Of two equal scores, the lower position
+/// gives the larger key, so no two keys of a row are equal. A NaN is below every number, and -0.0
+/// is equal to 0.0.
+fn nn_top_k_key(bits : u32, i : i32) on Topology::Any -> u64
+ensures writes_only()
+{
+  // The bits of a number at or above zero, with the top bit set, are in the order of the
+  // numbers. A negative number gets all its bits flipped, so it comes below them.
+  let mut order = bits | 2147483648u32;
+  if (bits >> 31u32) != 0u32 {
+    order = !bits;
+  }
+  let size = bits & 2147483647u32;
+  if size == 0u32 {
+    order = 2147483648u32;
+  }
+  if size > 2139095040u32 {
+    order = 0u32;
+  }
+  return ((order as u64) << 32u64) | ((4294967295u32 - (i as u32)) as u64);
+}
+
+/// The top `bits` bits of `key`, or 0 when `bits` is 0 or less.
+fn nn_top_k_high(key : u64, bits : i32) on Topology::Any -> u64
+ensures writes_only()
+{
+  if bits <= 0 {
+    return 0u64;
+  }
+  return key >> ((64 - bits) as u64);
+}
+
+/// The positions of the k largest scores in each row of scores, for rows longer than `nn_top_k`
+/// takes. The indexer of a sparse attention layer uses it to choose the tokens that each query
+/// reads.
+///
+/// Row r is scores[r][starts[r] .. starts[r] + lengths[r]]. ids[r] gets the positions of its k
+/// largest scores in that range, from 0. Of two equal scores, the lower position goes first, so
+/// the positions are always the same for the same scores. Their order in ids[r] is not fixed. A
+/// row with k scores or fewer gets the positions 0 to lengths[r] - 1, and -1 after them.
+///
+/// Each row is one block of 1024 lanes. The block finds the k-th largest key, one byte at a time
+/// from the top: a pass counts the next byte of the keys that agree with the bytes found so far.
+/// The keys of nn_top_k_key are 8 bytes, so the block makes at most 9 passes. A pass reads the
+/// scores from the row in memory until at most 2048 keys agree with the bytes found. Then it
+/// keeps their positions in shared memory, and the later passes read only those.
+fn nn_top_k_long<M : Memory>(ids : &mut Tensor<i32, [?, ?], Memory::M>, scores : &Tensor<f32, [?, ?], Memory::M>, starts : &Tensor<i32, [?], Memory::M>, lengths : &Tensor<i32, [?], Memory::M>, rows : i32, k : i32) -> void {
+  assert(k > 0 && k <= 2048, "nn_top_k_long: k must be 1 to 2048");
+  assert(rows >= 0 && starts.len() >= rows && lengths.len() >= rows && scores.extent(0) >= rows && ids.extent(0) >= rows && ids.extent(1) >= k, "nn_top_k_long: a tensor has too few rows, or a row of `ids` has fewer than k values");
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let start = starts[r];
+      let n = lengths[r];
+      if n <= k {
+        for j in 0..k across lanes(1024) {
+          if j < n {
+            ids[r][j] = j;
+          } else {
+            ids[r][j] = -1;
+          }
+        }
+      } else {
+        // The state of the search, which each pass reads:
+        //   state[0]: the top bits of the k-th largest key, found so far.
+        //   state[1]: how many keys with these top bits are still to take.
+        //   state[2]: the pass that takes the last keys. It is 8 until the search knows.
+        //   state[3]: 1 when `list[p % 2]` holds the positions of the keys with these top bits.
+        //   state[4]: how many keys have these top bits.
+        let mut state = unsafe { Tensor<i64, [5], Memory::SMEM>::uninit() };
+        state[0] = 0;
+        state[1] = k as i64;
+        state[2] = 8;
+        state[3] = 0;
+        state[4] = n as i64;
+        let counts = Tensor<u32, [256], Memory::SMEM>::fill(0u32);
+        let mut above = unsafe { Tensor<i32, [256], Memory::SMEM>::uninit() };
+        let mut part = unsafe { Tensor<i32, [256], Memory::SMEM>::uninit() };
+        // Two lists of positions, list[0 .. 2048] and list[2048 .. 4096]. Pass p reads list p % 2
+        // and writes the other one.
+        let list = Tensor<i32, [4096], Memory::SMEM>::fill(0);
+        let out = Tensor<i32, [2048], Memory::SMEM>::fill(0);
+        // tally[0]: the keys taken. tally[1 + p % 2]: the length of list p % 2. tally[3]: the byte
+        // that the last pass chose.
+        let tally = Tensor<u32, [4], Memory::SMEM>::fill(0u32);
+        for p in 0..9 {
+          // Pass p. The top 8 * p bits of the k-th largest key are known.
+          for l in 0..1024 across lanes {
+            let prefix = state[0] as u64;
+            let last = state[2] as i32;
+            let from_list = state[3] != 0;
+            let keep = from_list || state[4] <= 2048;
+            let mut count = n;
+            if from_list {
+              count = atomic_load_u32(&tally, 1 + p % 2, AtomicOrdering::Relaxed) as i32;
+            }
+            if p > last {
+              count = 0;
+            }
+            let mut at = l;
+            while at < count {
+              let mut i = at;
+              if from_list {
+                i = atomic_load_i32(&list, (p % 2) * 2048 + at, AtomicOrdering::Relaxed);
+              }
+              assert(start >= 0 && start + i < scores.extent(1), "nn_top_k_long: a row goes past the end of `scores`");
+              let key = nn_top_k_key(scores[r][start + i].to_bits(), i);
+              let high = nn_top_k_high(key, 8 * p);
+              // Take the keys above the k-th largest that the last pass told apart from it.
+              if p > 0 && nn_top_k_high(key, 8 * p - 8) == prefix >> 8u64 && (high > prefix || (p == last && high == prefix)) {
+                let slot = atomic_fetch_add_u32(&tally, 0, 1u32, AtomicOrdering::Relaxed) as i32;
+                assert(slot < k, "nn_top_k_long: more than k keys were taken");
+                atomic_store_i32(&out, slot, i, AtomicOrdering::Relaxed);
+              }
+              // Count the next byte of the keys that agree with the bits found so far.
+              if p < last && high == prefix {
+                let _c = atomic_fetch_add_u32(&counts, ((key >> ((56 - 8 * p) as u64)) & 255u64) as i32, 1u32, AtomicOrdering::Relaxed);
+                if keep {
+                  let place = atomic_fetch_add_u32(&tally, 1 + (p + 1) % 2, 1u32, AtomicOrdering::Relaxed) as i32;
+                  assert(place < 2048, "nn_top_k_long: a list of positions is full");
+                  atomic_store_i32(&list, ((p + 1) % 2) * 2048 + place, i, AtomicOrdering::Relaxed);
+                }
+              }
+              at = at + 1024;
+            }
+          }
+          // above[d] = the number of counted keys whose byte is d or more.
+          for l in 0..256 across lanes(1024) {
+            above[l] = atomic_load_u32(&counts, l, AtomicOrdering::Relaxed) as i32;
+          }
+          for s in 0..4 {
+            for l in 0..256 across lanes(1024) {
+              let mut v = above[l];
+              if l + (1 << (2 * s)) < 256 {
+                v = v + above[l + (1 << (2 * s))];
+              }
+              part[l] = v;
+            }
+            for l in 0..256 across lanes(1024) {
+              let mut v = part[l];
+              if l + (2 << (2 * s)) < 256 {
+                v = v + part[l + (2 << (2 * s))];
+              }
+              above[l] = v;
+            }
+          }
+          // The byte of the k-th largest key is the largest d with above[d] >= the keys to take.
+          for l in 0..256 across lanes(1024) {
+            atomic_store_u32(&counts, l, 0u32, AtomicOrdering::Relaxed);
+            let needed = state[1] as i32;
+            let mut more = 0;
+            if l < 255 {
+              more = above[l + 1];
+            }
+            if p < state[2] as i32 && above[l] >= needed && more < needed {
+              atomic_store_u32(&tally, 3, l as u32, AtomicOrdering::Relaxed);
+            }
+          }
+          if p < state[2] as i32 {
+            let d = tally[3] as i32;
+            let mut over = 0;
+            if d < 255 {
+              over = above[d + 1];
+            }
+            let needed = state[1] as i32 - over;
+            let here = above[d] - over;
+            if state[4] <= 2048 {
+              state[3] = 1;
+            }
+            state[0] = (state[0] << 8) | (d as i64);
+            state[1] = needed as i64;
+            state[4] = here as i64;
+            if here == needed {
+              state[2] = (p + 1) as i64;
+            }
+          }
+          atomic_store_u32(&tally, 1 + p % 2, 0u32, AtomicOrdering::Relaxed);
+        }
+        assert(tally[0] == k as u32, "nn_top_k_long: the passes took other than k keys");
+        for j in 0..k across lanes(1024) {
+          ids[r][j] = out[j];
+        }
+      }
+    }
+  }
+  return;
+}
+
 /// x[t] = row tokens[t] of `table`, for t below n.
 fn nn_embed_rows<M : Memory>(x : &mut Tensor<f32, [?, ?], Memory::M>, table : &Tensor<bf16, [?], Memory::M>, tokens : &Tensor<i32, [?], Memory::M>, n : i32, dim : i32) -> void {
   assert(n > 0 && x.extent(0) >= n && x.extent(1) >= dim && tokens.len() >= n, "nn_embed_rows: `x` needs n rows of dim values, and `tokens` n values");

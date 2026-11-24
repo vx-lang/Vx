@@ -66,6 +66,28 @@ fn reset(x : i64) -> i64 {
   return n;
 }
 
+// Two operations on one line, and only `arith` in the list. The dialect check reads each
+// operation of a line (E8010). The block does not parse with only `arith`, so it is not verified.
+// CHECK-DAG: E8010{{.*}}vx:[[@LINE+3]]:{{.*}}its `dialects` list does not name `llvm`
+// CHECK-DAG: E8016{{.*}}vx:[[@LINE+2]]:{{.*}}the block does not parse as MLIR of the `arith` and `math` dialects: Dialect `llvm' not found for custom op 'llvm.inttoptr'. Put
+fn peek_on_one_line(addr : i64) -> i64 {
+  return mlir!(inputs : (%a = addr : i64), returns : i64, dialects : ["arith"]) {
+    %z = arith.addi %a, %a : i64 %p = llvm.inttoptr %a : i64 to !llvm.ptr
+    %q = arith.addi %a, %a : i64 %v = llvm.load %p : !llvm.ptr -> i64
+    macro.yield %v : i64
+  };
+}
+
+// A block that does not parse gives the message of MLIR.
+// CHECK-DAG: E8016{{.*}}vx:[[@LINE+2]]:{{.*}}the block does not parse as MLIR of the `arith` and `math` dialects: custom op 'arith.no_such_op' is unknown. Put
+fn no_such_op() -> i64 {
+  return mlir!(inputs : (), returns : i64, dialects : ["arith"]) {
+    %b = arith.constant 0 : i64
+    arith.no_such_op %b : i64
+    macro.yield %b : i64
+  };
+}
+
 fn twice(x : i64) -> i64 {
   return mlir!(inputs : (%a = x : i64), returns : i64, dialects : ["arith"]) {
     %r = arith.addi %a, %a : i64
@@ -76,5 +98,6 @@ fn twice(x : i64) -> i64 {
 fn main() -> i32 {
   let t = Tensor<f32, [4]>::new();
   let s = add_no_wrap(1) + divide(4, 2) + twice(1) + reset(1) + peek(0);
-  return (s as f32 + root(4.0) + first(&t)) as i32;
+  let more = peek_on_one_line(0) + no_such_op();
+  return (s as f32 + root(4.0) + first(&t)) as i32 + more as i32;
 }

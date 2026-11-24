@@ -64,6 +64,7 @@ position. `whence` is 0 for the start of the file, 1 for the current position an
 - `NotFound`: no file has the path, or a folder of the path is missing.
 - `PermissionDenied`: the system does not let the program open the file in the mode.
 - `BadPath`: the path holds a zero byte.
+- `NotInFolder`: the name leads out of a `Folder`. The end of this section explains `Folder`.
 - `Os(code)`: another failure, with the error number of the system.
 
 The `?` operator gives the error to the caller
@@ -94,6 +95,15 @@ end of `write_text`. So `write_and_read` reads all 14 bytes.
 `File` also has methods that take raw pointers, for trusted code that gets a path from C:
 `open_c_str`, `read_raw` and `write_raw`. They need `unsafe`, and they need no `&Files`. A failed
 `open_c_str` gives a `File` that does nothing: each later `read_raw` and `write_raw` gives 0.
+
+A `Folder` is a narrower right: the right to read the files of one folder.
+`Folder::open(files, path)` opens the folder at `path`. `folder.open_file(name)` opens the file
+`name` inside it, for reading, and `folder.open_folder(name)` gives a `Folder` for a folder inside
+it. A name that leads out of the folder gives `FileError::NotInFolder`: an absolute path, a `..`
+part, or a symbolic link. So a function that gets only a `&Folder` can read the files of that
+folder, and no others. For example, a model server can give the code that loads its weights a
+`Folder`, and give the code that reads requests no right at all
+(`a_folder_right_reads_only_the_files_inside_its_folder.vx`).
 
 ## Standard input and output
 

@@ -1,0 +1,113 @@
+//===- a_folder_right_reads_only_the_files_inside_its_folder.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `main` narrows its file right to a `Folder` for the folder `models`, and passes only the
+// `Folder` to `serve`. `serve` can read the files inside `models`, also through a narrower
+// `Folder` for `models/sub`. A name that leads out of the folder gives `NotInFolder`: a `..`
+// part, an absolute path, and a symbolic link to a file outside it.
+// The RUN lines make the files and give the paths in MODELS and SECRET. The test runner gives
+// no such variables, so NO_EXEC.
+//
+// NO_EXEC
+// RUN: rm -rf %t
+// RUN: mkdir -p %t/models/sub
+// RUN: printf abc > %t/models/a.txt
+// RUN: printf xy > %t/models/sub/b.txt
+// RUN: printf secret > %t/secret.txt
+// RUN: ln -s ../secret.txt %t/models/link.txt
+// RUN: env MODELS=%t/models SECRET=%t/secret.txt vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env MODELS=%t/models SECRET=%t/secret.txt vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: rm -rf %t
+// CHECK: {{^}}a.txt: 3 bytes{{$}}
+// CHECK-NEXT: {{^}}sub/b.txt: 2 bytes{{$}}
+// CHECK-NEXT: {{^}}../secret.txt: NotInFolder{{$}}
+// CHECK-NEXT: {{^}}the absolute path of secret.txt: NotInFolder{{$}}
+// CHECK-NEXT: {{^}}link.txt, a link to secret.txt: NotInFolder{{$}}
+// CHECK-NEXT: {{^}}missing.txt: NotFound{{$}}
+// CHECK-NEXT: {{^}}b.txt in the folder sub: 2 bytes{{$}}
+// CHECK-NEXT: {{^}}../a.txt from the folder sub: NotInFolder{{$}}
+
+import core::result;
+import std::fs;
+import std::string;
+import std::vec;
+
+extern {
+  fn getenv(name : *const i8) -> *const i8;
+}
+
+fn text(s : *const i8) -> String {
+  return unsafe { String::from_c_str(s) };
+}
+
+fn report_error(name : *const i8, e : FileError) -> void {
+  match e {
+    FileError::NotInFolder => {
+      println!("{}: NotInFolder", name);
+    }
+    FileError::NotFound => {
+      println!("{}: NotFound", name);
+    }
+    _ => {
+      println!("{}: another error", name);
+    }
+  }
+}
+
+fn report(name : *const i8, result : Result<u64, FileError>) -> void {
+  match result {
+    Result<u64, FileError>::Ok(count) => {
+      println!("{}: {} bytes", name, count);
+    }
+    Result<u64, FileError>::Err(e) => {
+      report_error(name, e);
+    }
+  }
+}
+
+// The number of bytes in the file `name` of `folder`, up to 16.
+fn read_in(folder : &Folder, name : &String) -> Result<u64, FileError> {
+  let mut file = folder.open_file(name)?;
+  let mut buffer = Vec<u8>::new();
+  for _i in 0..16 {
+    buffer.push(0u8);
+  }
+  return file.read(&mut buffer);
+}
+
+// `serve` gets no `&Files`, so it can open only what `models` lets it open.
+fn serve(models : &Folder, secret_path : &String) -> void {
+  report("a.txt", read_in(models, &text("a.txt")));
+  report("sub/b.txt", read_in(models, &text("sub/b.txt")));
+  report("../secret.txt", read_in(models, &text("../secret.txt")));
+  report("the absolute path of secret.txt", read_in(models, secret_path));
+  report("link.txt, a link to secret.txt", read_in(models, &text("link.txt")));
+  report("missing.txt", read_in(models, &text("missing.txt")));
+  match models.open_folder(&text("sub")) {
+    Result<Folder, FileError>::Ok(sub) => {
+      report("b.txt in the folder sub", read_in(&sub, &text("b.txt")));
+      report("../a.txt from the folder sub", read_in(&sub, &text("../a.txt")));
+    }
+    Result<Folder, FileError>::Err(e) => {
+      report_error("sub", e);
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  let models_path = text(unsafe { getenv("MODELS") });
+  let secret_path = text(unsafe { getenv("SECRET") });
+  match Folder::open(&root.files, &models_path) {
+    Result<Folder, FileError>::Ok(models) => {
+      serve(&models, &secret_path);
+    }
+    Result<Folder, FileError>::Err(e) => {
+      report_error("models", e);
+    }
+  }
+  return 0;
+}

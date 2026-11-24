@@ -547,6 +547,10 @@ impl<'a> TypeChecker<'a> {
                             None => decl.ty.clone(),
                         };
                     }
+                    if name.as_ref() == "main" {
+                        self.refuse_a_use_of_main(&span);
+                        return Type::Unknown;
+                    }
                     self.check_function_value(name.as_ref(), span);
                     if let Some((ret_ty, is_unsafe, params, _, _, _)) =
                         self.env.functions.get(name.as_ref())
