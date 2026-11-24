@@ -2243,6 +2243,9 @@ impl<'a> TypeChecker<'a> {
         let outer_closure_depths = std::mem::take(&mut self.mono.closure_depths);
         let outer_captures = std::mem::take(&mut self.mono.closure_captures_stack);
         let outer_capture_uses = std::mem::take(&mut self.mono.closure_capture_uses);
+        // The transfer tokens of the caller are waited in the caller. The body starts again at
+        // the depth of the base scope, so the end of one of its scopes could look like theirs.
+        let outer_tokens = std::mem::take(&mut self.tokens);
         self.push_scope();
         // A dimension in the signature can name a variable of the caller, as `n` in
         // `Tensor<f32, [n, m]>`. The body sees that variable, and what is known about its value.
@@ -2484,6 +2487,11 @@ impl<'a> TypeChecker<'a> {
         self.mono.closure_depths = outer_closure_depths;
         self.mono.closure_captures_stack = outer_captures;
         self.mono.closure_capture_uses = outer_capture_uses;
+        assert!(
+            self.tokens.is_empty(),
+            "a function body left a transfer token in the list"
+        );
+        self.tokens = outer_tokens;
         self.traffic.memory_placements = prev_placements;
         self.traffic.call_sites = prev_call_sites;
         self.traffic.channel_rooms = prev_channel_rooms;
