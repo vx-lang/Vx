@@ -2161,6 +2161,21 @@ fn give_main_its_root(functions: &mut Vec<Function>) -> bool {
     true
 }
 
+/// Whether `f` is the `main` that `give_main_its_root` writes, which makes the `Root` of the
+/// program.
+pub(crate) fn makes_the_root(f: &Function) -> bool {
+    let [Statement::Return(ReturnStmt {
+        expr: Some(Expr::FunctionCall(call)),
+        ..
+    })] = f.body.as_slice()
+    else {
+        return false;
+    };
+    f.name.as_ref() == "main"
+        && call.name.as_ref() == "main_with_root"
+        && matches!(call.args.as_slice(), [Expr::UnsafeBlock(block)] if block.generated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

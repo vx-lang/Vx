@@ -1,0 +1,16 @@
+//===- a_module_with_a_main_that_takes_a_root.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module that declares `fn main(root : Root)`, for `a_root_main_in_an_imported_file.vx`.
+
+fn main(root : Root) -> i32 {
+  return answer();
+}
+
+fn answer() -> i32 {
+  return 7;
+}
