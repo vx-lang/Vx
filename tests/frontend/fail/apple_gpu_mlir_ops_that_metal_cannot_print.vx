@@ -26,15 +26,15 @@ pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f16, [?], Memory:
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
       for l in 0..32 across lanes(32) {
-        let _v = mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xf16>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
-          %c0 = arith.constant 0 : index
-          %k = arith.index_cast %l : i32 to index
-          %v = vector.load %a[%k] : memref<?xf16>, vector<8xf16>
-          %h = vector.extract %v[0] : f16 from vector<8xf16>
-          %r = arith.extf %h : f16 to f32
-          memref.store %r, %o[%k] : memref<?xf32>
-          macro.yield %r : f32
-        };
+        let _v = unsafe { mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xf16>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
+            %c0 = arith.constant 0 : index
+            %k = arith.index_cast %l : i32 to index
+            %v = vector.load %a[%k] : memref<?xf16>, vector<8xf16>
+            %h = vector.extract %v[0] : f16 from vector<8xf16>
+            %r = arith.extf %h : f16 to f32
+            memref.store %r, %o[%k] : memref<?xf32>
+            macro.yield %r : f32
+          } };
       }
     }
   }
@@ -50,25 +50,25 @@ pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f16, [?], Memory:
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
       for l in 0..32 across lanes(32) {
-        let _v = mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xf16>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
-          %c0 = arith.constant 0 : index
-          %k = arith.index_cast %l : i32 to index
-          %m = gpu.subgroup_mma_load_matrix %a[%c0] {
-            leadDimension = 0 : index
-          } : memref<?xf16> -> !gpu.mma_matrix<8x8xf16, "AOp">
-          %mb = gpu.subgroup_mma_load_matrix %a[%c0] {
-            leadDimension = 8 : index
-          } : memref<?xf16> -> !gpu.mma_matrix<8x8xf16, "BOp">
-          %z = arith.constant 0.0 : f32
-          %c = gpu.subgroup_mma_constant_matrix %z : !gpu.mma_matrix<8x8xf32, "COp">
-          %d = gpu.subgroup_mma_compute %m, %mb, %c : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
-          gpu.subgroup_mma_store_matrix %d, %o[%c0] {
-            leadDimension = 8 : index
-          } : !gpu.mma_matrix<8x8xf32, "COp">, memref<?xf32>
-          %r = arith.constant 0.0 : f32
-          memref.store %r, %o[%k] : memref<?xf32>
-          macro.yield %r : f32
-        };
+        let _v = unsafe { mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xf16>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
+            %c0 = arith.constant 0 : index
+            %k = arith.index_cast %l : i32 to index
+            %m = gpu.subgroup_mma_load_matrix %a[%c0] {
+              leadDimension = 0 : index
+            } : memref<?xf16> -> !gpu.mma_matrix<8x8xf16, "AOp">
+            %mb = gpu.subgroup_mma_load_matrix %a[%c0] {
+              leadDimension = 8 : index
+            } : memref<?xf16> -> !gpu.mma_matrix<8x8xf16, "BOp">
+            %z = arith.constant 0.0 : f32
+            %c = gpu.subgroup_mma_constant_matrix %z : !gpu.mma_matrix<8x8xf32, "COp">
+            %d = gpu.subgroup_mma_compute %m, %mb, %c : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+            gpu.subgroup_mma_store_matrix %d, %o[%c0] {
+              leadDimension = 8 : index
+            } : !gpu.mma_matrix<8x8xf32, "COp">, memref<?xf32>
+            %r = arith.constant 0.0 : f32
+            memref.store %r, %o[%k] : memref<?xf32>
+            macro.yield %r : f32
+          } };
       }
     }
   }
@@ -84,15 +84,15 @@ pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<bf16, [?], Memory
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
       for l in 0..32 across lanes(32) {
-        let _v = mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xbf16>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
-          %c0 = arith.constant 0 : index
-          %k = arith.index_cast %l : i32 to index
-          %v = vector.load %a[%k] : memref<?xbf16>, vector<4xbf16>
-          %h = vector.extract %v[0] : bf16 from vector<4xbf16>
-          %r = arith.extf %h : bf16 to f32
-          memref.store %r, %o[%k] : memref<?xf32>
-          macro.yield %r : f32
-        };
+        let _v = unsafe { mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xbf16>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
+            %c0 = arith.constant 0 : index
+            %k = arith.index_cast %l : i32 to index
+            %v = vector.load %a[%k] : memref<?xbf16>, vector<4xbf16>
+            %h = vector.extract %v[0] : bf16 from vector<4xbf16>
+            %r = arith.extf %h : bf16 to f32
+            memref.store %r, %o[%k] : memref<?xf32>
+            macro.yield %r : f32
+          } };
       }
     }
   }
@@ -108,16 +108,16 @@ pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?], Memory:
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
       for l in 0..32 across lanes(32) {
-        let _v = mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xf32>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
-          %c0 = arith.constant 0 : index
-          %k = arith.index_cast %l : i32 to index
-          %v = vector.load %a[%k] : memref<?xf32>, vector<4xf32>
-          %u = arith.constant dense<1.0> : vector<4xf32>
-          %w = arith.maximumf %v, %u : vector<4xf32>
-          %r = vector.extract %w[0] : f32 from vector<4xf32>
-          memref.store %r, %o[%k] : memref<?xf32>
-          macro.yield %r : f32
-        };
+        let _v = unsafe { mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xf32>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
+            %c0 = arith.constant 0 : index
+            %k = arith.index_cast %l : i32 to index
+            %v = vector.load %a[%k] : memref<?xf32>, vector<4xf32>
+            %u = arith.constant dense<1.0> : vector<4xf32>
+            %w = arith.maximumf %v, %u : vector<4xf32>
+            %r = vector.extract %w[0] : f32 from vector<4xf32>
+            memref.store %r, %o[%k] : memref<?xf32>
+            macro.yield %r : f32
+          } };
       }
     }
   }
@@ -133,25 +133,25 @@ pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f16, [?], Memory:
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
       for l in 0..32 across lanes(32) {
-        let _v = mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xf16>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
-          %c0 = arith.constant 0 : index
-          %k = arith.index_cast %l : i32 to index
-          %m = gpu.subgroup_mma_load_matrix %a[%c0] {
-            leadDimension = 16 : index
-          } : memref<?xf16> -> !gpu.mma_matrix<16x16xf16, "AOp">
-          %mb = gpu.subgroup_mma_load_matrix %a[%c0] {
-            leadDimension = 16 : index
-          } : memref<?xf16> -> !gpu.mma_matrix<16x16xf16, "BOp">
-          %z = arith.constant 0.0 : f32
-          %c = gpu.subgroup_mma_constant_matrix %z : !gpu.mma_matrix<16x16xf32, "COp">
-          %d = gpu.subgroup_mma_compute %m, %mb, %c : !gpu.mma_matrix<16x16xf16, "AOp">, !gpu.mma_matrix<16x16xf16, "BOp"> -> !gpu.mma_matrix<16x16xf32, "COp">
-          gpu.subgroup_mma_store_matrix %d, %o[%c0] {
-            leadDimension = 16 : index
-          } : !gpu.mma_matrix<16x16xf32, "COp">, memref<?xf32>
-          %r = arith.constant 0.0 : f32
-          memref.store %r, %o[%k] : memref<?xf32>
-          macro.yield %r : f32
-        };
+        let _v = unsafe { mlir!( inputs : (%o = out : memref<?xf32>, %a = a : memref<?xf16>, %l = l : i32), returns : f32, dialects : ["arith", "vector", "gpu", "memref"], ensures : [reads_only(a), writes_only(out[l])]) {
+            %c0 = arith.constant 0 : index
+            %k = arith.index_cast %l : i32 to index
+            %m = gpu.subgroup_mma_load_matrix %a[%c0] {
+              leadDimension = 16 : index
+            } : memref<?xf16> -> !gpu.mma_matrix<16x16xf16, "AOp">
+            %mb = gpu.subgroup_mma_load_matrix %a[%c0] {
+              leadDimension = 16 : index
+            } : memref<?xf16> -> !gpu.mma_matrix<16x16xf16, "BOp">
+            %z = arith.constant 0.0 : f32
+            %c = gpu.subgroup_mma_constant_matrix %z : !gpu.mma_matrix<16x16xf32, "COp">
+            %d = gpu.subgroup_mma_compute %m, %mb, %c : !gpu.mma_matrix<16x16xf16, "AOp">, !gpu.mma_matrix<16x16xf16, "BOp"> -> !gpu.mma_matrix<16x16xf32, "COp">
+            gpu.subgroup_mma_store_matrix %d, %o[%c0] {
+              leadDimension = 16 : index
+            } : !gpu.mma_matrix<16x16xf32, "COp">, memref<?xf32>
+            %r = arith.constant 0.0 : f32
+            memref.store %r, %o[%k] : memref<?xf32>
+            macro.yield %r : f32
+          } };
       }
     }
   }

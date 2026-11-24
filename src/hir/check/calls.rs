@@ -1010,6 +1010,9 @@ impl<'a> TypeChecker<'a> {
                 // Calling a local, `p(env, x)` with `p` a closure's function, uses it.
                 if self.lookup(&resolved_name).is_some() {
                     self.used_vars.insert(resolved_name.clone());
+                } else if resolved_name.as_ref() == "main" {
+                    self.refuse_a_use_of_main(span);
+                    return Type::Unknown;
                 }
                 let mut base_name = resolved_name.clone();
                 let mut explicit_generic_args = type_args.clone().unwrap_or_default();
@@ -1238,6 +1241,22 @@ impl<'a> TypeChecker<'a> {
                     self.lookup(&resolved_name).cloned()
                 {
                     if struct_name.starts_with("Closure_") {
+                        // A call uses up a closure that runs once.
+                        let once = self.mono.closures_that_run_once.get(&struct_name).cloned();
+                        if let (Some(moved), false) = (once, self.speculating) {
+                            if self.is_moved(&resolved_name) {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E4001,
+                                    format!(
+                                        "`{resolved_name}` already ran. It moves `{moved}`, a \
+                                         value that it captures, so it can run only once"
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
+                            } else {
+                                self.consume(&resolved_name);
+                            }
+                        }
                         let call_name = format!("{}_call", struct_name);
                         if let Some(func) = self
                             .mono
@@ -1561,6 +1580,20 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The file of this compile, as the compiler was given it.
+    /// E5004 for a call of `main` or for `main` as a value, so that no code gets a second `Root`.
+    pub(crate) fn refuse_a_use_of_main(&mut self, at: &crate::syntax::Span) {
+        if self.speculating {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E5004,
+            "A program cannot call `main` or use it as a value. Only the runtime starts `main`. \
+             A `main` that takes a `Root` would make a new `Root` at each call"
+                .to_string(),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
+        );
+    }
+
     pub(crate) fn file_name(&self) -> String {
         self.errors
             .file
@@ -3680,7 +3713,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// `r.f()` for a method `f` that takes `self` by value passes `*r`. A reference cannot give
-    /// away a value that is not `Copy` (E4008), and a raw pointer needs `unsafe` (E5002).
+    /// away a value that is not `Copy` (E4008).
     fn check_receiver_taken_through(&mut self, base_ty: &Type, method: &str, span: &Span) {
         match base_ty {
             Type::Borrow { inner, .. } if inner.is_linear() && !self.is_copy(inner) => {
@@ -3694,13 +3727,7 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
-            Type::Pointer(inner, _, _) => {
-                let what = format!(
-                    "Calling `{method}`, which takes `self` by value, through a raw pointer"
-                );
-                self.require_unsafe_raw_access(&what, span);
-                self.refuse_move_through_raw_pointer(inner, true, span);
-            }
+            Type::Pointer(inner, _, _) => self.refuse_move_through_raw_pointer(inner, true, span),
             _ => {}
         }
     }
@@ -4044,6 +4071,12 @@ impl<'a> TypeChecker<'a> {
                     // Through a reference or a raw pointer, the call takes `*r`, as `f(*r)` does.
                     if self_by_value && !self.speculating {
                         self.check_receiver_taken_through(&base_ty, _method, &method_span);
+                    }
+                    // The method reads or changes the value that a raw pointer points at, as
+                    // `p.field` does.
+                    if matches!(base_ty, Type::Pointer(..)) && !self.speculating {
+                        let what = format!("Calling `{_method}` through a raw pointer");
+                        self.require_unsafe_raw_access(&what, &method_span);
                     }
                     // Where the result may point. The receiver is argument 0.
                     let summary = self.env.method_provenance_of(&ib, _method.as_ref());

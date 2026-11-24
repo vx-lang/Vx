@@ -402,7 +402,8 @@ Each of the last two also has a `_bf16` form, with `uint16_t` elements. `in` and
 the same buffer. Vx stops the program with a message on a wrong argument or an NCCL error.
 A Vx program uses them through `std::collective`: `join_job`, `leave_job`, `job_rank`,
 `job_ranks`, `all_reduce_sum_f32(&mut t)` and `all_gather_f32(&t, &mut out)`, and the `_bf16`
-forms.
+forms. `join_job(&root.files, &root.network, rank, ranks)` takes the file right and the network
+right of the program, because it uses the id file and NCCL connects the ranks.
 
 - **NCCL.** The CUDA backend calls NCCL, which it loads with `dlopen` from `libnccl.so.2`, or
   from the path in `VX_NCCL_LIB`. `init` uses the GPU that is current at the call.

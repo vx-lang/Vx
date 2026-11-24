@@ -20,11 +20,11 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3066` (65 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
-- [Safety Errors](#safety-errors) — `E5001`–`E5003` (3 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
+- [Safety Errors](#safety-errors) — `E5001`–`E5004` (4 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8014` (14 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8016` (16 codes)
 
 ## Warnings
 
@@ -132,7 +132,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3028`](/errors/E3028/) | A function with a non-void return type whose body can complete without returning. Reported here rather than left to codegen, where it surfaced as an MLIR verifier message naming an operation, with no source location. |
 | [`E3029`](/errors/E3029/) | A type name in a signature that names no declaration. An unknown name in type position parses as a user nominal, so without this a typo -- or a type constructor removed from the language -- compiled silently and did nothing. |
 | [`E3030`](/errors/E3030/) | An operator applied to operand types it is not defined on -- `%` on a shaped tensor, `+`, `-`, `*`, `/` or `%` on a `bool`, or `-` on an unsigned integer or a `bool`. For `%`, the flat emitter would decline and fall back to a path that cannot lower it either, and an `i1` operand would reach `arith.remsi` and verify. `-` on an unsigned integer would wrap with no error, and `true + true` would be `false`. |
-| [`E3031`](/errors/E3031/) | `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a value survives being assigned elsewhere, and a field that does not survive it breaks that promise for the whole type -- which would be a way to duplicate a tensor, or any other placed value, without saying so. |
+| [`E3031`](/errors/E3031/) | `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a value survives being assigned elsewhere, and a field that does not survive it breaks that promise for the whole type -- which would be a way to duplicate a tensor, or any other placed value, without saying so. In `impl<T> Copy for Twice<T>`, a field of type `T` needs the bound `T : Copy`. |
 | [`E3032`](/errors/E3032/) | A chain of generic instantiations that does not end -- `f<N - 1>()` whose base case is never reached. Reported here rather than left to run out of stack, which gave no file, no line and no message. |
 | [`E3033`](/errors/E3033/) | A `comptime` block the evaluator could not finish. The block runs during compilation and leaves nothing behind, so one that cannot be run has no meaning -- and used to be emitted as ordinary run-time code, which hid the fact entirely. |
 | [`E3034`](/errors/E3034/) | A `comptime` block inside another one. The outer block already runs at compile time, so the inner one asks for nothing extra, and nesting them is what made a block's value depend on evaluating a closure defined inside another block. |
@@ -190,6 +190,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4014`](/errors/E4014/) | A task that can still run when a variable that it uses ends or changes. A task in a loop that the same pass does not join runs at the same time as the next pass, so it must not write a variable from outside the loop, or read one that the loop writes. A task must not use a variable that ends before its `tasks` block, such as one of the loop body. Join the task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break` or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so it cannot drop a value from outside the inner block yet. |
 | [`E4015`](/errors/E4015/) | A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)` with a parameter that takes `t` by value, where `t` is declared before the region. The region only borrows what it uses, and the function drops `t` after the region. Borrow it (`&t`), or clone it (`t.clone()`). |
 | [`E4016`](/errors/E4016/) | A borrow clause that is not well formed, or one that the body does not keep. In `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its own. |
+| [`E4017`](/errors/E4017/) | A closure that runs only once is copied, returned, passed or written outside a `let`. A closure whose body moves a value that it captures can run only once, because a second call would move the value again. Write such a closure in a `let` with no type, and call it there. A second call of it is E4001. |
 
 ## Safety Errors
 
@@ -198,8 +199,9 @@ Raised where an operation needs an `unsafe` context and does not have one.
 | Code | Meaning |
 | --- | --- |
 | [`E5001`](/errors/E5001/) | Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements hold whatever the memory held, so the program says with `unsafe` that it writes each one before reading it. |
-| [`E5002`](/errors/E5002/) | Unsafe memory operation outside unsafe block |
+| [`E5002`](/errors/E5002/) | An operation that only an `unsafe` block allows, outside one. An access through a raw pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot know that the value is still at the address. So is `assume`. |
 | [`E5003`](/errors/E5003/) | Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`. The program that uses the package gives the flag, so a new version of the package cannot add trusted code without an error. `vxc --audit` lists the trusted code of a program. |
+| [`E5004`](/errors/E5004/) | A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that takes a `Root` makes the capabilities of the program, so a second start would give them to code that did not get them. |
 
 ## Topology/Hardware Errors
 
@@ -281,7 +283,9 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8012`](/errors/E8012/) | A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body changes a parameter that such a clause names. Or the function says `ensures !frees(p)`, and its body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a call without `!frees` for that parameter, a store or an `mlir!` block. |
 | [`E8013`](/errors/E8013/) | A type invariant that is not well formed. An `invariant` comes after the last field of a struct, inside its braces. It can use the fields of the struct at any depth, numbers, operators, `as` and the pointer clauses `valid`, `initialized` and `overlaps`. It calls no other function, and it names no constant. |
 | [`E8014`](/errors/E8014/) | Code outside the module of a type with an invariant changes a field of the type. Only the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a field, call a method that takes `&mut self` on a field, move a field out of the value, or make a value of the type with a struct literal or an `mlir!` block. Other code calls a function of the module to change a value of the type. Then the invariant holds for each value of the type outside its module. |
+| [`E8015`](/errors/E8015/) | A `safe` extern function that returns a value of a type with an invariant, or takes a `&mut` or a `*mut` to such a value. C code does not keep the invariant, and a call of a `safe` function needs no `unsafe`. So C code could return or change such a value with no mark in the program. Remove `safe`, so that each call is in an `unsafe` block. |
+| [`E8016`](/errors/E8016/) | An `mlir!` block outside `unsafe` that the compiler cannot verify as safe. The compiler verifies a block whose operations are on a list of `arith` and `math` operations that give a defined result for every input, with no `overflow` or `fastmath` flags, and that takes and gives only numbers. Any other block goes in `unsafe { }`, because the compiler does not verify what its operations do. |
 
 ______________________________________________________________________
 
-193 diagnostics.
+197 diagnostics.

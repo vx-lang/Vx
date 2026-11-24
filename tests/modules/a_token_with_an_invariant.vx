@@ -15,8 +15,10 @@ struct Token {
 }
 
 fn token_from_mlir() -> Token {
-  return mlir!(inputs : (), returns : Token, dialects : ["llvm"]) {
-    %u = llvm.mlir.undef : !llvm.struct<(i64)>
-    macro.yield %u : !llvm.struct<(i64)>
-  };
+  unsafe {
+    return mlir!(inputs : (), returns : Token, dialects : ["llvm"]) {
+      %u = llvm.mlir.undef : !llvm.struct<(i64)>
+      macro.yield %u : !llvm.struct<(i64)>
+    };
+  }
 }

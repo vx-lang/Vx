@@ -50,6 +50,9 @@ The compiler checks each way:
   before the last use of the closure (E4002).
 - A closure whose body moves a struct, for example by passing it by value to a function, takes the
   struct. After that, the code around the closure cannot use the struct (E4001).
+- Such a closure runs only once, because a second call would move the struct again. A second call,
+  or a call in a loop, is E4001. Write it in a `let` with no type, and call it there. A copy of it,
+  or such a closure passed to a function or returned, is E4017.
 
 Inside a closure, `?` needs the return type written:
 `|x : i32| -> Result<i32, E> { .. }`. [Vx for Rust programmers](for-rust-programmers.md) says

@@ -60,11 +60,12 @@ fn report<T>(call : *const i8, result : Result<T, NetError>) -> void {
   }
 }
 
-fn main() -> i32 {
-  report("TcpListener::bind", TcpListener::bind(&with_a_nul("127.0.0.1:41771")));
-  report("TcpStream::connect", TcpStream::connect(&with_a_nul("127.0.0.1:41771")));
-  report("UdpSocket::bind", UdpSocket::bind(&with_a_nul("127.0.0.1:41772")));
-  match UdpSocket::bind(&unsafe { String::from_c_str("127.0.0.1:0") }) {
+fn main(root : Root) -> i32 {
+  let network = &root.network;
+  report("TcpListener::bind", TcpListener::bind(network, &with_a_nul("127.0.0.1:41771")));
+  report("TcpStream::connect", TcpStream::connect(network, &with_a_nul("127.0.0.1:41771")));
+  report("UdpSocket::bind", UdpSocket::bind(network, &with_a_nul("127.0.0.1:41772")));
+  match UdpSocket::bind(network, &unsafe { String::from_c_str("127.0.0.1:0") }) {
     Result<UdpSocket, NetError>::Ok(socket) => {
       let mut s = socket;
       let mut one = Vec<u8>::new();

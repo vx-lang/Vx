@@ -26,7 +26,8 @@ Most parallel programs have one of four shapes:
   borrow the input from the function around them, and `join()` gives each result. The first
   program of [Tasks and channels](tasks.md) has this shape.
 - **Workers take jobs.** When jobs take different times, an even split leaves some tasks idle.
-  Give each worker the next job number from an atomic counter instead.
+  Give each worker the next job number from an atomic counter instead. `run_jobs` does this
+  for you, as [Run jobs with at most `n` tasks](tasks.md#run-jobs-with-at-most-n-tasks) shows.
 - **A pipeline.** Each stage is a task, and a channel connects each stage to the next one. A full
   channel makes a fast stage wait for a slow one.
 
@@ -67,9 +68,10 @@ the same in each run.
 | Values from many tasks | a channel |
 | A counter or a flag that tasks share | an atomic |
 | A change to more than one value at a time | a `Mutex` |
-| Values from more than one channel | a `Selector` |
+| Values from more than one channel, or a channel and a time limit | `select2` to `select6`, or a `Selector` |
 | A value that lives longer than its `tasks` block | an `Arc` |
 | At most `n` tasks that do one thing at the same time | a `Semaphore` |
+| The same work on each job of a list, with at most `n` tasks | `run_jobs` |
 
 Use a channel when you are not sure. A channel moves each value to one owner, so two tasks never
 change the same data. A task can borrow the locals of the function around it, so most programs
@@ -163,8 +165,9 @@ of each kernel, and the result must be the same as on the GPU.
 | a multi-thread tokio runtime | `VX_TASK_RUNTIME=shared`, with no change to the program |
 | `async fn` and `.await` | a normal function: `recv()`, `join()` and `lock()` wait in place |
 | `tokio::sync::mpsc` | `std::sync::channel` |
-| `tokio::select!` | `Selector` |
+| `tokio::select!` | `select2` to `select6` from `std::sync::select` |
 | `tokio::sync::Semaphore` | `std::sync::semaphore::Semaphore` |
+| a `JoinSet` with a `Semaphore` | `run_jobs` from `std::sync::jobs` |
 | `AtomicU64` with `Ordering::Relaxed` | `AtomicU64` with `AtomicOrdering::Relaxed` |
 
 Vx has no `async`. [Why Vx has no `async`](tasks.md#why-vx-has-no-async) explains this.

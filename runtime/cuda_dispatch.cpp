@@ -1908,7 +1908,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
   vx_view_copy_point_at(views.data(), (int64_t)views.size(), spans.data());
 
-  vx_host_refuse_coop(binary_payload, payload_size, label().c_str(), "CUDA");
+  vx_host_refuse_coop(binary_payload, payload_size, "CUDA");
   void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     fprintf(stderr, "[Vx CUDA] FATAL: outlined kernel %s not found\n",

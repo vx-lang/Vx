@@ -7,18 +7,18 @@
 // RUN: env VX_METAL=0 not vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=CPU
 //
 // GPU: {{^}}out: 7 7{{$}}
-// CPU: vx: the `mlir!` block with `threads` at line 16, column 23 runs only on a GPU, but no GPU ran its kernel, so the CPU did
+// CPU: vx: the `mlir!` block with `threads` at line 16, column 32 runs only on a GPU, but no GPU ran its kernel, so the CPU did
 // CPU-NOT: out:
 
 pub fn sevens(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..2 across blocks {
-      let _d = mlir!( threads : 32, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(out[b..b + 1])]) {
-        %k = arith.index_cast %b : i32 to index
-        %c7 = arith.constant 7 : i32
-        memref.store %c7, %o[%k] : memref<?xi32>
-        macro.yield %c7 : i32
-      };
+      let _d = unsafe { mlir!( threads : 32, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(out[b..b + 1])]) {
+          %k = arith.index_cast %b : i32 to index
+          %c7 = arith.constant 7 : i32
+          memref.store %c7, %o[%k] : memref<?xi32>
+          macro.yield %c7 : i32
+        } };
     }
   }
   return;

@@ -113,44 +113,44 @@ fn libm_log_eval(x : f64) -> f64 {
   let i = ((libm_f64_to_bits(x) >> 46u64) & 63u64) as i64;
   let r = LIBM_R_LOG[i];
   let log_r = LIBM_LOG_R[i];
-  return mlir!( inputs : (%x = x : f64, %r = r : f64, %log_r = log_r : f64), returns : f64, dialects : ["arith", "math"]) {
-    %x_u = "arith.bitcast"(%x) : (f64) -> i64
-    // x_e = ((x_u + 2^46) >> 52) - 1023: the exponent, plus one when the 8 leading bits of the
-    // mantissa are all ones
-    %c_round = arith.constant 70368744177664 : i64
-    %c52 = arith.constant 52 : i64
-    %c1023 = arith.constant 1023 : i64
-    %xr = arith.addi %x_u, %c_round : i64
-    %xe0 = arith.shrui %xr, %c52 : i64
-    %xe = arith.subi %xe0, %c1023 : i64
-    %e_x = arith.sitofp %xe : i64 to f64
-    %log_2 = arith.constant 0x3FE62E42FEFA39EF : f64 // 0x1.62e42fefa39efp-1
-    %r_hi = math.fma %e_x, %log_2, %log_r : f64
-    // m = 1.mantissa
-    %c_frac = arith.constant 4503599627370495 : i64
-    %c_one = arith.constant 4607182418800017408 : i64
-    %mf = arith.andi %x_u, %c_frac : i64
-    %mb = arith.ori %mf, %c_one : i64
-    %m = "arith.bitcast"(%mb) : (i64) -> f64
-    %neg_one = arith.constant -1.0 : f64
-    %dx = math.fma %r, %m, %neg_one : f64
-    %k0 = arith.constant 0xBFDFFFFFFFFFFE03 : f64 // -0x1.ffffffffffe03p-2
-    %k1 = arith.constant 0x3FD55555555395F9 : f64 // 0x1.55555555395f9p-2
-    %k2 = arith.constant 0xBFD0000001BE5329 : f64 // -0x1.0000001be5329p-2
-    %k3 = arith.constant 0x3FC9999C1BF8C3AF : f64 // 0x1.9999c1bf8c3afp-3
-    %k4 = arith.constant 0xBFC554F0BA9CEE4B : f64 // -0x1.554f0ba9cee4bp-3
-    %k5 = arith.constant 0x3FC1D94CD56B72D7 : f64 // 0x1.1d94cd56b72d7p-3
-    %dx2 = arith.mulf %dx, %dx : f64
-    %c1 = math.fma %dx, %k1, %k0 : f64
-    %c2 = math.fma %dx, %k3, %k2 : f64
-    %c3 = math.fma %dx, %k5, %k4 : f64
-    %dx4 = arith.mulf %dx2, %dx2 : f64
-    %rd = arith.addf %r_hi, %dx : f64
-    %d1 = math.fma %dx2, %c1, %rd : f64
-    %d2 = math.fma %dx2, %c3, %c2 : f64
-    %res = math.fma %dx4, %d2, %d1 : f64
-    macro.yield %res : f64
-  };
+  return unsafe { mlir!( inputs : (%x = x : f64, %r = r : f64, %log_r = log_r : f64), returns : f64, dialects : ["arith", "math"]) {
+      %x_u = "arith.bitcast"(%x) : (f64) -> i64
+      // x_e = ((x_u + 2^46) >> 52) - 1023: the exponent, plus one when the 8 leading bits of the
+      // mantissa are all ones
+      %c_round = arith.constant 70368744177664 : i64
+      %c52 = arith.constant 52 : i64
+      %c1023 = arith.constant 1023 : i64
+      %xr = arith.addi %x_u, %c_round : i64
+      %xe0 = arith.shrui %xr, %c52 : i64
+      %xe = arith.subi %xe0, %c1023 : i64
+      %e_x = arith.sitofp %xe : i64 to f64
+      %log_2 = arith.constant 0x3FE62E42FEFA39EF : f64 // 0x1.62e42fefa39efp-1
+      %r_hi = math.fma %e_x, %log_2, %log_r : f64
+      // m = 1.mantissa
+      %c_frac = arith.constant 4503599627370495 : i64
+      %c_one = arith.constant 4607182418800017408 : i64
+      %mf = arith.andi %x_u, %c_frac : i64
+      %mb = arith.ori %mf, %c_one : i64
+      %m = "arith.bitcast"(%mb) : (i64) -> f64
+      %neg_one = arith.constant -1.0 : f64
+      %dx = math.fma %r, %m, %neg_one : f64
+      %k0 = arith.constant 0xBFDFFFFFFFFFFE03 : f64 // -0x1.ffffffffffe03p-2
+      %k1 = arith.constant 0x3FD55555555395F9 : f64 // 0x1.55555555395f9p-2
+      %k2 = arith.constant 0xBFD0000001BE5329 : f64 // -0x1.0000001be5329p-2
+      %k3 = arith.constant 0x3FC9999C1BF8C3AF : f64 // 0x1.9999c1bf8c3afp-3
+      %k4 = arith.constant 0xBFC554F0BA9CEE4B : f64 // -0x1.554f0ba9cee4bp-3
+      %k5 = arith.constant 0x3FC1D94CD56B72D7 : f64 // 0x1.1d94cd56b72d7p-3
+      %dx2 = arith.mulf %dx, %dx : f64
+      %c1 = math.fma %dx, %k1, %k0 : f64
+      %c2 = math.fma %dx, %k3, %k2 : f64
+      %c3 = math.fma %dx, %k5, %k4 : f64
+      %dx4 = arith.mulf %dx2, %dx2 : f64
+      %rd = arith.addf %r_hi, %dx : f64
+      %d1 = math.fma %dx2, %c1, %rd : f64
+      %d2 = math.fma %dx2, %c3, %c2 : f64
+      %res = math.fma %dx4, %d2, %d1 : f64
+      macro.yield %res : f64
+    } };
 }
 
 /// The inverse hyperbolic sine, correctly rounded: `asinhf` from `asinhf.h`.

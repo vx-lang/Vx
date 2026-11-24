@@ -1,0 +1,75 @@
+//===- a_closure_that_moves_a_captured_value_runs_once.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A closure whose body moves a value that it captures can run only once, because a second call
+// would move the value again. A second call, or a call in a loop, is E4001. A copy of the
+// closure, or the closure outside a `let`, is E4017. A `let` with a closure type refuses any
+// closure literal today (E3001).
+import std::vec;
+
+fn consume(v : Vec<i64>) -> i64 {
+  return v.len() as i64;
+}
+
+fn make() -> Vec<i64> {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  return v;
+}
+
+fn apply(g : || -> i64) -> i64 {
+  return g();
+}
+
+fn called_twice() -> i64 {
+  let v = make();
+  let f = || consume(v);
+  let a = f();
+  return a + f();
+}
+
+fn called_in_a_loop() -> i64 {
+  let v = make();
+  let f = || consume(v);
+  let mut total = 0i64;
+  for i in 0..3 {
+    total = total + f();
+  }
+  return total;
+}
+
+fn copied() -> i64 {
+  let v = make();
+  let f = || consume(v);
+  let g = f;
+  return g();
+}
+
+fn passed() -> i64 {
+  let v = make();
+  return apply(|| consume(v));
+}
+
+fn in_a_let_with_a_type() -> i64 {
+  let v = make();
+  let f : || -> i64 = || consume(v);
+  return f();
+}
+
+fn main() -> i32 {
+  let n = called_twice() + called_in_a_loop() + copied() + passed() + in_a_let_with_a_type();
+  return n as i32;
+}
+
+// CHECK: Error[E4001] at {{.*}}a_closure_that_moves_a_captured_value_runs_once.vx:34:14: `f` already ran. It moves `v`, a value that it captures, so it can run only once
+// CHECK: Error[E4001] at {{.*}}a_closure_that_moves_a_captured_value_runs_once.vx:41:3: `f` is moved inside this loop
+// CHECK: Error[E4017] at {{.*}}a_closure_that_moves_a_captured_value_runs_once.vx:50:11: `f` moves `v`, a value that it captures, so it can run only once. Call `f`, and do not copy, return or pass it
+// CHECK: Error[E4017] at {{.*}}a_closure_that_moves_a_captured_value_runs_once.vx:56:16: this closure moves `v`, a value that it captures, so it can run only once. Write it in a `let` with no type, and call it there
+// CHECK: Error[E4017] at {{.*}}a_closure_that_moves_a_captured_value_runs_once.vx:61:23: this closure moves `v`
+// CHECK: Error[E3001] at {{.*}}a_closure_that_moves_a_captured_value_runs_once.vx:61:3: 'f' is declared || -> i64 but its initializer is Closure_{{[0-9]+}}

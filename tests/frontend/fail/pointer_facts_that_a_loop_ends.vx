@@ -154,16 +154,16 @@ requires valid(p, n)
 }
 
 // CHECK: E8006] at {{.*}}pointer_facts_that_a_loop_ends.vx:[[@LINE+13]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
-// CHECK-NEXT: note: a fact that proves it ended at the `mlir!` block, which can free memory, in a pass of the loop (at [[@LINE+6]]:19)
+// CHECK-NEXT: note: a fact that proves it ended at the `mlir!` block, which can free memory, in a pass of the loop (at [[@LINE+6]]:28)
 fn after_a_loop_with_an_mlir_block(p : *const i64, n : i64) -> i64
 requires valid(p, n)
 {
   let mut t = 0i64;
   for _i in 0i64..3i64 {
-    let z = mlir!(inputs : (%q = p : !llvm.ptr), returns : i64, dialects : ["llvm", "arith"]) {
-      %z = arith.constant 0 : i64
-      macro.yield %z : i64
-    };
+    let z = unsafe { mlir!(inputs : (%q = p : !llvm.ptr), returns : i64, dialects : ["llvm", "arith"]) {
+        %z = arith.constant 0 : i64
+        macro.yield %z : i64
+      } };
     t = t + z;
   }
   return need_valid(p, n) + t;

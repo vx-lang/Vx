@@ -90,10 +90,10 @@ fn gives_it_to_a_closure(p : *const i64) -> i64 {
 }
 
 fn gives_it_to_an_mlir_block(p : *const i64) -> i64 {
-  return mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
-    %v = llvm.load %p : !llvm.ptr -> i64
-    macro.yield %v : i64
-  };
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %v = llvm.load %p : !llvm.ptr -> i64
+      macro.yield %v : i64
+    } };
 }
 
 // `q` points into the memory of `p`, and `frees_it` frees it.

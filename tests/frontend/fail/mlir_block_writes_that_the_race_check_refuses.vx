@@ -18,28 +18,28 @@
 // RUN: not vxc %t/write_through_a_view.vx --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=VIEW
 // RUN: not vxc %t/mut_input_with_no_clause.vx --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --check-prefix=NO_CLAUSE
 //
-// INDEX: Error[E6032] at {{.*}}index_misses_the_block.vx:5:148: two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
-// WHOLE: Error[E6032] at {{.*}}whole_tensor_from_outside.vx:5:148: `writes_only(out)` says that the block may write any element of `out`, and each pass runs the block. Name the elements that one pass writes, such as `writes_only(out[i])`
-// LANE_TILE: Error[E6032] at {{.*}}whole_tile_from_each_lane.vx:6:141: `writes_only(t)` says that the block may write any element of `t`
-// NO_WIDTH: Error[E6032] at {{.*}}range_with_no_number_width.vx:4:161: a range in a `writes_only` clause must be `lo..lo + k`, with a number `k` above 0
-// OVERLAP: Error[E6032] at {{.*}}ranges_that_overlap.vx:4:139: two passes of this block loop may write the same element of `out`
-// VIEW: Error[E8007] at {{.*}}write_through_a_view.vx:5:25: the block says `reads_only(out)`, but `memref.store %v, %s[%c0] : memref<1xi32, strided<[1], offset: ?>>` writes `%o`
-// NO_CLAUSE: Error[E8007] at {{.*}}mut_input_with_no_clause.vx:6:25: `memref.store %l, %t[%k] : memref<32xi32, 3>` writes `%t`, which the clauses of the block do not name
+// INDEX: Error[E6032] at {{.*}}index_misses_the_block.vx:5:157: two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// WHOLE: Error[E6032] at {{.*}}whole_tensor_from_outside.vx:5:157: `writes_only(out)` says that the block may write any element of `out`, and each pass runs the block. Name the elements that one pass writes, such as `writes_only(out[i])`
+// LANE_TILE: Error[E6032] at {{.*}}whole_tile_from_each_lane.vx:6:150: `writes_only(t)` says that the block may write any element of `t`
+// NO_WIDTH: Error[E6032] at {{.*}}range_with_no_number_width.vx:4:170: a range in a `writes_only` clause must be `lo..lo + k`, with a number `k` above 0
+// OVERLAP: Error[E6032] at {{.*}}ranges_that_overlap.vx:4:148: two passes of this block loop may write the same element of `out`
+// VIEW: Error[E8007] at {{.*}}write_through_a_view.vx:5:34: the block says `reads_only(out)`, but `memref.store %v, %s[%c0] : memref<1xi32, strided<[1], offset: ?>>` writes `%o`
+// NO_CLAUSE: Error[E8007] at {{.*}}mut_input_with_no_clause.vx:6:34: `memref.store %l, %t[%k] : memref<32xi32, 3>` writes `%t`, which the clauses of the block do not name
 
 //--- index_misses_the_block.vx
 pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..4 across blocks {
       for l in 0..32 across lanes(32) {
-        let _w = mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(out[l])]) {
-          %c32 = arith.constant 32 : i32
-          %r = arith.muli %b, %c32 : i32
-          %i = arith.addi %r, %l : i32
-          %v = arith.addi %i, %i : i32
-          %k = arith.index_cast %i : i32 to index
-          memref.store %v, %o[%k] : memref<?xi32>
-          macro.yield %v : i32
-        };
+        let _w = unsafe { mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(out[l])]) {
+            %c32 = arith.constant 32 : i32
+            %r = arith.muli %b, %c32 : i32
+            %i = arith.addi %r, %l : i32
+            %v = arith.addi %i, %i : i32
+            %k = arith.index_cast %i : i32 to index
+            memref.store %v, %o[%k] : memref<?xi32>
+            macro.yield %v : i32
+          } };
       }
     }
   }
@@ -59,15 +59,15 @@ pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..4 across blocks {
       for l in 0..32 across lanes(32) {
-        let _w = mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(out)]) {
-          %c32 = arith.constant 32 : i32
-          %r = arith.muli %b, %c32 : i32
-          %i = arith.addi %r, %l : i32
-          %v = arith.addi %i, %i : i32
-          %k = arith.index_cast %i : i32 to index
-          memref.store %v, %o[%k] : memref<?xi32>
-          macro.yield %v : i32
-        };
+        let _w = unsafe { mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(out)]) {
+            %c32 = arith.constant 32 : i32
+            %r = arith.muli %b, %c32 : i32
+            %i = arith.addi %r, %l : i32
+            %v = arith.addi %i, %i : i32
+            %k = arith.index_cast %i : i32 to index
+            memref.store %v, %o[%k] : memref<?xi32>
+            macro.yield %v : i32
+          } };
       }
     }
   }
@@ -88,11 +88,11 @@ pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
     for b in 0..4 across blocks {
       let mut t = unsafe { Tensor<i32, [32], Memory::SMEM>::uninit() };
       for l in 0..32 across lanes(32) {
-        let _w = mlir!( inputs : (%t = &mut t : memref<32xi32, 3>, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(t)]) {
-          %k = arith.index_cast %l : i32 to index
-          memref.store %l, %t[%k] : memref<32xi32, 3>
-          macro.yield %l : i32
-        };
+        let _w = unsafe { mlir!( inputs : (%t = &mut t : memref<32xi32, 3>, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only(t)]) {
+            %k = arith.index_cast %l : i32 to index
+            memref.store %l, %t[%k] : memref<32xi32, 3>
+            macro.yield %l : i32
+          } };
       }
       for l in 0..32 across lanes(32) {
         out[b * 32 + l] = t[31 - l] + b;
@@ -114,21 +114,21 @@ fn main() -> i32 {
 pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..4 across blocks {
-      let _w = mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "scf"], ensures : [writes_only(out[b * 32..b * 64])]) {
-        %c32 = arith.constant 32 : i32
-        %r = arith.muli %b, %c32 : i32
-        %lo = arith.index_cast %r : i32 to index
-        %c0 = arith.constant 0 : index
-        %c1 = arith.constant 1 : index
-        %n = arith.constant 32 : index
-        scf.for %j = %c0 to %n step %c1 {
-          %k = arith.addi %lo, %j : index
-          %ji = arith.index_cast %k : index to i32
-          %v = arith.addi %ji, %ji : i32
-          memref.store %v, %o[%k] : memref<?xi32>
-        }
-        macro.yield %r : i32
-      };
+      let _w = unsafe { mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "scf"], ensures : [writes_only(out[b * 32..b * 64])]) {
+          %c32 = arith.constant 32 : i32
+          %r = arith.muli %b, %c32 : i32
+          %lo = arith.index_cast %r : i32 to index
+          %c0 = arith.constant 0 : index
+          %c1 = arith.constant 1 : index
+          %n = arith.constant 32 : index
+          scf.for %j = %c0 to %n step %c1 {
+            %k = arith.addi %lo, %j : index
+            %ji = arith.index_cast %k : index to i32
+            %v = arith.addi %ji, %ji : i32
+            memref.store %v, %o[%k] : memref<?xi32>
+          }
+          macro.yield %r : i32
+        } };
     }
   }
   return;
@@ -146,21 +146,21 @@ fn main() -> i32 {
 pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..4 across blocks {
-      let _w = mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "scf"], ensures : [writes_only(out[b * 32..b * 32 + 33])]) {
-        %c32 = arith.constant 32 : i32
-        %r = arith.muli %b, %c32 : i32
-        %lo = arith.index_cast %r : i32 to index
-        %c0 = arith.constant 0 : index
-        %c1 = arith.constant 1 : index
-        %n = arith.constant 32 : index
-        scf.for %j = %c0 to %n step %c1 {
-          %k = arith.addi %lo, %j : index
-          %ji = arith.index_cast %k : index to i32
-          %v = arith.addi %ji, %ji : i32
-          memref.store %v, %o[%k] : memref<?xi32>
-        }
-        macro.yield %r : i32
-      };
+      let _w = unsafe { mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "scf"], ensures : [writes_only(out[b * 32..b * 32 + 33])]) {
+          %c32 = arith.constant 32 : i32
+          %r = arith.muli %b, %c32 : i32
+          %lo = arith.index_cast %r : i32 to index
+          %c0 = arith.constant 0 : index
+          %c1 = arith.constant 1 : index
+          %n = arith.constant 32 : index
+          scf.for %j = %c0 to %n step %c1 {
+            %k = arith.addi %lo, %j : index
+            %ji = arith.index_cast %k : index to i32
+            %v = arith.addi %ji, %ji : i32
+            memref.store %v, %o[%k] : memref<?xi32>
+          }
+          macro.yield %r : i32
+        } };
     }
   }
   return;
@@ -179,18 +179,18 @@ pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..4 across blocks {
       for l in 0..32 across lanes(32) {
-        let _w = mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [reads_only(out)]) {
-          %c32 = arith.constant 32 : i32
-          %r = arith.muli %b, %c32 : i32
-          %i = arith.addi %r, %l : i32
-          %v = arith.addi %i, %i : i32
-          %k = arith.index_cast %i : i32 to index
-          %c1 = arith.constant 1 : index
-          %s = memref.subview %o[%k] [1] [1] : memref<?xi32> to memref<1xi32, strided<[1], offset: ?>>
-          %c0 = arith.constant 0 : index
-          memref.store %v, %s[%c0] : memref<1xi32, strided<[1], offset: ?>>
-          macro.yield %v : i32
-        };
+        let _w = unsafe { mlir!( inputs : (%o = out : memref<?xi32>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [reads_only(out)]) {
+            %c32 = arith.constant 32 : i32
+            %r = arith.muli %b, %c32 : i32
+            %i = arith.addi %r, %l : i32
+            %v = arith.addi %i, %i : i32
+            %k = arith.index_cast %i : i32 to index
+            %c1 = arith.constant 1 : index
+            %s = memref.subview %o[%k] [1] [1] : memref<?xi32> to memref<1xi32, strided<[1], offset: ?>>
+            %c0 = arith.constant 0 : index
+            memref.store %v, %s[%c0] : memref<1xi32, strided<[1], offset: ?>>
+            macro.yield %v : i32
+          } };
       }
     }
   }
@@ -211,11 +211,11 @@ pub fn k(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
     for b in 0..4 across blocks {
       let mut t = unsafe { Tensor<i32, [32], Memory::SMEM>::uninit() };
       for l in 0..32 across lanes(32) {
-        let _w = mlir!( inputs : (%t = &mut t : memref<32xi32, 3>, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only()]) {
-          %k = arith.index_cast %l : i32 to index
-          memref.store %l, %t[%k] : memref<32xi32, 3>
-          macro.yield %l : i32
-        };
+        let _w = unsafe { mlir!( inputs : (%t = &mut t : memref<32xi32, 3>, %l = l : i32), returns : i32, dialects : ["arith", "memref"], ensures : [writes_only()]) {
+            %k = arith.index_cast %l : i32 to index
+            memref.store %l, %t[%k] : memref<32xi32, 3>
+            macro.yield %l : i32
+          } };
       }
       for l in 0..32 across lanes(32) {
         out[b * 32 + l] = t[31 - l] + b;

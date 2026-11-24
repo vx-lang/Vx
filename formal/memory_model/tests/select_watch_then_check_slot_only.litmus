@@ -1,0 +1,12 @@
+LISA select_watch_then_check_slot_only
+(* As select_watch_then_check_seq_cst, but the check of the `select` reads only the slot, with
+   sc. The slot was filled with release, so P0 can miss the watch while P1 misses the value. Then
+   the `select` waits, and no wake comes. So the check must read wake first.
+   Expect: sometimes, no data race. *)
+{ slot = 0; wake = 0; watchers = 0; }
+ P0                              | P1                              ;
+ w[rel] slot 1                   | rmw[sc] r8 (add r8 1) watchers  ;
+ rmw[sc] r9 (add r9 1) wake      | r[sc] r1 slot                   ;
+ r[sc] r0 watchers               |                                 ;
+scopes: (system P0 P1)
+exists (0:r0 = 0 /\ 1:r1 = 0)

@@ -179,6 +179,9 @@ It calls a function of the module instead. For example, `Vec` has an invariant, 
 error outside `std::vec`. Code in another module can still assign a whole value, as in
 `v = Vec::new()`.
 
+A `safe` extern function cannot return a value of such a type, or take a `&mut` or a `*mut` to such
+a value (`E8015`). C code does not keep the invariant. Without `safe`, each call is in an `unsafe` block.
+
 The prover does not check the invariant yet, so the module of the type must keep it true. Later,
 each use of the type will get the invariant as a fact
 ([Vx#2832](https://github.com/vx-lang/Vx/issues/2832)).

@@ -21,7 +21,8 @@ fn main() -> i32 {
 ```
 
 Reading through a raw pointer — `*p` — is the operation that needs the block. So does indexing
-through one, or reading a field through one.
+through one, reading a field through one, or calling a method through one. `p.get()` gives the
+method a reference to `*p`, and the compiler cannot know that `*p` is still there.
 
 ## Raw pointers
 
@@ -245,9 +246,9 @@ result can be read. A clause that does not hold is undefined behavior, as a wron
 - each pointer `requires` of a `pub fn`, because a call from C proves nothing
 
 It also lists each use of trusted code, which the compiler does not check: each `unsafe` block and
-`unsafe fn` that the program writes, each `mlir!` block, each `extern` function, and each
-`extern impl` and `unsafe impl`. Code with none of these cannot forge a value that only one module
-can build. For `core` and `std`, a last line gives only the counts. `vxc --audit-library` lists
+`unsafe fn` that the program writes, each `mlir!` block that the compiler does not verify, each
+`extern` function, and each `extern impl` and `unsafe impl`. Code with none of these cannot forge a
+value that only one module can build. For `core` and `std`, a last line gives only the counts. `vxc --audit-library` lists
 their uses too.
 
 To keep trusted code out of a package, give `--no-trusted-code NAME` with `--package NAME=DIR`.
@@ -340,9 +341,34 @@ The `dialects` list must agree with the body. If `count_ones` listed `"arith"` a
 the compiler would give the error E8010: the block uses `math.ctpop`, but the list does not name
 `math`. A name in the list that is not a dialect is also E8010.
 
-The compiler does not check what the MLIR operations do. So treat each `mlir!` block as code that
-the compiler trusts, as you treat an `unsafe` block. The standard library uses `mlir!` in this way.
-`core::ptr` moves a raw pointer and compares two raw pointers with one LLVM operation each.
+An `mlir!` block outside `unsafe` must be one that the compiler can verify as safe. The compiler
+verifies a block when each of its operations is on a short list, and the block takes and gives
+only numbers. The list has `arith` operations such as `addi`, `cmpi` and `select`, and `math`
+operations such as `ctpop` and `sqrt`. Both blocks above are on it. These operations are not on
+the list:
+
+- an operation with an `overflow` or a `fastmath` flag, because the flag can make the result
+  poison
+- integer division, remainder and shifts, because a zero divisor or a large shift gives undefined
+  behavior
+- each operation of another dialect, such as `llvm.load`
+
+Any other block must be in an `unsafe` block. If it is not, the error E8016 names the first
+operation that the compiler cannot verify:
+
+```vx
+fn peek(addr : i64) -> i64 {
+  return unsafe { mlir!(inputs : (%a = addr : i64), returns : i64, dialects : ["llvm"]) {
+    %p = llvm.inttoptr %a : i64 to !llvm.ptr
+    %v = llvm.load %p : !llvm.ptr -> i64
+    macro.yield %v : i64
+  } };
+}
+```
+
+The compiler does not verify what the operations of such a block do, so `vxc --audit` lists it.
+The standard library uses `unsafe` blocks in this way: `core::ptr` moves a raw pointer and
+compares two raw pointers with one LLVM operation each.
 
 The compiler assumes one more thing about a block: a block that gets a raw pointer can free the
 memory behind it. So a function that says `ensures !frees(p)` (see [Pointer

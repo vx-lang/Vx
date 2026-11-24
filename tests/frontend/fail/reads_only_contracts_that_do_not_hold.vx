@@ -13,21 +13,21 @@
 
 fn block_names_no_input(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> void {
   // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:{{[0-9]+}}: a `reads_only` clause of an `mlir!` block names one of its inputs, a tensor passed by name, such as `reads_only(t)` for `%t = t : memref<?xi32>`
-  mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref"], ensures : [reads_only(u)]) {
-    macro.yield
-  };
+  unsafe { mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref"], ensures : [reads_only(u)]) {
+      macro.yield
+    } };
   return;
 }
 
 fn block_writes_its_tensor(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> void {
-  // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:10: the block says `reads_only(t)`, but `memref.store %z, %t[%c0] : memref<?xi32>` writes `%t`
-  mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref", "arith"],
-  ensures : [reads_only(t)]) {
-    %c0 = arith.constant 0 : index
-    %z = arith.constant 0 : i32
-    memref.store %z, %t[%c0] : memref<?xi32>
-    macro.yield
-  };
+  // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:19: the block says `reads_only(t)`, but `memref.store %z, %t[%c0] : memref<?xi32>` writes `%t`
+  unsafe { mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref", "arith"],
+    ensures : [reads_only(t)]) {
+      %c0 = arith.constant 0 : index
+      %z = arith.constant 0 : i32
+      memref.store %z, %t[%c0] : memref<?xi32>
+      macro.yield
+    } };
   return;
 }
 
@@ -49,9 +49,9 @@ fn passes_it_to_a_block_without_the_clause(t : &Tensor<i32, [?], Memory::HBM>) o
 ensures reads_only(t)
 {
   // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:{{[0-9]+}}: `passes_it_to_a_block_without_the_clause` says `reads_only(t)`, so it may only read an element or a field of `t`, or pass it to an `mlir!` block with `ensures : [reads_only(t)]`, or to a function that says `reads_only` for that argument
-  mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref"]) {
-    macro.yield
-  };
+  unsafe { mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref"]) {
+      macro.yield
+    } };
   return;
 }
 

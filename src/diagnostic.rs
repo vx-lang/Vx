@@ -336,7 +336,8 @@ pub enum DiagnosticCode {
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
     /// that promise for the whole type -- which would be a way to duplicate a tensor, or any
-    /// other placed value, without saying so.
+    /// other placed value, without saying so. In `impl<T> Copy for Twice<T>`, a field of type
+    /// `T` needs the bound `T : Copy`.
     E3031,
     /// A chain of generic instantiations that does not end -- `f<N - 1>()` whose base case
     /// is never reached. Reported here rather than left to run out of stack, which gave no
@@ -568,19 +569,30 @@ pub enum DiagnosticCode {
     /// outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its
     /// own.
     E4016,
+    /// A closure that runs only once is copied, returned, passed or written outside a `let`. A
+    /// closure whose body moves a value that it captures can run only once, because a second
+    /// call would move the value again. Write such a closure in a `let` with no type, and call
+    /// it there. A second call of it is E4001.
+    E4017,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements
     /// hold whatever the memory held, so the program says with `unsafe` that it writes each one
     /// before reading it.
     E5001,
-    /// Unsafe memory operation outside unsafe block
+    /// An operation that only an `unsafe` block allows, outside one. An access through a raw
+    /// pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot
+    /// know that the value is still at the address. So is `assume`.
     E5002,
     /// Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or
     /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`.
     /// The program that uses the package gives the flag, so a new version of the package cannot
     /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
     E5003,
+    /// A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that
+    /// takes a `Root` makes the capabilities of the program, so a second start would give them to
+    /// code that did not get them.
+    E5004,
 
     // --- Topology/Hardware Errors (E6xxx) ---
     /// Topology mismatch in function call
@@ -866,6 +878,17 @@ pub enum DiagnosticCode {
     /// function of the module to change a value of the type. Then the invariant holds for each
     /// value of the type outside its module.
     E8014,
+    /// A `safe` extern function that returns a value of a type with an invariant, or takes a
+    /// `&mut` or a `*mut` to such a value. C code does not keep the invariant, and a call of a
+    /// `safe` function needs no `unsafe`. So C code could return or change such a value with no
+    /// mark in the program. Remove `safe`, so that each call is in an `unsafe` block.
+    E8015,
+    /// An `mlir!` block outside `unsafe` that the compiler cannot verify as safe. The compiler
+    /// verifies a block whose operations are on a list of `arith` and `math` operations that give
+    /// a defined result for every input, with no `overflow` or `fastmath` flags, and that takes
+    /// and gives only numbers. Any other block goes in `unsafe { }`, because the compiler does not
+    /// verify what its operations do.
+    E8016,
 }
 
 impl std::fmt::Display for DiagnosticCode {
