@@ -5,9 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// This module hides the low-level FFI C-stubs behind high-level, safe, object-oriented abstractions.
-// The raw C FFI calls are completely hidden from user code.
+// This module hides the C bridge of the llama2.c format behind Vx types. The loaders read files,
+// so each one takes the file right, a `&Files`. They are unsafe, because nothing checks the file
+// that they read.
 
+import std::fs;
 import std::tensor;
 import std::string;
 
@@ -43,11 +45,12 @@ struct LlamaConfig {
 }
 
 impl LlamaConfig {
-  /// Read a checkpoint's header.
+  /// Read a checkpoint's header. The caller needs the file right, a `&Files`.
   ///
-  /// Nothing validates the file: a path that is not a checkpoint gives a config of whatever
-  /// the first seven words happen to be, and the sizes computed from it are then wrong.
-  fn load(filepath: *const i8) -> LlamaConfig {
+  /// Unsafe because nothing checks the file. A missing file gives a null pointer, which this
+  /// reads. A path that is not a checkpoint gives a config of whatever the first seven words
+  /// happen to be, and the sizes computed from it are then wrong.
+  unsafe fn load(_files : &Files, filepath: *const i8) -> LlamaConfig {
     let config_ptr = unsafe { vx_load_config(filepath) };
 
     let config = unsafe {
@@ -146,11 +149,14 @@ impl TransformerWeightOffsets {
     };
   }
 
-  /// Every weight as one 1-by-N tensor, copied out of the mapped checkpoint.
+  /// Every weight as one 1-by-N tensor, copied out of the mapped checkpoint. The caller needs
+  /// the file right, a `&Files`.
   ///
-  /// The length is computed from `c`, so a config that does not match the file reads past its
-  /// end. A copy rather than a view, so the whole model is resident twice while this runs.
-  fn load_all_weights(filepath: *const i8, c: &LlamaConfig) -> Tensor<f32, [?, ?]> {
+  /// Unsafe because the length is computed from `c`, so a config that does not match the file
+  /// reads past its end. A missing file gives a null pointer, which this reads. A copy rather
+  /// than a view, so the whole model is resident twice while this runs.
+  unsafe fn load_all_weights(_files : &Files, filepath: *const i8, c: &LlamaConfig)
+  -> Tensor<f32, [?, ?]> {
     let ptr = unsafe { vx_load_weights(filepath) };
     let dim = c.dim;
     let n_layers = c.n_layers;
@@ -190,8 +196,12 @@ struct Tokenizer {
 unsafe impl Send for Tokenizer {}
 
 impl Tokenizer {
-  /// Read a tokenizer file. `vocab_size` must match the checkpoint's.
-  fn load(filepath: *const i8, vocab_size: i32) -> Tokenizer {
+  /// Read a tokenizer file. `vocab_size` must match the checkpoint's. The caller needs the file
+  /// right, a `&Files`.
+  ///
+  /// Unsafe because nothing checks the file or `vocab_size`. A missing file gives a null
+  /// handle, which `decode` reads.
+  unsafe fn load(_files : &Files, filepath: *const i8, vocab_size: i32) -> Tokenizer {
     let ptr = unsafe { vx_build_tokenizer(filepath, vocab_size) };
     return Tokenizer {
       ptr: ptr

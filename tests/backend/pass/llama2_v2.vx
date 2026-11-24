@@ -11,12 +11,12 @@
 // The externs this program pulls in are declared, and main calls them in order with the
 // values threaded between them -- the dataflow the run below scores, stated in the IR.
 // CHECK-DAG: func.func private @print_str(
-// CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @"LlamaConfig::load"(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<{{.*}}(i32, i32, i32, i32, i32, i32, i32)>
+// CHECK-LABEL: func.func @main_with_root(
+// CHECK: call @"LlamaConfig::load"(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> !llvm.struct<{{.*}}(i32, i32, i32, i32, i32, i32, i32)>
 // CHECK: call @"TransformerWeightOffsets::calculate"(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<{{.*}}(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>
-// CHECK: call @"TransformerWeightOffsets::load_all_weights"(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> memref<?x?xf32>
+// CHECK: call @"TransformerWeightOffsets::load_all_weights"(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> memref<?x?xf32>
 // CHECK: call @malloc_run_state(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, i32, i32, i32, i32, i32) -> !llvm.struct<{{.*}}(ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)>
-// CHECK: call @"Tokenizer::load"(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> !llvm.struct<{{.*}}(ptr)>
+// CHECK: call @"Tokenizer::load"(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr, i32) -> !llvm.struct<{{.*}}(ptr)>
 // CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: %[[V0:.*]] = func.call @transformer(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, !llvm.ptr, !llvm.ptr, !llvm.ptr, memref<{{.*}}>) -> !llvm.ptr
 // CHECK: func.call @argmax(%[[V0]], %{{.*}}) : (!llvm.ptr, i32) -> i32
@@ -386,25 +386,29 @@ fn argmax(probabilities : &mut f32, n : i32) -> i32 {
   return max_i;
 }
 
-fn main() -> i32 {
+fn main(root : Root) -> i32 {
   let model_path : *const i8 = "tests/backend/pass/stories15M.bin";
   let tokenizer_path : *const i8 = "tests/backend/pass/tokenizer.bin";
   let temperature : f32 = 0.0;
 
-  let config = LlamaConfig::load(model_path);
+  let config = unsafe { LlamaConfig::load(&root.files, model_path) };
   let steps : i32 = 256;
   if config.seq_len < steps {
     let s : i32 = config.seq_len;
   }
 
   let weights = TransformerWeightOffsets::calculate(&config);
-  let all_weights = TransformerWeightOffsets::load_all_weights(model_path, &config);
+  let all_weights = unsafe {
+    TransformerWeightOffsets::load_all_weights(&root.files, model_path, &config)
+  };
 
   let mut state = malloc_run_state(config.dim, config.hidden_dim, config.n_layers,
   config.n_heads, config.n_kv_heads,
   config.seq_len, config.vocab_size);
 
-  let tokenizer = Tokenizer::load(tokenizer_path, config.vocab_size);
+  let tokenizer = unsafe {
+    Tokenizer::load(&root.files, tokenizer_path, config.vocab_size)
+  };
 
   let mut next : i32 = 0;
   let mut token : i32 = 1;
