@@ -10,12 +10,16 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 ## Current API and migration
 
+`File::open`, `File::read` and `File::write` are safe. `open` takes the right to open files (a `&Files`, which `main` gets in its `Root`), a `String` path and an `OpenMode`, and gives a `Result<File, FileError>`. `read` and `write` take a `Vec<u8>` and give a `Result<u64, FileError>`. `Folder` narrows the right to the files of one folder. The older raw-pointer methods are `open_c_str`, `read_raw` and `write_raw`.
+
+The incubating `IoError` API adds the methods below. They take raw pointers, so each one is `unsafe`, and none of them needs a `&Files`.
+
 - `File::open_raw(path)` opens a file that exists, for reading. It returns `Result<File, IoError>`.
 - `File::create_raw(path)` makes a file for writing, or makes an existing file empty.
 - `File::create_new_raw(path)` makes a new file for reading and writing, in one step. It fails if the file exists. This is Rust's `File::create_new`.
 - `OpenOptions::new()` turns every choice off. Its setters `read`, `write`, `append`, `create`, `truncate` and `create_new` take a `bool`.
 - `OpenOptions::open_raw(path)` checks the combination of choices, and returns an `IoError` when the open fails.
-- `File::read_raw` and `write_raw` take a raw buffer and a `usize` length. They return `Result<usize, IoError>`.
+- `File::try_read_raw` and `try_write_raw` take a raw buffer and a `usize` length. They return `Result<usize, IoError>`.
 - `File` implements `Seek::seek_to`. `SeekFrom::Start(u64)`, `Current(i64)` and `End(i64)` give the position.
 - `Seek::stream_position` returns the position.
 - `File` owns its handle, and `Drop` closes it. A failed open makes no `File`.
@@ -32,29 +36,23 @@ The Rust file bridge still does the work. [The error contract](io_error_contract
 
 `IoError` is `Copy` today. A later message or cause, as in Rust's `io::Error`, cannot be `Copy`. So adding one removes `Copy`, which breaks a program that copies an `IoError`. The doc comment of `IoError` warns about this. RFC question Q3 decides the shape of the error type, and `Copy` must not decide it first.
 
-## Deprecated APIs
+## Raw-pointer APIs that hide errors
 
-These APIs are deprecated. Each doc comment has a `# Stage` section that names the replacement. Vx has no deprecation attribute yet, so the compiler gives no warning.
+These methods hide errors: a failed `open_c_str` gives a `File` with a null handle, and a failed `read_raw` or `write_raw` gives 0. Use the safe methods, or the incubating `IoError` methods, in new code.
 
-| Deprecated API | Replacement |
+| Method that hides errors | Replacement |
 | --- | --- |
-| `OpenMode` | `OpenOptions` |
-| `File::open(path, OpenMode) -> File` | `File::open_raw`, `create_raw` or `OpenOptions::open_raw` |
-| `File::read(buffer, u64) -> u64` | `File::read_raw(buffer, usize) -> Result<usize, IoError>` |
-| `File::write(buffer, u64) -> u64` | `File::write_raw(buffer, usize) -> Result<usize, IoError>` |
+| `File::open_c_str(path, OpenMode) -> File` | `File::open`, or `File::open_raw`, `create_raw` or `OpenOptions::open_raw` |
+| `File::read_raw(buffer, u64) -> u64` | `File::read(&mut Vec<u8>)`, or `File::try_read_raw(buffer, usize) -> Result<usize, IoError>` |
+| `File::write_raw(buffer, u64) -> u64` | `File::write(&Vec<u8>)`, or `File::try_write_raw(buffer, usize) -> Result<usize, IoError>` |
 | `File::seek(offset, whence) -> i64` | `Seek::seek_to(SeekFrom) -> Result<u64, IoError>` |
-
-The deprecated APIs hide errors: a failed open gives a `File` with a null handle, and a failed read gives 0.
-They keep their names, signatures and behavior until they are removed. The standard library RFC (section 6) says that a deprecated item stays for at least one release before 1.0.
-After the removal, a later safe API can use the names `open`, `read`, `write` and `seek` again. The RFC decides this, not this plan.
 
 New runtime declarations are in `std::fs::raw`. The old runtime and C declarations stay in `std::fs`, so their paths do not change.
 Vx has no private functions yet, so a program can still call these declarations.
 
 ## Safe API gates
 
-The deprecated `File::open`, `read`, `write` and `seek` keep their signatures until a release removes them.
-Until then, a new safe API needs a new name. The names in the table below are placeholders. No API in it has an implementation yet.
+The names in the table below are placeholders. No API in it has an implementation yet.
 
 | Prerequisite | API it enables | Required safety contract |
 | --- | --- | --- |
@@ -79,9 +77,9 @@ The table lists what makes it long, and what removes each part. "No issue yet" m
 | --- | --- | --- |
 | Each call needs `unsafe`, because a buffer is a raw pointer and its size is not checked. | Bounded byte slices | #534 |
 | A path is a raw C string. | A `Path` type that keeps Unix path bytes and refuses an embedded NUL | No issue yet |
-| A string literal is `*const i8`, but `write_raw` takes `*const u8`. A program must copy the text into a `Vec<u8>`. | `str` with `as_bytes()` | #532 |
+| A string literal is `*const i8`, but `try_write_raw` takes `*const u8`. A program must copy the text into a `Vec<u8>`. | `str` with `as_bytes()` | #532 |
 | Vx cannot cast `*const i8` to `*const u8`. | A pointer cast between byte types. This is smaller than `str`, and helps before it. | No issue yet |
-| A write needs a loop, because `write_raw` can take fewer bytes. A read of an exact size also needs a loop. | `write_all` and `read_exact` on slices. Before slices, `write_all_raw` and `read_exact_raw` on raw pointers can remove the loop. | No issue yet |
+| A write needs a loop, because `try_write_raw` can take fewer bytes. A read of an exact size also needs a loop. | `write_all` and `read_exact` on slices. Before slices, `write_all_raw` and `read_exact_raw` on raw pointers can remove the loop. | No issue yet |
 | An `IoError` cannot print itself, so a program calls `message_c_str`. | Text formatting traits, from the core-library plan | No issue yet |
 | `Vec` lengths are `i32`. | `Vec` with 64-bit lengths | #3271 |
 | Each program imports `core::result`, `std::fs` and `std::io`. | A prelude | #529 |
@@ -97,7 +95,7 @@ These questions are open, and have no issue yet:
 - Can `main` return a `Result`, so that `?` works in `main`?
 - Inside a task, the Rust bridge sends each file call to a helper thread, so that the task's worker can run other tasks. That costs a heap allocation, atomic operations, a wake and a park for each call. A benchmark against Rust must measure it, from a plain thread and from inside a task.
 
-[`file_read_and_write_make_one_runtime_call.vx`](../../tests/optimizations/pass/file_read_and_write_make_one_runtime_call.vx) checks that `read_raw` and `write_raw` make one runtime call and no other work after `opt -O3`.
+[`file_read_and_write_make_one_runtime_call.vx`](../../tests/optimizations/pass/file_read_and_write_make_one_runtime_call.vx) checks that `try_read_raw` and `try_write_raw` make one runtime call and no other work after `opt -O3`.
 
 ## Target caller experience
 
@@ -134,8 +132,8 @@ For this plan, assume three prerequisite fixes have merged: `vx_file_drop` has t
 
 - [x] Document the `std::io::Error` contract: portable category, operation, optional native error code, and message on request. Public types and fallible raw file methods are implemented.
 - [x] Define the current three open modes as named choices in Vx. Reject an unknown integer passed directly to the Rust bridge instead of treating it as read/write/create. Richer open options remain future work.
-- [x] Specify byte-transfer results: success returns a count from zero through the requested length; a short positive transfer succeeds. Zero means EOF for a nonempty regular-file read or success for an empty request. An error returns no count and carries a portable category and optional native code. The bridge follows this contract; the Vx `read_raw` and `write_raw` methods expose it.
-- [x] Expose fallible open/read/write through `File::open_raw`, `read_raw`, and `write_raw`. Preserve the explicit legacy methods during migration.
+- [x] Specify byte-transfer results: success returns a count from zero through the requested length; a short positive transfer succeeds. Zero means EOF for a nonempty regular-file read or success for an empty request. An error returns no count and carries a portable category and optional native code. The bridge follows this contract; the Vx `try_read_raw` and `try_write_raw` methods expose it.
+- [x] Expose fallible open/read/write through `File::open_raw`, `try_read_raw`, and `try_write_raw`. Preserve the explicit legacy methods during migration.
 - [ ] Specify what happens on an interrupted call, a write that makes no progress, an invalid handle, and a failed close. Document whether an explicit close consumes the handle even when the OS reports an error.
 - [ ] Define positioned `read_at` and `write_at` using a file byte offset. Keep them independent of the shared file cursor so separate requests can run concurrently. Define how sequential `read`, `write`, and `seek` use that cursor.
 - [ ] When more than one reader or writer needs shared operations, define reusable sequential and positioned interfaces over bounded byte views. Preserve implementation-specific errors, or use an explicit common error type until Vx can support associated error types. Keep `File` usable without requiring these interfaces first.

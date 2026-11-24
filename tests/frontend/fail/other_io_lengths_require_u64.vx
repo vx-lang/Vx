@@ -14,19 +14,16 @@
 import std::io;
 import std::net;
 
-fn main() -> i32 {
+fn use_an_i64_length(stream : &mut TcpStream, socket : &mut UdpSocket) -> void {
   unsafe {
     let length : i64 = 1;
-    let mut stream = TcpStream {
-      ptr: 0 as *mut i8
-    };
-    let mut socket = UdpSocket {
-      ptr: 0 as *mut i8
-    };
     let _stderr_count = stderr_write(0 as *const u8, length);
     let _stdin_count = stdin_read(0 as *mut u8, length);
-    let _write_count = stream.write_raw(0 as *const u8, length);
-    let _send_count = socket.send_to_raw(0 as *const u8, length, "127.0.0.1:0");
+    let _write_count = (*stream).write_raw(0 as *const u8, length);
+    let _send_count = (*socket).send_to_raw(0 as *const u8, length, "127.0.0.1:0");
   }
+}
+
+fn main() -> i32 {
   return 0;
 }

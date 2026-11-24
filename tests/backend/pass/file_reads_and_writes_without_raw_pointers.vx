@@ -1,0 +1,135 @@
+//===- file_reads_and_writes_without_raw_pointers.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that gets the file right, a `&Files`, opens, writes and reads a file with no
+// `unsafe`. Each call gives a `Result`, and a failed call gives the reason: `NotFound` for a
+// missing file, `BadPath` for a path with a NUL byte, and the error number of the system for a
+// read of a file that is open only for writing (9, `EBADF` on Linux and macOS).
+// The RUN lines give the paths in FILE and MISSING. The test runner gives no such variables, so
+// NO_EXEC.
+//
+// NO_EXEC
+// RUN: rm -f %t.missing
+// RUN: env FILE=%t MISSING=%t.missing vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env FILE=%t MISSING=%t.missing vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: rm -f %t
+// CHECK: {{^}}write: 3{{$}}
+// CHECK-NEXT: {{^}}read 3 bytes: 7 8 9{{$}}
+// CHECK-NEXT: {{^}}read at the end: 0{{$}}
+// CHECK-NEXT: {{^}}open a missing file: NotFound{{$}}
+// CHECK-NEXT: {{^}}open a path with a NUL byte: BadPath{{$}}
+// CHECK-NEXT: {{^}}read a file open for writing: Os(9){{$}}
+
+import core::convert;
+import core::result;
+import std::fs;
+import std::string;
+import std::vec;
+
+extern {
+  fn getenv(name : *const i8) -> *const i8;
+}
+
+/// `text` with a NUL byte after it.
+fn with_a_nul(text : *const i8) -> String {
+  let length = unsafe { string_length(text) };
+  let s = unsafe {
+    String::from_raw(vx_string_with_len(i64::from(length + 1)))
+  };
+  let p = unsafe { vx_string_as_mut_ptr(s.ptr) };
+  for i in 0..length {
+    unsafe { p[i] = text[i]; }
+  }
+  return s;
+}
+
+fn report_error(call : *const i8, e : FileError) -> void {
+  match e {
+    FileError::BadPath => {
+      println!("{}: BadPath", call);
+    }
+    FileError::NotFound => {
+      println!("{}: NotFound", call);
+    }
+    FileError::PermissionDenied => {
+      println!("{}: PermissionDenied", call);
+    }
+    FileError::NotInFolder => {
+      println!("{}: NotInFolder", call);
+    }
+    FileError::Os(code) => {
+      println!("{}: Os({})", call, code);
+    }
+  }
+}
+
+fn report_count(call : *const i8, result : Result<u64, FileError>) -> void {
+  match result {
+    Result<u64, FileError>::Ok(count) => {
+      println!("{}: {}", call, count);
+    }
+    Result<u64, FileError>::Err(e) => {
+      report_error(call, e);
+    }
+  }
+}
+
+fn report_open(call : *const i8, result : Result<File, FileError>) -> void {
+  match result {
+    Result<File, FileError>::Ok(_file) => {
+      println!("{}: opened", call);
+    }
+    Result<File, FileError>::Err(e) => {
+      report_error(call, e);
+    }
+  }
+}
+
+fn eight_zeros() -> Vec<u8> {
+  let mut buffer = Vec<u8>::new();
+  for _i in 0..8 {
+    buffer.push(0u8);
+  }
+  return buffer;
+}
+
+fn write_three_bytes(files : &Files, path : &String) -> Result<u64, FileError> {
+  let mut out = File::open(files, path, OpenMode::Write())?;
+  let mut bytes = Vec<u8>::new();
+  bytes.push(7u8);
+  bytes.push(8u8);
+  bytes.push(9u8);
+  return out.write(&bytes);
+}
+
+// Reads the three bytes, then reads again at the end of the file.
+fn read_back(files : &Files, path : &String) -> Result<u64, FileError> {
+  let mut input = File::open(files, path, OpenMode::Read())?;
+  let mut buffer = eight_zeros();
+  let n = input.read(&mut buffer)?;
+  println!("read {} bytes: {} {} {}", n, buffer.get(0), buffer.get(1), buffer.get(2));
+  return input.read(&mut buffer);
+}
+
+fn read_a_file_open_for_writing(files : &Files, path : &String) -> Result<u64, FileError> {
+  let mut out = File::open(files, path, OpenMode::Write())?;
+  let mut buffer = eight_zeros();
+  return out.read(&mut buffer);
+}
+
+fn main(root : Root) -> i32 {
+  let files = &root.files;
+  let path = unsafe { String::from_c_str(getenv("FILE")) };
+  let missing = unsafe { String::from_c_str(getenv("MISSING")) };
+  report_count("write", write_three_bytes(files, &path));
+  report_count("read at the end", read_back(files, &path));
+  report_open("open a missing file", File::open(files, &missing, OpenMode::Read()));
+  let nul_path = with_a_nul(unsafe { getenv("FILE") });
+  report_open("open a path with a NUL byte", File::open(files, &nul_path, OpenMode::Read()));
+  report_count("read a file open for writing", read_a_file_open_for_writing(files, &path));
+  return 0;
+}

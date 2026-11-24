@@ -622,14 +622,15 @@ fn fallible_file_write_preserves_the_os_error() -> Result<(), String> {
 }
 
 #[test]
-fn fallible_open_reports_missing_paths_and_clears_invalid_outputs() -> Result<(), String> {
+fn options_open_reports_missing_paths_and_clears_invalid_outputs() -> Result<(), String> {
     let dir = tempfile::tempdir().map_err(|error| format!("create directory: {error}"))?;
     let missing = dir.path().join("missing");
     let path = std::ffi::CString::new(missing.to_str().ok_or("temporary path is not UTF-8")?)
         .map_err(|error| format!("encode path: {error}"))?;
     let mut out = std::ptr::null_mut();
     let (mut code, mut has_code) = (99, false);
-    let status = unsafe { vx_file_try_open(path.as_ptr(), 0, &mut out, &mut code, &mut has_code) };
+    let status =
+        unsafe { _vx_file_open_options(path.as_ptr(), 1, &mut out, &mut code, &mut has_code) };
     expect_equal(status, 1, "missing path category")?;
     expect_equal(out.is_null(), true, "failed open must not return a handle")?;
     let expected = std::fs::File::open(&missing)
@@ -644,7 +645,7 @@ fn fallible_open_reports_missing_paths_and_clears_invalid_outputs() -> Result<()
         code = 99;
         has_code = true;
         let status = unsafe {
-            vx_file_try_open(
+            _vx_file_open_options(
                 if null_output == 4 {
                     std::ptr::null()
                 } else {
@@ -679,7 +680,8 @@ fn fallible_open_reports_missing_paths_and_clears_invalid_outputs() -> Result<()
             expect_equal(!has_code, true, "clear native flag")?;
         }
     }
-    let status = unsafe { vx_file_try_open(path.as_ptr(), 1, &mut out, &mut code, &mut has_code) };
+    let status =
+        unsafe { _vx_file_open_options(path.as_ptr(), 26, &mut out, &mut code, &mut has_code) };
     expect_equal(
         (status, code, has_code),
         (0, 0, false),
@@ -899,5 +901,48 @@ fn a_read_larger_than_i32_max_is_a_short_read() -> Result<(), String> {
     expect_equal((status, code, has_code), (0, 0, false), "large read status")?;
     expect_equal(count, 1, "large read count")?;
     expect_equal(first, b'A', "large read byte")?;
+    Ok(())
+}
+
+#[test]
+fn fallible_file_open_reports_the_file_or_the_error() -> Result<(), String> {
+    let dir = tempfile::tempdir().map_err(|error| format!("create test directory: {error}"))?;
+    let present = dir.path().join("present");
+    std::fs::write(&present, b"P").map_err(|error| format!("create test file: {error}"))?;
+    let c_path = |path: &std::path::Path| {
+        std::ffi::CString::new(path.to_string_lossy().as_bytes())
+            .map_err(|error| format!("path contains a NUL byte: {error}"))
+    };
+    // A non-null start value shows that a failed open stores null.
+    let mut marker = 0u8;
+    let marker: *mut std::ffi::c_void = (&mut marker as *mut u8).cast();
+    let open = |path: *const std::ffi::c_char| {
+        let mut file = marker;
+        let mut code = 99;
+        let status = unsafe { vx_file_try_open(path, 0, &mut file, &mut code) };
+        (status, file, code)
+    };
+
+    let (status, file, code) = open(c_path(&present)?.as_ptr());
+    if status != 0 || file.is_null() || code != 0 {
+        return Err(format!("open of a file gave status {status}, code {code}"));
+    }
+    vx_file_drop(file);
+
+    let missing = dir.path().join("missing");
+    let expected = std::fs::File::open(&missing).expect_err("the file must be missing");
+    let (status, file, code) = open(c_path(&missing)?.as_ptr());
+    if status != 1 || !file.is_null() || Some(code) != expected.raw_os_error() {
+        return Err(format!(
+            "open of a missing file gave status {status}, code {code}"
+        ));
+    }
+
+    let (status, file, code) = open(std::ptr::null());
+    if status != 4 || !file.is_null() || code != 0 {
+        return Err(format!(
+            "open of a null path gave status {status}, code {code}"
+        ));
+    }
     Ok(())
 }

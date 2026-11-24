@@ -65,7 +65,7 @@ trait Seek {
   /// ```vx
   /// let mut file = (unsafe { File::create_raw("/tmp/vx_example_position.txt") }).unwrap();
   /// let letter : u8 = 65;
-  /// (unsafe { file.write_raw((&letter) as *const u8, 1) }).unwrap();
+  /// (unsafe { file.try_write_raw((&letter) as *const u8, 1) }).unwrap();
   /// assert(file.stream_position().unwrap() == 1, "one byte after the start");
   /// ```
   fn stream_position(self : &mut Self) -> Result<u64, IoError> {

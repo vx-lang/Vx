@@ -1,0 +1,51 @@
+//===- the_file_right_cannot_be_forged.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A `Files` is the right to open files. Only `std::fs` can make one, and a program gets one in its
+// `Root`. Code in another file cannot:
+// - copy a `Files` with an `impl Copy` (E3066),
+// - make a `Files` with a struct literal (E8014),
+// - get the file right of the program without `unsafe` (E5001),
+// - open a file without a `&Files` (E3010),
+// - make a `CPath`, the copy of a path that `File::open` gives to the Rust core. A drop of a
+//   forged one would free memory that it does not own (E8014).
+import std::fs;
+import std::string;
+
+impl Copy for Files {}
+
+fn forged() -> Files {
+  return Files {};
+}
+
+fn taken() -> Files {
+  return files_of_the_program();
+}
+
+fn without_a_right(path : &String) -> i32 {
+  let _file = File::open(path, OpenMode::Read());
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+fn forged_path(path : &String) -> i32 {
+  let _c = CPath {
+    ptr : path.ptr as *const i8
+  };
+  return 0;
+}
+
+// CHECK: Error[E3066] at {{.*}}.vx:21:1: `impl Copy for Files` is in `the_file_right_cannot_be_forged.vx`, and `fs.vx` declares `Files`
+// CHECK: Error[E8014] at {{.*}}.vx:24:10: this struct literal builds a `Files`. `Files` has an invariant, so only code in `fs.vx` can build it
+// CHECK: Error[E5001] at {{.*}}.vx:28:10: Call to unsafe function 'files_of_the_program' is unsafe
+// CHECK: Error[E3010] at {{.*}}.vx:32:15: Function 'File::open' expects 3 arguments, got 2
+// CHECK: Error[E8014] at {{.*}}.vx:41:12: this struct literal builds a `CPath`. `CPath` has an invariant, so only code in `fs.vx` can build it

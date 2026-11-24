@@ -32,8 +32,8 @@ fn bytes(text : *const i8) -> Vec<u8> {
   return v;
 }
 
-fn client(addr : &String) -> Result<u64, NetError> {
-  let stream = TcpStream::connect(addr)?;
+fn client(network : &Network, addr : &String) -> Result<u64, NetError> {
+  let stream = TcpStream::connect(network, addr)?;
   let mut out = TcpBufWriter::new(stream);
   let _first = out.write(&bytes("first line\n"))?;
   let _second = out.write(&bytes("second line\n"))?;
@@ -59,13 +59,14 @@ fn server(listener : TcpListener) -> Result<u64, NetError> {
   return Result<u64, NetError>::Ok(count);
 }
 
-fn main() -> i32 {
+fn main(root : Root) -> i32 {
+  let network = &root.network;
   let addr = unsafe { String::from_c_str("127.0.0.1:41765") };
-  match TcpListener::bind(&addr) {
+  match TcpListener::bind(network, &addr) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
-          let _sent = client(&addr);
+          let _sent = client(network, &addr);
         };
         let _read = server(listener);
       }

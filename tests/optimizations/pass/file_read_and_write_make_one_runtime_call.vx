@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// After `opt -O3`, `File::read_raw` and `File::write_raw` call the Rust runtime once. They make
-// no other call and no other store, except to report an error.
+// After `opt -O3`, `File::try_read_raw` and `File::try_write_raw` call the Rust runtime once.
+// They make no other call and no other store, except to report an error.
 //
 // Each RUN line cuts one function out of the IR, and keeps each call and each store in it. A
 // sorted list has a fixed order, so the CHECK-NEXT lines must match the whole list:
@@ -20,8 +20,8 @@
 // as an allocation, makes this test fail. Then measure the cost, and update the checks if the new
 // code is needed.
 //
-// RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -O3 -S | awk '/^define .*File\$read_raw"\(/,/^}/' | grep -o -E '(call [^@]*@[A-Za-z_]+|store [a-z0-9]+)' | LC_ALL=C sort | FileCheck %s --check-prefix=READ --implicit-check-not='call ' --implicit-check-not='store ' # flat-codegen
-// RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -O3 -S | awk '/^define .*File\$write_raw"\(/,/^}/' | grep -o -E '(call [^@]*@[A-Za-z_]+|store [a-z0-9]+)' | LC_ALL=C sort | FileCheck %s --check-prefix=WRITE --implicit-check-not='call ' --implicit-check-not='store ' # flat-codegen
+// RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -O3 -S | awk '/^define .*File\$try_read_raw"\(/,/^}/' | grep -o -E '(call [^@]*@[A-Za-z_]+|store [a-z0-9]+)' | LC_ALL=C sort | FileCheck %s --check-prefix=READ --implicit-check-not='call ' --implicit-check-not='store ' # flat-codegen
+// RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -O3 -S | awk '/^define .*File\$try_write_raw"\(/,/^}/' | grep -o -E '(call [^@]*@[A-Za-z_]+|store [a-z0-9]+)' | LC_ALL=C sort | FileCheck %s --check-prefix=WRITE --implicit-check-not='call ' --implicit-check-not='store ' # flat-codegen
 
 // READ: call i32 @_vx_file_try_read
 // READ-NEXT: call i64 @write
@@ -48,7 +48,7 @@ fn main() -> i32 {
     File::create_raw("/tmp/vx_file_read_and_write_codegen.txt")
   }).unwrap();
   let mut byte : u8 = 65;
-  let wrote = (unsafe { file.write_raw((&byte) as *const u8, 1) }).unwrap();
-  let read = (unsafe { file.read_raw((&mut byte) as *mut u8, 1) }).unwrap();
+  let wrote = (unsafe { file.try_write_raw((&byte) as *const u8, 1) }).unwrap();
+  let read = (unsafe { file.try_read_raw((&mut byte) as *mut u8, 1) }).unwrap();
   return (wrote + read) as i32;
 }

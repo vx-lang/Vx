@@ -358,6 +358,14 @@ impl<'a> TypeChecker<'a> {
             {
                 return target_ty;
             }
+            // Any pointer to `*const void` in the same memory: an address that no program can
+            // read through, as C's `void *`.
+            (Type::Pointer(_, from_space, _), Type::Pointer(to, to_space, _))
+                if matches!(to.as_ref(), Type::Struct(n, None) if n.as_ref() == "void")
+                    && from_space == to_space =>
+            {
+                return target_ty;
+            }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
                 if self.unsafe_is_missing() {

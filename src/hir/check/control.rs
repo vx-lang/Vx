@@ -2030,6 +2030,7 @@ impl<'a> TypeChecker<'a> {
                     name: struct_name.clone().into(),
                     fields,
                     type_id: None,
+                    made_by_the_compiler: true,
                     span: e.span,
                 });
 

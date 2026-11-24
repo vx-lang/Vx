@@ -5,7 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A pointer cast may change `const` to `mut`, not what the pointer points at.
+// A pointer cast may change `const` to `mut`, not what the pointer points at. Only a cast to
+// `void` drops the element type (a_void_pointer_cannot_be_read.vx).
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 

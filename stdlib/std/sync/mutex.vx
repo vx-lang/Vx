@@ -54,6 +54,8 @@ struct MutexGuard<T> {
   sleepers : &AtomicI64,
   holder : &AtomicI64,
   value : *mut T,
+
+  invariant true,
 }
 
 impl<T>

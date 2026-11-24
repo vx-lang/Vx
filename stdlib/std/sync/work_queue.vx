@@ -35,6 +35,8 @@ struct WorkReceiver<T> {
   cap : i64,
   // The line that made the work queue, for the deadlock report.
   made : Location,
+
+  invariant true,
 }
 
 unsafe impl<T : Send> Send for WorkReceiver<T> {}

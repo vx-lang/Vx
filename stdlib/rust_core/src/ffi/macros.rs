@@ -404,51 +404,106 @@ macro_rules! instantiate_file_ffi {
             }
         }
 
+        /// The options of a mode of the Vx `OpenMode`: 0 reads, 1 writes, 2 reads, writes and
+        /// creates. An unknown mode aborts, before the path is read.
+        fn vx_file_open_options(mode: i32) -> std::fs::OpenOptions {
+            let mut opts = std::fs::OpenOptions::new();
+            match mode {
+                0 => {
+                    opts.read(true);
+                }
+                1 => {
+                    opts.write(true).create(true).truncate(true);
+                }
+                2 => {
+                    opts.read(true).write(true).create(true);
+                }
+                _ => {
+                    eprintln!("vx_file_open received unknown mode {mode}");
+                    std::process::abort();
+                }
+            }
+            opts
+        }
+
+        /// Opens a NUL-terminated path. A null path, or off Unix a path that is not UTF-8,
+        /// gives `InvalidInput`.
+        ///
+        /// # Safety
+        /// A non-null `c_path` must point at a NUL-terminated string.
+        unsafe fn vx_file_open_path(
+            c_path: *const std::ffi::c_char,
+            opts: &std::fs::OpenOptions,
+        ) -> std::io::Result<std::fs::File> {
+            let bad_path = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
+            if c_path.is_null() {
+                return Err(bad_path());
+            }
+            let c_path = unsafe { std::ffi::CStr::from_ptr(c_path) };
+            #[cfg(unix)]
+            let path = {
+                use std::os::unix::ffi::OsStrExt;
+                std::ffi::OsStr::from_bytes(c_path.to_bytes())
+            };
+            #[cfg(not(unix))]
+            let path = c_path.to_str().map_err(|_| bad_path())?;
+            $off_the_worker(|| opts.open(path))
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_file_open(
             c_path: *const std::ffi::c_char,
             mode: i32,
         ) -> *mut std::ffi::c_void {
-            if !(0..=2).contains(&mode) {
-                eprintln!("vx_file_open received unknown mode {mode}");
-                std::process::abort();
+            let opts = vx_file_open_options(mode);
+            match unsafe { vx_file_open_path(c_path, &opts) } {
+                Ok(file) => Box::into_raw(Box::new(file)) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
             }
-            let mut out = std::ptr::null_mut();
-            let (mut code, mut has_code) = (0, false);
-            unsafe { vx_file_try_open(c_path, mode, &mut out, &mut code, &mut has_code) };
-            out
         }
 
-        /// Compatibility entry point for the original three opening modes.
+        /// Opens `c_path` as `vx_file_open` does. On success it gives 0 and stores the file in
+        /// `*file`. Else it stores null in `*file` and gives the error category of
+        /// `_vx_file_try_read`. It stores the error number of the system in `*native_code`, or 0
+        /// when there is none.
         ///
         /// # Safety
-        /// The path and outputs follow `_vx_file_open_options`'s contract.
+        /// A non-null `c_path` must point at a NUL-terminated string. `file` and `native_code`
+        /// must be non-null, aligned and writable.
         #[no_mangle]
         pub unsafe extern "C" fn vx_file_try_open(
-            path: *const std::ffi::c_char,
+            c_path: *const std::ffi::c_char,
             mode: i32,
-            out: *mut *mut std::ffi::c_void,
-            code: *mut i32,
-            has_code: *mut bool,
+            file: *mut *mut std::ffi::c_void,
+            native_code: *mut i32,
         ) -> i32 {
-            // The three `OpenMode` values: Read, Write and ReadWriteCreate.
-            let options = match mode {
-                0 => VX_FILE_OPEN_READ,
-                1 => VX_FILE_OPEN_WRITE | VX_FILE_OPEN_CREATE | VX_FILE_OPEN_TRUNCATE,
-                2 => VX_FILE_OPEN_READ | VX_FILE_OPEN_WRITE | VX_FILE_OPEN_CREATE,
-                _ => -1,
-            };
-            unsafe { _vx_file_open_options(path, options, out, code, has_code) }
+            let opts = vx_file_open_options(mode);
+            unsafe {
+                *file = std::ptr::null_mut();
+                *native_code = 0;
+            }
+            match unsafe { vx_file_open_path(c_path, &opts) } {
+                Ok(opened) => {
+                    unsafe { *file = Box::into_raw(Box::new(opened)) as *mut std::ffi::c_void };
+                    VX_FILE_STATUS_OK
+                }
+                Err(error) => {
+                    let mut has_native_code = false;
+                    unsafe { vx_file_store_error(&error, native_code, &mut has_native_code) }
+                }
+            }
         }
 
-        /// Classify a native error without allocating or losing its exact code.
+        /// The `IoError` category of an error number of the system.
         #[no_mangle]
         pub extern "C" fn _vx_io_error_kind(code: i32) -> i32 {
             vx_file_error_kind(std::io::Error::from_raw_os_error(code).kind())
         }
 
-        /// Open with the byte-transfer status encoding and optional native error code.
-        /// Invalid arguments return -1. Every provided output is cleared before validation.
+        /// Opens `c_path` with the bits of `OpenOptions`. On success it gives 0 and stores the
+        /// file in `*out`. Else it gives the error category of `_vx_file_try_read`, and stores
+        /// the error number of the system in `*native_code`. Unknown bits or a null pointer give
+        /// -1. The function clears every non-null output before it checks the arguments.
         ///
         /// # Safety
         /// A non-null path must name a live NUL-terminated string. Each non-null output
@@ -490,19 +545,7 @@ macro_rules! instantiate_file_ffi {
                 .create(options & VX_FILE_OPEN_CREATE != 0)
                 .truncate(options & VX_FILE_OPEN_TRUNCATE != 0)
                 .create_new(options & VX_FILE_OPEN_CREATE_NEW != 0);
-
-            let c_path = unsafe { std::ffi::CStr::from_ptr(c_path) };
-            #[cfg(unix)]
-            let path = {
-                use std::os::unix::ffi::OsStrExt;
-                std::ffi::OsStr::from_bytes(c_path.to_bytes())
-            };
-            #[cfg(not(unix))]
-            let path = match c_path.to_str() {
-                Ok(path) => path,
-                Err(_) => return VX_FILE_STATUS_INVALID_ARGUMENT,
-            };
-            match $off_the_worker(|| opts.open(path)) {
+            match unsafe { vx_file_open_path(c_path, &opts) } {
                 Ok(file) => {
                     unsafe {
                         *out = Box::into_raw(Box::new(file)).cast();

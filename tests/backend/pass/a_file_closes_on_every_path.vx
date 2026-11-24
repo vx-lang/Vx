@@ -31,7 +31,7 @@ fn lowest_free_descriptor() -> i32 {
 unsafe fn write_to_a_reader(path : *const i8) -> Result<usize, IoError> {
   let mut file = (unsafe { File::open_raw(path) })?;
   let byte : u8 = 65;
-  let count = (unsafe { file.write_raw((&byte) as *const u8, 1) })?;
+  let count = (unsafe { file.try_write_raw((&byte) as *const u8, 1) })?;
   return Result<usize, IoError>::Ok(count);
 }
 

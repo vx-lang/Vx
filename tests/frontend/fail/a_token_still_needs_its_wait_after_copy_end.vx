@@ -1,0 +1,27 @@
+//===- a_token_still_needs_its_wait_after_copy_end.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t.copy_end()` borrows the token `t` and does not take it. So a token with a `copy_end` and no
+// `wait` still gets E6036. A token gives the address of its tensor with `as_ptr`, but not with
+// `as_mut_ptr`, because the copy may still write the tensor.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: .vx:[[@LINE+12]]:{{[0-9]+}}: Cannot call as_mut_ptr on Token<Tensor<f32, [4], Memory::GPU_HBM>>
+// CHECK-DAG: E6036] at {{.*}}.vx:[[@LINE+9]]:{{[0-9]+}}: the transfer token 't' is dropped with no `.wait()`
+// CHECK-NOT: '_w' is dropped
+
+import std::sync::select;
+
+fn main() -> i32 {
+  let ready = transfer_async(Tensor<f32, [4]>::fill(2.0), Memory::GPU_HBM);
+  let _read = ready.as_ptr();
+  let _x = ready.wait();
+  let t = transfer_async(Tensor<f32, [4]>::fill(1.0), Memory::GPU_HBM);
+  let _e = t.copy_end();
+  let _w = t.as_mut_ptr();
+  return 0;
+}

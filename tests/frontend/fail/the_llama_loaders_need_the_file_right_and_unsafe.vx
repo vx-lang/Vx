@@ -1,0 +1,21 @@
+//===- the_llama_loaders_need_the_file_right_and_unsafe.vx -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The loaders of `std::llama` read files, so each one takes the file right, a `&Files`. Nothing
+// checks the file that they read, so each one is also unsafe.
+import std::llama;
+
+fn main(root : Root) -> i32 {
+  let path : *const i8 = "model.bin";
+  // CHECK: Error[E5001] at {{.*}}.vx:[[@LINE+1]]:16: Call to unsafe function 'LlamaConfig::load' is unsafe and requires unsafe function or block{{$}}
+  let config = LlamaConfig::load(&root.files, path);
+  // CHECK: Error[E3010] at {{.*}}.vx:[[@LINE+1]]:28: Function 'Tokenizer::load' expects 3 arguments, got 2{{$}}
+  let tokenizer = unsafe { Tokenizer::load(path, 32000) };
+  return config.dim + tokenizer.decode(0, 1).len();
+}

@@ -61,7 +61,7 @@ fn main() -> i32 {
   let created = unsafe { File::create_new_raw(path) };
   assert(created.is_ok(), "create_new_raw of a new path failed");
   let mut file = created.unwrap();
-  let written = unsafe { file.write_raw((&byte) as *const u8, 1) };
+  let written = unsafe { file.try_write_raw((&byte) as *const u8, 1) };
   assert(written.is_ok(), "the write after create_new_raw failed");
   assert(written.unwrap() == 1, "the write after create_new_raw did not take one byte");
 
@@ -82,7 +82,7 @@ fn main() -> i32 {
   assert(here.unwrap() == 0, "stream_position after the seek to the start is not 0");
 
   let mut read_back : u8 = 0;
-  let read = unsafe { file.read_raw((&mut read_back) as *mut u8, 1) };
+  let read = unsafe { file.try_read_raw((&mut read_back) as *mut u8, 1) };
   assert(read.is_ok(), "a read from a file that create_new_raw opened failed");
   assert(read.unwrap() == 1, "a read from a file that create_new_raw opened did not get one byte");
   assert(read_back == byte, "the read did not get the byte that the write took");
@@ -126,7 +126,7 @@ fn main() -> i32 {
   assert(appending.is_ok(), "opening with append failed");
   let mut appended = appending.unwrap();
   assert(appended.seek_to(SeekFrom::Start(0)).is_ok(), "a seek to the start with append failed");
-  let added = unsafe { appended.write_raw((&byte) as *const u8, 1) };
+  let added = unsafe { appended.try_write_raw((&byte) as *const u8, 1) };
   assert(added.is_ok(), "the write with append failed");
   assert(added.unwrap() == 1, "the write with append did not take one byte");
   let after_append = appended.stream_position();
@@ -147,7 +147,7 @@ fn main() -> i32 {
   let reading = unsafe { read_only.open_raw(path) };
   assert(reading.is_ok(), "opening with write turned off failed");
   let mut reader = reading.unwrap();
-  let denied_result = unsafe { reader.write_raw((&byte) as *const u8, 1) };
+  let denied_result = unsafe { reader.try_write_raw((&byte) as *const u8, 1) };
   assert(denied_result.is_err(), "a write with write turned off did not give an error");
   let denied_operation = match denied_result.unwrap_err().operation() {
     Operation::Write() => {

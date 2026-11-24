@@ -674,6 +674,7 @@ impl<'a> TypeChecker<'a> {
                 name,
                 fields,
                 type_id,
+                made_by_the_compiler,
                 span: literal_span,
             }) => {
                 let literal_span = *literal_span;
@@ -687,7 +688,9 @@ impl<'a> TypeChecker<'a> {
                     }
                     generic_args = args;
                 }
-                self.check_struct_literal_module(base_name.as_ref(), &literal_span);
+                if !*made_by_the_compiler {
+                    self.check_struct_literal_module(base_name.as_ref(), &literal_span);
+                }
 
                 // Attach the struct's resolved GID so downstream consumers (the flat-HIR lowerer)
                 // reach its registry layout without re-resolving the name (#199). Resolved through the

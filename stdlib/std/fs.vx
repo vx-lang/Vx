@@ -5,36 +5,42 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Files on the host: open, read, write and seek.
+// Files and the right to open them. A program gets the right, a `Files`, in its `Root`
+// (`std::root`), and passes `&root.files` to `File::open`, or to a function that calls it.
 //
 // Layer: the OS layer. Runs on: the host only. `File` is `HostOnly`.
 //
-// Stage: `OpenOptions`, the `File` methods that end in `_raw`, and `Seek for File` are
-// incubating, with the feature name `file_io_errors`. `OpenMode` and the methods `File::open`,
-// `read`, `write` and `seek` are deprecated.
-//
-// Differences from Rust:
-//
-// - A path or a buffer is a raw pointer, because Vx has no slices and no path type yet. So each
-//   method that takes one is `unsafe`, and its name ends in `_raw`.
-// - A buffer must not be null, also for an empty request.
-// - `Seek::seek_to` is Rust's `Seek::seek`. The deprecated `File::seek` has the name `seek`.
-// - `OpenOptions` setters take the options by value and return them. Rust's take `&mut self`.
+// Stage: `OpenOptions`, `File::open_raw`, `create_raw`, `create_new_raw`, `try_read_raw`,
+// `try_write_raw` and `Seek for File` are incubating, with the feature name `file_io_errors`.
+// They give an `IoError` from `std::io`. They take raw pointers and need no `&Files`, so each
+// one is `unsafe`.
 //===----------------------------------------------------------------------===//
 import core::marker;
 import core::ops;
+import core::ptr;
 import core::result;
 import std::io;
+import std::string;
+import std::vec;
 
 import std::fs::raw;
-
 extern {
-  /// The Rust core behind `File::open`. Null when the open fails.
+  /// The Rust core behind `File::open_c_str`. Null when the open fails.
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
-  /// The Rust core behind `File::read`.
+  /// The Rust core behind `File::open`: 0 and the file in `*file`, or the category of the error
+  /// and the error number of the system.
+  fn vx_file_try_open(c_path : *const i8, mode : i32, file : *mut *mut i8,
+  native_code : *mut i32) -> i32;
+  /// The Rust core behind `File::read_raw`.
   fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
-  /// The Rust core behind `File::write`.
+  /// The Rust core behind `File::write_raw`.
   fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : u64) -> u64;
+  /// The Rust core behind `Folder::open`, with the outputs of `vx_file_try_open`.
+  fn vx_folder_open(c_path : *const i8, folder : *mut *mut i8, native_code : *mut i32) -> i32;
+  /// The Rust core behind `Folder::open_file` and `Folder::open_folder`. 13 means that the name
+  /// does not name a file inside the folder.
+  fn vx_folder_open_file(folder : *mut i8, c_name : *const i8, want_folder : i32,
+  out : *mut *mut i8, native_code : *mut i32) -> i32;
   /// The Rust core behind `File::seek`.
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   /// The Rust core behind dropping a `File`.
@@ -59,7 +65,6 @@ extern {
   fn munmap(addr: *mut i8, len: i64) -> i32;
 }
 
-
 // The bits of `OpenOptions`. The Rust bridge reads the same bits in `_vx_file_open_options`.
 const _OPEN_READ : i32 = 1;
 const _OPEN_WRITE : i32 = 2;
@@ -68,11 +73,80 @@ const _OPEN_CREATE : i32 = 8;
 const _OPEN_TRUNCATE : i32 = 16;
 const _OPEN_CREATE_NEW : i32 = 32;
 
-/// The three ways that `File::open` can open a file.
-///
-/// # Stage
-///
-/// Deprecated. Use `OpenOptions`, which sets each choice on its own.
+/// The right to open files. Only this file can make a `Files`, and a program gets one in its
+/// `Root` (`std::root`). A function that gets a `&Files` uses it during the call and cannot keep
+/// it.
+struct Files {
+  invariant true,
+}
+
+/// The file right of the program, for `std::root`. Unsafe because a second `Files` gives the
+/// right to code that did not get it.
+unsafe fn files_of_the_program() -> Files {
+  return Files {};
+}
+
+/// Why a file call did not work.
+enum FileError {
+  // The path holds a NUL byte, so the system cannot read it.
+  BadPath,
+  // No file has the path, or a folder of the path is missing.
+  NotFound,
+  // The system does not let the program open the file in the mode, or change it.
+  PermissionDenied,
+  // The name does not name a file inside the folder: it is empty or absolute, it has a `..`
+  // part, or a part of it is a symbolic link.
+  NotInFolder,
+  // Another failure, with the error number of the system, or 0 when it gave none.
+  Os(i32),
+}
+
+impl Copy for FileError {}
+
+/// The `FileError` of a status that is not 0. The status is a category of the Rust core.
+fn file_error(status : i32, native_code : i32) -> FileError {
+  if status == 1 {
+    return FileError::NotFound;
+  }
+  if status == 2 {
+    return FileError::PermissionDenied;
+  }
+  if status == 13 {
+    return FileError::NotInFolder;
+  }
+  return FileError::Os(native_code);
+}
+
+/// A NUL-terminated copy of a path, for the Rust core. A drop releases it. The invariant lets
+/// only this file make a `CPath` or change its pointer.
+struct CPath {
+  ptr : *const i8,
+
+  invariant true,
+}
+
+impl CPath {
+  /// A copy of `path`, or `BadPath` when `path` holds a NUL byte, because a C string ends at its
+  /// first NUL.
+  fn of(path : &String) -> Result<CPath, FileError> {
+    let ptr = unsafe { vx_string_try_as_c_str(path.ptr) };
+    if is_null(ptr) {
+      return Result<CPath, FileError>::Err(FileError::BadPath);
+    }
+    return Result<CPath, FileError>::Ok(CPath {
+      ptr : ptr
+    });
+  }
+}
+
+impl Drop for CPath {
+  /// Release the copy.
+  fn drop(self : &mut CPath) -> void {
+    let _freed = unsafe { vx_string_free_c_str(self.ptr) };
+  }
+}
+
+/// The three file-opening behaviors supported by the current host bridge.
 enum OpenMode {
   Read,
   Write,
@@ -81,20 +155,136 @@ enum OpenMode {
 
 impl Copy for OpenMode {}
 
-/// An open file on the host. Dropping a `File` closes it.
+/// An open file, held by the Rust core behind an opaque pointer.
 ///
-/// The Rust runtime holds the file behind an opaque pointer. A `File` cannot go into device code,
-/// because it holds a host handle.
+/// Closed when it is dropped.
 struct File {
   ptr : *mut i8,
+
+  invariant true,
 }
 
+
 // The handle may move to another task. It is not `Sync`, because each method takes
-// a mutable receiver. A shared `&File` cannot perform file operations.
+// `*mut File`, so a shared `&File` has no use yet.
 unsafe impl Send for File {}
 impl HostOnly for File {}
 
+/// The code of a mode for the Rust core.
+fn open_mode_code(mode : OpenMode) -> i32 {
+  // Read uses code 0; the other modes replace it below.
+  let mut mode_code : i32 = 0;
+  match mode {
+    OpenMode::Read() => {},
+    OpenMode::Write() => {
+      mode_code = 1;
+    }
+    OpenMode::ReadWriteCreate() => {
+      mode_code = 2;
+    }
+  }
+  return mode_code;
+}
+
 impl File {
+  /// Open `path` with a named mode. The caller needs the file right, a `&Files`.
+  ///
+  /// Writing creates the file and truncates it; read-and-write creates it and does not
+  /// truncate. Reading does not create it.
+  fn open(_files : &Files, path : &String, mode : OpenMode) -> Result<File, FileError> {
+    let c_path = CPath::of(path)?;
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let mut native_code : i32 = 0;
+    let status = unsafe {
+      vx_file_try_open(c_path.ptr, open_mode_code(mode), (&mut ptr) as *mut *mut i8,
+      (&mut native_code) as *mut i32)
+    };
+    if status != 0 {
+      return Result<File, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<File, FileError>::Ok(File {
+      ptr : ptr
+    });
+  }
+
+  /// Read up to `buffer.len()` bytes into `buffer` and give how many arrived. 0 means the end of
+  /// the file. A short read is normal and is not an error.
+  fn read(self : &mut File, buffer : &mut Vec<u8>) -> Result<u64, FileError> {
+    let len = buffer.len() as u64;
+    let mut count : u64 = 0;
+    let mut native_code : i32 = 0;
+    let mut has_native_code = false;
+    let status = unsafe {
+      _vx_file_try_read(self.ptr, buffer.as_mut_ptr(), len, (&mut count) as *mut u64,
+      (&mut native_code) as *mut i32, (&mut has_native_code) as *mut bool)
+    };
+    if status != 0 {
+      return Result<u64, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<u64, FileError>::Ok(count);
+  }
+
+  /// Write up to `buffer.len()` bytes and give how many were taken. A short write is not an
+  /// error, and the rest is not tried again here.
+  fn write(self : &mut File, buffer : &Vec<u8>) -> Result<u64, FileError> {
+    let len = buffer.len() as u64;
+    let mut count : u64 = 0;
+    let mut native_code : i32 = 0;
+    let mut has_native_code = false;
+    let status = unsafe {
+      _vx_file_try_write(self.ptr, buffer.as_mut_ptr() as *const u8, len,
+      (&mut count) as *mut u64, (&mut native_code) as *mut i32,
+      (&mut has_native_code) as *mut bool)
+    };
+    if status != 0 {
+      return Result<u64, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<u64, FileError>::Ok(count);
+  }
+
+  /// Open `path` with a named mode, with no file right. Trusted code uses it, for example code
+  /// that gets its path from C.
+  ///
+  /// **A failed open cannot be detected.** The returned `File` holds a null pointer, and Vx
+  /// cannot compare a raw pointer against null or cast one to an integer (Vx#714) -- so a
+  /// missing file is indistinguishable from an empty one until that closes. Every later call
+  /// on it answers 0 or -1 rather than doing anything.
+  ///
+  /// Unsafe because nothing checks that `path` points at a NUL-terminated string.
+  unsafe fn open_c_str(path : *const i8, mode : OpenMode) -> File {
+    let ptr = unsafe { vx_file_open(path, open_mode_code(mode)) };
+    File {
+      ptr: ptr
+    }
+  }
+
+  /// Read up to `len` bytes into `buffer` and answer how many arrived.
+  ///
+  /// Zero means end of file, a null file or buffer, or a read error -- the four are not told
+  /// apart. A short read is normal and is not an error.
+  ///
+  /// Unsafe because `buffer` must have room for `len` bytes; nothing here checks.
+  unsafe fn read_raw(self : *mut File, buffer : *mut u8, len : u64) -> u64 {
+    unsafe { vx_file_read(self.ptr, buffer, len) }
+  }
+
+  /// Write up to `len` bytes from `buffer` and answer how many were taken.
+  ///
+  /// Zero means a null file or buffer, or a write error, with the same lack of distinction
+  /// `read_raw` has. A short write is not an error and the remainder is not retried here.
+  unsafe fn write_raw(self : *mut File, buffer : *const u8, len : u64) -> u64 {
+    unsafe { vx_file_write(self.ptr, buffer, len) }
+  }
+
+  /// Move the read and write position, answering where it ended up.
+  ///
+  /// `whence` is 0 from the start, 1 from the current position, 2 from the end, as libc's
+  /// `SEEK_SET`, `SEEK_CUR` and `SEEK_END`. Answers -1 for a null file, an unknown `whence`,
+  /// or a seek the operating system refuses.
+  fn seek(self : *mut File, offset : i64, whence : i32) -> i64 {
+    unsafe { vx_file_seek(self.ptr, offset, whence) }
+  }
+
   /// Open the file at `path` for reading. The file must exist.
   ///
   /// # Errors
@@ -211,41 +401,6 @@ impl File {
     return unsafe { options.open_raw(path) };
   }
 
-  /// Open `path` in one of the three ways of `OpenMode`.
-  ///
-  /// `Write` makes the file, or makes an existing file empty. `ReadWriteCreate` makes the file if
-  /// it does not exist, and keeps its bytes. `Read` does not make the file.
-  ///
-  /// A failed open gives a `File` that holds a null handle, and each later call on it returns 0
-  /// or -1. After a failed open, `is_null_mut(file.ptr)` from `core::ptr` is true. It does not
-  /// tell why the open failed.
-  ///
-  /// # Safety
-  ///
-  /// `path` must point to a NUL-terminated string. Nothing checks it.
-  ///
-  /// # Stage
-  ///
-  /// Deprecated. Use `File::open_raw`, `File::create_raw` or `OpenOptions::open_raw`.
-  /// They return an error when the open fails.
-  unsafe fn open(path : *const i8, mode : OpenMode) -> File {
-    // Read uses code 0; the other modes replace it below.
-    let mut mode_code : i32 = 0;
-    match mode {
-      OpenMode::Read() => {},
-      OpenMode::Write() => {
-        mode_code = 1;
-      }
-      OpenMode::ReadWriteCreate() => {
-        mode_code = 2;
-      }
-    }
-    let ptr = unsafe { vx_file_open(path, mode_code) };
-    File {
-      ptr: ptr
-    }
-  }
-
   /// Read at most `len` bytes into `buffer`, and return the number of bytes that the read got.
   ///
   /// A read can get fewer bytes than `len`. That is not an error. A count of 0 means the end of
@@ -279,17 +434,17 @@ impl File {
   /// let path = "/tmp/vx_example_read.txt";
   /// let mut out = (unsafe { File::create_raw(path) }).unwrap();
   /// let letter : u8 = 65;
-  /// (unsafe { out.write_raw((&letter) as *const u8, 1) }).unwrap();
+  /// (unsafe { out.try_write_raw((&letter) as *const u8, 1) }).unwrap();
   /// drop(out);
   ///
   /// let mut file = (unsafe { File::open_raw(path) }).unwrap();
   /// let mut byte : u8 = 0;
-  /// let count = (unsafe { file.read_raw((&mut byte) as *mut u8, 1) }).unwrap();
+  /// let count = (unsafe { file.try_read_raw((&mut byte) as *mut u8, 1) }).unwrap();
   /// assert(count == 1 && byte == 65, "the read got the letter A");
-  /// let end = (unsafe { file.read_raw((&mut byte) as *mut u8, 1) }).unwrap();
+  /// let end = (unsafe { file.try_read_raw((&mut byte) as *mut u8, 1) }).unwrap();
   /// assert(end == 0, "a count of 0 is the end of the file");
   /// ```
-  unsafe fn read_raw(self : &mut File, buffer : *mut u8, len : usize) -> Result<usize, IoError>
+  unsafe fn try_read_raw(self : &mut File, buffer : *mut u8, len : usize) -> Result<usize, IoError>
   requires valid(buffer, len)
   {
     let mut count : u64 = 0;
@@ -338,10 +493,10 @@ impl File {
   /// let mut letters = Vec<u8>::new();
   /// letters.push(72u8);
   /// letters.push(105u8);
-  /// let count = (unsafe { file.write_raw(letters.as_mut_ptr() as *const u8, 2) }).unwrap();
+  /// let count = (unsafe { file.try_write_raw(letters.as_mut_ptr() as *const u8, 2) }).unwrap();
   /// assert(count == 2, "the write took both bytes");
   /// ```
-  unsafe fn write_raw(self : &mut File, buffer : *const u8, len : usize) -> Result<usize, IoError>
+  unsafe fn try_write_raw(self : &mut File, buffer : *const u8, len : usize) -> Result<usize, IoError>
   requires valid(buffer, len)
   requires initialized(buffer, len)
   {
@@ -355,52 +510,6 @@ impl File {
       return Result<usize, IoError>::Err(_io_error_from_bridge(status, Operation::Write(), code, has_code));
     }
     return Result<usize, IoError>::Ok(count as usize);
-  }
-
-  /// Read up to `len` bytes into `buffer`, and return how many bytes the read got.
-  ///
-  /// A count of 0 means one of four things: the end of the file, a null file, a null buffer, or
-  /// a read error. The program cannot tell them apart. A short read is not an error.
-  ///
-  /// # Safety
-  ///
-  /// `buffer` must have room for `len` bytes. Nothing checks it.
-  ///
-  /// # Stage
-  ///
-  /// Deprecated. Use `File::read_raw`, which returns an error when the read fails.
-  unsafe fn read(self : *mut File, buffer : *mut u8, len : u64) -> u64 {
-    unsafe { vx_file_read(self.ptr, buffer, len) }
-  }
-
-  /// Write up to `len` bytes from `buffer`, and return how many bytes the write took.
-  ///
-  /// A count of 0 means a null file, a null buffer, or a write error. The program cannot tell
-  /// them apart. A short write is not an error, and this method does not write the rest.
-  ///
-  /// # Safety
-  ///
-  /// `buffer` must hold `len` bytes. Nothing checks it.
-  ///
-  /// # Stage
-  ///
-  /// Deprecated. Use `File::write_raw`, which returns an error when the write fails.
-  unsafe fn write(self : *mut File, buffer : *const u8, len : u64) -> u64 {
-    unsafe { vx_file_write(self.ptr, buffer, len) }
-  }
-
-  /// Move the position of the next read or write, and return the new position.
-  ///
-  /// `whence` is 0 for the start of the file, 1 for the current position, and 2 for the end. These
-  /// are libc's `SEEK_SET`, `SEEK_CUR` and `SEEK_END`. The result is -1 for a null file, for an
-  /// unknown `whence`, or for a seek that the operating system refuses.
-  ///
-  /// # Stage
-  ///
-  /// Deprecated. Use `seek_to` with a `SeekFrom`, which returns an error when the
-  /// seek fails.
-  fn seek(self : *mut File, offset : i64, whence : i32) -> i64 {
-    unsafe { vx_file_seek(self.ptr, offset, whence) }
   }
 }
 
@@ -432,7 +541,7 @@ impl Seek for File {
   /// letters.push(97u8);
   /// letters.push(98u8);
   /// letters.push(99u8);
-  /// (unsafe { file.write_raw(letters.as_mut_ptr() as *const u8, 3) }).unwrap();
+  /// (unsafe { file.try_write_raw(letters.as_mut_ptr() as *const u8, 3) }).unwrap();
   /// assert(file.seek_to(SeekFrom::Start(1)).unwrap() == 1, "from the start");
   /// assert(file.seek_to(SeekFrom::Current(1)).unwrap() == 2, "from the current position");
   /// assert(file.seek_to(SeekFrom::End(-3)).unwrap() == 0, "from the end");
@@ -484,12 +593,12 @@ impl Seek for File {
 /// let create = OpenOptions::new().write(true).create(true).truncate(true);
 /// let mut file = (unsafe { create.open_raw(path) }).unwrap();
 /// let letter : u8 = 65;
-/// (unsafe { file.write_raw((&letter) as *const u8, 1) }).unwrap();
+/// (unsafe { file.try_write_raw((&letter) as *const u8, 1) }).unwrap();
 /// drop(file);
 ///
 /// let append = OpenOptions::new().append(true);
 /// let mut log = (unsafe { append.open_raw(path) }).unwrap();
-/// (unsafe { log.write_raw((&letter) as *const u8, 1) }).unwrap();
+/// (unsafe { log.try_write_raw((&letter) as *const u8, 1) }).unwrap();
 /// assert(log.stream_position().unwrap() == 2, "append writes at the end");
 /// drop(log);
 ///
@@ -589,5 +698,79 @@ impl OpenOptions {
     return Result<File, IoError>::Ok(File {
       ptr : ptr
     });
+  }
+}
+
+/// The right to read the files of one folder, and of the folders inside it. A function that
+/// gets a `&Folder` can read those files and no others, because a name that leads out of the
+/// folder gives `NotInFolder`. A program narrows its `Files` to a `Folder` with `Folder::open`.
+///
+/// The Rust core holds the open folder, so a rename of the folder does not change which files
+/// the `Folder` reads. The invariant lets only this file make a `Folder` or change its field.
+struct Folder {
+  dir : *mut i8,
+
+  invariant true,
+}
+
+// A `Folder` may move to another task, and tasks may share it: an open in a folder does not
+// change the folder.
+unsafe impl Send for Folder {}
+unsafe impl Sync for Folder {}
+
+impl Folder {
+  /// Open the folder at `path`. The caller needs the file right, a `&Files`.
+  fn open(_files : &Files, path : &String) -> Result<Folder, FileError> {
+    let c_path = CPath::of(path)?;
+    let mut dir : *mut i8 = unsafe { 0 as *mut i8 };
+    let mut native_code : i32 = 0;
+    let status = unsafe {
+      vx_folder_open(c_path.ptr, (&mut dir) as *mut *mut i8, (&mut native_code) as *mut i32)
+    };
+    if status != 0 {
+      return Result<Folder, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<Folder, FileError>::Ok(Folder {
+      dir : dir
+    });
+  }
+
+  /// Open the file `name` of this folder for reading. `name` is a path inside the folder, such
+  /// as `"weights.bin"` or `"adapters/a.bin"`.
+  fn open_file(self : &Folder, name : &String) -> Result<File, FileError> {
+    let ptr = self.open_below(name, 0)?;
+    return Result<File, FileError>::Ok(File {
+      ptr : ptr
+    });
+  }
+
+  /// Open the folder `name` inside this folder: a narrower right.
+  fn open_folder(self : &Folder, name : &String) -> Result<Folder, FileError> {
+    let dir = self.open_below(name, 1)?;
+    return Result<Folder, FileError>::Ok(Folder {
+      dir : dir
+    });
+  }
+
+  /// The handle of the Rust core for `name`, a file or, with `want_folder` 1, a folder.
+  fn open_below(self : &Folder, name : &String, want_folder : i32) -> Result<*mut i8, FileError> {
+    let c_name = CPath::of(name)?;
+    let mut out : *mut i8 = unsafe { 0 as *mut i8 };
+    let mut native_code : i32 = 0;
+    let status = unsafe {
+      vx_folder_open_file(self.dir, c_name.ptr, want_folder, (&mut out) as *mut *mut i8,
+      (&mut native_code) as *mut i32)
+    };
+    if status != 0 {
+      return Result<*mut i8, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<*mut i8, FileError>::Ok(out);
+  }
+}
+
+impl Drop for Folder {
+  /// Close the folder. The Rust core holds an open folder as a file.
+  fn drop(self : &mut Folder) -> void {
+    unsafe { vx_file_drop(self.dir) };
   }
 }

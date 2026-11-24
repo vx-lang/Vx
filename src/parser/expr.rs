@@ -739,6 +739,7 @@ impl<'a> Parser<'a> {
                     name: call_name.into(),
                     fields,
                     type_id: None,
+                    made_by_the_compiler: false,
                     span,
                 }))
             } else if self.match_token(&TokenType::DoubleColon) {
@@ -1303,6 +1304,7 @@ impl<'a> Parser<'a> {
                                     .map(|(i, e)| (format!("_{i}").into(), e))
                                     .collect(),
                                 type_id: None,
+                                made_by_the_compiler: false,
                                 span: Span::default(),
                             })
                         } else {
