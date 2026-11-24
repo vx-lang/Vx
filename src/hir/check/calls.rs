@@ -3741,7 +3741,10 @@ impl<'a> TypeChecker<'a> {
                 // Found before the check rewrites `v[i]` into a call: the variable that
                 // changes if the method changes its receiver.
                 let receiver_root = self.changed_root(obj);
-                let mut base_ty = self.check_expr_type_flag(obj, false);
+                // A call that gives the receiver runs as in a `let`, so it moves what it takes:
+                // `r.unwrap().len()` moves `r`.
+                let receiver_is_a_call = matches!(&**obj, Expr::MethodCall(_));
+                let mut base_ty = self.check_expr_type_flag(obj, receiver_is_a_call);
                 self.allow_cross_topology = prev_allow;
                 self.warn_wait_in_drop(&base_ty, _method, &method_span);
 
