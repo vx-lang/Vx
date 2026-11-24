@@ -115,20 +115,21 @@ operating system needs one:
 - Only `main` gets the root capabilities. A library gets only the capabilities that its caller
   passes to it.
 - A module narrows a capability, for example from the right to open any file to the right to read
-  one folder. The narrow type keeps its folder in a field, and its invariant keeps the field fixed.
-  Each open checks at run time that the name stays in the folder: no `..`, no absolute path, and no
-  link that leads out. On Linux, `openat2` with `RESOLVE_BENEATH` does this check.
+  one folder. The narrow type keeps its open folder in a field, and its invariant keeps the field
+  fixed. Each open checks at run time that the name stays in the folder: no `..`, no absolute path,
+  and no symbolic link. Each part of the name opens with `openat` and `O_NOFOLLOW`, so the check is
+  the same on Linux and macOS. It refuses a link that stays inside the folder too.
 
-<!-- vx-doctest: skip (proposed std API) -->
+<!-- vx-doctest: skip (a sketch: `serve` and the path are not declared) -->
 
 ```vx
 // `Files` is the right to open any file. `Folder` is the right to read the files of one folder.
 // Only `std::fs` can build either one.
-fn open_folder(files : &Files, path : String) -> Folder { .. }
-fn read_file(folder : &Folder, name : &String) -> Result<Vec<u8>, IoError> { .. }
+fn Folder::open(files : &Files, path : &String) -> Result<Folder, FileError> { .. }
+fn Folder::open_file(self : &Folder, name : &String) -> Result<File, FileError> { .. }
 
 fn main(root : Root) -> i32 {
-  let adapters = open_folder(&root.files, "adapters/");
+  let adapters = Folder::open(&root.files, &adapters_path)?;
   serve(&adapters);
   return 0;
 }
@@ -183,5 +184,5 @@ no global fact depend on a function body. Each new check reads one declaration:
    `File::open` was an `unsafe fn` already. So the network came first: `TcpStream::connect`,
    `TcpListener::bind` and `UdpSocket::bind` take a `&Network`, which a program gets as
    `root.network`. Then `File::open` became safe, and takes a `&Files`, which a program gets as
-   `root.files`. The raw open, `File::open_c_str`, stays `unsafe`. Next come `Folder`, processes
-   and native code.
+   `root.files`. The raw open, `File::open_c_str`, stays `unsafe`. Then `Folder`, which narrows
+   `Files` to one folder. Next come processes and native code.
