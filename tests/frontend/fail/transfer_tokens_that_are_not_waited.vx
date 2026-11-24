@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // A token of `transfer_async` must be waited, or the copy may not be done. Each function here
-// drops a token with no `.wait()`, or reads the data before the wait.
+// drops a token with no `.wait()`, or reads the data before the wait. A call of a generic function
+// does not change which tokens the caller must wait.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 
@@ -47,10 +48,32 @@ fn read_before_wait() -> f32 {
   return v + x[0];
 }
 
+fn same<T>(x : T) -> T {
+  return x;
+}
+
+fn first<T>(x : T, _y : T) -> T {
+  return x;
+}
+
+// The checker checks a generic body at its first call, here. The token is still the caller's.
+fn waited_after_a_generic_call() -> f32 {
+  let t = transfer_async(filled(1.0), Memory::CPU_DRAM);
+  let n = same(2.0);
+  let x = t.wait();
+  return x[0] + n;
+}
+
+fn dropped_after_a_generic_call() -> void {
+  // CHECK-DAG: Error[E6036] at {{.*}}.vx:[[@LINE+1]]:3: the transfer token '_late' is dropped with no `.wait()` when its scope ends
+  let _late = transfer_async(filled(1.0), Memory::CPU_DRAM);
+  let _n = first(2.0, 3.0);
+}
+
 fn main() -> i32 {
   return 0;
 }
 
-// The 4 errors above are the only ones. `--implicit-check-not` does not look past the first
+// The 5 errors above are the only ones. `--implicit-check-not` does not look past the first
 // `CHECK-DAG` match, so this line counts them.
-// CHECK: {{^}}Semantic check failed on {{.*}}: 4 error(s) emitted
+// CHECK: {{^}}Semantic check failed on {{.*}}: 5 error(s) emitted
