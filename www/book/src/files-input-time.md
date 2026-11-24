@@ -4,8 +4,8 @@ A program often needs text, files, the clock or the network. This chapter shows 
 standard library for these jobs: `std::string`, `std::fs`, `std::io`, `std::time` and `std::net`.
 
 Many of these functions take a raw pointer, such as a string literal or a buffer. The compiler
-cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block. The
-network types also have safe methods, which take a `String` and a `Vec<u8>`.
+cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block. Files and
+the network types also have safe methods, which take a `String` and a `Vec<u8>`.
 [Unsafe and FFI](unsafe-and-ffi.md) explains raw pointers.
 
 Each complete program in this chapter is also a test of the compiler. You can find it under
@@ -40,17 +40,34 @@ gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
 ## Files
 
-`File::open(path, mode)` opens a file. `path` is a text that ends with a zero byte, such as a
-string literal. The mode is one of the three values of `OpenMode`:
+To open a file, a call needs the right to open files: a `&Files`. Only `main` gets it. A `main`
+written `fn main(root : Root) -> i32` gets the rights of the program in `root`. It passes
+`&root.files` to `File::open`, or to a function that calls it. Only `std::fs` can make a `Files`,
+so a function that gets no `&Files` cannot open a file.
+
+`File::open(files, path, mode)` opens the file at the `String` `path`. The mode is one of the
+three values of `OpenMode`:
 
 - `OpenMode::Read()` opens a file that exists, for reading.
 - `OpenMode::Write()` makes the file, or makes an existing file empty, for writing.
 - `OpenMode::ReadWriteCreate()` opens the file for both, and makes it if it does not exist. It
   keeps the bytes that the file has.
 
-`write(buffer, len)` writes `len` bytes from a buffer and gives how many it wrote. `read(buffer, len)` reads up to `len` bytes into a buffer and gives how many it read. 0 means the end of the
+`write(bytes)` writes the bytes of a `Vec<u8>` and gives how many it wrote. `read(buffer)` reads
+up to `buffer.len()` bytes into a `Vec<u8>` and gives how many it read. 0 means the end of the
 file. `seek(offset, whence)` moves the position of the next read or write, and gives the new
 position. `whence` is 0 for the start of the file, 1 for the current position and 2 for the end.
+
+`open`, `read` and `write` give a `Result`. When a call does not work, its `Err` holds a
+`FileError`:
+
+- `NotFound`: no file has the path, or a folder of the path is missing.
+- `PermissionDenied`: the system does not let the program open the file in the mode.
+- `BadPath`: the path holds a zero byte.
+- `Os(code)`: another failure, with the error number of the system.
+
+The `?` operator gives the error to the caller
+([Errors, Option and Result](errors.md)).
 
 `File` implements `Drop`, so a file closes at the end of its scope. You do not close it by hand.
 [Ownership and borrowing](ownership.md) explains `Drop`.
@@ -71,11 +88,12 @@ the file ends at byte 14
 byte 4 is 116, the letter t
 ```
 
-`write_text` copies the literal into a `Vec<u8>`, because `write` takes a pointer to `u8` bytes.
-`out` closes at the end of `write_text`. So `main` reads all 14 bytes.
+`write_text` copies the literal into a `Vec<u8>`, because `write` takes bytes. `out` closes at the
+end of `write_text`. So `write_and_read` reads all 14 bytes.
 
-A failed `open` gives a `File` that does nothing: each later `read` and `write` gives 0. A missing
-file and an empty file look the same. So check the count that `read` and `write` give.
+`File` also has methods that take raw pointers, for trusted code that gets a path from C:
+`open_c_str`, `read_raw` and `write_raw`. They need `unsafe`, and they need no `&Files`. A failed
+`open_c_str` gives a `File` that does nothing: each later `read_raw` and `write_raw` gives 0.
 
 ## Standard input and output
 
@@ -167,6 +185,12 @@ The program does not print the time that it slept, because that time is differen
 connection. `UdpSocket` sends and receives UDP datagrams, which are single messages. Each address
 is a text of the form `host:port`, for example `"127.0.0.1:7878"`.
 
+To open a connection or to bind an address, a call needs the right to use the network: a
+`&Network`. As for files, only `main` gets it, in `root`. `main` passes `&root.network` to
+`TcpStream::connect`, `TcpListener::bind` and `UdpSocket::bind`, or to a function that calls them. Only `std::net` can make a `Network`, so a
+function that gets no `&Network` cannot open a connection. A connection that `accept` gives needs
+no other right.
+
 The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
 The length of the vector is the size of the buffer. Each type also has methods that take raw
 pointers. Their names end in `_c_str` or `_raw`.
@@ -225,8 +249,7 @@ other end wrote, and a `write` can take fewer bytes than you gave. `read_exact` 
 buffer is full, and `write_all` writes all bytes of the buffer. When the connection closes before
 the buffer is full, `read_exact` gives `Closed`.
 
-`TcpBufReader` and `TcpBufWriter` hold a `TcpStream` and a buffer of 4096 bytes. `read_line(&mut
-line)` on a `TcpBufReader` adds the next line, with its newline, to the end of `line`, and gives the
+`TcpBufReader` and `TcpBufWriter` hold a `TcpStream` and a buffer of 4096 bytes. `read_line(&mut line)` on a `TcpBufReader` adds the next line, with its newline, to the end of `line`, and gives the
 count of bytes. 0 means that the connection closed. A line has no length limit, so a client that
 never sends a newline makes `line` grow until the memory runs out. After `read_line`, the reader can
 hold the start of the next data, for example the body after a header. So read it with `read` or

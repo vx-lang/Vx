@@ -21,50 +21,50 @@ fn main() -> i32 {
     remove(missing_path);
 
     // Reading a missing file must leave the path absent.
-    let missing_reader = File::open(missing_path, OpenMode::Read());
+    let missing_reader = File::open_c_str(missing_path, OpenMode::Read());
     drop(missing_reader);
     let remove_after_read = remove(missing_path);
 
     // Seed content that a read-only or read-write open must preserve.
     let original : u8 = 65;
     let replacement : u8 = 66;
-    let mut seed = File::open(existing_path, OpenMode::Write());
-    let seeded = seed.write((&original) as *const u8, 1);
+    let mut seed = File::open_c_str(existing_path, OpenMode::Write());
+    let seeded = seed.write_raw((&original) as *const u8, 1);
     drop(seed);
 
-    let mut reader = File::open(existing_path, OpenMode::Read());
+    let mut reader = File::open_c_str(existing_path, OpenMode::Read());
     let mut first_read : u8 = 0;
-    let read_count = reader.read((&mut first_read) as *mut u8, 1);
-    let denied_write = reader.write((&replacement) as *const u8, 1);
+    let read_count = reader.read_raw((&mut first_read) as *mut u8, 1);
+    let denied_write = reader.write_raw((&replacement) as *const u8, 1);
     drop(reader);
 
     // A failed write through Read must leave the original byte intact.
-    let mut preserved_reader = File::open(existing_path, OpenMode::Read());
+    let mut preserved_reader = File::open_c_str(existing_path, OpenMode::Read());
     let mut after_denied_write : u8 = 0;
-    let preserved_count = preserved_reader.read((&mut after_denied_write) as *mut u8, 1);
+    let preserved_count = preserved_reader.read_raw((&mut after_denied_write) as *mut u8, 1);
     drop(preserved_reader);
 
     // ReadWriteCreate must neither truncate the existing file nor be read-only.
-    let mut reader_writer = File::open(existing_path, OpenMode::ReadWriteCreate());
+    let mut reader_writer = File::open_c_str(existing_path, OpenMode::ReadWriteCreate());
     let mut existing_byte : u8 = 0;
-    let existing_count = reader_writer.read((&mut existing_byte) as *mut u8, 1);
-    let updated = reader_writer.write((&replacement) as *const u8, 1);
+    let existing_count = reader_writer.read_raw((&mut existing_byte) as *mut u8, 1);
+    let updated = reader_writer.write_raw((&replacement) as *const u8, 1);
     drop(reader_writer);
 
     // Opening an existing file for Write must truncate it.
-    let truncating_writer = File::open(existing_path, OpenMode::Write());
+    let truncating_writer = File::open_c_str(existing_path, OpenMode::Write());
     drop(truncating_writer);
-    let mut empty_reader = File::open(existing_path, OpenMode::Read());
+    let mut empty_reader = File::open_c_str(existing_path, OpenMode::Read());
     let mut after_truncate : u8 = 0;
-    let after_truncate_count = empty_reader.read((&mut after_truncate) as *mut u8, 1);
+    let after_truncate_count = empty_reader.read_raw((&mut after_truncate) as *mut u8, 1);
     drop(empty_reader);
 
     // ReadWriteCreate must create a missing path and permit both operations.
-    let mut created = File::open(missing_path, OpenMode::ReadWriteCreate());
-    let created_write = created.write((&original) as *const u8, 1);
+    let mut created = File::open_c_str(missing_path, OpenMode::ReadWriteCreate());
+    let created_write = created.write_raw((&original) as *const u8, 1);
     let created_seek = created.seek(0, 0);
     let mut created_byte : u8 = 0;
-    let created_read = created.read((&mut created_byte) as *mut u8, 1);
+    let created_read = created.read_raw((&mut created_byte) as *mut u8, 1);
     drop(created);
 
     remove(existing_path);

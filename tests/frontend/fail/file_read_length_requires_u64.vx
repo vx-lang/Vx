@@ -7,14 +7,14 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // A positive i64 is still the wrong type for a file-read byte count.
-// CHECK: Error[E3003]{{.*}}'File::read'. Expected u64, got i64
+// CHECK: Error[E3003]{{.*}}'File::read_raw'. Expected u64, got i64
 import std::fs;
 
 fn main() -> i32 {
   unsafe {
-    let mut file = File::open("unused", OpenMode::Read());
+    let mut file = File::open_c_str("unused", OpenMode::Read());
     let length : i64 = 5;
-    let _count = file.read(0 as *mut u8, length);
+    let _count = file.read_raw(0 as *mut u8, length);
   }
   return 0;
 }
