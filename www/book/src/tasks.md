@@ -348,6 +348,39 @@ tokio's `Semaphore` gives the permits in the order of the `acquire` calls, and t
 - When each task waits and nothing can wake one, the runtime stops the program. Its report names
   each `acquire` that waits, its line, and the line that made the `Semaphore`.
 
+## Run jobs with at most `n` tasks
+
+`run_jobs(jobs, n, work)` from `std::sync::jobs` calls `work(job)` for each job in the vector
+`jobs`. `work` can be a closure or a function. It starts at most `n` tasks, and gives the results in the order of the
+jobs (`book_run_jobs_gives_results_in_job_order.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_run_jobs_gives_results_in_job_order.vx:program}}
+```
+
+It prints `scaled 10 20 30 40 50 60 70 80`.
+
+`run_jobs` starts its tasks in a `tasks` block, so the call returns only after each task ends.
+Each task takes the next job from a counter, so a slow job does not hold up the other tasks.
+
+The tasks borrow `jobs` and call `work` at the same time, so both must be `Sync`. A closure is
+`Sync` when each value that it captures is. So a closure that captures a `Receiver` is an error
+at the call. Give the result a type, as the program above does. The compiler does not find the
+type of the results from the closure.
+
+When the `tasks` block around the call is cancelled, the jobs that did not start do not run, and
+`run_jobs` gives `Cancelled`. `try_run_jobs` takes a `work` that gives a `Result`. The first `Err`
+cancels the tasks, so the jobs that did not start do not run. The call then gives `Failed` with
+that error, and drops the results that arrived before it. A panic in `work` stops the program,
+as a panic in any task does.
+
+### Compared with Rust
+
+`run_jobs` does parallel work on a list, as `std::thread::scope` and rayon's
+`par_iter().map().collect()` do. As with those, the tasks borrow the data of the caller, and the
+results come in the order of the jobs. A cancel of the `tasks` block around the call stops the
+jobs that did not start. The cancel follows the blocks of the program, so it needs no extra code.
+
 ## `Arc`
 
 A task can borrow the locals of its parent, so most programs need no `Arc`. Use an `Arc<T>` when a
@@ -421,3 +454,4 @@ a TCP server and a client as two tasks.
 | Functions that wait | Normal functions | `async fn`, or a blocked thread | Normal functions |
 | Wait on many channels | `select2` to `select6`, or `select` over a list of receivers | A crate, such as `crossbeam` | `select` statement |
 | Kinds of channel | `channel`, oneshot, work queue, broadcast, watch | The same in tokio | One kind, `chan` |
+| Run jobs with at most `n` tasks | `run_jobs`, results in job order | A `JoinSet` and a `Semaphore` | Each program writes it |
