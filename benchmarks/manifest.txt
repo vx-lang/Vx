@@ -14,6 +14,7 @@
 #   benchmark_test.vx     a tracing demo, times nothing
 #   matmul_execution.vx   an execution demo, times nothing
 #   gpu_gemm/             needs an NVIDIA GPU; its run.sh times it against cuBLAS
+#   vec_get_set/          its run.sh compares two builds of vxc
 
 benchmarks/benchmark_scalar.vx
 benchmarks/benchmark_simd.vx
