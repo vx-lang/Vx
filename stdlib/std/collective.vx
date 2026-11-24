@@ -11,6 +11,9 @@
 // docs/lang/abi.md section 3.7 has the rules: NCCL, the id file, and the stream.
 //===----------------------------------------------------------------------===//
 
+import std::fs;
+import std::net;
+
 extern "C" {
   /// The dispatch library behind `join_job`.
   fn vx_collective_init(rank : i32, ranks : i32) -> void;
@@ -32,7 +35,10 @@ extern "C" {
 
 /// Joins this process to a job of `ranks` processes, as rank `rank`. Each rank uses the GPU
 /// that is current when it joins. The program stops if it cannot join.
-fn join_job(rank : i32, ranks : i32) -> void {
+///
+/// It takes the file right and the network right. Rank 0 writes the NCCL id to a file, the other
+/// ranks read it, and NCCL connects the ranks over the network.
+fn join_job(_files : &Files, _network : &Network, rank : i32, ranks : i32) -> void {
   unsafe { vx_collective_init(rank, ranks); }
 }
 

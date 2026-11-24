@@ -136,8 +136,8 @@ extern "C" {
   fn vx_metal_set_enabled(enabled : i32) -> void;
 }
 
-fn main() -> i32 {
-  join_job(0, 1);
+fn main(root : Root) -> i32 {
+  join_job(&root.files, &root.network, 0, 1);
   let h : i32 = 64;
   let w : i32 = 1000;
   let mut a = transfer(Tensor<f32, [64, 1000]>::fill(0.0), Memory::HBM);

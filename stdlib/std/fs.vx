@@ -32,6 +32,12 @@ extern {
   /// The Rust core behind `File::write`, with the outputs of `vx_file_try_read`.
   fn vx_file_try_write(ptr : *mut i8, buffer : *const u8, len : u64, count : *mut u64,
   native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  /// The Rust core behind `Folder::open`, with the outputs of `vx_file_try_open`.
+  fn vx_folder_open(c_path : *const i8, folder : *mut *mut i8, native_code : *mut i32) -> i32;
+  /// The Rust core behind `Folder::open_file` and `Folder::open_folder`. 13 means that the name
+  /// does not name a file inside the folder.
+  fn vx_folder_open_file(folder : *mut i8, c_name : *const i8, want_folder : i32,
+  out : *mut *mut i8, native_code : *mut i32) -> i32;
   /// The Rust core behind `File::seek`.
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   /// The Rust core behind dropping a `File`.
@@ -77,6 +83,9 @@ enum FileError {
   NotFound,
   // The system does not let the program open the file in the mode, or change it.
   PermissionDenied,
+  // The name does not name a file inside the folder: it is empty or absolute, it has a `..`
+  // part, or a part of it is a symbolic link.
+  NotInFolder,
   // Another failure, with the error number of the system, or 0 when it gave none.
   Os(i32),
 }
@@ -90,6 +99,9 @@ fn file_error(status : i32, native_code : i32) -> FileError {
   }
   if status == 2 {
     return FileError::PermissionDenied;
+  }
+  if status == 13 {
+    return FileError::NotInFolder;
   }
   return FileError::Os(native_code);
 }
@@ -257,5 +269,73 @@ impl Drop for File {
   /// Close the file and release it.
   fn drop(self : &mut File) -> void {
     unsafe { vx_file_drop(self.ptr) };
+  }
+}
+
+/// The right to read the files of one folder, and of the folders inside it. A function that
+/// gets a `&Folder` can read those files and no others, because a name that leads out of the
+/// folder gives `NotInFolder`. A program narrows its `Files` to a `Folder` with `Folder::open`.
+///
+/// The Rust core holds the open folder, so a rename of the folder does not change which files
+/// the `Folder` reads. The invariant lets only this file make a `Folder` or change its field.
+struct Folder {
+  dir : *mut i8,
+
+  invariant true,
+}
+
+// A `Folder` may move to another task, and tasks may share it: an open in a folder does not
+// change the folder.
+unsafe impl Send for Folder {}
+unsafe impl Sync for Folder {}
+
+impl Folder {
+  /// Open the folder at `path`. The caller needs the file right, a `&Files`.
+  fn open(_files : &Files, path : &String) -> Result<Folder, FileError> {
+    let c_path = CPath::of(path)?;
+    let mut dir : *mut i8 = unsafe { 0 as *mut i8 };
+    let mut native_code : i32 = 0;
+    let status = unsafe {
+      vx_folder_open(c_path.ptr, (&mut dir) as *mut *mut i8, (&mut native_code) as *mut i32)
+    };
+    if status != 0 {
+      return Result<Folder, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<Folder, FileError>::Ok(Folder { dir : dir });
+  }
+
+  /// Open the file `name` of this folder for reading. `name` is a path inside the folder, such
+  /// as `"weights.bin"` or `"adapters/a.bin"`.
+  fn open_file(self : &Folder, name : &String) -> Result<File, FileError> {
+    let ptr = self.open_below(name, 0)?;
+    return Result<File, FileError>::Ok(File { ptr : ptr });
+  }
+
+  /// Open the folder `name` inside this folder: a narrower right.
+  fn open_folder(self : &Folder, name : &String) -> Result<Folder, FileError> {
+    let dir = self.open_below(name, 1)?;
+    return Result<Folder, FileError>::Ok(Folder { dir : dir });
+  }
+
+  /// The handle of the Rust core for `name`, a file or, with `want_folder` 1, a folder.
+  fn open_below(self : &Folder, name : &String, want_folder : i32) -> Result<*mut i8, FileError> {
+    let c_name = CPath::of(name)?;
+    let mut out : *mut i8 = unsafe { 0 as *mut i8 };
+    let mut native_code : i32 = 0;
+    let status = unsafe {
+      vx_folder_open_file(self.dir, c_name.ptr, want_folder, (&mut out) as *mut *mut i8,
+      (&mut native_code) as *mut i32)
+    };
+    if status != 0 {
+      return Result<*mut i8, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<*mut i8, FileError>::Ok(out);
+  }
+}
+
+impl Drop for Folder {
+  /// Close the folder. The Rust core holds an open folder as a file.
+  fn drop(self : &mut Folder) -> void {
+    unsafe { vx_file_drop(self.dir) };
   }
 }

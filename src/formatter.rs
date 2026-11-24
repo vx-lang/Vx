@@ -465,18 +465,79 @@ fn can_join(tokens: &[Token], lo: usize, hi: usize, allowed: impl Fn(usize) -> b
 
 /// The length on one line of the tokens after `at`, up to the end of the line. A `;`, or a `,`
 /// of a group in `split`, ends the line too, because a new line follows it.
-fn rest_of_line(tokens: &[Token], b: &Brackets, split: &HashSet<usize>, at: usize) -> usize {
+fn rest_of_line(
+    tokens: &[Token],
+    b: &Brackets,
+    split: &HashSet<usize>,
+    in_types: &HashSet<usize>,
+    at: usize,
+) -> usize {
     let mut len = 0;
     for (k, t) in tokens.iter().enumerate().skip(at) {
         match t.kind {
             TokenType::Whitespace(ws) if ws.contains('\n') => break,
             TokenType::Whitespace(_) => len += 1,
             TokenType::Semicolon => return len + 1,
-            TokenType::Comma if b.parent[k].is_some_and(|p| split.contains(&p)) => return len + 1,
+            TokenType::Comma
+                if !in_types.contains(&k) && b.parent[k].is_some_and(|p| split.contains(&p)) =>
+            {
+                return len + 1
+            }
             _ => len += t.length,
         }
     }
     len
+}
+
+/// The commas inside type arguments, as in `Result<u64, E>::Ok(n)`. They do not end an item of
+/// a group. A `<` right after a name or a `::` opens type arguments. When a token that cannot be
+/// in a type comes before the matching `>`, the `<` was a comparison.
+fn commas_in_type_arguments(tokens: &[Token]) -> HashSet<usize> {
+    let mut found = HashSet::new();
+    let mut k = 1;
+    while k < tokens.len() {
+        let opens = matches!(tokens[k].kind, TokenType::LeftAngle)
+            && matches!(
+                tokens[k - 1].kind,
+                TokenType::Identifier(_) | TokenType::DoubleColon
+            );
+        if !opens {
+            k += 1;
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut commas = Vec::new();
+        let mut end = None;
+        for (j, t) in tokens.iter().enumerate().skip(k) {
+            match t.kind {
+                TokenType::LeftAngle => depth += 1,
+                TokenType::RightAngle => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(j);
+                        break;
+                    }
+                }
+                TokenType::Comma => commas.push(j),
+                TokenType::Semicolon
+                | TokenType::LeftBrace
+                | TokenType::RightBrace
+                | TokenType::FatArrow
+                | TokenType::Equals
+                | TokenType::AndAnd
+                | TokenType::OrOr => break,
+                _ => {}
+            }
+        }
+        match end {
+            Some(e) => {
+                found.extend(commas);
+                k = e + 1;
+            }
+            None => k += 1,
+        }
+    }
+    found
 }
 
 /// Lays out struct literals, the arms of each `match`, and short if values. Returns the tokens,
@@ -492,6 +553,7 @@ fn lay_out_literals_and_arms<'a>(
             _ => Group::Other,
         })
         .collect();
+    let in_types = commas_in_type_arguments(&tokens);
 
     let mut out: Vec<Token<'a>> = Vec::with_capacity(tokens.len() + tokens.len() / 8);
     let mut inline = HashSet::new();
@@ -600,7 +662,7 @@ fn lay_out_literals_and_arms<'a>(
                 if let Some(end) = short_if_value(&tokens, &b, i) {
                     let fits = line_len(&out, line_depth)
                         + inline_len(&tokens, i, end)
-                        + rest_of_line(&tokens, &b, &split, end + 1)
+                        + rest_of_line(&tokens, &b, &split, &in_types, end + 1)
                         <= MAX_LINE;
                     if fits {
                         join(&mut out, &mut inline, i, end);
@@ -619,7 +681,7 @@ fn lay_out_literals_and_arms<'a>(
                             && fields <= MAX_INLINE_FIELDS
                             && line_len(&out, line_depth)
                                 + inline_len(&tokens, i, rb)
-                                + rest_of_line(&tokens, &b, &split, rb + 1)
+                                + rest_of_line(&tokens, &b, &split, &in_types, rb + 1)
                                 <= MAX_LINE;
                         if fits {
                             join(&mut out, &mut inline, i, rb);
@@ -655,7 +717,9 @@ fn lay_out_literals_and_arms<'a>(
         // of a match arm with no comma.
         let parent = b.parent[i];
         let item_ends = match t.kind {
-            TokenType::Comma => parent.is_some_and(|p| split.contains(&p)),
+            TokenType::Comma => {
+                !in_types.contains(&i) && parent.is_some_and(|p| split.contains(&p))
+            }
             TokenType::RightBrace => {
                 parent.is_some_and(|p| split.contains(&p) && groups[p] == Group::MatchArms)
                     && next_sig(&tokens, i + 1).is_some_and(|n| {
@@ -1048,6 +1112,14 @@ mod tests {
         formats_to(
             "struct Point { x : i32, y : i32 }\nMemory HBM { capacity: 1 GiB, scope: device }",
             "struct Point {\n  x : i32, y : i32\n}\nMemory HBM {\n  capacity: 1 GiB, scope: device\n}",
+        );
+    }
+
+    #[test]
+    fn a_comma_between_type_arguments_does_not_end_a_match_arm() {
+        formats_to(
+            "fn main() -> i32 {\n  match r { Result<u64, E>::Ok(n) => { return 1; }, Result<u64, E>::Err(e) => Result<u64, E>::Err(e), x => a < b }\n  return 0;\n}",
+            "fn main() -> i32 {\n  match r {\n    Result<u64, E>::Ok(n) => {\n      return 1;\n    },\n    Result<u64, E>::Err(e) => Result<u64, E>::Err(e),\n    x => a < b\n  }\n  return 0;\n}",
         );
     }
 

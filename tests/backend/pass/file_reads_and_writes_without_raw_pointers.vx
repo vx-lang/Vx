@@ -58,6 +58,9 @@ fn report_error(call : *const i8, e : FileError) -> void {
     FileError::PermissionDenied => {
       println!("{}: PermissionDenied", call);
     }
+    FileError::NotInFolder => {
+      println!("{}: NotInFolder", call);
+    }
     FileError::Os(code) => {
       println!("{}: Os({})", call, code);
     }
