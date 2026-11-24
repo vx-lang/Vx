@@ -588,6 +588,10 @@ pub enum DiagnosticCode {
     /// The program that uses the package gives the flag, so a new version of the package cannot
     /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
     E5003,
+    /// A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that
+    /// takes a `Root` makes the capabilities of the program, so a second start would give them to
+    /// code that did not get them.
+    E5004,
 
     // --- Topology/Hardware Errors (E6xxx) ---
     /// Topology mismatch in function call

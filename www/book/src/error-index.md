@@ -21,7 +21,7 @@ the test suite has one, a program that triggers it.
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3066` (65 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
-- [Safety Errors](#safety-errors) — `E5001`–`E5003` (3 codes)
+- [Safety Errors](#safety-errors) — `E5001`–`E5004` (4 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8016` (16 codes)
@@ -201,6 +201,7 @@ Raised where an operation needs an `unsafe` context and does not have one.
 | [`E5001`](/errors/E5001/) | Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements hold whatever the memory held, so the program says with `unsafe` that it writes each one before reading it. |
 | [`E5002`](/errors/E5002/) | An operation that only an `unsafe` block allows, outside one. An access through a raw pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot know that the value is still at the address. So is `assume`. |
 | [`E5003`](/errors/E5003/) | Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`. The program that uses the package gives the flag, so a new version of the package cannot add trusted code without an error. `vxc --audit` lists the trusted code of a program. |
+| [`E5004`](/errors/E5004/) | A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that takes a `Root` makes the capabilities of the program, so a second start would give them to code that did not get them. |
 
 ## Topology/Hardware Errors
 
@@ -287,4 +288,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-196 diagnostics.
+197 diagnostics.

@@ -168,6 +168,7 @@ no global fact depend on a function body. Each new check reads one declaration:
 1. How does `main` get the root capabilities: as a parameter, as in Austral, or from a call that
    only the module of `main` can make? **Decided (2026-11-23): as a parameter,
    `fn main(root : Root) -> i32`.** A program that needs no capability keeps `fn main() -> i32`.
+   A program cannot call `main` or use it as a value (E5004), so no code gets a second `Root`.
 1. The package setting is a flag of `vxc`, because Vx has no manifest yet. Does it move into a
    manifest when Vx gets one?
 1. What is the type of a parameter that takes a closure that runs once (#3751)?
