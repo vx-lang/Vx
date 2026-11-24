@@ -82,7 +82,8 @@ pub enum Opcode {
     /// it. The host path ignores it entirely (#251). Under `SPAWN_TWO_LEVEL` (bit 62, Vx#379) the
     /// low bits are a BLOCK count and bits 32..47 the thread width; `SPAWN_COOP` (bit 61, stage C)
     /// additionally marks the thread loop as cooperative — barriers inside it, no serial
-    /// schedule, so the host refuses the region instead of running it.
+    /// schedule, so the host refuses the region instead of running it. `SPAWN_RUN_TIME_TRIP`
+    /// (bit 60) marks a parallel loop whose trip count is known only at run time.
     SpawnEnd = 21,
     /// Load a struct field: `operand1` is the aggregate's slot handle (from `Alloca`), `imm` the
     /// encoded field index (`encode_field_index`), and `type_idx` the field's type. The result
@@ -230,8 +231,8 @@ pub enum Opcode {
     /// `operand1` is the buffer, `operand2` the value. Lowers to `linalg.fill`, the same fill
     /// `TensorZero` emits, with the value the source wrote instead of a zero.
     TensorFill = 46,
-    /// A rank-2 view over memory the caller owns (`tensor_view_2d(ptr, rows, cols)`): `operand1`
-    /// is the pointer, `type_idx` the tensor type. A `?` extent is the `operand1` of an `Arg`
+    /// A rank-1 or rank-2 view over memory the caller owns (`tensor_view_1d(ptr, len)`,
+    /// `tensor_view_2d(ptr, rows, cols)`): `operand1` is the pointer, `type_idx` the tensor type. A `?` extent is the `operand1` of an `Arg`
     /// immediately before, one per `?` in order; a static one is the type's. Lowers to a memref
     /// descriptor built over the pointer, with row-major strides. The result is the view.
     TensorView = 47,
@@ -316,9 +317,10 @@ pub enum Opcode {
     /// `imm` encodes an `EnumPayloadIndex`. The layout supplies the field's address and metadata.
     /// `operand2` is unused and must be zero.
     EnumPayloadLoad = 70,
-    /// A lane reduction (`lanes::sum` and the others) of the tensor `operand1` over its first
-    /// `operand2` elements, an `f32` that every lane gets. `imm` holds `LANE_REDUCE_*`.
-    LaneReduce = 71,
+    /// A call to a lane routine (`lanes::sum`, `lanes::copy` and the others), or a lane matmul.
+    /// `imm` is a `LaneCallImm`. The `Arg`s just before are the operands of its op, and the value
+    /// is the value of the op, when it has one.
+    LaneCall = 71,
     /// The stream that `Print` and `PrintStr` write to, from here on in this thread: standard error
     /// when `imm` is 1, standard output when it is 0. An `eprint!` and a `panic` are between two.
     PrintStream = 72,
@@ -353,6 +355,29 @@ pub enum Opcode {
     /// `t as f32`: a fresh tensor of the result type, each element of `operand1` cast to the
     /// result's element type.
     TensorCast = 85,
+    /// Rows `a` to `b - 1` of a tensor (`q[a..b]`): `operand1` is the tensor and `operand2` is
+    /// `a`. The result type holds the number of rows, `b - a`. The result is a view that shares
+    /// the memory of the tensor.
+    TensorRange = 86,
+    /// `c = a + b` (or `-`, `*`, `/`) on whole tensors, written into the buffer that `c`
+    /// holds: `operand1` = a, `operand2` = b. As for `MatmulInto`, `imm` holds the destination
+    /// register, in its low 32 bits. Its high 32 bits hold the operation, the `Opcode` of
+    /// `Add`, `Sub`, `Mul` or `Div`. See `elementwise_into_imm`.
+    ElementwiseInto = 87,
+}
+
+/// The `imm` of an `ElementwiseInto` that writes `op` of its operands into `dst`.
+pub fn elementwise_into_imm(dst: Register, op: Opcode) -> u64 {
+    assert!(matches!(
+        op,
+        Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div
+    ));
+    ((op as u64) << 32) | dst.0 as u64
+}
+
+/// The destination register and the operation of an `ElementwiseInto`'s `imm`.
+pub fn elementwise_into_parts(imm: u64) -> (Register, Option<Opcode>) {
+    (Register(imm as u32), Opcode::from_u32((imm >> 32) as u32))
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -393,37 +418,77 @@ impl EnumPayloadIndex {
     }
 }
 
-/// `Opcode::LaneReduce`: the larger value, not the sum.
-pub const LANE_REDUCE_MAX: u64 = 1;
-/// `Opcode::LaneReduce`: in the order that docs/lane_reductions.md gives.
-pub const LANE_REDUCE_ORDERED: u64 = 2;
-/// `Opcode::LaneReduce`: over the lanes of a subgroup, not of a block.
-pub const LANE_REDUCE_SUBGROUP: u64 = 4;
-/// `Opcode::LaneReduce`: the index of the larger value. `operand1` is the tensor of values,
-/// `operand2` the tensor of indices, and the `Arg` just before is the count. The result is an
-/// `i32`.
-pub const LANE_REDUCE_ARGMAX: u64 = 8;
-/// `Opcode::LaneReduce` in the code of a subgroup: each tensor is `&tile[w]`, with `w` the index
-/// of the subgroup loop. So it is the row that a `TENSOR_STORE_LANE_ELEMENT` store of the
-/// subgroup writes.
-pub const LANE_REDUCE_OWN_ROW: u64 = 16;
-/// `Opcode::LaneReduce`: `lanes::sort`, an effect with no result. `operand1` is the tensor and
-/// `operand2` the count. The lanes of the block or the subgroup are in `imm >> 32`.
-pub const LANE_REDUCE_SORT: u64 = 32;
-/// `Opcode::LaneReduce` with `LANE_REDUCE_SORT`: from the largest value down.
-pub const LANE_REDUCE_DESCENDING: u64 = 64;
-/// `Opcode::LaneReduce`: `lanes::copy_async`. `operand1` is the tile in shared memory and
-/// `operand2` the tensor. The `Arg`s just before are the place of the tile, one for each of the
-/// `(imm >> 16) & 0xff` dimensions. The lanes of the block or the subgroup are in `imm >> 32`.
-/// The result is the `i32` token.
-pub const LANE_REDUCE_COPY: u64 = 128;
-/// `Opcode::LaneReduce`: the wait for the copy of the token `operand1`, an effect with no result.
-pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
-/// `Opcode::LaneReduce`: `acc = acc + (a as f32) @ (b as f32)` in the code of a subgroup, an
-/// effect with no result. `operand1` is `acc` and `operand2` is `a`. The `Arg` just before is `b`.
-pub const LANE_REDUCE_MATMUL: u64 = 512;
-/// `Opcode::LaneReduce` with `LANE_REDUCE_MATMUL`: the products are added to the old `acc`.
-pub const LANE_REDUCE_ACCUMULATE: u64 = 1024;
+/// The `imm` of `Opcode::LaneCall`: the routine, the number of `Arg`s before the call, and where
+/// the call runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LaneCallImm {
+    /// The position of the routine in `lanes::LANE_ROUTINES`.
+    pub routine: usize,
+    /// The number of `Arg`s just before the call. They are its operands.
+    pub operands: usize,
+    pub site: crate::hir::check::lanes::LaneSite,
+}
+
+impl LaneCallImm {
+    // Bits 0 to 7 hold the routine, 8 to 15 the operands, 16 to 19 the flags of the site, 20 to
+    // 31 the row of `own_row`, and 32 to 63 the lanes.
+    const SUBGROUP: u64 = 1 << 16;
+    const SUBGROUP_ROW: u64 = 1 << 17;
+    const OWN_ROW: u64 = 1 << 18;
+    const LANE_OWN: u64 = 1 << 19;
+
+    pub fn encode(self) -> u64 {
+        assert!(
+            self.routine < 1 << 8,
+            "too many lane routines for the imm of a lane call"
+        );
+        assert!(
+            self.operands < 1 << 8,
+            "too many operands for the imm of a lane call"
+        );
+        assert!(
+            self.site.lanes < 1 << 32,
+            "too many lanes for the imm of a lane call"
+        );
+        assert!(
+            !self.site.serial,
+            "the flat HIR has no lane call on one lane"
+        );
+        let mut imm = self.routine as u64 | (self.operands as u64) << 8 | self.site.lanes << 32;
+        if self.site.subgroup {
+            imm |= Self::SUBGROUP;
+        }
+        if self.site.subgroup_row {
+            imm |= Self::SUBGROUP_ROW;
+        }
+        if let Some(row) = self.site.own_row {
+            assert!(
+                row < 1 << 12,
+                "a row of a subgroup's tile too far for a lane call"
+            );
+            imm |= Self::OWN_ROW | row << 20;
+        }
+        if self.site.lane_own {
+            imm |= Self::LANE_OWN;
+        }
+        imm
+    }
+
+    pub fn decode(imm: u64) -> Self {
+        Self {
+            routine: (imm & 0xff) as usize,
+            operands: ((imm >> 8) & 0xff) as usize,
+            site: crate::hir::check::lanes::LaneSite {
+                serial: false,
+                subgroup: imm & Self::SUBGROUP != 0,
+                subgroup_row: imm & Self::SUBGROUP_ROW != 0,
+                own_row: (imm & Self::OWN_ROW != 0).then_some((imm >> 20) & 0xfff),
+                lane_own: imm & Self::LANE_OWN != 0,
+                lanes: imm >> 32,
+            },
+        }
+    }
+}
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
@@ -432,9 +497,18 @@ pub const TENSOR_STORE_BLOCK_LANE_ELEMENT: u64 = 1;
 /// `Opcode::TensorStore`: as `TENSOR_STORE_BLOCK_LANE_ELEMENT`, but `tile[w][t]` in the code of a
 /// subgroup, with `w` the index of the subgroup loop.
 pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
-/// The bits of a lane-element store's or an `own_row` reduction's `imm` from here up give the row
-/// of the subgroup: 0 for `t[w]`, and `c + 1` for `t[w][c]`.
+/// The bits of a lane-element store's `imm` from here up give the row of the subgroup: 0 for
+/// `t[w]`, and `c + 1` for `t[w][c]`.
 pub const LANE_ROW_SHIFT: u64 = 32;
+/// `Opcode::TensorStore`, and `Opcode::TensorIndex` that reads an element: the element belongs to
+/// this lane alone, as `t[w][..][l]` in a lane loop of subgroup `w`, where `w` is the number of the
+/// subgroup (docs/lane_reductions.md).
+pub const LANE_OWN_SUBGROUP: u64 = 1 << 8;
+/// As `LANE_OWN_SUBGROUP`, but `t[..][l]`, where one block or one subgroup has all of `t`.
+pub const LANE_OWN_WHOLE: u64 = 1 << 9;
+/// With `LANE_OWN_SUBGROUP` or `LANE_OWN_WHOLE`, the bits from here up to `LANE_ROW_SHIFT` give
+/// the lanes of the lane loop.
+pub const LANE_OWN_LANES_SHIFT: u64 = 16;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
@@ -469,6 +543,15 @@ pub const BARRIER_GPU: u64 = 2;
 /// body follows the transfer, and the transfer only places the tile. The other bits are the
 /// string index of the arrival count, plus 1.
 pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
+/// A bit of `Opcode::Transfer`'s `operand2`: the transfer is a `transfer_async`, so a device can
+/// copy in the background until a use of the tensor.
+pub const TRANSFER_ASYNC: u32 = 1 << 30;
+/// A bit of `Opcode::Transfer`'s `operand2`: the source is memory that nothing can write, a view
+/// made from a `*const` pointer. See `TransferExpr::read_only_source`.
+pub const TRANSFER_READ_ONLY_SOURCE: u32 = 1 << 29;
+/// A bit of `Opcode::Transfer`'s `operand2`: the source is reached through a shared reference that
+/// a parameter holds. See `TransferExpr::source_borrowed_for_call`.
+pub const TRANSFER_SOURCE_BORROWED_FOR_CALL: u32 = 1 << 28;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
@@ -521,11 +604,13 @@ impl Opcode {
             68 => AffineForEnd,
             69 => LoopHint,
             70 => EnumPayloadLoad,
-            71 => LaneReduce,
+            71 => LaneCall,
             79 => LifetimeStart,
             80 => LifetimeEnd,
             84 => CheckAggregate,
             85 => TensorCast,
+            86 => TensorRange,
+            87 => ElementwiseInto,
             8 => Call,
             9 => Ret,
             10 => Matmul,
@@ -682,5 +767,26 @@ mod enum_payload_tests {
             (70, Some(Opcode::EnumPayloadLoad)),
             "enum payload loads must retain their own wire opcode"
         );
+    }
+}
+
+#[cfg(test)]
+mod lane_call_tests {
+    use super::*;
+    use crate::hir::check::lanes::LaneSite;
+
+    #[rstest::rstest]
+    #[case::block(LaneSite { lanes: 256, ..LaneSite::default() })]
+    #[case::subgroup_row(LaneSite { subgroup: true, subgroup_row: true, lanes: 32, ..LaneSite::default() })]
+    #[case::first_row(LaneSite { subgroup: true, own_row: Some(0), ..LaneSite::default() })]
+    #[case::later_row(LaneSite { subgroup: true, own_row: Some(4095), ..LaneSite::default() })]
+    #[case::row_in_registers(LaneSite { subgroup: true, own_row: Some(0), lane_own: true, ..LaneSite::default() })]
+    fn a_lane_call_decodes_to_the_call_that_was_encoded(#[case] site: LaneSite) {
+        let call = LaneCallImm {
+            routine: 255,
+            operands: 255,
+            site,
+        };
+        assert_eq!(LaneCallImm::decode(call.encode()), call);
     }
 }

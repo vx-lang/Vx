@@ -178,6 +178,22 @@ The runtime builds an `ffi_cif` from the tags and `ffi_call`s
 or stack slot, so this is correct for **all** argument types, including by-value
 `f32`/`f64`.
 
+**Slot results belong to the program's allocator.** A matmul region that
+allocates its result (`c = a @ b`, where the kernel makes `c` rather than
+filling a buffer it was handed) does not receive a destination buffer. Its
+payload says `outkind=slot`, and the output argument is a pointer to storage for
+the result's descriptor instead of to element data. A plugin standing in for the
+kernel allocates the result, computes it, and writes the descriptor through that
+argument. From then on the allocation is the program's, and the program frees it
+with the same allocator that frees its other tensor storage, which is `malloc`
+and `free` on this platform. So the published pointer has to be memory that
+allocator made. Device memory the host can also read is the wrong answer even
+though it reads correctly: `free()` on shared USM aborts the program with
+`free(): invalid size` at cleanup, after the right numbers have been printed.
+`cuda_dispatch.cpp` states this rule at its slot branch, and
+`runtime/xpu_dispatch.cpp` copies the result out of its device buffer into a
+`malloc` buffer to obey it.
+
 ### 3.2 Why the naive dispatch was wrong
 
 The previous dispatcher called the kernel through a fixed
@@ -292,6 +308,14 @@ shared memory, and its entry also gives `dynamic_shared_bytes`. A program that
 launches it calls `cuFuncSetAttribute(f, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, n)` once, and passes `n` as
 the `sharedMemBytes` of `cuLaunchKernel`. Vx's own launch does both.
 
+A kernel that `vxc` compiled with `VX_GPU_PDL=1` for `sm_90` or later also gives
+`"waits_for_earlier_kernels": true`. It waits for the kernels before it on the
+stream before it reads or writes global memory. So a launcher may launch it
+with `cuLaunchKernelEx` and `CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION`
+set to 1, and it can then start while the kernel before it still runs. Do not
+launch a kernel without this field that way: it could read memory before the
+kernel before it wrote it.
+
 A kernel from a region with `across` loops also has `launch`: `grid`, one entry for each loop
 of blocks, `block` for the lanes of a block, and `"grid_loops": true`. An entry is a number,
 `{"param": "rows"}` for the value of a parameter, or `{"computed": "(rows + 3) / 4"}` for a size
@@ -389,8 +413,9 @@ forms.
 - **Memory.** The tensors must be in GPU memory.
 - **Stream and graphs.** A collective goes on the stream from `vx_cuda_set_stream` (§3.6),
   with Vx's kernels, so a CUDA graph can record it. Call `init` before the recording.
-- **No GPU.** A CPU backend, or the CUDA backend on a machine with no GPU, runs a job of one
-  rank only. There, each collective copies `in` to `out`.
+- **One rank.** A backend with no library that joins several ranks runs a job of one rank
+  only: the CPU backends, the CUDA backend on a machine with no GPU, the Intel GPU backend,
+  and the Apple one. There, each collective copies `in` to `out`.
 
 ### 3.8 Calling a Vx function that launches Apple GPU kernels
 

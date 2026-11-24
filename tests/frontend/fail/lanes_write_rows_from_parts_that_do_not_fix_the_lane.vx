@@ -1,0 +1,107 @@
+//===- lanes_write_rows_from_parts_that_do_not_fix_the_lane.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Lane `l` writes columns `2 * (l % 4)` and one more, in a row and in the row 8 below it, as in
+// `lanes_write_rows_from_nested_parts_of_the_lane_index.vx`. Each function here computes the row
+// from parts of `l` that let two lanes write the same element.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// `l / 4` goes up to 31, so the row 8 below lane 0's row is the row of lane 32.
+pub fn rows_of_a_quarter(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        let lo = l / 4;
+        let col = 2 * (l % 4);
+        out[lo][col] = l;
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:9: two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `l`
+        out[lo + 8][col] = l;
+      }
+    }
+  }
+  return;
+}
+
+// A step of 8 rows between the groups of 32 lanes: the rows 8 below one group are the rows of the next.
+pub fn groups_8_rows_apart(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        let lo = 8 * (l / 32) + (l % 32) / 4;
+        let col = 2 * (l % 4);
+        out[lo][col] = l;
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:9: two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `l`
+        out[lo + 8][col] = l;
+      }
+    }
+  }
+  return;
+}
+
+// `(l % 16) / 4` drops a bit of `l`: lanes 0 and 16 write the same row.
+pub fn a_part_that_drops_a_bit(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        let lo = 16 * (l / 32) + (l % 16) / 4;
+        let col = 2 * (l % 4);
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:9: two passes of this lane loop may write the same element of `out`: an index of the write must fix `l`
+        out[lo][col] = l;
+      }
+    }
+  }
+  return;
+}
+
+// 3 does not divide 32, so `(l % 32) / 3` is not a digit of `l`, and the compiler cannot prove
+// that it keeps the lanes apart.
+pub fn a_divisor_that_does_not_divide(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        let lo = 16 * (l / 32) + (l % 32) / 3;
+        let col = l % 3;
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:9: two passes of this lane loop may write the same element of `out`: an index of the write must fix `l`
+        out[lo][col] = l;
+      }
+    }
+  }
+  return;
+}
+
+// `(l % 32) / 3` goes up to 10, so lanes 30 and 31 both write `out[310]`.
+pub fn a_part_that_reaches_the_next_lane(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        out[10 * l] = l;
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:9: two passes of this lane loop may write the same element of `out`
+        out[10 * l + (l % 32) / 3] = l;
+      }
+    }
+  }
+  return;
+}
+
+// 3 does not divide 4, so `l / 4` and `l % 3` are not digits of one number: lanes 0 and 3 both
+// write `out[0][0]`.
+pub fn parts_that_are_not_digits_of_one_number(out : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..128 across lanes(128) {
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:9: two passes of this lane loop may write the same element of `out`: an index of the write must fix `l`
+        out[l / 4][l % 3] = l;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -29,10 +29,10 @@ import std::string;
 import std::vec;
 
 unsafe fn resources() -> void {
-  let file = unsafe { File::open("unused", OpenMode::Read()) };
-  let stream = unsafe { TcpStream::connect("127.0.0.1:1").unwrap() };
-  let socket = unsafe { UdpSocket::bind("127.0.0.1:0").unwrap() };
-  let listener = unsafe { TcpListener::bind("127.0.0.1:0").unwrap() };
+  let file = unsafe { File::open_c_str("unused", OpenMode::Read()) };
+  let stream = unsafe { TcpStream::connect_c_str("127.0.0.1:1").unwrap() };
+  let socket = unsafe { UdpSocket::bind_c_str("127.0.0.1:0").unwrap() };
+  let listener = unsafe { TcpListener::bind_c_str("127.0.0.1:0").unwrap() };
 }
 
 fn main() -> i32 {

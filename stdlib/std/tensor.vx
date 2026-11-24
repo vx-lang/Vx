@@ -188,14 +188,14 @@ impl<T : Float> Tensor<T, [?, ?]> {
   ///
   /// Lowered through `linalg`, with a separate path chosen at compile time for AVX-512.
   fn fill(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
-    mlir!(
-    inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+    unsafe { mlir!(
+    inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
     clobbers: [self],
     dialects: ["linalg"]
     ) {
-      linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+      linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
       macro.yield
-    };
+    } };
   }
 
   /// Overwrite this tensor's elements with `src`'s.
@@ -205,33 +205,33 @@ impl<T : Float> Tensor<T, [?, ?]> {
   fn copy(self : &mut Tensor<T, [?, ?]>, src : &Tensor<T, [?, ?]>) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
-      mlir!(
-      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      unsafe { mlir!(
+      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
         macro.yield
-      };
+      } };
     } else if comptime
     Topology::Current == Topology::ANE {
-      mlir!(
-      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      unsafe { mlir!(
+      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
         macro.yield
-      };
+      } };
     } else {
-      mlir!(
-      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      unsafe { mlir!(
+      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
         macro.yield
-      };
+      } };
     };
   }
 
@@ -240,33 +240,33 @@ impl<T : Float> Tensor<T, [?, ?]> {
   fn assign(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
-      mlir!(
-      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      unsafe { mlir!(
+      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
         macro.yield
-      };
+      } };
     } else if comptime
     Topology::Current == Topology::ANE {
-      mlir!(
-      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      unsafe { mlir!(
+      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
         macro.yield
-      };
+      } };
     } else {
-      mlir!(
-      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      unsafe { mlir!(
+      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
       clobbers: [self],
       dialects: ["linalg"]
       ) {
-        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
         macro.yield
-      };
+      } };
     };
   }
 
@@ -277,8 +277,8 @@ impl<T : Float> Tensor<T, [?, ?]> {
   fn compare(self : &Tensor<T, [?, ?]>, other : &Tensor<T, [?, ?]>) -> bool {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
-      mlir!(
-      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      unsafe { mlir!(
+      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
       clobbers: [],
       returns: bool,
       dialects: ["linalg", "arith", "memref", "func"]
@@ -293,19 +293,19 @@ impl<T : Float> Tensor<T, [?, ?]> {
             affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
-          ^bb0(%a: f32, %b: f32, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : f32
+        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+          ^bb0(%a: T, %b: T, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : T
           %and = arith.andi %out, %cmp : i1
           linalg.yield %and : i1
         }
         %val = memref.load %res[] : memref<i1>
         func.return %val : i1
-      }
+      } }
     } else if comptime
     Topology::Current == Topology::ANE {
-      mlir!(
-      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      unsafe { mlir!(
+      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
       clobbers: [],
       returns: bool,
       dialects: ["linalg", "arith", "memref", "func"]
@@ -320,18 +320,18 @@ impl<T : Float> Tensor<T, [?, ?]> {
             affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
-          ^bb0(%a: f32, %b: f32, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : f32
+        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+          ^bb0(%a: T, %b: T, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : T
           %and = arith.andi %out, %cmp : i1
           linalg.yield %and : i1
         }
         %val = memref.load %res[] : memref<i1>
         func.return %val : i1
-      }
+      } }
     } else {
-      mlir!(
-      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      unsafe { mlir!(
+      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
       clobbers: [],
       returns: bool,
       dialects: ["linalg", "arith", "memref", "func"]
@@ -346,15 +346,15 @@ impl<T : Float> Tensor<T, [?, ?]> {
             affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
-          ^bb0(%a: f32, %b: f32, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : f32
+        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+          ^bb0(%a: T, %b: T, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : T
           %and = arith.andi %out, %cmp : i1
           linalg.yield %and : i1
         }
         %val = memref.load %res[] : memref<i1>
         func.return %val : i1
-      }
+      } }
     }
   }
 }
@@ -365,24 +365,14 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   ///
   /// The shape is known at compile time here, so the emitted loop has constant bounds.
   fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void {
-    if comptime
-    Topology::Current == Topology::CPU_AVX512 {
-      // Demonstrate optimized code path for AVX512 (fallback to standard
-      // Linalg for demonstration)
-      mlir!(inputs : (% arg_t = self : memref<N x M x f32>,
-      % arg_v = val : f32),
-      clobbers : [self], dialects : ["linalg"]) {
-        linalg
-        .fill ins(% arg_v : f32) outs(% arg_t : memref<N x M x f32>)
-        macro.yield};
-    } else {
-      mlir!(
-      inputs : (% arg_t = self : memref<N x M x f32>, % arg_v = val : f32),
-      clobbers : [self], dialects : ["linalg"]) {
-        linalg
-        .fill ins(% arg_v : f32) outs(% arg_t : memref<N x M x f32>)
-        macro.yield};
-    }
+    unsafe { mlir!(
+    inputs: (%arg_t = self: memref<N x M x T>, %arg_v = val: T),
+    clobbers: [self],
+    dialects: ["linalg"]
+    ) {
+      linalg.fill ins(%arg_v : T) outs(%arg_t : memref<N x M x T>)
+      macro.yield
+    } };
   }
 }
 
@@ -398,7 +388,7 @@ macro_rules stamp_tensor_sums {
     impl Tensor<$t, [?]> {
       /// The sum of the elements. 0 for an empty tensor.
       fn sum(self : &Tensor<$t, [?]>) -> $t {
-        return mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+        return unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -436,14 +426,14 @@ macro_rules stamp_tensor_sums {
             scf.yield %y : $t
           }
           macro.yield %t : $t
-        };
+        } };
       }
 
       /// The sum of the products of matching elements. Refused for tensors of different
       /// lengths.
       fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> $t {
         assert(self.len() == other.len(), "dot needs two tensors of the same length");
-        return mlir!( inputs : (%a = self : memref<?x$t>, %b = other : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+        return unsafe { mlir!( inputs : (%a = self : memref<?x$t>, %b = other : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -486,13 +476,13 @@ macro_rules stamp_tensor_sums {
             scf.yield %m : $t
           }
           macro.yield %t : $t
-        };
+        } };
       }
 
       /// The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
       /// rather than calling `self.sum()`, which the legacy code generator cannot compile.
       fn mean(self : &Tensor<$t, [?]>) -> $t {
-        let total : $t = mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+        let total : $t = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -530,7 +520,7 @@ macro_rules stamp_tensor_sums {
             scf.yield %y : $t
           }
           macro.yield %t : $t
-        };
+        } };
         return total / (self.len() as $t);
       }
 
@@ -538,7 +528,7 @@ macro_rules stamp_tensor_sums {
       /// with the tensor on both sides, written out rather than calling `self.dot(self)`,
       /// which the legacy code generator cannot compile.
       fn norm(self : &Tensor<$t, [?]>) -> $t {
-        let squares : $t = mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+        let squares : $t = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -581,7 +571,7 @@ macro_rules stamp_tensor_sums {
             scf.yield %m : $t
           }
           macro.yield %t : $t
-        };
+        } };
         return squares.sqrt();
       }
     }
@@ -597,7 +587,7 @@ macro_rules stamp_half_tensor_sums {
     impl Tensor<$t, [?]> {
       /// The sum of the elements. 0 for an empty tensor.
       fn sum(self : &Tensor<$t, [?]>) -> f32 {
-        return mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+        return unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -640,14 +630,14 @@ macro_rules stamp_half_tensor_sums {
             scf.yield %y : f32
           }
           macro.yield %t : f32
-        };
+        } };
       }
 
       /// The sum of the products of matching elements. Refused for tensors of different
       /// lengths.
       fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> f32 {
         assert(self.len() == other.len(), "dot needs two tensors of the same length");
-        return mlir!( inputs : (%a = self : memref<?x$t>, %b = other : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+        return unsafe { mlir!( inputs : (%a = self : memref<?x$t>, %b = other : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -700,13 +690,13 @@ macro_rules stamp_half_tensor_sums {
             scf.yield %m : f32
           }
           macro.yield %t : f32
-        };
+        } };
       }
 
       /// The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
       /// rather than calling `self.sum()`, which the legacy code generator cannot compile.
       fn mean(self : &Tensor<$t, [?]>) -> f32 {
-        let total : f32 = mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+        let total : f32 = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -749,7 +739,7 @@ macro_rules stamp_half_tensor_sums {
             scf.yield %y : f32
           }
           macro.yield %t : f32
-        };
+        } };
         return total / (self.len() as f32);
       }
 
@@ -757,7 +747,7 @@ macro_rules stamp_half_tensor_sums {
       /// with the tensor on both sides, written out rather than calling `self.dot(self)`,
       /// which the legacy code generator cannot compile.
       fn norm(self : &Tensor<$t, [?]>) -> f32 {
-        let squares : f32 = mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+        let squares : f32 = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
           %c2 = arith.constant 2 : index
@@ -810,7 +800,7 @@ macro_rules stamp_half_tensor_sums {
             scf.yield %m : f32
           }
           macro.yield %t : f32
-        };
+        } };
         return squares.sqrt();
       }
     }
@@ -827,7 +817,7 @@ stamp_half_tensor_sums!(bf16 , 16);
 /// elements one at a time.
 macro_rules tensor_max_loop {
   ($a : expr , $t : ident , $lanes : expr , $start : expr) => {
-    mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+    unsafe { mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
@@ -865,7 +855,7 @@ macro_rules tensor_max_loop {
         scf.yield %y : $t
       }
       macro.yield %t : $t
-    }
+    } }
   };
 }
 
@@ -873,7 +863,7 @@ macro_rules tensor_max_loop {
 /// (the bits of positive infinity), with the loop shape of `tensor_max_loop`.
 macro_rules tensor_min_loop {
   ($a : expr , $t : ident , $lanes : expr , $start : expr) => {
-    mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+    unsafe { mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
@@ -911,7 +901,7 @@ macro_rules tensor_min_loop {
         scf.yield %y : $t
       }
       macro.yield %t : $t
-    }
+    } }
   };
 }
 
@@ -1005,7 +995,7 @@ stamp_tensor_statistics!(bf16 , f32);
 /// partial sums, then the elements left over one at a time.
 macro_rules tensor_sum_loop {
   ($a : expr , $t : ident , $lanes : expr) => {
-    mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "memref", "scf", "vector"]) {
+    unsafe { mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "memref", "scf", "vector"]) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
@@ -1043,7 +1033,7 @@ macro_rules tensor_sum_loop {
         scf.yield %y : $t
       }
       macro.yield %t : $t
-    }
+    } }
   };
 }
 
@@ -1051,7 +1041,7 @@ macro_rules tensor_sum_loop {
 /// loop shape as `tensor_sum_loop`.
 macro_rules tensor_squared_distance_loop {
   ($a : expr , $mean : expr , $t : ident , $lanes : expr) => {
-    mlir!( inputs : (%a = $a : memref<?x$t>, %m = $mean : $t), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+    unsafe { mlir!( inputs : (%a = $a : memref<?x$t>, %m = $mean : $t), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
@@ -1095,7 +1085,7 @@ macro_rules tensor_squared_distance_loop {
         scf.yield %y : $t
       }
       macro.yield %t : $t
-    }
+    } }
   };
 }
 
@@ -1173,7 +1163,7 @@ macro_rules stamp_half_tensor_spread {
 /// integer is defined, and the NaN is put back at the end. The leftover elements use `math.exp`.
 macro_rules tensor_exp_shifted_loop {
   ($a : expr , $m : expr) => {
-    mlir!( inputs : (%a = $a : memref<?xf32>, %m = $m : f32), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
+    unsafe { mlir!( inputs : (%a = $a : memref<?xf32>, %m = $m : f32), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c16 = arith.constant 16 : index
@@ -1235,7 +1225,7 @@ macro_rules tensor_exp_shifted_loop {
         scf.yield %s : f32
       }
       macro.yield %total : f32
-    }
+    } }
   };
 }
 
@@ -1364,7 +1354,7 @@ stamp_tensor_rank2!(bf16);
 /// viewed as one row of `rows * cols` elements.
 macro_rules tensor_reduce_2d {
   ($a : expr , $t : ident , $lanes : expr , $start : expr , $op : ident , $red : ident) => {
-    mlir!( inputs : (%m = $a : memref<?x?x$t>), returns : $t, dialects : ["arith", "memref", "scf", "vector"]) {
+    unsafe { mlir!( inputs : (%m = $a : memref<?x?x$t>), returns : $t, dialects : ["arith", "memref", "scf", "vector"]) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
@@ -1406,7 +1396,7 @@ macro_rules tensor_reduce_2d {
         scf.yield %y : $t
       }
       macro.yield %t : $t
-    }
+    } }
   };
 }
 
@@ -1414,7 +1404,7 @@ macro_rules tensor_reduce_2d {
 /// the 1-D tensor `$out`, which has one element per row.
 macro_rules tensor_reduce_rows_2d {
   ($a : expr , $out : expr , $t : ident , $lanes : expr , $start : expr , $op : ident , $red : ident) => {
-    mlir!( inputs : (%m = $a : memref<?x?x$t>, %o = $out : memref<?x$t>), returns : i32, dialects : ["arith", "memref", "scf", "vector"]) {
+    unsafe { mlir!( inputs : (%m = $a : memref<?x?x$t>, %o = $out : memref<?x$t>), returns : i32, dialects : ["arith", "memref", "scf", "vector"]) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
@@ -1458,7 +1448,7 @@ macro_rules tensor_reduce_rows_2d {
       }
       %zero = arith.constant 0 : i32
       macro.yield %zero : i32
-    }
+    } }
   };
 }
 
@@ -1771,7 +1761,7 @@ stamp_half_tensor_rank2_reductions!(bf16);
 /// running sum with a single rounding.
 macro_rules tensor_matmul_kernel {
   ($c : expr , $a : expr , $b : expr , $t : ident , $lanes : expr) => {
-    mlir!( inputs : (%c = $c : memref<?x?x$t>, %a = $a : memref<?x?x$t>, %b = $b : memref<?x?x$t>), returns : i32, dialects : ["arith", "memref", "scf", "vector"]) {
+    unsafe { mlir!( inputs : (%c = $c : memref<?x?x$t>, %a = $a : memref<?x?x$t>, %b = $b : memref<?x?x$t>), returns : i32, dialects : ["arith", "memref", "scf", "vector"]) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %lanes = arith.constant $lanes : index
@@ -1891,7 +1881,7 @@ macro_rules tensor_matmul_kernel {
       memref.dealloc %pb : memref<?x?x$t>
       %zero = arith.constant 0 : i32
       macro.yield %zero : i32
-    }
+    } }
   };
 }
 

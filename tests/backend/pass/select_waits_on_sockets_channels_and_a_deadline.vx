@@ -1,0 +1,180 @@
+//===- select_waits_on_sockets_channels_and_a_deadline.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `TcpListener`, a `TcpStream` and a `UdpSocket` are sources of `select`, with channels and
+// deadlines in the same call. In each step, the server waits in a `select`, and the client makes
+// one source ready 0.1 seconds later. The server prints the index that the `select` gave.
+//
+// - A connection makes the listener ready, and two bytes make the stream ready.
+// - A send on a channel wins over a stream that gets no bytes.
+// - A peer that closes the connection makes the stream ready, and `read` gives 0.
+// - A `Deadline` wins over a listener that gets no connection.
+// - A datagram makes the UDP socket ready.
+//
+// The port numbers are fixed, because `std::net` cannot give the port of a listener yet.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}connect: select3 gave 0, the listener{{$}}
+// CHECK-NEXT: {{^}}bytes: select3 gave 1, the stream{{$}}
+// CHECK-NEXT: {{^}}bytes: read_exact got hi: true{{$}}
+// CHECK-NEXT: {{^}}send: select3 gave 2, the channel, with the value 9{{$}}
+// CHECK-NEXT: {{^}}close: select2 gave 1, the stream{{$}}
+// CHECK-NEXT: {{^}}close: read got 0 bytes{{$}}
+// CHECK-NEXT: {{^}}deadline: select2 gave 1, the deadline{{$}}
+// CHECK-NEXT: {{^}}datagram: select2 gave 1, the UDP socket{{$}}
+// CHECK-NEXT: {{^}}datagram: recv got 4 bytes{{$}}
+
+import core::result;
+import core::time;
+import std::net;
+import std::string;
+import std::sync::channel;
+import std::sync::select;
+import std::time;
+import std::vec;
+
+/// The bytes of `s`, without its NUL.
+fn bytes(s : *const i8) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  let mut i = 0i64;
+  while unsafe { s[i] } != 0i8 {
+    v.push(unsafe { s[i] } as u8);
+    i = i + 1i64;
+  }
+  return v;
+}
+
+/// A vector of `len` zero bytes.
+fn zeros(len : i32) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  for _i in 0..len {
+    v.push(0u8);
+  }
+  return v;
+}
+
+fn address(s : *const i8) -> String {
+  return unsafe { String::from_c_str(s) };
+}
+
+/// The index that a `select` gave, or -1 for a cancel.
+fn index(r : Result<i32, SelectError>) -> i32 {
+  match r {
+    Result<i32, SelectError>::Ok(i) => {
+      return i;
+    }
+    Result<i32, SelectError>::Err(_) => {
+      return -1;
+    }
+  }
+}
+
+fn report(who : *const i8, result : Result<u64, NetError>) -> void {
+  match result {
+    Result<u64, NetError>::Ok(_n) => {}
+    Result<u64, NetError>::Err(_e) => {
+      println!("{}: Error", who);
+    }
+  }
+}
+
+fn pause() -> void {
+  sleep(Duration::from_millis(100));
+}
+
+/// Connects, and then waits for a value on `go` before each of its next steps.
+fn client(network : &Network, go : Receiver<i64>) -> Result<u64, NetError> {
+  pause();
+  let mut stream = TcpStream::connect(network, &address("127.0.0.1:41781"))?;
+  let _first = go.recv();
+  pause();
+  let _sent = stream.write_all(&bytes("hi"))?;
+  let _second = go.recv();
+  pause();
+  return Result<u64, NetError>::Ok(0);
+}
+
+fn server(listener : TcpListener, go : Sender<i64>) -> Result<u64, NetError> {
+  let mut l = listener;
+  let (tx, rx) = channel<i64>(1);
+  let limit = Deadline::after(Duration::from_secs(5));
+  println!("connect: select3 gave {}, the listener", index(select3(&l, &rx, &limit)));
+  let mut stream = l.accept()?;
+  let _go1 = go.send(1);
+  println!("bytes: select3 gave {}, the stream", index(select3(&l, &stream, &limit)));
+  let mut two = zeros(2);
+  let _n = stream.read_exact(&mut two)?;
+  println!("bytes: read_exact got hi: {}", two.get(0) == 104u8 && two.get(1) == 105u8);
+  let _sent = tx.send(9);
+  let i = index(select3(&l, &stream, &rx));
+  match rx.try_recv() {
+    Result<i64, TryRecvError>::Ok(v) => {
+      println!("send: select3 gave {}, the channel, with the value {}", i, v);
+    }
+    Result<i64, TryRecvError>::Err(_) => {
+      println!("send: select3 gave {}, with no value", i);
+    }
+  }
+  let _go2 = go.send(2);
+  println!("close: select2 gave {}, the stream", index(select2(&l, &stream)));
+  let mut one = zeros(1);
+  let n = stream.read(&mut one)?;
+  println!("close: read got {} bytes", n);
+  let soon = Deadline::after(Duration::from_millis(200));
+  println!("deadline: select2 gave {}, the deadline", index(select2(&l, &soon)));
+  return Result<u64, NetError>::Ok(0);
+}
+
+fn send_datagram(network : &Network) -> Result<u64, NetError> {
+  pause();
+  let mut socket = UdpSocket::bind(network, &address("127.0.0.1:41783"))?;
+  return socket.send_to(&bytes("ping"), &address("127.0.0.1:41782"));
+}
+
+fn receive_datagram(socket : UdpSocket) -> Result<u64, NetError> {
+  let mut s = socket;
+  let limit = Deadline::after(Duration::from_secs(5));
+  println!("datagram: select2 gave {}, the UDP socket", index(select2(&limit, &s)));
+  let mut buffer = zeros(8);
+  let n = s.recv(&mut buffer)?;
+  println!("datagram: recv got {} bytes", n);
+  return Result<u64, NetError>::Ok(n);
+}
+
+fn main(root : Root) -> i32 {
+  let network = &root.network;
+  let (go_tx, go_rx) = channel<i64>(1);
+  match TcpListener::bind(network, &address("127.0.0.1:41781")) {
+    Result<TcpListener, NetError>::Ok(listener) => {
+      tasks {
+        spawn {
+          report("client", client(network, go_rx));
+        };
+        report("server", server(listener, go_tx));
+      }
+    }
+    Result<TcpListener, NetError>::Err(_e) => {
+      println!("bind: Error");
+    }
+  }
+  match UdpSocket::bind(network, &address("127.0.0.1:41782")) {
+    Result<UdpSocket, NetError>::Ok(socket) => {
+      tasks {
+        spawn {
+          report("datagram", send_datagram(network));
+        };
+        report("datagram", receive_datagram(socket));
+      }
+    }
+    Result<UdpSocket, NetError>::Err(_e) => {
+      println!("udp bind: Error");
+    }
+  }
+  return 0;
+}

@@ -1,0 +1,107 @@
+// An `mlir!` block with `threads : 32` multiplies an 8 x 16 matrix `a` by the transpose of an 8 x 16
+// matrix `bt` with the simdgroup matrices of the Apple GPU. All 32 threads of the threadgroup run
+// the block. The sum stays in a simdgroup matrix through a loop over K, in steps of 8. In each step,
+// the threads copy the step's part of `a` into the shared tile `sa`, wait at a barrier, and load it
+// from there. They load the part of `bt` from device memory, transposed, with `leadDimension = 0`:
+// the row stride of the memref, which the program gives at run time. The inputs are whole numbers,
+// so the GPU must give the exact products.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>%t.ast.gpu | FileCheck %s
+// RUN: FileCheck %s --check-prefix=GPU --input-file=%t.ast.gpu
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal && FileCheck %s --check-prefix=MSL --input-file=%t.metal
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 2 x 1 x 1, block 32
+// CHECK: {{^}}wrong: 0{{$}}
+// MSL: make_filled_simdgroup_matrix<float, 8, 8>(
+// MSL: simdgroup_load({{.*}}, (ulong)8, ulong2(0, 0), false);
+// MSL: simdgroup_load({{.*}}, (ulong){{[a-z0-9_]+}}, ulong2(0, 0), true);
+// MSL: simdgroup_multiply_accumulate(
+// MSL: simdgroup_store(
+
+pub fn product(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, bt : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<f16, [64], Memory::SMEM>::uninit() };
+      let _d = unsafe { mlir!( threads : 32, inputs : (%sa = &mut sa : memref<64xf16, 3>, %a = a : memref<?x?xf16>, %bt = bt : memref<?x?xf16, strided<[?, 1], offset: ?>>, %o = out : memref<?x?xf32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "scf", "gpu"], ensures : [writes_only(sa), reads_only(a), reads_only(bt), writes_only(out[b * 8..b * 8 + 8][0..8])]) {
+          %c0 = arith.constant 0 : index
+          %c8 = arith.constant 8 : index
+          %c16 = arith.constant 16 : index
+          %c32 = arith.constant 32 : index
+          %tid = gpu.thread_id x
+          %bi = arith.index_cast %b : i32 to index
+          %row0 = arith.muli %bi, %c8 : index
+          %zero = arith.constant 0.0 : f32
+          %start = gpu.subgroup_mma_constant_matrix %zero : !gpu.mma_matrix<8x8xf32, "COp">
+          %sum = scf.for %kb = %c0 to %c16 step %c8 iter_args(%acc = %start) -> (!gpu.mma_matrix<8x8xf32, "COp">) {
+            scf.for %e = %tid to %c32 step %c32 {
+              %e2 = arith.addi %e, %c32 : index
+              %r1 = arith.divui %e, %c8 : index
+              %k1 = arith.remui %e, %c8 : index
+              %r2 = arith.divui %e2, %c8 : index
+              %k2 = arith.remui %e2, %c8 : index
+              %ar1 = arith.addi %row0, %r1 : index
+              %ak1 = arith.addi %kb, %k1 : index
+              %ar2 = arith.addi %row0, %r2 : index
+              %ak2 = arith.addi %kb, %k2 : index
+              %v1 = memref.load %a[%ar1, %ak1] : memref<?x?xf16>
+              %v2 = memref.load %a[%ar2, %ak2] : memref<?x?xf16>
+              memref.store %v1, %sa[%e] : memref<64xf16, 3>
+              memref.store %v2, %sa[%e2] : memref<64xf16, 3>
+            }
+            gpu.barrier
+            %ma = gpu.subgroup_mma_load_matrix %sa[%c0] {
+              leadDimension = 8 : index
+            } : memref<64xf16, 3> -> !gpu.mma_matrix<8x8xf16, "AOp">
+            %mb = gpu.subgroup_mma_load_matrix %bt[%c0, %kb] {
+              leadDimension = 0 : index, transpose
+            } : memref<?x?xf16, strided<[?, 1], offset: ?>> -> !gpu.mma_matrix<8x8xf16, "BOp">
+            %next = gpu.subgroup_mma_compute %ma, %mb, %acc : !gpu.mma_matrix<8x8xf16, "AOp">, !gpu.mma_matrix<8x8xf16, "BOp"> -> !gpu.mma_matrix<8x8xf32, "COp">
+            gpu.barrier
+            scf.yield %next : !gpu.mma_matrix<8x8xf32, "COp">
+          }
+          gpu.subgroup_mma_store_matrix %sum, %o[%row0, %c0] {
+            leadDimension = 0 : index
+          } : !gpu.mma_matrix<8x8xf32, "COp">, memref<?x?xf32>
+          macro.yield %b : i32
+        } };
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut ha = Tensor<f16>([16, 16]);
+  let mut hbt = Tensor<f16>([8, 16]);
+  for i in 0..16 {
+    for k in 0..16 {
+      ha[i][k] = ((i + 2 * k) % 5 - 2) as f16;
+    }
+  }
+  for j in 0..8 {
+    for k in 0..16 {
+      hbt[j][k] = ((3 * j + k) % 7 - 3) as f16;
+    }
+  }
+  let a = transfer(&ha, Memory::HBM);
+  let bt = transfer(&hbt, Memory::HBM);
+  let mut out = transfer(Tensor<f32>([16, 8]), Memory::HBM);
+  product(&mut out, &a, &bt);
+  let got = transfer(&out, Memory::CPU_DRAM);
+  let mut wrong = 0;
+  for i in 0..16 {
+    for j in 0..8 {
+      let mut want = 0.0;
+      for k in 0..16 {
+        want = want + (ha[i][k] as f32) * (hbt[j][k] as f32);
+      }
+      if got[i][j] != want {
+        wrong = wrong + 1;
+      }
+    }
+  }
+  println!("wrong: {}", wrong);
+  return 0;
+}

@@ -1,0 +1,33 @@
+//===- a_crash_report_gives_the_file_and_line_of_each_frame.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The crash report gives the file and line of each frame, from the debug information of the
+// program. Only the legacy code generator writes debug information. On macOS, the debug
+// information stays in the object file, and the symbolizer does not read it there.
+//
+// REQUIRES: linux
+// RUN: not vxc --legacy-codegen %s 2>&1 | FileCheck %s
+// CHECK: Backtrace:
+// CHECK-NEXT: #0 0x{{[0-9a-f]+}} in read_it at {{.*}}a_crash_report_gives_the_file_and_line_of_each_frame.vx:20:
+// CHECK-NEXT: #1 0x{{[0-9a-f]+}} in call_it at {{.*}}a_crash_report_gives_the_file_and_line_of_each_frame.vx:25:
+// CHECK-NEXT: #2 0x{{[0-9a-f]+}} in main at {{.*}}a_crash_report_gives_the_file_and_line_of_each_frame.vx:31:
+
+fn read_it(p : *mut i32) -> i32 {
+  let v = unsafe { p[0] };
+  return v;
+}
+
+fn call_it(p : *mut i32) -> i32 {
+  let v = read_it(p);
+  return v + 1;
+}
+
+fn main() -> i32 {
+  let p : *mut i32 = unsafe { 0 as *mut i32 };
+  let r = call_it(p);
+  return r;
+}

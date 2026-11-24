@@ -12,8 +12,9 @@
 // from `vx_cuda_set_stream`, so a CUDA graph can record it.
 //
 // The CUDA backend calls NCCL, loaded with dlopen as the CUDA driver is. A
-// build with no NCCL must still link every program. The CPU backends answer
-// one rank only, where each collective is a copy.
+// build with no NCCL must still link every program. A backend with no library
+// that joins several ranks answers one rank only, where each collective is a
+// copy: the CPU backends and the Intel GPU one.
 //
 // The functions here return an error message, or null. The backends stop the
 // program on an error. A test drives this file against a fake NCCL with no GPU
@@ -282,8 +283,8 @@ private:
   int32_t ranks_ = 0;
 };
 
-/// A job of one rank, for a process with no GPU. Each collective copies its
-/// input to its output.
+/// A job of one rank, for a backend that cannot join several. Each collective
+/// copies its input to its output.
 class OneRankCollective {
 public:
   std::string init(int32_t rank, int32_t ranks) {
@@ -294,8 +295,8 @@ public:
     if (ranks != 1 || rank != 0) {
       return "vx_collective_init got rank " + std::to_string(rank) + " of " +
              std::to_string(ranks) +
-             " ranks, but this process has no GPU, so it runs a job of one "
-             "rank only.";
+             " ranks, but this process runs a job of one rank only: this "
+             "backend has no library that joins several ranks.";
     }
     ranks_ = 1;
     return "";

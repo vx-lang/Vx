@@ -1,0 +1,68 @@
+//===- spirv_user_lowered_transfer_fills_a_shared_tile.vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The topology of an Intel GPU (`arch: spirv64`) gives its own `impl Transfer`
+// into shared memory, so `move_tile` fills the tile, not the builtin copy. The
+// SPIR-V image inlines `move_tile` and keeps the tile in Workgroup storage.
+// tests/integration_test/spirv_images_on_pocl.rs runs the image on the CPU with
+// pocl and compares the output with this one. The default way of pocl to run a
+// block crashed on this kernel, so that test asks pocl for another way.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --implicit-check-not='cannot become'
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}format=spirv
+// EXPECT: [[2,   4],
+// EXPECT: [6,   8]]
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+Memory SMEM {
+  within: Memory::DEV_HBM, capacity: 64 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::SMEM
+}
+
+impl Transfer<Memory::DEV_HBM, Memory::SMEM> for Topology::Dev {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    for i in 0..raw::extent(src) {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = (i * 2 + d + 1) as f32;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::DEV_HBM);
+  let mut od = transfer(o, Memory::DEV_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = tile[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

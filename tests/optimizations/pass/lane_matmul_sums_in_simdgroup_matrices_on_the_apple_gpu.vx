@@ -1,0 +1,107 @@
+//===- lane_matmul_sums_in_simdgroup_matrices_on_the_apple_gpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A matmul of tiles on the Apple GPU whose accumulator stays in simdgroup matrices
+// (lane_matmul_sums_stay_in_simdgroup_matrices.vx). The fill sets each sum to 1, the matmuls add
+// three steps of k, and the copy stores the sums to `c` at [top, left]. The inputs are small
+// integers, so each sum is exact. In the first case the tile is inside `c`. In the second, the
+// tile goes past the last row and the last column of `c`, so each lane stores only its elements
+// that are inside, at the places that the layout of `thread_elements` gives. The other elements
+// of `c` keep -1: a store past the last column would land in the next row. The last RUN line uses
+// the CPU copy of the kernel.
+//
+// REQUIRES: macos
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}inside: 1024 sums, 0 wrong, 0 other elements changed{{$}}
+// CHECK: {{^}}past the edges: 441 sums, 0 wrong, 0 other elements changed{{$}}
+
+pub fn sums(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>, k : i32, top : i32, left : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 32], Memory::SMEM>::uninit() };
+      let mut acc = unsafe {
+        Tensor<f32, [2, 16, 32], Memory::SMEM>::uninit()
+      };
+      for w in 0..2 across subgroups {
+        lanes::fill(&mut acc[w], 1.0);
+      }
+      for kt in 0..k / 16 {
+        lanes::copy(&mut sb, b, [kt * 16, 0]);
+        lanes::copy(&mut sa[0], a, [0, kt * 16]);
+        lanes::copy(&mut sa[1], a, [16, kt * 16]);
+        for w in 0..2 across subgroups {
+          acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+        }
+      }
+      for w in 0..2 across subgroups {
+        lanes::copy(c, &acc[w], [top + w * 16, left]);
+      }
+    }
+  }
+  return;
+}
+
+/// Runs `sums` into a tensor of `rows` x `cols` of -1, and counts the sums that are wrong and the
+/// other elements that are not -1.
+fn check(name : *const i8, rows : i32, cols : i32, top : i32, left : i32) -> void {
+  let k = 48;
+  let mut ha = Tensor<f16>([32, k]);
+  let mut hb = Tensor<f16>([k, 32]);
+  for i in 0..32 {
+    for j in 0..k {
+      ha[i][j] = (((i * 3 + j) % 5) - 2) as f16;
+    }
+  }
+  for i in 0..k {
+    for j in 0..32 {
+      hb[i][j] = (((i + j * 7) % 3) - 1) as f16;
+    }
+  }
+  let mut hc = Tensor<f32>([rows, cols]);
+  for i in 0..rows {
+    for j in 0..cols {
+      hc[i][j] = -1.0;
+    }
+  }
+  let a = transfer(&ha, Memory::HBM);
+  let b = transfer(&hb, Memory::HBM);
+  let mut c = transfer(hc, Memory::HBM);
+  sums(&mut c, &a, &b, k, top, left);
+  let out = transfer(&c, Memory::CPU_DRAM);
+  let mut count = 0;
+  let mut wrong = 0;
+  let mut changed = 0;
+  for i in 0..rows {
+    for j in 0..cols {
+      let r = i - top;
+      let q = j - left;
+      if r >= 0 && r < 32 && q >= 0 && q < 32 {
+        let mut want : f32 = 1.0;
+        for t in 0..k {
+          want = want + (ha[r][t] as f32) * (hb[t][q] as f32);
+        }
+        count = count + 1;
+        if out[i][j] != want {
+          wrong = wrong + 1;
+        }
+      } else if out[i][j] != -1.0 {
+        changed = changed + 1;
+      }
+    }
+  }
+  println!("{}: {} sums, {} wrong, {} other elements changed", name, count, wrong, changed);
+  return;
+}
+
+fn main() -> i32 {
+  check("inside", 40, 48, 4, 8);
+  check("past the edges", 28, 44, 7, 23);
+  return 0;
+}

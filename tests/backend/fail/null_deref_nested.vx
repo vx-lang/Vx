@@ -1,14 +1,21 @@
+// REQUIRES: linux
+// On macOS the runtime has no crash handler for now, so it prints no report there.
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: LLVM_SYMBOLIZER_PATH= not vxc %s 2>&1 | FileCheck %s --check-prefix=NO-SYMBOLIZER
 
-// Note: On macOS, `libunwind` from a signal handler truncates the stack trace
-// when crossing JIT frames. It usually stops after capturing the faulting frame
-// (or the frame it got inlined into, like `_f4` here). Therefore, we only check
-// what is actually reliably captured.
+// The crash report names each function of the program, from the one that crashed to `main`. An
+// empty `LLVM_SYMBOLIZER_PATH` turns the symbolizer off. The report then still numbers the frames.
 
 // CHECK: Caught SIGSEGV: Segmentation Fault!
-// CHECK: Backtrace
-// CHECK: vx_sigsegv_handler
-// CHECK: {{_?}}f4
+// CHECK-NEXT: Backtrace:
+// CHECK-NEXT: #0 0x{{[0-9a-f]+}} in f5{{$| at}}
+// CHECK-NEXT: #1 0x{{[0-9a-f]+}} in f4{{$| at}}
+// CHECK-NEXT: #2 0x{{[0-9a-f]+}} in f3{{$| at}}
+// CHECK-NEXT: #3 0x{{[0-9a-f]+}} in f2{{$| at}}
+// CHECK-NEXT: #4 0x{{[0-9a-f]+}} in f1{{$| at}}
+// CHECK-NEXT: #5 0x{{[0-9a-f]+}} in main{{$| at}}
+// NO-SYMBOLIZER: Backtrace:
+// NO-SYMBOLIZER-NEXT: #0 0x{{[0-9a-f]+}} in {{.*}}temp.out
 // The runtime's own handler prints the SIGSEGV above, then aborts -- so what the
 // JIT sees is the abort, named. This line used to read "exited with non-zero
 // code: -1", which is what an exit status reports when the process was killed

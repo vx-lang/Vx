@@ -1,0 +1,36 @@
+//===- a_tile_copied_into_a_row_of_a_tensor_parameter.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each block copies its tiles into its own part `out[g]` of a parameter with 3 dimensions.
+// `out[g]` holds numbers, so `lanes::copy` cannot store the borrow of the local tile in it, and
+// the call gets no E4005. The compiler used to give E4005, because it did not know the type of
+// `out[g]`. On a computer with no GPU, the kernel runs its CPU copy.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: tiles: 0 1 3 4 7
+
+pub fn per_block(out : &mut Tensor<f32, [?, ?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..2 across blocks {
+      let mut acc = unsafe { Tensor<f32, [4, 8, 8], Memory::SMEM>::uninit() };
+      for sg in 0..4 across subgroups {
+        lanes::fill(&mut acc[sg], (g * 4 + sg) as f32);
+        lanes::copy(&mut out[g], &acc[sg], [sg * 8, 0]);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<f32>([2, 32, 8]), Memory::HBM);
+  per_block(&mut out);
+  let r = transfer(out, Memory::CPU_DRAM);
+  println!("tiles: {} {} {} {} {}", r[0][0][0], r[0][8][7], r[0][31][7], r[1][0][0], r[1][31][7]);
+  return 0;
+}

@@ -1,0 +1,105 @@
+//===- spirv_device_image_bf16.vx - a bf16 kernel gets a SPIR-V image -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// A SPIR-V kernel that reads, computes on and writes bf16. SPIR-V has a bf16
+// type only through an extension, and LLVM's SPIR-V backend stopped the
+// compiler on it. The image now computes in f32, rounds to bf16 after each
+// operation as the CPU does, and holds bf16 values as i16.
+//
+// The values need rounding: a product of two numbers with 8-bit fractions has
+// up to 16 bits. In bf16, `(a0 + a1) - a0` gives `a0`, because the sum rounds
+// to its even neighbor. So no element is below it, and `gf` is all `-1`.
+// Computed in f32 without rounding, it gives `a1`, and `x = a0` is below it.
+// The second region keeps a bf16 product across the passes of a loop.
+//
+// CHECK-NOT: cannot become a `spirv64` device image
+// CHECK-NOT: LLVM ERROR
+// CHECK-DAG: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}format=spirv\00
+// CHECK-DAG: @vx_npu_kernel_1_str("vx_npu_kernel_1\00{{.*}}format=spirv\00
+// EXPECT: 2
+// EXPECT: 2.03125
+// EXPECT: 2.046875
+// EXPECT: 2.0625
+// EXPECT: 2.09375
+// EXPECT: 2.125
+// EXPECT: 2.140625
+// EXPECT: 2.15625
+// EXPECT: [[-1,   -1,   -1,   -1],
+// EXPECT:  [-1,   -1,   -1,   -1]]
+// EXPECT: 1.046875
+// EXPECT: 1.1796875
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 1 GiB, bandwidth: 100 GB/s, managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 10 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 10 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<bf16, [2, 4]>::uninit() };
+  let mut o = unsafe { Tensor<bf16, [2, 4]>::uninit() };
+  let mut f = unsafe { Tensor<f32, [2, 4]>::uninit() };
+  let mut p = unsafe { Tensor<bf16, [2]>::uninit() };
+  for i in 0..2 {
+    p[i] = 0.0 as bf16;
+    for j in 0..4 {
+      a[i][j] = (1.0 + (j as f32) / 128.0 + (i as f32) / 32.0) as bf16;
+      o[i][j] = 0.0 as bf16;
+      f[i][j] = 0.0;
+    }
+  }
+  let ga = transfer(a, Memory::DEV_HBM);
+  let mut go = transfer(o, Memory::DEV_HBM);
+  let mut gf = transfer(f, Memory::DEV_HBM);
+  let mut gp = transfer(p, Memory::DEV_HBM);
+
+  // A multiply-add and a compare in bf16, and a conversion to f32.
+  spawn on(Topology::Dev) {
+    for i in 0..2 {
+      for j in 0..4 {
+        let x = ga[i][j];
+        go[i][j] = x * x + x;
+        if x < ga[i][0] + ga[i][1] - ga[i][0] {
+          gf[i][j] = x as f32;
+        } else {
+          gf[i][j] = -1.0;
+        }
+      }
+    }
+  }
+  // A bf16 product carried across the passes of a loop.
+  spawn on(Topology::Dev) {
+    for i in 0..2 {
+      let mut product = ga[i][0];
+      for j in 1..4 {
+        product = product * ga[i][j];
+      }
+      gp[i] = product;
+    }
+  }
+
+  let ho = transfer(go, Memory::CPU_DRAM);
+  let hf = transfer(gf, Memory::CPU_DRAM);
+  let hp = transfer(gp, Memory::CPU_DRAM);
+  for i in 0..2 {
+    for j in 0..4 {
+      println!(ho[i][j] as f32);
+    }
+  }
+  print(hf);
+  for i in 0..2 {
+    println!(hp[i] as f32);
+  }
+  return 0;
+}

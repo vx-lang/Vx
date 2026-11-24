@@ -13,10 +13,6 @@
 // billion must finish, which it does only if the power is taken by squaring. -1 in an
 // answer below means "nothing" (`None`).
 //
-// Flat path only, for the unsigned half: the legacy code generator compares a `u8` as
-// signed.
-//
-// REQUIRES: flat-codegen
 // EXPECT: 81 -1 1073741824 -2147483648 1 -1 -1 2147395600 | 2147483647 -2147483648 2147483647 | 0 1870418611 | 4 3 2 3 9 -1 -1 -1 10 | -1 5 -2147483648 2147483647 2147483647 -5 -2147483648 -3 0 -1 | 1 128 243 255 10000000000000000000 1 19 | 1 0 1 0 | 15 15 252 1 1 | 1 128 1 1
 import core::num;
 import core::option;

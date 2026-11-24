@@ -109,7 +109,7 @@ Program exited with non-zero code: 42
 ## Installing a specific version
 
 ```bash
-curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.4 sh
+curl -fsSL https://vxlang.org/install.sh | VX_VERSION=v0.0.5 sh
 ```
 
 `VX_VERSION` goes after the `|`, so that it is set for the `sh` that runs the installer.

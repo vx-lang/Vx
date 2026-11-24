@@ -50,10 +50,17 @@ fn unused_parameter(t : Tensor<f32, [4]>) -> i32 {
   return 0;
 }
 
-// `t = t + b` moves the old `t` into `+`: it is freed once the sum is computed, before the
-// sum is stored in `t`.
+// `t = t + b` writes the sum into the buffer of `t`, so the old `t` is not freed.
 fn reassigned_from_itself(b : Tensor<f32, [4]>) -> Tensor<f32, [4]> {
   let mut t = Tensor<f32, [4]>::new();
+  t = t + b;
+  return t;
+}
+
+// With a size known only at run time, `t = t + b` makes a new buffer. It moves the old `t` into
+// `+`, which frees it once the sum is computed, before the sum is stored in `t`.
+fn reassigned_from_itself_at_run_time(b : Tensor<f32, [?, ?]>, n : i32) -> Tensor<f32, [?, ?]> {
+  let mut t = Tensor<f32>([n, n]);
   t = t + b;
   return t;
 }
@@ -156,6 +163,17 @@ fn main() -> i32 {
 // CHECK-NEXT: Return
 
 // CHECK-LABEL: Function: reassigned_from_itself
+// CHECK-NOT:  Drop t
+// CHECK:      Assign
+// CHECK-NEXT: Identifier(t)
+// CHECK-NEXT: BinaryOp(Add)
+// CHECK-NEXT: Identifier(t)
+// CHECK-NEXT: Identifier(b)
+// CHECK-NEXT: Drop b
+// CHECK-NEXT: Return
+// CHECK-NEXT: Identifier(t)
+
+// CHECK-LABEL: Function: reassigned_from_itself_at_run_time
 // CHECK:      Drop t, after the value
 // CHECK-NEXT: Assign
 // CHECK-NEXT: Identifier(t)

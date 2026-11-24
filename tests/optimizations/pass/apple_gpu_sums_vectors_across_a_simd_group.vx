@@ -1,0 +1,64 @@
+// In an `mlir!` block of 32 threads, each thread t makes three vectors of 4 elements and reduces
+// each one across the SIMD-group of 32 threads, one element at a time. The f32 vector (t, 2t, 1,
+// -t) has the sums (496, 992, 32, -496) and the maxima (31, 62, 1, 0). The i32 vector (t - 16, t,
+// 7, -t) has the unsigned maxima (-1, 31, 7, -1): -1 is the largest unsigned value.
+//
+// REQUIRES: macos
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --emit-msl -o %t.metal && FileCheck %s --check-prefix=MSL --input-file=%t.metal
+//
+// CHECK: {{^}}sums: 496 992 32 -496{{$}}
+// CHECK-NEXT: {{^}}maxima: 31 62 1 0{{$}}
+// CHECK-NEXT: {{^}}unsigned maxima: -1 31 7 -1{{$}}
+// MSL: float4 {{v[0-9]+}} = simd_sum({{v[0-9]+}});
+// MSL: float4 {{v[0-9]+}} = simd_max({{v[0-9]+}});
+// MSL: int4 {{v[0-9]+}} = (int4)simd_max((uint4){{v[0-9]+}});
+
+pub fn reduce(fl : &mut Tensor<f32, [?], Memory::HBM>, ints : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let _d = unsafe { mlir!( threads : 32, inputs : (%f = fl : memref<?xf32>, %n = ints : memref<?xi32>), returns : i32, dialects : ["arith", "memref", "gpu", "scf", "vector"], ensures : [writes_only(fl[0..8]), writes_only(ints[0..4])]) {
+          %tid = gpu.thread_id x
+          %ti = arith.index_cast %tid : index to i32
+          %c2 = arith.constant 2 : i32
+          %c16 = arith.constant 16 : i32
+          %c7 = arith.constant 7 : i32
+          %c0i = arith.constant 0 : i32
+          %t2 = arith.muli %ti, %c2 : i32
+          %neg = arith.subi %c0i, %ti : i32
+          %low = arith.subi %ti, %c16 : i32
+          %x = arith.sitofp %ti : i32 to f32
+          %x2 = arith.sitofp %t2 : i32 to f32
+          %xn = arith.sitofp %neg : i32 to f32
+          %one = arith.constant 1.0 : f32
+          %v = vector.from_elements %x, %x2, %one, %xn : vector<4xf32>
+          %w = vector.from_elements %low, %ti, %c7, %neg : vector<4xi32>
+          %sum = gpu.subgroup_reduce add %v : (vector<4xf32>) -> vector<4xf32>
+          %max = gpu.subgroup_reduce maxnumf %v : (vector<4xf32>) -> vector<4xf32>
+          %umax = gpu.subgroup_reduce maxui %w : (vector<4xi32>) -> vector<4xi32>
+          %c0 = arith.constant 0 : index
+          %c4 = arith.constant 4 : index
+          %first = arith.cmpi eq, %tid, %c0 : index
+          scf.if %first {
+            vector.store %sum, %f[%c0] : memref<?xf32>, vector<4xf32>
+            vector.store %max, %f[%c4] : memref<?xf32>, vector<4xf32>
+            vector.store %umax, %n[%c0] : memref<?xi32>, vector<4xi32>
+          }
+          macro.yield %ti : i32
+        } };
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut fl = transfer(Tensor<f32>([8]), Memory::HBM);
+  let mut ints = transfer(Tensor<i32>([4]), Memory::HBM);
+  reduce(&mut fl, &mut ints);
+  let f = transfer(&fl, Memory::CPU_DRAM);
+  let n = transfer(&ints, Memory::CPU_DRAM);
+  println!("sums: {} {} {} {}", f[0] as i32, f[1] as i32, f[2] as i32, f[3] as i32);
+  println!("maxima: {} {} {} {}", f[4] as i32, f[5] as i32, f[6] as i32, f[7] as i32);
+  println!("unsigned maxima: {} {} {} {}", n[0], n[1], n[2], n[3]);
+  return 0;
+}

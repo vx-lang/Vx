@@ -116,7 +116,7 @@ fn with_a_solver_the_obligation_is_decided() {
         eprintln!("skipping: no z3 on this machine");
         return;
     }
-    let tmp = std::env::temp_dir().join("vx-solver-policy-present");
+    let tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx-solver-policy-present");
     let prog = write_program(&tmp);
     let path = std::env::var("PATH").unwrap_or_default();
     let (ok, text) = run(&prog, &path, false);
@@ -131,7 +131,7 @@ fn with_a_solver_the_obligation_is_decided() {
 /// Before Vx#374 this compiled cleanly and emitted nothing at all.
 #[test]
 fn without_a_solver_the_build_fails_rather_than_claiming_success() {
-    let tmp = std::env::temp_dir().join("vx-solver-policy-missing");
+    let tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx-solver-policy-missing");
     let path = path_without_z3(&tmp.join("bin"));
     let prog = write_program(&tmp);
     let (ok, text) = run(&prog, &path, false);
@@ -163,7 +163,7 @@ fn without_a_solver_the_build_fails_rather_than_claiming_success() {
 /// "this was proved".
 #[test]
 fn opting_out_compiles_but_says_so_every_time() {
-    let tmp = std::env::temp_dir().join("vx-solver-policy-optout");
+    let tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx-solver-policy-optout");
     let path = path_without_z3(&tmp.join("bin"));
     let prog = write_program(&tmp);
     let (ok, text) = run(&prog, &path, true);

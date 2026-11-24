@@ -67,7 +67,7 @@ exclude = ["scripts/release/crates-io"]
 # The product version in one place. Members that ship as the product inherit it; internal
 # crates keep their own version, which is not a release number.
 [workspace.package]
-version = "0.0.4"
+version = "0.0.5"
 
 [lints.clippy]
 if_same_then_else = "allow"

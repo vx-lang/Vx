@@ -1,0 +1,80 @@
+//===- network_address_with_a_nul_byte.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `String` address can hold a NUL byte, but a C string ends at its first NUL. So each safe call
+// of `std::net` that takes an address gives `BadAddress` for such an address, and the program
+// goes on. Each address here is a good one with a NUL after it, so a call that cut the address
+// at the NUL would work, or give `Refused`, and fail the check.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}TcpListener::bind: BadAddress{{$}}
+// CHECK-NEXT: {{^}}TcpStream::connect: BadAddress{{$}}
+// CHECK-NEXT: {{^}}UdpSocket::bind: BadAddress{{$}}
+// CHECK-NEXT: {{^}}UdpSocket::send_to: BadAddress{{$}}
+
+import core::result;
+import std::net;
+import std::string;
+import std::vec;
+
+/// `text` with a NUL byte after it.
+fn with_a_nul(text : *const i8) -> String {
+  let length = unsafe { string_length(text) };
+  let s = String {
+    ptr : unsafe { vx_string_with_len((length + 1) as i64) }
+  };
+  let p = unsafe { vx_string_as_mut_ptr(s.ptr) };
+  for i in 0..length {
+    unsafe { p[i] = text[i]; }
+  }
+  return s;
+}
+
+fn name(e : NetError) -> *const i8 {
+  match e {
+    NetError::BadAddress => {
+      return "BadAddress";
+    }
+    NetError::Refused => {
+      return "Refused";
+    }
+    _ => {
+      return "another error";
+    }
+  }
+}
+
+fn report<T>(call : *const i8, result : Result<T, NetError>) -> void {
+  match result {
+    Result<T, NetError>::Ok(_value) => {
+      println!("{}: it worked", call);
+    }
+    Result<T, NetError>::Err(e) => {
+      println!("{}: {}", call, name(e));
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  let network = &root.network;
+  report("TcpListener::bind", TcpListener::bind(network, &with_a_nul("127.0.0.1:41771")));
+  report("TcpStream::connect", TcpStream::connect(network, &with_a_nul("127.0.0.1:41771")));
+  report("UdpSocket::bind", UdpSocket::bind(network, &with_a_nul("127.0.0.1:41772")));
+  match UdpSocket::bind(network, &unsafe { String::from_c_str("127.0.0.1:0") }) {
+    Result<UdpSocket, NetError>::Ok(socket) => {
+      let mut s = socket;
+      let mut one = Vec<u8>::new();
+      one.push(1u8);
+      report("UdpSocket::send_to", s.send_to(&one, &with_a_nul("127.0.0.1:41773")));
+    }
+    Result<UdpSocket, NetError>::Err(e) => {
+      println!("UdpSocket::bind of a good address: {}", name(e));
+    }
+  }
+  return 0;
+}

@@ -8,11 +8,6 @@
 // A `while` condition built from `&&` and `||` short-circuits: the right side
 // only runs when the left side does not already decide the answer. Each helper
 // prints a letter, so the output records exactly which checks ran.
-//
-// The legacy AST codegen evaluates both sides of `&&` and `||` before combining
-// them, so there it prints `LR` for the first line below.
-//
-// REQUIRES: flat-codegen
 
 fn left(v : bool) -> bool {
   print!("L");

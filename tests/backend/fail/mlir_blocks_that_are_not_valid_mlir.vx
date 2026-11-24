@@ -19,8 +19,8 @@
 // RUN: not vxc %t/gpu.vx --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=GPU --implicit-check-not='Internal Error'
 // OP: The `mlir!` block at line 2, column 17 is not valid MLIR: custom op 'arith.no_such_op' is unknown
 // TYPES: The `mlir!` block at line 3, column 17 is not valid MLIR: use of value '%a' expects different type than prior uses: 'i32' vs 'i64'
-// INPUT: The `mlir!` block at line 2, column 17 takes its input `%t` as `memref<4xf32>`, but the value is a `memref<8xf32>`: 'memref.cast' op operand type 'memref<8xf32>' and result type 'memref<4xf32>' are cast incompatible
-// GPU: The `mlir!` block at line 2, column 17 is not valid MLIR: custom op 'nvvm.no.such.op' is unknown
+// INPUT: The `mlir!` block at line 2, column 26 takes its input `%t` as `memref<4xf32>`, but the value is a `memref<8xf32>`: 'memref.cast' op operand type 'memref<8xf32>' and result type 'memref<4xf32>' are cast incompatible
+// GPU: The `mlir!` block at line 2, column 26 is not valid MLIR: custom op 'nvvm.no.such.op' is unknown
 
 //--- op.vx
 fn f() -> i32 {
@@ -50,11 +50,11 @@ fn main() -> i32 {
 
 //--- input.vx
 fn first(a : &Tensor<f32, [8]>) -> f32 {
-  return mlir!( inputs : (%t = a : memref<4xf32>), returns : f32, dialects : ["memref", "arith"]) {
-    %i = arith.constant 0 : index
-    %v = memref.load %t[%i] : memref<4xf32>
-    macro.yield %v : f32
-  };
+  return unsafe { mlir!( inputs : (%t = a : memref<4xf32>), returns : f32, dialects : ["memref", "arith"]) {
+      %i = arith.constant 0 : index
+      %v = memref.load %t[%i] : memref<4xf32>
+      macro.yield %v : f32
+    } };
 }
 
 fn main() -> i32 {
@@ -64,11 +64,11 @@ fn main() -> i32 {
 
 //--- gpu.vx
 fn f() on Topology::Device -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["nvvm", "arith"]) {
-    %b = arith.constant 0 : i32
-    nvvm.no.such.op %b : i32
-    macro.yield %b : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["nvvm", "arith"]) {
+      %b = arith.constant 0 : i32
+      nvvm.no.such.op %b : i32
+      macro.yield %b : i32
+    } };
 }
 
 pub fn run(o : &mut Tensor<i32, [?], Memory::HBM>) -> void {

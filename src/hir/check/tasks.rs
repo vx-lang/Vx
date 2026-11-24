@@ -430,24 +430,16 @@ impl TypeChecker<'_> {
             self.pointer_facts_enter_body()
         });
         let running = self.pointer_facts_running_tasks();
-        let mut ty = match (*kind, ret.as_deref_mut()) {
-            // The last value of a `tasks` block is checked in the block, as in an `unsafe` block.
-            // So a task that it starts, or a `return` in it, is known when the drops are placed.
-            (TaskBlockKind::Tasks, Some(r)) => {
+        // The last value of the block is checked in the block, as in an `unsafe` block. So a task
+        // that it starts, or a `return` in it, is known when the drops are placed.
+        let ty = match ret.as_deref_mut() {
+            Some(r) => {
+                // A `return` of a task gives the type of its last value, as in a closure.
+                self.closure_body_next = *kind == TaskBlockKind::Spawn;
                 self.check_expr_block_with_value(stmts, r, unused, consume)
             }
-            _ => self.check_expr_block(stmts, ret.as_deref(), consume),
+            None => self.check_expr_block(stmts, None, consume),
         };
-        if let (TaskBlockKind::Spawn, Some(r)) = (*kind, ret) {
-            self.value_unused = unused;
-            // A `return` of the task gives the type of its last value, as the return type of a
-            // function does.
-            let returned = self.current_return_type.clone();
-            let outer = self.expected_type.take();
-            self.expected_type = returned.filter(|t| *t != Type::Unknown).or(outer.clone());
-            ty = self.check_expr_type_flag(r, consume);
-            self.expected_type = outer;
-        }
         match outer_pointers {
             Some(outer) => {
                 self.pointer_facts_leave_body(outer);
@@ -489,6 +481,7 @@ impl TypeChecker<'_> {
     }
 
     fn check_tasks_block(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let unused = self.value_unused;
         if let Expr::TaskBlock(tb) = &*expr {
             find_ending_joins(
                 &tb.stmts,
@@ -532,6 +525,17 @@ impl TypeChecker<'_> {
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
         let fails_as = self.check_block_failures(&failures, &passed_up, &ty, &expr.span());
+        if unused && fails_as.is_some() && !self.speculating {
+            self.errors.warn(
+                DiagnosticCode::W1038,
+                format!(
+                    "this `tasks` block can fail, but nothing uses its value, a '{ty}'. When the \
+                     block fails, the code after it goes on, and nothing sees the error. Use the \
+                     value, as in `let r = tasks {{ .. }};`"
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span())),
+            );
+        }
         let has_value = matches!(&*expr, Expr::TaskBlock(tb) if tb.ret.is_some())
             && !crate::syntax::types::is_void_ty(&ty);
         let value_ty = has_value.then(|| ty.clone());

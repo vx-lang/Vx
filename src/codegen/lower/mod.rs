@@ -210,6 +210,7 @@ pub(crate) fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, St
         "f4E2M1FN" => Ok("f4E2M1FN"),
         "f8E4M3FN" => Ok("f8E4M3FN"),
         "f8E5M2" => Ok("f8E5M2"),
+        "f8E8M0FNU" => Ok("f8E8M0FNU"),
         "bf16" => Ok("bf16"),
         "f16" => Ok("f16"),
         "f32" => Ok("f32"),
@@ -1507,7 +1508,11 @@ pub(crate) fn pick_scalar_print<'c>(
         Expr::AsCast(c) => match &c.target_ty {
             VxType::Scalar(e) => matches!(
                 e,
-                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+                ElementType::U8
+                    | ElementType::U16
+                    | ElementType::U32
+                    | ElementType::U64
+                    | ElementType::U128
             ),
             _ => false,
         },
@@ -1523,9 +1528,11 @@ pub(crate) fn pick_scalar_print<'c>(
         ("i8" | "i16", false) => ("print_i32", Some(("arith.extsi", "i32"))),
         ("i32", false) => ("print_i32", None),
         ("i64", false) => ("print_i64", None),
+        ("i128", true) => ("print_u128", None),
+        ("i128", false) => ("print_i128", None),
         // A `for` variable over a range is an `index` here.
         ("index", _) => ("print_i64", Some(("arith.index_cast", "i64"))),
-        ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16", _) => {
+        ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16", _) => {
             ("print_f32", Some(("arith.extf", "f32")))
         }
         ("f32", _) => ("print_f32", None),
@@ -1553,6 +1560,43 @@ pub(crate) fn call_scalar_print<'c>(
     arg_val: Value<'c, 'c>,
     arg_ty_str: &str,
 ) -> Result<Value<'c, 'c>, LowerError> {
+    if arg_ty_str == "i128" {
+        // The helper takes the low and the high 64 bits, as two `i64`s.
+        let i64_ty = gen.i64_ty;
+        let i128_ty =
+            Type::parse(gen.context, "i128").ok_or_else(|| LowerError::from("i128".to_string()))?;
+        let op = |name: &str, operands: &[Value<'c, 'c>], ty: Type<'c>| {
+            OperationBuilder::new(name, gen.loc())
+                .add_operands(operands)
+                .add_results(&[ty])
+                .build()
+        };
+        let low = block
+            .append_operation(op("arith.trunci", &[arg_val], i64_ty)?)
+            .result(0)?
+            .into();
+        let sixty_four = block
+            .append_operation(
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(i128_ty, 64).into(),
+                    )])
+                    .add_results(&[i128_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let shifted = block
+            .append_operation(op("arith.shrui", &[arg_val, sixty_four], i128_ty)?)
+            .result(0)?
+            .into();
+        let high = block
+            .append_operation(op("arith.trunci", &[shifted], i64_ty)?)
+            .result(0)?
+            .into();
+        return call_runtime_fn(gen, block, fn_name, &[(low, "i64"), (high, "i64")], "i32");
+    }
     call_runtime_fn(gen, block, fn_name, &[(arg_val, arg_ty_str)], "i32")
 }
 

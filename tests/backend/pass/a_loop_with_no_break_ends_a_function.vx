@@ -1,0 +1,74 @@
+//===- a_loop_with_no_break_ends_a_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `loop` that no `break` leaves never finishes, so it can end a function body with no `return`
+// after it. The function leaves the loop only through a `return`, or never, as a `-> !` function.
+// A `break` in an inner loop leaves the inner loop only.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}first over 3: 4{{$}}
+// CHECK: {{^}}with inner breaks: 30{{$}}
+// CHECK: {{^}}first positive: 1{{$}}
+
+fn first_over(limit : i64) -> i64 {
+  let mut i : i64 = 0;
+  loop {
+    i = i + 1;
+    if i > limit {
+      return i;
+    }
+  }
+}
+
+fn with_inner_breaks(limit : i64) -> i64 {
+  let mut i : i64 = 0;
+  loop {
+    loop {
+      break;
+    }
+    for j in 0..3 {
+      if j == 1 {
+        break;
+      }
+    }
+    i = i + 1;
+    if i > limit {
+      return i * 10;
+    }
+  }
+}
+
+// The prover knows that the loop ends only through the `return`.
+fn first_positive(start : i32) -> i32
+ensures return > 0
+{
+  let mut i = start;
+  loop {
+    if i > 0 {
+      return i;
+    }
+    i = i + 1;
+  }
+}
+
+// A server that runs until the program stops.
+fn serve() -> ! {
+  loop {
+    println!("serving");
+  }
+}
+
+fn main() -> i32 {
+  println!("first over 3: {}", first_over(3));
+  println!("with inner breaks: {}", with_inner_breaks(2));
+  println!("first positive: {}", first_positive(-2));
+  if first_over(0) < 0 {
+    serve();
+  }
+  return 0;
+}

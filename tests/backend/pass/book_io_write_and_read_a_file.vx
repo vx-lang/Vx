@@ -28,32 +28,30 @@ extern {
 }
 
 // Writes `text` to a new file at `path`. The file closes when `out` goes out of scope.
-fn write_text(path : *const i8, text : *const i8) -> void {
+fn write_text(files : &Files, path : &String, text : *const i8) -> Result<u64, FileError> {
   let mut bytes = Vec<u8>::new();
   let length = unsafe { string_length(text) };
   for i in 0..length {
     bytes.push(unsafe { text[i] } as u8);
   }
-  let mut out = unsafe { File::open(path, OpenMode::Write()) };
-  let written = unsafe {
-    out.write(bytes.as_mut_ptr() as *const u8, length as u64)
-  };
-  println!("wrote {} bytes", written);
+  let mut out = File::open(files, path, OpenMode::Write())?;
+  return out.write(&bytes);
 }
 
-fn main() -> i32 {
-  let path = unsafe { getenv("NOTES") };
-  write_text(path, "one\ntwo\nthree\n");
+fn write_and_read(files : &Files, path : &String) -> Result<i32, FileError> {
+  let written = write_text(files, path, "one\ntwo\nthree\n")?;
+  println!("wrote {} bytes", written);
 
-  let mut input = unsafe { File::open(path, OpenMode::Read()) };
-  let mut byte : u8 = 0;
+  let mut input = File::open(files, path, OpenMode::Read())?;
+  let mut byte = Vec<u8>::new();
+  byte.push(0u8);
   let mut lines = 0;
   loop {
-    let n = unsafe { input.read((&mut byte) as *mut u8, 1) };
+    let n = input.read(&mut byte)?;
     if n == 0 {
       break;
     }
-    if byte == 10 {
+    if byte.get(0) == 10 {
       lines = lines + 1;
     }
   }
@@ -61,8 +59,21 @@ fn main() -> i32 {
   println!("the file ends at byte {}", input.seek(0, 2));
 
   input.seek(4, 0);
-  unsafe { input.read((&mut byte) as *mut u8, 1) };
-  println!("byte 4 is {}, the letter t", byte);
-  return 0;
+  let _n = input.read(&mut byte)?;
+  println!("byte 4 is {}, the letter t", byte.get(0));
+  return Result<i32, FileError>::Ok(lines);
+}
+
+fn main(root : Root) -> i32 {
+  let path = unsafe { String::from_c_str(getenv("NOTES")) };
+  match write_and_read(&root.files, &path) {
+    Result<i32, FileError>::Ok(_lines) => {
+      return 0;
+    }
+    Result<i32, FileError>::Err(_e) => {
+      println!("a file call did not work");
+      return 1;
+    }
+  }
 }
 // ANCHOR_END: program

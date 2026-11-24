@@ -19,11 +19,6 @@
 // power of two above 50000 is 65536, which this width cannot hold, and the assert that says
 // so fires before anything can be printed.
 //
-// Flat path only, for the reason `std_rand.vx` is: the legacy code generator chooses its
-// arithmetic from the printed MLIR type, which has no sign, so `>>`, `/`, `%` and `<` on an
-// unsigned operand all take the signed op there.
-//
-// REQUIRES: flat-codegen
 // EXPECT: 255 65535 4294967295 18446744073709551615 0 64 | 32 32 0 1 5427111154114964181 15134944594269656235 | 1 0 0 40 63 1024 3486784401 | 6100562111716053675 15180320056172814090 12345678901234567890 | 4115226300411522630 1 12345677801722940114 12345677801722940114 | 12345678901234567891 1 12345678901234567889 1 21 1 4115226300411522630 1 1 1 | 18446744073709551615 12345678901234567891 0 12345678901234567889 | 200 145 3 12405 1 32768 755359755 31 428571428 1
 import core::num;
 import core::option;

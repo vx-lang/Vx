@@ -1,0 +1,56 @@
+//===- a_declared_space_the_backend_cannot_place.vx ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program with its own `Memory` block and a `spirv64` topology, transferring
+// a tensor into `Memory::HBM`. That space is not the topology's `memory:`, so
+// the compiler sends no `VX_CTRL_LOCAL_DEVICE` alias for it and the runtime has
+// only a hash. The space is `managed: explicit`: a kernel reads it as device
+// memory, and the host cannot read it.
+//
+// The backend used to answer with a host `malloc`. With no check before a
+// launch, the device image was launched at that buffer and read zeros. With the
+// check, the region quietly ran on the host instead. Either way the run looked
+// successful and the numbers came from the wrong engine.
+//
+// The runner compiles this with no machine file -- the declarations below are
+// the point -- runs it, and requires the refusal to name the space id and say
+// what to change. Before the fix it printed `4`s from the host.
+
+Memory CPU_DRAM {}
+Memory VRAM {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, bandwidth: 560 GB/s,
+  managed: explicit, scope: device
+}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, bandwidth: 560 GB/s,
+  managed: explicit, scope: device
+}
+Topology Device {
+  arch: spirv64,
+  memory: Memory::VRAM,
+  visible: [Memory::VRAM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::VRAM : 63 GB/s,
+  transfer Memory::VRAM -> Memory::CPU_DRAM : 63 GB/s,
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32, [8]>::fill(2.0);
+  let o = Tensor<f32, [8]>::fill(0.0);
+  let ad = transfer(a, Memory::HBM);
+  let mut od = transfer(o, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..8 {
+      od[i] = ad[i] * 2.0;
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

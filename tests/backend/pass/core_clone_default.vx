@@ -19,7 +19,6 @@
 // The `Ordering` bindings are annotated because a value built straight from a variant call
 // finds no impl yet; the annotation is what gives the binding its type.
 //
-// REQUIRES: flat-codegen
 // EXPECT: 7 9 | 1 2.5 1 | 9 1 | 0 0 0 0 1
 import core::clone;
 import core::cmp;

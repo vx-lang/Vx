@@ -64,6 +64,7 @@ print(r.v);
 
 **A reference cannot give away what it points at (E4008).** `let b = *r;` would move the value out
 of `r`, which only borrows it. Copy or clone it instead; for a number, `*r` is a copy and is fine.
+A method that takes `self` by value is the same: `r.f()` passes `*r`, so it needs a `Copy` value.
 
 **Reading a field that has something to drop moves it out of its struct.** After `let x = s.a;`,
 `s.a` has no value and `s` cannot be used whole, but its other fields can, and `s` drops only the
@@ -153,8 +154,8 @@ r[0] = 5.0;         // writes q[1][0]
 print(q[1][0]);     // fine: r is not used again
 ```
 
-- A view is made by indexing to a row (`q[1]`), reading a tensor field (`h.t`), reshaping
-  (`q.reshape([8])`), or taking a view of a view. A view chosen by an `if` or a `match` borrows
+- A view is made by indexing to a row (`q[1]`) or to a range of rows (`q[1..3]`), reading a
+  tensor field (`h.t`), reshaping (`q.reshape([8])`), or taking a view of a view. A view chosen by an `if` or a `match` borrows
   every tensor it may come from, and a view taken through a reference (`rq[1]` with `rq = &q`)
   borrows the tensor behind the reference. A closure that uses a view keeps the view's tensor
   borrowed for as long as the closure is used.
@@ -166,7 +167,8 @@ print(q[1][0]);     // fine: r is not used again
   returned (E4005). A view of a tensor taken by reference (`q : &Tensor<..>`) can be returned
   as a reference: `-> &Tensor<..>` or `-> &mut Tensor<..>`, with `return &q[1]`. The result
   borrows the caller's tensor, and a write through a `&mut` result changes that tensor. A view
-  of memory from a raw pointer, `tensor_view_2d(p, ..)`, is returned the same way.
+  of memory from a raw pointer, `tensor_view_1d(p, ..)` or `tensor_view_2d(p, ..)`, is returned
+  the same way.
 - A function that returns a tensor by value (`-> Tensor<..>`) cannot return a view (E4011): the
   caller would get a copy, and its writes would not reach the owner. Return a reference, or
   return a copy with `q[1].clone()`.

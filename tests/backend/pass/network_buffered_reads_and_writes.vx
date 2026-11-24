@@ -1,0 +1,281 @@
+//===- network_buffered_reads_and_writes.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `TcpBufReader` and `TcpBufWriter` have buffers of 4096 bytes. In each part, a server task and a
+// client task talk over one TCP connection.
+//
+// - A long line: the client writes 3000, 2000 and 5000 bytes and a newline. The second write does
+//   not fit after the first, so the writer flushes first. The third is longer than the buffer, so
+//   the writer flushes and then writes it at once. The server reads the line of 10001 bytes, which
+//   takes more than one read, and then a short line that came in the same read as its end.
+// - A drop: the client writes a line and does not call `flush`. The drop of the writer sends it.
+// - A header and a body: the client writes "head\nxyzab" in one write. After `read_line`, the
+//   reader holds "xyzab". `read` gives "xyz" from the buffer. Then the client writes "cd", and
+//   `read_exact` gives "ab" from the buffer and "cd" from the stream.
+// - A cancel: the server waits in `read_line` for a line that never comes. The code of the block
+//   returns early, which cancels the task, so `read_line` gives `Cancelled`.
+//
+// The port numbers are fixed, because `std::net` cannot give the port of a listener yet. The
+// second RUN line runs the tasks on the shared runtime, with one worker thread, and the third
+// one uses the AST code generator.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}long line: 10001 bytes{{$}}
+// CHECK-NEXT: {{^}}long line: 3000 a, 2000 b, 5000 c and a newline: true{{$}}
+// CHECK-NEXT: {{^}}long line: the next line is after: true{{$}}
+// CHECK-NEXT: {{^}}drop: the server got the line: true{{$}}
+// CHECK-NEXT: {{^}}body: read gave xyz: true{{$}}
+// CHECK-NEXT: {{^}}body: read_exact gave abcd: true{{$}}
+// CHECK-NEXT: {{^}}body: read at the end gives 0 bytes{{$}}
+// CHECK-NEXT: {{^}}cancel: read_line gave Cancelled{{$}}
+
+import core::result;
+import std::net;
+import std::string;
+import std::vec;
+
+/// The bytes of `text`, without its NUL.
+fn bytes(text : *const i8) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  let length = unsafe { string_length(text) };
+  for i in 0..length {
+    v.push(unsafe { text[i] } as u8);
+  }
+  return v;
+}
+
+/// `count` copies of `byte`.
+fn repeat(byte : u8, count : i32) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  for _i in 0..count {
+    v.push(byte);
+  }
+  return v;
+}
+
+/// Whether the bytes of `v` from `start` on are `count` copies of `byte`.
+fn run_of(v : &Vec<u8>, start : i32, byte : u8, count : i32) -> bool {
+  for i in start..(start + count) {
+    if v.get(i) != byte {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Whether `v` holds the bytes of `text`.
+fn same(v : &Vec<u8>, text : *const i8) -> bool {
+  let other = bytes(text);
+  if v.len() != other.len() {
+    return false;
+  }
+  for i in 0..v.len() {
+    if v.get(i) != other.get(i) {
+      return false;
+    }
+  }
+  return true;
+}
+
+fn address(text : *const i8) -> String {
+  return unsafe { String::from_c_str(text) };
+}
+
+fn name(e : NetError) -> *const i8 {
+  match e {
+    NetError::Cancelled => {
+      return "Cancelled";
+    }
+    NetError::Closed => {
+      return "Closed";
+    }
+    NetError::Reset => {
+      return "Reset";
+    }
+    _ => {
+      return "another error";
+    }
+  }
+}
+
+fn report(who : *const i8, result : Result<u64, NetError>) -> void {
+  match result {
+    Result<u64, NetError>::Ok(_n) => {}
+    Result<u64, NetError>::Err(e) => {
+      println!("{}: Error {}", who, name(e));
+    }
+  }
+}
+
+fn long_line_client(network : &Network) -> Result<u64, NetError> {
+  let mut out = TcpBufWriter::new(TcpStream::connect(network, &address("127.0.0.1:41774"))?);
+  let _a = out.write(&repeat(97u8, 3000))?;
+  let _b = out.write(&repeat(98u8, 2000))?;
+  let _c = out.write(&repeat(99u8, 5000))?;
+  let _newline = out.write(&bytes("\n"))?;
+  let _after = out.write(&bytes("after\n"))?;
+  return out.flush();
+}
+
+fn long_line_server(listener : TcpListener) -> Result<u64, NetError> {
+  let mut l = listener;
+  let mut input = TcpBufReader::new(l.accept()?);
+  let mut line = Vec<u8>::new();
+  let n = input.read_line(&mut line)?;
+  println!("long line: {} bytes", n);
+  let right = n == 10001 && run_of(&line, 0, 97u8, 3000) && run_of(&line, 3000, 98u8, 2000) && run_of(&line, 5000, 99u8, 5000) && line.get(10000) == 10u8;
+  println!("long line: 3000 a, 2000 b, 5000 c and a newline: {}", right);
+  let mut next = Vec<u8>::new();
+  let _m = input.read_line(&mut next)?;
+  println!("long line: the next line is after: {}", same(&next, "after\n"));
+  return Result<u64, NetError>::Ok(n);
+}
+
+fn drop_client(network : &Network) -> Result<u64, NetError> {
+  let mut out = TcpBufWriter::new(TcpStream::connect(network, &address("127.0.0.1:41775"))?);
+  return out.write(&bytes("dropped\n"));
+}
+
+fn drop_server(listener : TcpListener) -> Result<u64, NetError> {
+  let mut l = listener;
+  let mut input = TcpBufReader::new(l.accept()?);
+  let mut line = Vec<u8>::new();
+  let n = input.read_line(&mut line)?;
+  println!("drop: the server got the line: {}", same(&line, "dropped\n"));
+  return Result<u64, NetError>::Ok(n);
+}
+
+fn body_client(network : &Network) -> Result<u64, NetError> {
+  let mut stream = TcpStream::connect(network, &address("127.0.0.1:41776"))?;
+  let _first = stream.write_all(&bytes("head\nxyzab"))?;
+  let mut go = repeat(0u8, 2);
+  let _go = stream.read_exact(&mut go)?;
+  return stream.write_all(&bytes("cd"));
+}
+
+fn body_server(listener : TcpListener) -> Result<u64, NetError> {
+  let mut l = listener;
+  let mut input = TcpBufReader::new(l.accept()?);
+  let mut head = Vec<u8>::new();
+  let _head = input.read_line(&mut head)?;
+  let mut three = repeat(0u8, 3);
+  let _three = input.read(&mut three)?;
+  println!("body: read gave xyz: {}", same(&three, "xyz"));
+  let _go = input.get_mut().write_all(&bytes("go"))?;
+  let mut four = repeat(0u8, 4);
+  let _four = input.read_exact(&mut four)?;
+  println!("body: read_exact gave abcd: {}", same(&four, "abcd"));
+  let mut rest = repeat(0u8, 8);
+  let end = input.read(&mut rest)?;
+  println!("body: read at the end gives {} bytes", end);
+  return Result<u64, NetError>::Ok(0);
+}
+
+fn wait_for_a_line(listener : TcpListener) -> void {
+  let mut l = listener;
+  match l.accept() {
+    Result<TcpStream, NetError>::Ok(stream) => {
+      let mut input = TcpBufReader::new(stream);
+      // The client waits for this byte, so the block returns only after the accept.
+      match input.get_mut().write_all(&bytes("r")) {
+        Result<u64, NetError>::Ok(_n) => {}
+        Result<u64, NetError>::Err(e) => {
+          println!("cancel: the write gave {}", name(e));
+        }
+      }
+      let mut line = Vec<u8>::new();
+      match input.read_line(&mut line) {
+        Result<u64, NetError>::Ok(n) => {
+          println!("cancel: read_line gave {} bytes", n);
+        }
+        Result<u64, NetError>::Err(e) => {
+          println!("cancel: read_line gave {}", name(e));
+        }
+      }
+    }
+    Result<TcpStream, NetError>::Err(e) => {
+      println!("cancel: accept gave {}", name(e));
+    }
+  }
+}
+
+/// The client connects before the block, so that its end of the connection stays open until the
+/// cancelled task ends. A close would end `read_line` with 0 bytes.
+fn cancel_a_read_line(network : &Network) -> i32 {
+  let listener = TcpListener::bind(network, &address("127.0.0.1:41777"));
+  let client = TcpStream::connect(network, &address("127.0.0.1:41777"));
+  match listener {
+    Result<TcpListener, NetError>::Ok(l) => {
+      match client {
+        Result<TcpStream, NetError>::Ok(stream) => {
+          let mut s = stream;
+          tasks {
+            spawn {
+              wait_for_a_line(l);
+            };
+            let mut ready = repeat(0u8, 1);
+            report("cancel", s.read_exact(&mut ready));
+            return 0;
+          }
+        }
+        Result<TcpStream, NetError>::Err(e) => {
+          println!("cancel: connect gave {}", name(e));
+        }
+      }
+    }
+    Result<TcpListener, NetError>::Err(e) => {
+      println!("cancel: bind gave {}", name(e));
+    }
+  }
+  return 1;
+}
+
+fn main(root : Root) -> i32 {
+  let network = &root.network;
+  match TcpListener::bind(network, &address("127.0.0.1:41774")) {
+    Result<TcpListener, NetError>::Ok(listener) => {
+      tasks {
+        spawn {
+          report("long line client", long_line_client(network));
+        };
+        report("long line server", long_line_server(listener));
+      }
+    }
+    Result<TcpListener, NetError>::Err(e) => {
+      println!("long line: bind gave {}", name(e));
+    }
+  }
+  match TcpListener::bind(network, &address("127.0.0.1:41775")) {
+    Result<TcpListener, NetError>::Ok(listener) => {
+      tasks {
+        spawn {
+          report("drop client", drop_client(network));
+        };
+        report("drop server", drop_server(listener));
+      }
+    }
+    Result<TcpListener, NetError>::Err(e) => {
+      println!("drop: bind gave {}", name(e));
+    }
+  }
+  match TcpListener::bind(network, &address("127.0.0.1:41776")) {
+    Result<TcpListener, NetError>::Ok(listener) => {
+      tasks {
+        spawn {
+          report("body client", body_client(network));
+        };
+        report("body server", body_server(listener));
+      }
+    }
+    Result<TcpListener, NetError>::Err(e) => {
+      println!("body: bind gave {}", name(e));
+    }
+  }
+  return cancel_a_read_line(network);
+}

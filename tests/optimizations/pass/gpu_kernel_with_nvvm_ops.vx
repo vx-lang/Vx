@@ -14,17 +14,17 @@
 // CHECK-DAG: image={{.*}}ex2.approx.ftz.f32
 
 fn lane_id() on Topology::Device -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["nvvm"]) {
-    %r = nvvm.read.ptx.sreg.laneid : i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["nvvm"]) {
+      %r = nvvm.read.ptx.sreg.laneid : i32
+      macro.yield %r : i32
+    } };
 }
 
 fn exp2_ftz(v : f32) on Topology::Device -> f32 {
-  return mlir!( inputs : (%v = v : f32), returns : f32, dialects : ["llvm"]) {
-    %r = llvm.call_intrinsic "llvm.nvvm.ex2.approx.ftz.f"(%v) : (f32) -> f32
-    macro.yield %r : f32
-  };
+  return unsafe { mlir!( inputs : (%v = v : f32), returns : f32, dialects : ["llvm"]) {
+      %r = llvm.call_intrinsic "llvm.nvvm.ex2.approx.ftz.f"(%v) : (f32) -> f32
+      macro.yield %r : f32
+    } };
 }
 
 pub fn lane_ids(o : &mut Tensor<i32, [?], Memory::HBM>) -> void {

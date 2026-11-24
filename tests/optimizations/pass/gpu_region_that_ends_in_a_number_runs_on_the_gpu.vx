@@ -1,0 +1,52 @@
+//===- gpu_region_that_ends_in_a_number_runs_on_the_gpu.vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` region on the GPU that ends in a number runs on the GPU. The compiler makes a buffer
+// of one element in GPU memory before the region, the PTX kernel stores the number in it, and the
+// host copies it back after the region and frees both copies. Here each region gets a PTX kernel
+// with that store: 42, 4.5 (bits 1083179008), and i * 10 in a loop. On a machine with no GPU, the
+// kernels run on the host and print the same numbers.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// OUT: {{^}}42 4.5{{$}}
+// OUT-NEXT: {{^}}0{{$}}
+// OUT-NEXT: {{^}}10{{$}}
+// OUT-NEXT: {{^}}20{{$}}
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}image={{.*}}.entry vx_npu_kernel_0({{.*}}, 10;\0A\09st.global.b32
+// CHECK: @vx_npu_kernel_1_str("vx_npu_kernel_1\00{{.*}}image={{.*}}.entry vx_npu_kernel_1({{.*}}st.global.b32 \09[{{%rd[0-9]+}}], 1083179008;
+// CHECK: @vx_npu_kernel_2_str("vx_npu_kernel_2\00{{.*}}image={{.*}}.entry vx_npu_kernel_2({{.*}}st.global.b32 \09[{{%rd[0-9]+}}], 42;
+// The first region: the host reads the number from the copy that came back, and frees both copies.
+// CHECK-LABEL: llvm.func @main(
+// CHECK: [[GPU:%[0-9]+]] = llvm.call @vx_plugin_alloc_and_transfer(
+// CHECK: llvm.call @vx_plugin_dispatch_async(
+// CHECK: [[HOST:%[0-9]+]] = llvm.call @vx_plugin_alloc_and_transfer(
+// CHECK-NEXT: llvm.call @vx_plugin_transfer_device_to_host([[GPU]], [[HOST]],
+// CHECK-NEXT: llvm.call @vx_plugin_free([[GPU]],
+// CHECK-NEXT: [[AT:%[0-9]+]] = llvm.getelementptr inbounds|nuw [[HOST]][
+// CHECK-NEXT: [[N:%[0-9]+]] = llvm.load [[AT]] : !llvm.ptr -> i32
+// CHECK-NEXT: llvm.call @vx_plugin_free([[HOST]],
+// CHECK: llvm.call @print_i32([[N]])
+
+fn main() -> i32 {
+  let n = spawn on(Topology::GPU) {
+    12 + 30
+  };
+  let x = spawn on(Topology::GPU) {
+    (1.5 as f32) * 3.0
+  };
+  println!("{} {}", n, x);
+  for i in 0..3 {
+    let v = spawn on(Topology::GPU) {
+      i * 10
+    };
+    println!("{}", v);
+  }
+  return 0;
+}
