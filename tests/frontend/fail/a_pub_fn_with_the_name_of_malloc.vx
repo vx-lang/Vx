@@ -9,7 +9,7 @@
 // program calls a `pub fn` by its name, so a `pub fn malloc` is an error.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: a_pub_fn_with_the_name_of_malloc.vx:[[@LINE+1]]: `pub fn malloc` cannot keep its name, because the C function `malloc` has that name. Choose another name
+// CHECK: a_pub_fn_with_the_name_of_malloc.vx:[[@LINE+1]]: the exported function `malloc` cannot keep its name, because the C function `malloc` has that name. Choose another name
 pub fn malloc(_size : usize) -> *mut i8 {
   return unsafe { 0 as *mut i8 };
 }

@@ -93,9 +93,12 @@ pub struct Function {
     /// unsafe context. The body is not itself one (Rust 2024): an unsafe operation inside still
     /// needs its own `unsafe` block.
     pub is_unsafe: bool,
-    /// `pub fn`: the object file exports the function under its own name. Any other function
-    /// the program defines is hidden (docs/lang/abi.md, section 4).
+    /// `pub fn`: code in other files can call the function. A function with no `pub` is private
+    /// to its file (docs/discussions/private_functions.md).
     pub is_pub: bool,
+    /// `extern fn`: the object file exports the function under its own name. Any other function
+    /// the program defines is hidden (docs/lang/abi.md, section 4).
+    pub exported: bool,
     pub body: Vec<Statement>,
     pub doc_comment: Option<String>,
     /// Where the function's name is written. A diagnostic about the function as a whole, such
@@ -122,6 +125,7 @@ impl Function {
             where_transfers: self.where_transfers.clone(),
             is_unsafe: self.is_unsafe,
             is_pub: self.is_pub,
+            exported: self.exported,
             body: if preserve_body || !self.generics.is_empty() {
                 self.body.clone()
             } else {
@@ -175,6 +179,8 @@ pub struct EnumDecl {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ExternDecl {
     pub name: Symbol,
+    /// `pub fn` in the `extern` block: code in other files can call the function.
+    pub is_pub: bool,
     pub is_safe: bool,
     /// The memory parameters, the `M` of `fn f<M : Memory>(p : *mut f32 in Memory::M)`. Each
     /// call binds them to the memories of its pointer arguments.

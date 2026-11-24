@@ -1962,6 +1962,7 @@ impl<'a> TypeChecker<'a> {
                 let call_func = decl::Function {
                     is_unsafe: false,
                     is_pub: false,
+                    exported: false,
                     name: func_name.clone().into(),
                     generics: vec![],
                     params: env_params,

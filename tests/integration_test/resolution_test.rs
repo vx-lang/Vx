@@ -402,6 +402,7 @@ fn test_local_name_resolution() -> Result<(), String> {
         functions: vec![Function {
             is_unsafe: false,
             is_pub: false,
+            exported: false,
             name: "get_vector".into(),
             generics: vec![],
             params: vec![],
@@ -472,6 +473,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
         functions: vec![Function {
             is_unsafe: false,
             is_pub: false,
+            exported: false,
             name: "get_vector".into(),
             generics: vec![],
             params: vec![],
@@ -534,6 +536,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
         functions: vec![Function {
             is_unsafe: false,
             is_pub: false,
+            exported: false,
             name: "compute".into(),
             generics: vec![],
             topology: vxc::syntax::Topology::CPU,
@@ -609,6 +612,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         functions: vec![Function {
             is_unsafe: false,
             is_pub: false,
+            exported: false,
             name: "setup".into(),
             generics: vec![],
             params: vec![],

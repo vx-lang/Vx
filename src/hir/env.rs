@@ -2009,6 +2009,7 @@ impl<'a> TypeChecker<'a> {
         Some(Function {
             is_unsafe: generic_func.is_unsafe,
             is_pub: generic_func.is_pub,
+            exported: generic_func.exported,
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,

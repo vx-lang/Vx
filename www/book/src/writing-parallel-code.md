@@ -192,7 +192,7 @@ and atomics on `i32` and `u32`.
 
 ## Calling parallel Vx from C or Rust
 
-A `pub fn` can start tasks, and C or Rust can call it as any other `pub fn`. The program that
+An `extern fn` can start tasks, and C or Rust can call it as any other `extern fn`. The program that
 calls it starts no threads. Link the object with the Vx runtime library, `libvx_std_core`, which
 runs the tasks:
 
@@ -201,4 +201,4 @@ vxc work.vx --action emit-obj -o work.o
 cc host.c work.o -L"$HOME/.vx/current/lib" -lvx_std_core -Wl,-rpath,"$HOME/.vx/current/lib" -lpthread -lm -o host
 ```
 
-[Calling Vx from C](unsafe-and-ffi.md#calling-vx-from-c) says which types a `pub fn` can take.
+[Calling Vx from C](unsafe-and-ffi.md#calling-vx-from-c) says which types an `extern fn` can take.

@@ -24,7 +24,7 @@
 // CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:47:3: trusted code: the `extern` function `c_buffer`, which runs C code
 // CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:48:11: the `extern` function `c_buffer` ensures `valid(return, n)`, and the compiler trusts it
 // CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:57:21: trusted code: an `unsafe` block
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:63:10: `pub fn fill` requires `valid(p, n)`, and a call from C proves nothing
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:63:10: the exported function `fill` requires `valid(p, n)`, and a call from C proves nothing
 // CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:66:5: trusted code: an `unsafe` block
 // CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:72:3: trusted code: an `unsafe` block
 // CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:72:12: an `assume` trusts `valid(p, 4)`
