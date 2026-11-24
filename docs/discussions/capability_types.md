@@ -138,6 +138,10 @@ fn main(root : Root) -> i32 {
 A type cannot take back a capability: a value that a function holds stays valid while it holds it.
 To revoke a right, the program needs a run-time handle that its owner can clear.
 
+`std` has no function that starts a process. Native code runs only through `extern`, which is
+trusted code (section 4). `std::collective::join_job` takes `&Files` and `&Network`, because rank 0
+writes the NCCL id to a file and NCCL connects the ranks over the network.
+
 ## 6. Effect on a model server
 
 In a Python model server, remote code execution usually comes from loading: a weight file read with
