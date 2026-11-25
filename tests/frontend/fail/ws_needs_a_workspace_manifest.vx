@@ -1,0 +1,13 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `ws` makes a function visible to each package of a workspace group. A manifest declares the
+// group, and Vx has no manifest yet. So the parser refuses `ws`.
+
+ws fn shared() -> i32 {
+  return 1;
+}
+// CHECK: Error at {{.*}}ws_needs_a_workspace_manifest.vx:[[@LINE-3]]:1: `ws` needs a workspace group, and Vx has no manifest to declare one yet. Write `pkg` or `pub`
+
+fn main() -> i32 {
+  return shared();
+}

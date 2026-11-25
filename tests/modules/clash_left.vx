@@ -18,7 +18,7 @@ fn left_point() -> Point {
   };
 }
 
-fn left_x() -> i64 {
+pub fn left_x() -> i64 {
   return left_point().x;
 }
 
@@ -27,7 +27,7 @@ struct Range {
   lo : i64,
 }
 
-fn left_count() -> i64 {
+pub fn left_count() -> i64 {
   let mut n = 0i64;
   let mut it = range(0i64, 3i64);
   for x in it {

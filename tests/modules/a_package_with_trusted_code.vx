@@ -57,7 +57,7 @@ fn half(x : i32) -> i32 {
   };
 }
 
-fn checked_value() -> i64 {
+pub fn checked_value() -> i64 {
   let n = 2i64;
   let p = &n as *const i64;
   let x = read_first!(p);

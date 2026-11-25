@@ -9,8 +9,6 @@
 // `assert`, a tuple, a struct value or a `match` in the loop does not keep it on one thread.
 // These things still do:
 //
-// - A `match` arm that names a value (`named`). The name may refer to memory that another
-//   pass writes.
 // - A pass that reads a value an earlier pass set, in a `match` arm or in a block of an `if`
 //   that gives a value (`carried_by_match`, `carried_by_if_value`). Each thread has its own
 //   copy of that value.
@@ -19,17 +17,18 @@
 // - A pass that reads scratch memory that an earlier pass may have set in a `match` arm.
 //
 // A loop that runs in parallel gets a launch size, its number of passes: 64 in `checked`, 96
-// in `pairs` and 128 in `picked`. The loops on one thread have 160 to 384 passes. The
-// launch sizes, sorted as text:
+// in `pairs`, 128 in `picked` and 160 in `named`. The loops on one thread have 192 to 384
+// passes. The launch sizes, sorted as text:
 //
 // RUN: VX_NO_AST_FALLBACK=1 vxc %s --action emit-llvm 2>/dev/null | grep -o 'launch=[0-9]*' | LC_ALL=C sort | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=
 // RUN: vxc %s --legacy-codegen --action emit-llvm 2>/dev/null | grep -o 'launch=[0-9]*' | LC_ALL=C sort | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=
 // LAUNCH: launch=128
+// LAUNCH-NEXT: launch=160
 // LAUNCH-NEXT: launch=64
 // LAUNCH-NEXT: launch=96
 //
-// W1033 says why `named` and the four loops that reach the row of the next pass run on one
-// thread. Like other loops whose passes share a value, the last three get no warning:
+// W1033 says why the four loops that reach the row of the next pass run on one thread. Like
+// other loops whose passes share a value, the last three get no warning:
 //
 // RUN: vxc %s --action emit-llvm 2>&1 >/dev/null | FileCheck %s --check-prefix=WARN --implicit-check-not=W1033
 //
@@ -121,7 +120,6 @@ fn named(a : &Tensor<i32, [160], Memory::GPU_HBM>) -> i32 {
         0 => {
           0
         }
-        // WARN: Warning[W1033] at {{.*}}.vx:[[@LINE+1]]:9: this `spawn` loop runs on one thread: a `match` arm names a value `r`, and `r` may refer to memory that another pass writes
         r => {
           r * 7
         }
