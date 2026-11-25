@@ -11,7 +11,7 @@ struct Point {
   z : i64,
 }
 
-fn right_z() -> i64 {
+pub fn right_z() -> i64 {
   let p = Point {
     y : 5, z : 20i64
   };

@@ -804,6 +804,16 @@ impl Proof<'_> {
         if self.error.is_some() {
             return;
         }
+        // `t.len()` and `t.extent(i)` read the shape of `t`, and no pass writes a shape.
+        if let Some((of, axis)) = crate::hir::check::parallel::extent_read(e) {
+            self.expr(axis);
+            match Self::element(of) {
+                Some((_, indices)) => indices.into_iter().for_each(|i| self.expr(i)),
+                None if matches!(of, Expr::Identifier(_)) => {}
+                None => self.expr(of),
+            }
+            return;
+        }
         if let Some((name, indices)) = Self::element(e) {
             for i in &indices {
                 self.expr(i);

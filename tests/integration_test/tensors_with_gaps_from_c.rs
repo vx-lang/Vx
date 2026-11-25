@@ -17,19 +17,19 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 const LIBRARY: &str = "
-pub fn at(t : &Tensor<i32, [?, ?]>, y : i32, x : i32) -> i32 {
+extern fn at(t : &Tensor<i32, [?, ?]>, y : i32, x : i32) -> i32 {
   return t[y][x];
 }
 
-pub fn fixed_at(t : &Tensor<i32, [2, 3]>, y : i32, x : i32) -> i32 {
+extern fn fixed_at(t : &Tensor<i32, [2, 3]>, y : i32, x : i32) -> i32 {
   return t[y][x];
 }
 
-pub fn at_1d(t : &Tensor<i32, [?]>, i : i32) -> i32 {
+extern fn at_1d(t : &Tensor<i32, [?]>, i : i32) -> i32 {
   return t[i];
 }
 
-pub fn seven(t : &Tensor<i32, [?, ?]>) -> i32 {
+extern fn seven(t : &Tensor<i32, [?, ?]>) -> i32 {
   return 7;
 }
 ";
