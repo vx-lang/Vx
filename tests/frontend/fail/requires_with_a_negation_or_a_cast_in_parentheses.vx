@@ -6,8 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // The error for a precondition that a call may not meet (E8006) quotes the precondition.
-// The quote keeps the parentheses of `-(...)` and `(...) as T`, so it means what the program
-// wrote. A negation or a cast that needs no parentheses is quoted without them.
+// The quote keeps the parentheses of `-(...)` and `(...) as T`, also around a comparison or
+// `&&`, so it means what the program wrote. A negation or a cast that needs no parentheses is
+// quoted without them.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 fn negated_cast(x : i32) -> i32
@@ -35,6 +36,16 @@ requires x > -1 {
   return x;
 }
 
+fn cast_of_a_comparison(x : i32) -> i32
+requires (x > 0) as i32 == 1 {
+  return x;
+}
+
+fn cast_of_an_and(x : i32) -> i32
+requires (x > 0 && x < 9) as i32 == 1 {
+  return x;
+}
+
 fn main(n : i32) -> i32 {
   // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'negated_cast' may not meet its precondition `-(x as i64) < 0`
   let a = negated_cast(n);
@@ -46,6 +57,10 @@ fn main(n : i32) -> i32 {
   let d = negated_difference(n);
   // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'above_minus_one' may not meet its precondition `x > -1`
   let e = above_minus_one(n);
-  return a + b + c + d + e;
+  // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'cast_of_a_comparison' may not meet its precondition `(x > 0) as i32 == 1`
+  let f = cast_of_a_comparison(n);
+  // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'cast_of_an_and' may not meet its precondition `((x > 0) && (x < 9)) as i32 == 1`
+  let g = cast_of_an_and(n);
+  return a + b + c + d + e + f + g;
 }
-// CHECK: 5 error(s) emitted
+// CHECK: 7 error(s) emitted
