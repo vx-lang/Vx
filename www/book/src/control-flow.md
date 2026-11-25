@@ -186,6 +186,10 @@ fn main() -> i32 {
 
 `_` matches anything. It is usually the last arm.
 
+A `match` on a number with no `_` arm runs no arm when the number has no arm of its own. So a
+function that returns a value cannot end with such a `match`. The compiler reports E3020, and a
+`_` arm fixes it.
+
 `match` is most useful with an `enum`, where each arm handles one variant:
 
 ```rust

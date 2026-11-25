@@ -1,0 +1,50 @@
+//===- code_after_a_match_on_a_number_with_no_default_arm_runs.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each arm of the `match` returns 1, but the `match` has no arm for 5. For 5, the code after
+// the `match` runs and returns 99. The prover used to treat that code as code that never runs,
+// so it accepted `ensures return == 1`, which is false.
+//
+// In `with_a_default_arm`, the same code never runs, so the compiler reports only the warning
+// for it. That function must get no error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn no_default_arm(x : i32) -> i32
+ensures return == 1
+{
+  match x {
+    0 => {
+      return 1;
+    }
+    1 => {
+      return 1;
+    }
+  }
+  // CHECK: Error[E8001] at {{.*}}.vx:[[@LINE+1]]:3: Function 'no_default_arm' cannot prove postcondition
+  return 99;
+}
+
+fn with_a_default_arm(x : i32) -> i32
+ensures return == 1
+{
+  match x {
+    0 => {
+      return 1;
+    }
+    _ => {
+      return 1;
+    }
+  }
+  return 99;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 1 error(s) emitted

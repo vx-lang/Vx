@@ -1,5 +1,5 @@
-// A `return match` that makes a struct, with no arm for the value it gets: the program stops
-// with a message instead of returning a struct that was never filled in.
+// A `return match` that makes a struct, and the empty `_` arm runs: the program stops with a
+// message instead of returning a struct that was never filled in.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
@@ -23,6 +23,7 @@ fn point_for(n : i32) -> Point {
         x: 8
       };
     }
+    _ => {}
   };
 }
 

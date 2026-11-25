@@ -1,13 +1,16 @@
-//===- a_return_match_with_no_arm_for_the_value_returns_zero.vx - Vx Compiler -*- Vx -*-===//
+//===- a_return_match_whose_default_arm_is_empty_returns_zero.vx - Vx Compiler -*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Each function returns a `match` with arms for some numbers only, and each arm returns. When
-// no arm matches, the function returns 0 for a number and null for a pointer. For a struct, the
-// program stops: tests/backend/fail/return_a_match_with_no_matching_arm.vx.
+// Each function returns a `match` whose `_` arm is empty, and each other arm returns. When the
+// `_` arm runs, the function returns 0 for a number and null for a pointer. For a struct, the
+// program stops: tests/backend/fail/return_a_match_whose_default_arm_is_empty.vx.
+//
+// A `match` on a number with no `_` arm is an error here:
+// tests/frontend/fail/a_match_on_a_number_with_no_default_arm_can_end.vx.
 //
 // RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -22,6 +25,7 @@ fn code_for(n : i32) -> i32 {
     1 => {
       return 8;
     }
+    _ => {}
   };
 }
 
@@ -30,6 +34,7 @@ fn scale_for(n : i32) -> f64 {
     0 => {
       return 1.5;
     }
+    _ => {}
   };
 }
 
@@ -38,6 +43,7 @@ fn name_for(n : i32) -> *const i8 {
     0 => {
       return "zero";
     }
+    _ => {}
   };
 }
 

@@ -285,6 +285,10 @@ pub enum DiagnosticCode {
     /// A scrutinee that is not an enum cannot be enumerated, so it is only asked for a wildcard
     /// in value position, where the fall-through edge would otherwise have no value to carry --
     /// codegen used to paper over that by evaluating the whole match to a constant zero.
+    ///
+    /// A `match` at the end of a function is in value position, because it gives the value that
+    /// the function returns. So a `match` on a number whose arms all `return` needs a `_` arm
+    /// there too.
     E3020,
     /// An enum variant whose payload is a `Pinned` or `Ref` tensor.
     ///
@@ -322,6 +326,10 @@ pub enum DiagnosticCode {
     /// A function with a non-void return type whose body can complete without returning. Reported
     /// here rather than left to codegen, where it surfaced as an MLIR verifier message naming an
     /// operation, with no source location.
+    ///
+    /// A `match` on a number with no `_` arm does not return on every path, so a body that ends
+    /// in one can complete. An arm of a `match` that ends in one can complete too. It gets this
+    /// error when its own `match` must give a value.
     E3028,
     /// A type name in a signature that names no declaration. An unknown name in type position
     /// parses as a user nominal, so without this a typo -- or a type constructor removed from the
@@ -413,8 +421,9 @@ pub enum DiagnosticCode {
     /// payload to a name and test it in the arm, with an `if` or another `match`.
     E3050,
     /// A `match` pattern of another type than the value matched: a variant of another enum, such
-    /// as `Other::Red` in a `match` on a `Color`, `true` in a `match` on an `i32`, or `1` in a
-    /// `match` on a `bool`. Write a pattern of the matched value's type.
+    /// as `Other::Red` in a `match` on a `Color`, a variant of an enum in a `match` on a number,
+    /// `true` in a `match` on an `i32`, or `1` in a `match` on a `bool`. Write a pattern of the
+    /// matched value's type.
     E3051,
     /// Arithmetic on fp8 or fp4 values (`f8e4m3`, `f8e5m2` or `f4e2m1`) with no written result
     /// type, as in `print(a * b)`. The compiler computes in f32 and rounds once to the written
