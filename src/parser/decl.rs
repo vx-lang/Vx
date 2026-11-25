@@ -42,6 +42,41 @@ fn return_the_trailing_expression(body: &mut [Statement]) {
 }
 
 impl<'a> Parser<'a> {
+    /// The message for a `#` where an item should start. Vx has no attributes. For
+    /// `#[derive(Clone)]` and `#[derive(Copy)]`, it shows the `impl` to write instead.
+    fn attribute_message(&self) -> String {
+        let mut message = String::from("Vx has no attributes yet, so `#[...]` does not work.");
+        let is_derive = self.peek_n(1).kind == TokenType::LeftBracket
+            && self.peek_n(2).kind == TokenType::Identifier("derive")
+            && self.peek_n(3).kind == TokenType::LeftParen;
+        if !is_derive {
+            return message;
+        }
+        let mut impls = Vec::new();
+        let mut offset = 4;
+        while let TokenType::Identifier(name) = self.peek_n(offset).kind {
+            match name {
+                "Clone" => {
+                    impls.push("`impl Clone for Type { fn clone(self : &Self) -> Self { ... } }`")
+                }
+                "Copy" => impls.push("`impl Copy for Type {}`"),
+                _ => {}
+            }
+            offset += 1;
+            if self.peek_n(offset).kind != TokenType::Comma {
+                break;
+            }
+            offset += 1;
+        }
+        if !impls.is_empty() {
+            message.push_str(&format!(
+                " Write the impl yourself: {}.",
+                impls.join(" and ")
+            ));
+        }
+        message
+    }
+
     pub(crate) fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
         let token = self.advance();
         match &token.kind {
@@ -1971,6 +2006,8 @@ impl<'a> Parser<'a> {
                 item_macros.push(self.parse_item_macro_call()?);
             } else if self.peek().kind == TokenType::Unknown('"') {
                 return Err(self.error(super::UNCLOSED_STRING));
+            } else if self.peek().kind == TokenType::Unknown('#') {
+                return Err(self.error(&self.attribute_message()));
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
