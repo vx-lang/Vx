@@ -1,0 +1,43 @@
+//===- println_a_string_twice.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `println!` and `print!` only read a `String` variable or field, so a program can print it
+// again. The string is dropped once, after the last print.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK-COUNT-5: call @vx_string_as_c_str(
+// CHECK-NOT: call @vx_string_as_c_str(
+// CHECK: call @vx_string_drop(
+// CHECK-NOT: call @vx_string_drop(
+// CHECK: return
+import std::string;
+
+struct Named {
+  name : String,
+}
+
+fn main() -> i32 {
+  let mut s = String::new();
+  unsafe { s.push_c_str("hi"); }
+  print!("first ");
+  print!(s);
+  println!("");
+  println!("second {}", s);
+  println!("third {}", s);
+  let n = Named {
+    name: s
+  };
+  println!("field {}", n.name);
+  println!("again {}", n.name);
+  return 0;
+}
+
+// EXPECT: first hi
+// EXPECT: second hi
+// EXPECT: third hi
+// EXPECT: field hi
+// EXPECT: again hi
