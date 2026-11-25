@@ -133,19 +133,21 @@ level of the item that a change touches sets what the change needs.
 
 ## 7. Levels for other items
 
-- **Fields** get one level to read and one to write. The level to write is never more than the
-  level to read.
+**Fields** get one level to read and one to write. The level to write is never more than the level
+to read. Any file can read `len` below, and only this file can write it. Any file can read
+`cursor`, and each file of the package can write it.
 
-  ```rust
-  struct Stream {
-    pub get len : u64,
-    pub get pkg set cursor : u64,
-    pkg buf : *mut u8,
-  }
-  ```
+<!-- vx-doctest: skip (the syntax of a later step: a field has no level yet) -->
 
-  Any file can read `len`, and only this file can write it. Any file can read `cursor`, and each
-  file of the package can write it.
+```rust
+struct Stream {
+  pub get len : u64,
+  pub get pkg set cursor : u64,
+  pkg buf : *mut u8,
+}
+```
+
+The other items:
 
 - **Traits** can be `sealed`. Any file can use a `pub sealed trait`, but only its own package can
   implement it.
