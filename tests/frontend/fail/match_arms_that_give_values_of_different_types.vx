@@ -21,7 +21,7 @@ fn wrong_second_arm(s : Size) -> i64 {
     Size::Circle(r) => {
       r
     }
-    // CHECK: Error[E3068] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type i32, but an earlier arm gives a value of type i64. Make every arm give the same type.
+    // CHECK: Error[E3069] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type i32, but an earlier arm gives a value of type i64. Make every arm give the same type.
     Size::Square(w) => {
       0i32
     }
@@ -40,7 +40,7 @@ fn wrong_last_arm(s : Size) -> i64 {
     Size::Square(w) => {
       w * w
     }
-    // CHECK: Error[E3068] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type bool
+    // CHECK: Error[E3069] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type bool
     Size::Triangle(t) => {
       t > 0
     }
@@ -48,7 +48,7 @@ fn wrong_last_arm(s : Size) -> i64 {
   return a;
 }
 
-// CHECK-NOT: Error[E3068]
+// CHECK-NOT: Error[E3069]
 fn arms_that_agree(s : Size) -> i64 {
   let a = match s {
     Size::Circle(r) => {
