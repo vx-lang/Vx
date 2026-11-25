@@ -40,31 +40,6 @@ pub(crate) fn is_builtin_type_name(name: &str) -> bool {
 }
 
 impl<'a> Parser<'a> {
-    /// The `n` of `?n`, a name right after the `?` with no space.
-    fn parse_extent_name(
-        &mut self,
-        question: &Token<'a>,
-    ) -> ParseResult<'a, Option<crate::symbol::Symbol>> {
-        let next = self.peek();
-        let TokenType::Identifier(name) = &next.kind else {
-            return Ok(None);
-        };
-        if next.line != question.line || next.column != question.column + question.length {
-            return Ok(None);
-        }
-        if !self.extent_names_allowed {
-            return Err(self.error_at(
-                next,
-                &format!(
-                    "`?{name}` gives a run-time extent a name, and only the type of a parameter \
-                     of a function with a body can do that"
-                ),
-            ));
-        }
-        self.advance();
-        Ok(Some(crate::symbol::Symbol::from(name.to_string().as_str())))
-    }
-
     pub(crate) fn parse_topology(&mut self) -> ParseResult<'a, Topology> {
         let topology = self.parse_topology_or_any()?;
         if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into(), None) {
@@ -563,9 +538,8 @@ impl<'a> Parser<'a> {
                             while !self.check(&TokenType::RightBracket)
                                 && !self.check(&TokenType::Eof)
                             {
-                                let question = self.peek();
                                 if self.match_token(&TokenType::Question) {
-                                    dims.push(Dim::Dyn(self.parse_extent_name(question)?));
+                                    dims.push(Dim::Dyn);
                                 } else {
                                     let mut dim = self.parse_expr()?;
                                     super::expr::stamp_dim_literals(&mut dim);

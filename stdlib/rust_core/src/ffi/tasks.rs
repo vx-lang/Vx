@@ -425,12 +425,14 @@ pub unsafe extern "C" fn vx_task_start_at(
     let put_aside = deadlines_for_a_task();
     let thread_done = Arc::new(AtomicI64::new(0));
     let done = thread_done.clone();
+    let pinned = sched::vx_task_pinned() != 0;
     crate::ffi::wait::thread_started();
     let started = thread::Builder::new()
         .stack_size(TASK_STACK_BYTES)
         .spawn(move || {
             let task_env = task_env;
             let mut site = site;
+            sched::set_pinned(pinned);
             CURRENT.with(|c| *c.borrow_mut() = Some(mark));
             PUT_ASIDE.with(|p| *p.borrow_mut() = put_aside);
             swap_site(&mut site);

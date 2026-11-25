@@ -263,7 +263,7 @@ fn tensor_dim_string(d: &Dim) -> Option<String> {
         Dim::Static(Expr::Number(n)) => Some(n.value.as_ref().to_string()),
         Dim::Static(Expr::Identifier(id)) => Some(id.name.as_ref().to_string()),
         Dim::Static(_) => None,
-        Dim::Dyn(_) => Some(DYN_DIM.to_string()),
+        Dim::Dyn => Some(DYN_DIM.to_string()),
     }
 }
 
@@ -3721,13 +3721,11 @@ impl<'r> Lowerer<'r> {
         // An `across` loop starts at its own pass and steps over the passes of the others.
         let (start, step) = match across {
             Some((offset, step)) => {
-                if elem.int_bits().is_none() || elem == ElementType::Bool {
+                if elem != ElementType::I32 {
                     return Err(Decline::Unsupported {
-                        what: "an `across` loop over a range that is not of integers",
+                        what: "an `across` loop over a range that is not `i32`",
                     });
                 }
-                let offset = self.widen_index(offset, &elem);
-                let step = self.widen_index(step, &elem);
                 let first = self.emit_value(Opcode::Add, start.reg, offset.reg, elem.clone(), 0);
                 (first, Some(step))
             }
@@ -4110,7 +4108,11 @@ impl<'r> Lowerer<'r> {
                     }
                 };
                 let size = self.read_rank0(size);
-                let size = self.launch_count(size, f.span.line)?;
+                if !matches!(size.ty, LoweredTy::Scalar(ElementType::I32)) {
+                    return Err(Decline::Unsupported {
+                        what: "an `across` loop of blocks whose size is not `i32`",
+                    });
+                }
                 shape.push((axis, size));
                 axis += 1;
                 level = Some(f.body.as_slice());
@@ -5768,7 +5770,7 @@ impl<'r> Lowerer<'r> {
             };
             let local_dims: Vec<bool> = dims.iter().map(local_dim).collect();
             let dynamic =
-                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn(_)));
+                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn));
             let mut extents: Vec<Register> = Vec::new();
             let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
@@ -5778,7 +5780,7 @@ impl<'r> Lowerer<'r> {
                 };
                 for (i, d) in dims.iter().enumerate() {
                     let extent = match d {
-                        Dim::Dyn(_) => written_shape
+                        Dim::Dyn => written_shape
                             .filter(|s| s.len() == dims.len())
                             .map(|s| &s[i])?,
                         Dim::Static(e) if local_dims[i] => e,
@@ -8146,7 +8148,7 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 /// corpus sweep's histogram measures the gap.
 fn is_dyn_tensor(ty: &Type) -> bool {
     match ty {
-        Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn(_))),
+        Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
         Type::Verified(inner)
         | Type::Distinct(inner)
         | Type::DisjointRanges(inner)

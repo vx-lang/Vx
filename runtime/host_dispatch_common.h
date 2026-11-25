@@ -354,6 +354,15 @@ static bool vx_numa_pin_to_node(int node) {
   }
   return sched_setaffinity(0, sizeof(set), &set) == 0;
 }
+
+/// From the Rust core: 1 when the program chose the CPUs of this thread with
+/// `std::task::pin_current`. Weak, so that this library also loads in a process without the Rust
+/// core.
+extern "C" int vx_task_pinned(void) __attribute__((weak));
+
+/// Whether the program chose the CPUs of this thread. A dispatch then keeps them, because a pin to
+/// a NUMA node would give the thread the CPUs of the whole node.
+static bool vx_thread_pinned_by_program() { return vx_task_pinned && vx_task_pinned() != 0; }
 #else
 static void *vx_numa_alloc(size_t bytes, int node, int *bound) {
   (void)bytes;
@@ -375,6 +384,7 @@ static bool vx_numa_pin_to_node(int node) {
   (void)node;
   return false;
 }
+static bool vx_thread_pinned_by_program() { return false; }
 #endif
 
 extern "C" {
@@ -572,10 +582,20 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
           best = (int)nd;
         }
       }
-      bool pinned = vx_numa_pin_to_node(best);
-      if (vx_verbose()) {
-        fprintf(stderr, "[Vx " VX_BACKEND_NAME "] %s to NUMA node %d for this dispatch\n",
-                pinned ? "pinned" : "could NOT pin", best);
+      // A thread that the program pinned with `pin_current` keeps its CPUs.
+      if (vx_thread_pinned_by_program()) {
+        if (vx_verbose()) {
+          fprintf(stderr,
+                  "[Vx " VX_BACKEND_NAME "] kept the CPUs that pin_current chose, and did not "
+                  "pin to NUMA node %d\n",
+                  best);
+        }
+      } else {
+        bool pinned = vx_numa_pin_to_node(best);
+        if (vx_verbose()) {
+          fprintf(stderr, "[Vx " VX_BACKEND_NAME "] %s to NUMA node %d for this dispatch\n",
+                  pinned ? "pinned" : "could NOT pin", best);
+        }
       }
     }
   }

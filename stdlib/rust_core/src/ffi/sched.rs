@@ -122,6 +122,8 @@ thread_local! {
     static HERE: Cell<Option<&'static Scheduler>> = const { Cell::new(None) };
     /// The Vx functions that foreign code called on this thread and that did not return yet.
     static CALLBACKS: Cell<u32> = const { Cell::new(0) };
+    /// `vx_task_pin_current` chose the CPUs of this thread. Then a dispatch keeps them.
+    static PINNED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The ready queue and its workers.
@@ -418,6 +420,10 @@ impl Scheduler {
 }
 
 fn start_thread(name: String, run: impl FnOnce() + Send + 'static) {
+    let run = move || {
+        unpin_runtime_thread();
+        run()
+    };
     if let Err(e) = std::thread::Builder::new().name(name).spawn(run) {
         eprintln!("vx: the system could not start a thread for the tasks: {e}");
         std::process::abort();
@@ -609,6 +615,129 @@ pub(crate) fn wake(FiberRef(fiber): FiberRef) {
     }
 }
 
+/// What `vx_task_pin_current` gives when it cannot pin the task. std/task.vx reads the same
+/// numbers. The other results are in `pin_this_thread`.
+const PIN_UNSUPPORTED: i32 = 1;
+
+/// `std::task::pin_current`: lets the OS thread that calls it run only on the `count` CPUs at
+/// `cpus`, from now on. A task of the default runtime has an OS thread of its own, so this pins
+/// the task. A task that it starts later starts on the same CPUs, because the OS copies the CPUs
+/// of a thread to the threads that it starts. The threads of the runtime itself, such as the
+/// deadlock watcher, do not stay on these CPUs (`unpin_runtime_thread`).
+///
+/// A task of the shared runtime is a fiber that can continue on another worker thread after
+/// each wait. Its worker also runs other tasks. So no pin of a thread can pin it, and the call
+/// gives `PIN_UNSUPPORTED` and changes nothing. A system other than Linux gives
+/// `PIN_UNSUPPORTED` too.
+///
+/// A CPU number that the machine does not have gives `PIN_NO_SUCH_CPU` and writes the number to
+/// `*bad`. When the system does not let the thread run on exactly these CPUs, the call gives
+/// `PIN_DENIED` and restores the CPUs that the thread had. A CPU number of `CPU_SETSIZE` (1024)
+/// or more also gives `PIN_DENIED`, because this call cannot name such a CPU to the system.
+///
+/// # Safety
+/// `cpus` points at `count` numbers, and `count` is above 0. `bad` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn vx_task_pin_current(cpus: *const i32, count: i32, bad: *mut i32) -> i32 {
+    assert!(count > 0, "pin_current needs at least one CPU");
+    if !current_fiber().is_null() {
+        return PIN_UNSUPPORTED;
+    }
+    pin_this_thread(std::slice::from_raw_parts(cpus, count as usize), &mut *bad)
+}
+
+/// The CPUs of the first thread that `pin_this_thread` pinned, from before that pin.
+#[cfg(target_os = "linux")]
+static CPUS_BEFORE_THE_FIRST_PIN: OnceLock<libc::cpu_set_t> = OnceLock::new();
+
+/// Whether the machine has a CPU with the number `cpu`. The kernel lists the CPU numbers it can
+/// have, such as `0-3,6`, in `/sys/devices/system/cpu/possible`. Without that file, each number
+/// from 0 up counts.
+#[cfg(target_os = "linux")]
+fn has_cpu(cpu: i32) -> bool {
+    if cpu < 0 {
+        return false;
+    }
+    let Ok(list) = std::fs::read_to_string("/sys/devices/system/cpu/possible") else {
+        return true;
+    };
+    list.trim().split(',').any(|range| {
+        let (lo, hi) = range.split_once('-').unwrap_or((range, range));
+        match (lo.parse::<i32>(), hi.parse::<i32>()) {
+            (Ok(lo), Ok(hi)) => (lo..=hi).contains(&cpu),
+            _ => false,
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn pin_this_thread(cpus: &[i32], bad: &mut i32) -> i32 {
+    const PIN_DONE: i32 = 0;
+    const PIN_NO_SUCH_CPU: i32 = 2;
+    const PIN_DENIED: i32 = 3;
+    let mut want: libc::cpu_set_t = std::mem::zeroed();
+    for &cpu in cpus {
+        if !has_cpu(cpu) {
+            *bad = cpu;
+            return PIN_NO_SUCH_CPU;
+        }
+    }
+    for &cpu in cpus {
+        if cpu as usize >= libc::CPU_SETSIZE as usize {
+            return PIN_DENIED;
+        }
+        libc::CPU_SET(cpu as usize, &mut want);
+    }
+    let size = std::mem::size_of::<libc::cpu_set_t>();
+    let mut before: libc::cpu_set_t = std::mem::zeroed();
+    if libc::sched_getaffinity(0, size, &mut before) != 0
+        || libc::sched_setaffinity(0, size, &want) != 0
+    {
+        return PIN_DENIED;
+    }
+    // The system can remove a CPU that the process may not use, and still succeed.
+    let mut now: libc::cpu_set_t = std::mem::zeroed();
+    if libc::sched_getaffinity(0, size, &mut now) != 0 || !libc::CPU_EQUAL(&now, &want) {
+        libc::sched_setaffinity(0, size, &before);
+        return PIN_DENIED;
+    }
+    CPUS_BEFORE_THE_FIRST_PIN.get_or_init(|| before);
+    PINNED.with(|p| p.set(true));
+    PIN_DONE
+}
+
+/// macOS steers a thread with a QoS class, and a QoS class is not a pin.
+#[cfg(not(target_os = "linux"))]
+unsafe fn pin_this_thread(_cpus: &[i32], _bad: &mut i32) -> i32 {
+    PIN_UNSUPPORTED
+}
+
+/// Gives a thread of the runtime (a worker, the monitor, the timer, the deadlock watcher or a
+/// thread of the I/O poller) the CPUs that threads had before the first `pin_current`. Call it
+/// first in the thread. Such a thread starts from the thread that first needs it, and that can be
+/// a task that pinned itself to a CPU of its own. A new thread is never marked as pinned.
+pub(crate) fn unpin_runtime_thread() {
+    #[cfg(target_os = "linux")]
+    if let Some(before) = CPUS_BEFORE_THE_FIRST_PIN.get() {
+        // When the system refuses, the thread stays on the pinned CPUs. It is slower, not wrong.
+        unsafe { libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), before) };
+    }
+}
+
+/// 1 when `vx_task_pin_current` chose the CPUs of this thread, or of the task thread that
+/// started it. A dispatch with data on a NUMA node asks this before it pins its thread to that
+/// node.
+#[no_mangle]
+pub extern "C" fn vx_task_pinned() -> i32 {
+    PINNED.with(|p| p.get()) as i32
+}
+
+/// A new task thread starts with the CPUs of the thread that starts it, so it gets the mark of
+/// that thread too.
+pub(crate) fn set_pinned(pinned: bool) {
+    PINNED.with(|p| p.set(pinned));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,6 +828,51 @@ mod tests {
             e.write(value);
             e as *mut u8
         }
+    }
+
+    /// The CPUs that the thread that calls it may run on.
+    #[cfg(target_os = "linux")]
+    fn cpus_of_this_thread() -> Vec<usize> {
+        let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::cpu_set_t>();
+        assert_eq!(unsafe { libc::sched_getaffinity(0, size, &mut set) }, 0);
+        (0..libc::CPU_SETSIZE as usize)
+            .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) })
+            .collect()
+    }
+
+    /// A thread pins itself to CPU 0, and then starts a thread of the runtime and a plain
+    /// thread. The plain thread gets CPU 0 from the OS. The thread of the runtime gets the CPUs
+    /// from before the pin, so it does not run on the CPU that the task wants for itself.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_thread_of_the_runtime_does_not_keep_the_cpus_of_a_pinned_task() {
+        let _watchdog =
+            Watchdog::new("a_thread_of_the_runtime_does_not_keep_the_cpus_of_a_pinned_task");
+        let (before, plain, runtime) = std::thread::spawn(|| {
+            let before = cpus_of_this_thread();
+            let mut bad = 0;
+            let status = unsafe { vx_task_pin_current([0].as_ptr(), 1, &mut bad) };
+            assert_eq!(status, 0, "the pin to CPU 0 did not work");
+            let plain = std::thread::spawn(cpus_of_this_thread).join().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            start_thread("vx-test".to_string(), move || {
+                tx.send((cpus_of_this_thread(), vx_task_pinned())).unwrap();
+            });
+            (before, plain, rx.recv().unwrap())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            plain,
+            vec![0],
+            "a plain thread did not get the CPU of the pin"
+        );
+        assert_eq!(
+            runtime.0, before,
+            "a thread of the runtime kept the CPU of the pin"
+        );
+        assert_eq!(runtime.1, 0, "a thread of the runtime counts as pinned");
     }
 
     #[test]

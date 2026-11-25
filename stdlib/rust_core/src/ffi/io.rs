@@ -364,7 +364,10 @@ impl Helpers {
         if s.0.len() > s.1 {
             std::thread::Builder::new()
                 .name("vx-helper".into())
-                .spawn(move || self.serve())
+                .spawn(move || {
+                    crate::ffi::sched::unpin_runtime_thread();
+                    self.serve()
+                })
                 .expect("the system could not start a helper thread");
         }
         drop(s);
@@ -412,7 +415,10 @@ fn poller() -> &'static Poller {
         }));
         std::thread::Builder::new()
             .name("vx-io".into())
-            .spawn(move || run(p, pipe[0]))
+            .spawn(move || {
+                crate::ffi::sched::unpin_runtime_thread();
+                run(p, pipe[0])
+            })
             .expect("the system could not start the I/O poller thread");
         p
     })

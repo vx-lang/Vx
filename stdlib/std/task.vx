@@ -1,0 +1,67 @@
+//===- task.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Choose the CPUs that a task runs on. A low-latency program gives each hot task a CPU of its
+// own, so that the system does not move the task to a CPU with a cold cache.
+//===----------------------------------------------------------------------===//
+import core::panic;
+import core::result;
+import std::vec;
+
+extern {
+  /// The Rust core behind `pin_current`: 0, or the code of a `PinError`. For `NoSuchCpu`, it
+  /// writes the CPU number to `*bad`.
+  pub fn vx_task_pin_current(cpus : *const i32, count : i32, bad : *mut i32) -> i32;
+}
+
+/// Why `pin_current` did not pin the task. The task then runs where it ran before.
+enum PinError {
+  // The system cannot pin a thread (macOS), or the task runs in the shared runtime
+  // (`VX_TASK_RUNTIME=shared`) or with a seed (`VX_TASK_SEED`). There a task has no OS thread of
+  // its own.
+  Unsupported,
+  // The machine has no CPU with this number. The list of the CPUs that the machine can have is in
+  // `/sys/devices/system/cpu/possible`.
+  NoSuchCpu(i32),
+  // The system did not let the task run on exactly these CPUs. For example, the CPU set of the
+  // process or of its container does not hold all of them.
+  Denied,
+}
+
+impl Copy for PinError {}
+
+/// Lets the task that calls it run only on the CPUs `cpus` from now on, on Linux.
+///
+/// A task of the default runtime runs on an OS thread of its own. So the call pins that OS
+/// thread: the code after the `tasks` block and the other tasks keep their CPUs. A task that
+/// this task spawns later starts on the same CPUs. The threads of the runtime, such as the
+/// deadlock watcher, do not stay on these CPUs. In code outside a task, the call pins the thread
+/// that runs that code, for example the main thread, and the tasks that it spawns later.
+///
+/// A dispatch of a kernel whose data is on a NUMA node keeps the CPUs that this call chose. It
+/// does not move the thread to the CPUs of that node.
+///
+/// Give at least one CPU. The call stops the program when `cpus` is empty.
+pub fn pin_current(cpus : &Vec<i32>) -> Result<void, PinError> {
+  if cpus.is_empty() {
+    panic("pin_current: the list of CPUs is empty");
+  }
+  let mut bad : i32 = 0;
+  let status = unsafe {
+    vx_task_pin_current(cpus.as_mut_ptr() as *const i32, cpus.len(), (&mut bad) as *mut i32)
+  };
+  if status == 0 {
+    return Result<void, PinError>::Ok();
+  }
+  if status == 1 {
+    return Result<void, PinError>::Err(PinError::Unsupported);
+  }
+  if status == 2 {
+    return Result<void, PinError>::Err(PinError::NoSuchCpu(bad));
+  }
+  return Result<void, PinError>::Err(PinError::Denied);
+}

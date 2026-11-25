@@ -64,7 +64,9 @@ Two consequences follow, and both are visible:
 
 - `transfer(t, Memory::PEER_HBM)` binds the allocation to node 1, through the `mbind` syscall. No
   libnuma dependency and no link flag; it compiles out entirely off Linux.
-- A dispatch whose arguments are placed pins itself to that node before running the kernel.
+- A dispatch whose arguments are placed pins itself to that node before running the kernel. A
+  thread that the program pinned with `std::task::pin_current` keeps its own CPUs
+  ([Tasks](tasks.md#pin-a-task-to-cpus)).
 
 Zero is a valid node and means the first one, so `node: 0` is a declaration rather than an absence.
 The upper bound is the dispatch band's rather than the hardware's; a node number past it is a parse

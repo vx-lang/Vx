@@ -1,0 +1,153 @@
+//===- a_task_pinned_to_a_cpu_stays_on_it.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task pins itself to CPU 1 with `pin_current`, and the system then reports only CPU 1 for
+// it. The pin stays after a kernel dispatch with data on NUMA node 0, which pins an unpinned
+// thread to all the CPUs of the node. A task that the pinned task spawns starts on CPU 1 too,
+// and keeps it after a dispatch. A pin to the list 0, 1 gives exactly CPUs 0 and 1.
+// CPU 100000 and CPU -1 give `NoSuchCpu` and keep the pin. The machine needs at least CPUs 0
+// and 1. The code outside a task can pin its own thread too.
+//
+// The controls: the code after the `tasks` block keeps all its CPUs until it pins itself, and
+// the dispatch of a task that did not pin itself still pins to the node (the NUMA lines).
+//
+// In the shared runtime, and with a seed (`VX_TASK_SEED`), a task has no OS thread of its own.
+// So the call gives `Unsupported`. The other RUN lines name the default runtime, so the sweep
+// over task runtimes does not run them again. No test makes the system refuse a pin
+// (`Denied`), because that needs a cpuset of a container.
+//
+// REQUIRES: linux
+// RUN: env VX_TASK_RUNTIME=threads vxc %s --host default --machine fleet/xeon-8275cl.vx 2>/dev/null | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=threads vxc %s --legacy-codegen --host default --machine fleet/xeon-8275cl.vx 2>/dev/null | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=threads VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/xeon-8275cl.vx 2>&1 >/dev/null | FileCheck %s --check-prefix=NUMA --implicit-check-not='NUMA node 0 for this dispatch'
+// RUN: env VX_TASK_RUNTIME=shared vxc %s --host default --machine fleet/xeon-8275cl.vx 2>/dev/null | FileCheck %s --check-prefix=SHARED
+// RUN: env VX_TASK_SEED=1 vxc %s --host default --machine fleet/xeon-8275cl.vx 2>/dev/null | FileCheck %s --check-prefix=SHARED
+//
+// CHECK: {{^}}pin to cpu 1: pinned{{$}}
+// CHECK-NEXT: {{^}}only cpu 1 after the pin: true{{$}}
+// CHECK-NEXT: {{^}}only cpu 1 after the dispatch: true{{$}}
+// CHECK-NEXT: {{^}}only cpu 1 in a task that it spawned: true{{$}}
+// CHECK-NEXT: {{^}}only cpu 1 after a dispatch in that task: true{{$}}
+// CHECK-NEXT: {{^}}pin to cpus 0 and 1: pinned{{$}}
+// CHECK-NEXT: {{^}}only cpus 0 and 1 after the pin: true{{$}}
+// CHECK-NEXT: {{^}}pin to cpu 100000: no such cpu 100000{{$}}
+// CHECK-NEXT: {{^}}pin to cpu -1: no such cpu -1{{$}}
+// CHECK-NEXT: {{^}}only cpus 0 and 1 after the pins that failed: true{{$}}
+// CHECK-NEXT: {{^}}the code after the block kept its cpus: true{{$}}
+// CHECK-NEXT: {{^}}pin to cpu 1: pinned{{$}}
+// CHECK-NEXT: {{^}}only cpu 1 in the code after the block: true{{$}}
+//
+// NUMA: kept the CPUs that pin_current chose, and did not pin to NUMA node 0
+// NUMA: kept the CPUs that pin_current chose, and did not pin to NUMA node 0
+// NUMA: pinned to NUMA node 0 for this dispatch
+//
+// SHARED: {{^}}pin to cpu 1: unsupported{{$}}
+
+import std::task;
+import std::vec;
+
+extern {
+  fn sched_getaffinity(pid : i32, size : i64, mask : *mut u64) -> i32;
+}
+
+/// The CPUs that this thread may run on: bit N is CPU N, for CPUs 0 to 63.
+fn cpus_now() -> u64 {
+  let mask : Vec<u64> = unsafe { Vec<u64>::zeroed(16) };
+  let _ = unsafe { sched_getaffinity(0, 128, mask.as_mut_ptr()) };
+  return mask.get(0);
+}
+
+fn say(what : i32, r : Result<void, PinError>) -> void {
+  match r {
+    Result<void, PinError>::Ok() => {
+      println!("pin to cpu {}: pinned", what);
+    }
+    Result<void, PinError>::Err(e) => {
+      match e {
+        PinError::Unsupported => {
+          println!("pin to cpu {}: unsupported", what);
+        }
+        PinError::NoSuchCpu(c) => {
+          println!("pin to cpu {}: no such cpu {}", what, c);
+        }
+        PinError::Denied => {
+          println!("pin to cpu {}: denied", what);
+        }
+      }
+    }
+  }
+}
+
+fn pin_to(cpu : i32) -> void {
+  let mut cpus : Vec<i32> = Vec<i32>::new();
+  cpus.push(cpu);
+  say(cpu, pin_current(&cpus));
+}
+
+fn pin_to_0_and_1() -> void {
+  let mut cpus : Vec<i32> = Vec<i32>::new();
+  cpus.push(0);
+  cpus.push(1);
+  match pin_current(&cpus) {
+    Result<void, PinError>::Ok() => {
+      println!("pin to cpus 0 and 1: pinned");
+    }
+    Result<void, PinError>::Err(_e) => {
+      println!("pin to cpus 0 and 1: failed");
+    }
+  }
+}
+
+/// A dispatch of a kernel whose data is on NUMA node 0.
+fn dispatch_on_node_0() -> void {
+  let mut a = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  for i in 0..4 {
+    for d in 0..4 {
+      a[i][d] = 1.0;
+    }
+  }
+  let ad = transfer(a, Memory::HBM);
+  let bd = transfer(a, Memory::HBM);
+  let mut cd = transfer(a, Memory::HBM);
+  spawn on(Topology::Device) {
+    cd = ad @ bd;
+  }
+}
+
+fn main() -> i32 {
+  let before = cpus_now();
+  tasks {
+    let pinned = spawn {
+      pin_to(1);
+      println!("only cpu 1 after the pin: {}", cpus_now() == 2);
+      dispatch_on_node_0();
+      println!("only cpu 1 after the dispatch: {}", cpus_now() == 2);
+      tasks {
+        let inner = spawn {
+          println!("only cpu 1 in a task that it spawned: {}", cpus_now() == 2);
+          dispatch_on_node_0();
+          println!("only cpu 1 after a dispatch in that task: {}", cpus_now() == 2);
+        };
+        inner.join();
+      }
+      pin_to_0_and_1();
+      println!("only cpus 0 and 1 after the pin: {}", cpus_now() == 3);
+      pin_to(100000);
+      pin_to(-1);
+      println!("only cpus 0 and 1 after the pins that failed: {}", cpus_now() == 3);
+    };
+    pinned.join();
+    let unpinned = spawn {
+      dispatch_on_node_0();
+    };
+    unpinned.join();
+  }
+  println!("the code after the block kept its cpus: {}", cpus_now() == before);
+  pin_to(1);
+  println!("only cpu 1 in the code after the block: {}", cpus_now() == 2);
+  return 0;
+}

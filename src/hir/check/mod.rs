@@ -30,7 +30,6 @@ pub mod control;
 pub mod drop_waits;
 pub mod drops;
 pub mod escape;
-pub mod extent_names;
 pub mod host_waits;
 pub mod imported_errors;
 pub mod lanes;

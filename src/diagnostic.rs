@@ -166,9 +166,6 @@ pub enum DiagnosticCode {
     /// A `tasks` block that can fail, whose value nothing uses. When the block fails, the code
     /// after it goes on, and nothing sees the error.
     W1038,
-    /// `?n` gives an extent the name of a constant or a const parameter. In the function, `n`
-    /// is the extent, so the function cannot use the constant.
-    W1039,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -495,13 +492,6 @@ pub enum DiagnosticCode {
     /// address, for example one that `p as *const void` made to give to a C function. It has no
     /// element type, so the compiler does not know what to read.
     E3067,
-    /// A call that gives one extent name two different extents. In `fn add(a : Tensor<f32,
-    /// [?n]>, b : Tensor<f32, [?n]>)`, both `?n` are one extent, so `add(x, y)` with the extents
-    /// 5 and 7 is an error. When the compiler does not know an extent, it does not check it.
-    E3068,
-    /// A variable of the body with the name of an extent, or an assignment to an extent name.
-    /// `?n` in the type of a parameter makes `n` a variable of the body that nothing changes.
-    E3069,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
