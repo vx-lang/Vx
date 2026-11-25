@@ -877,7 +877,7 @@ pub fn to_source(e: &Expr) -> Option<String> {
 }
 
 /// `e` as the operand of `-` or `as`. It is in parentheses when `e` is a binary operation,
-/// a comparison or a cast. Without them, `-(x as i64)` would read as `(-x) as i64`.
+/// a comparison, a logical operation or a cast. Without them, `-(x as i64)` would read as `(-x) as i64`.
 fn operand_source(e: &Expr) -> Option<String> {
     let text = to_source(e)?;
     Some(match e {
