@@ -163,7 +163,14 @@ pub fn trusted_code(program: &Program) -> Vec<(TrustedCode, Trusted)> {
             (false, false) => {}
         }
     }
-    let methods = program.impls.iter().flat_map(|ib| ib.methods.iter());
+    // A default method that the compiler copied from a trait into an impl is the trait's code.
+    // It counts once, in the trait's file, below.
+    let methods = program.impls.iter().flat_map(|ib| {
+        ib.methods
+            .iter()
+            .filter(|m| !ib.copied_defaults.contains(&m.name))
+    });
+    let mut bodies: Vec<&[crate::syntax::Statement]> = Vec::new();
     for f in program.functions.iter().chain(methods) {
         if f.is_unsafe {
             add(
@@ -172,7 +179,12 @@ pub fn trusted_code(program: &Program) -> Vec<(TrustedCode, Trusted)> {
                 format!("`unsafe fn {}`", f.name),
             );
         }
-        crate::syntax::visit_exprs(&f.body, &mut |e| match e {
+        bodies.push(&f.body);
+    }
+    let defaults = program.traits.iter().flat_map(|t| t.methods.iter());
+    bodies.extend(defaults.filter_map(|m| m.default_body.as_deref()));
+    for body in bodies {
+        crate::syntax::visit_exprs(body, &mut |e| match e {
             Expr::UnsafeBlock(b) if !b.generated && b.task.is_none() => add(
                 TrustedCode::UnsafeBlock,
                 b.span,
