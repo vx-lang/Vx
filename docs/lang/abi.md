@@ -460,8 +460,8 @@ message, `%`, `\` and each control character are `%` and two hex digits, so a ne
 - An `extern fn` keeps its name and is exported, so a shared library built from
   the program gives it to C. Only a top-level function that is not generic can be
   `extern`. An `extern fn write` replaces libc's `write`, as any exported C
-  function does. Until the tests that read a C name say `extern fn`, a `pub fn`
-  that is not generic is exported too (`docs/discussions/private_functions.md`).
+  function does. A `pub fn` is not exported: `pub` says only which Vx files can
+  call it.
 - Apart from `main` and exported functions, every symbol Vx exports starts with
   `_vx_`. The kernel entry
   points `_vx_ciface_<kernel>` are the only ones today. The dispatch runtime

@@ -3417,6 +3417,99 @@ fn a_register_accumulator_coop_region_gets_the_plan() {
 }
 
 #[test]
+fn a_coop_region_with_a_barrier_in_a_match_arm_stays_serial() {
+    // The region above, with its first barrier in a `match` arm. The threads of a block may
+    // take different arms, so some may never reach the barrier, and the others wait forever.
+    let (did, w) = lower_with_registry(
+        "fn main() -> i32 {\n\
+               let mut q = Tensor<f32>([8, 4]);\n\
+               let mut k = Tensor<f32>([6, 4]);\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
+                 let mut acc = Tensor<f32>([1, 4]);\n\
+                 for bq in 0..4 {\n\
+                   for qi in 0..2 {\n\
+                     acc[0] = q[bq * 2 + qi] * 0.0;\n\
+                     for t in 0..3 {\n\
+                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
+                       match qi {\n\
+                         0 => { barrier(); }\n\
+                         _ => {}\n\
+                       }\n\
+                       for jj in 0..2 {\n\
+                         acc[0] = acc[0] + kt[jj] * 1.0;\n\
+                       }\n\
+                       barrier();\n\
+                     }\n\
+                     o[bq * 2 + qi] = acc[0] * 1.0;\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+        "main",
+    );
+    assert!(did, "still lowers -- serially");
+    let end = w
+        .local_hir_stream
+        .iter()
+        .find(|i| i.opcode == Opcode::SpawnEnd)
+        .expect("a SpawnEnd");
+    assert_eq!(
+        end.imm & SPAWN_TWO_LEVEL,
+        0,
+        "no two-level bit: imm={:#x}",
+        end.imm
+    );
+}
+
+#[test]
+fn a_coop_region_that_writes_through_another_name_stays_serial() {
+    // The register-accumulator region, but each thread writes `o[0]` through `r`, another name
+    // for `o`. The threads race on that element.
+    let (did, w) = lower_with_registry(
+        "fn f(o : &mut Tensor<f32, [8, 4]>) -> i32 {\n\
+               let mut q = Tensor<f32>([8, 4]);\n\
+               let mut k = Tensor<f32>([6, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
+                 let mut acc = Tensor<f32>([1, 4]);\n\
+                 for bq in 0..4 {\n\
+                   for qi in 0..2 {\n\
+                     acc[0] = q[bq * 2 + qi] * 0.0;\n\
+                     for t in 0..3 {\n\
+                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
+                       barrier();\n\
+                       for jj in 0..2 {\n\
+                         acc[0] = acc[0] + kt[jj] * 1.0;\n\
+                       }\n\
+                       barrier();\n\
+                     }\n\
+                     let r = o;\n\
+                     r[0] = acc[0] * 1.0;\n\
+                   }\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+        "f",
+    );
+    assert!(did, "still lowers -- serially");
+    let end = w
+        .local_hir_stream
+        .iter()
+        .find(|i| i.opcode == Opcode::SpawnEnd)
+        .expect("a SpawnEnd");
+    assert_eq!(
+        end.imm & SPAWN_TWO_LEVEL,
+        0,
+        "no two-level bit: imm={:#x}",
+        end.imm
+    );
+}
+
+#[test]
 fn a_coop_region_missing_the_tail_barrier_stays_serial() {
     // The same shape minus the barrier AFTER the consume. One pass sees nothing wrong --
     // fill, barrier, consume is a legal order -- the wrap is the bug: the next tile's
