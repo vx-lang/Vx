@@ -4063,6 +4063,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let FunctionCallExpr {
+            owner_type_args: _,
             name,
             args,
             type_args,
