@@ -1214,6 +1214,20 @@ impl CompilerDriver {
         if self.options.action == Action::Audit {
             checker.trusted = Some(std::collections::BTreeSet::new());
         }
+        // The trusted code of each module, read before the check moves the body of each closure
+        // into a function of its own. `--no-trusted-code` reads the modules at this point too.
+        let trusted_code: Vec<_> = match self.options.action {
+            Action::Audit => std::iter::once(&*ast)
+                .chain(other_asts.values())
+                .flat_map(|p| {
+                    let library = crate::hir::check::audit::is_library(p);
+                    crate::hir::check::audit::trusted_code(p)
+                        .into_iter()
+                        .map(move |(kind, item)| (library, kind, item))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
 
         // The checks that look at the whole program's declarations at once can only name a
         // file when the program is one file; a `--host default` module was read from none.
@@ -1444,12 +1458,12 @@ impl CompilerDriver {
             let mut library = std::collections::BTreeMap::new();
             for p in std::iter::once(&*ast).chain(other_asts.values()) {
                 trusted.extend(audit::trusted_declarations(p));
-                for (kind, item) in audit::trusted_code(p) {
-                    if audit::is_library(p) && !self.options.audit_library {
-                        *library.entry(kind).or_insert(0) += 1;
-                    } else {
-                        trusted.insert(item);
-                    }
+            }
+            for (in_library, kind, item) in trusted_code {
+                if in_library && !self.options.audit_library {
+                    *library.entry(kind).or_insert(0) += 1;
+                } else {
+                    trusted.insert(item);
                 }
             }
             for item in &trusted {
