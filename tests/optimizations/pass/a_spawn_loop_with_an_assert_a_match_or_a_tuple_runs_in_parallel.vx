@@ -1,0 +1,271 @@
+//===- a_spawn_loop_with_an_assert_a_match_or_a_tuple_runs_in_parallel.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Pass `i` of each loop writes only `out[i]`, so the passes can run at the same time. An
+// `assert`, a tuple, a struct value or a `match` in the loop does not keep it on one thread.
+// These things still do:
+//
+// - A pass that reads a value an earlier pass set, in a `match` arm or in a block of an `if`
+//   that gives a value (`carried_by_match`, `carried_by_if_value`). Each thread has its own
+//   copy of that value.
+// - A pass that reads the row of the next pass, in an assert, in the value that a `match`
+//   tests or in a tuple, or writes it in a `match` arm.
+// - A pass that reads scratch memory that an earlier pass may have set in a `match` arm.
+//
+// A loop that runs in parallel gets a launch size, its number of passes: 64 in `checked`, 96
+// in `pairs`, 128 in `picked` and 160 in `named`. The loops on one thread have 192 to 384
+// passes. The launch sizes, sorted as text:
+//
+// RUN: VX_NO_AST_FALLBACK=1 vxc %s --action emit-llvm 2>/dev/null | grep -o 'launch=[0-9]*' | LC_ALL=C sort | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>/dev/null | grep -o 'launch=[0-9]*' | LC_ALL=C sort | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=
+// LAUNCH: launch=128
+// LAUNCH-NEXT: launch=160
+// LAUNCH-NEXT: launch=64
+// LAUNCH-NEXT: launch=96
+//
+// W1033 says why the four loops that reach the row of the next pass run on one thread. Like
+// other loops whose passes share a value, the last three get no warning:
+//
+// RUN: vxc %s --action emit-llvm 2>&1 >/dev/null | FileCheck %s --check-prefix=WARN --implicit-check-not=W1033
+//
+// The kernels run on this machine's CPU, split across 8 threads:
+//
+// RUN: env CUDA_VISIBLE_DEVICES= VX_HOST_THREADS=8 VX_NO_AST_FALLBACK=1 vxc %s 2>/dev/null | FileCheck %s --check-prefix=OUT
+// RUN: env CUDA_VISIBLE_DEVICES= VX_HOST_THREADS=8 vxc %s --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=OUT
+// OUT: 4032 451440 799 1680
+// OUT-NEXT: 18050 24754
+// OUT-NEXT: 32640 41328 51040
+// OUT-NEXT: 61776 73344
+
+struct Pair {
+  lo : i32,
+  hi : i32,
+}
+
+fn total<const N : usize>(t : Tensor<i32, [N], Memory::GPU_HBM>, n : i32) -> i32 {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let mut sum = 0;
+  for i in 0..n {
+    sum = sum + h[i];
+  }
+  return sum;
+}
+
+// The sum of 2 * i for i below 64.
+fn checked(a : &Tensor<i32, [160], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([160]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..64 {
+      assert(a[i] >= 0, "a negative input");
+      out[i] = a[i] * 2;
+    }
+  }
+  return total(out, 64);
+}
+
+// The sum of 100 * i - i for i below 96.
+fn pairs(a : &Tensor<i32, [160], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([160]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..96 {
+      let (x, y) = (a[i], a[i] * 100);
+      let p = Pair {
+        lo: x, hi: y
+      };
+      out[i] = p.hi - p.lo;
+    }
+  }
+  return total(out, 96);
+}
+
+// For i below 128: 7 unless i is a multiple of 4, plus i % 3.
+fn picked(a : &Tensor<i32, [160], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([160]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..128 {
+      let w = match a[i] % 4 {
+        0 => {
+          0
+        }
+        _ => {
+          7
+        }
+      };
+      match a[i] % 3 {
+        0 => {
+          out[i] = w;
+        }
+        1 => {
+          out[i] = w + 1;
+        }
+        _ => {
+          out[i] = w + 2;
+        }
+      }
+    }
+  }
+  return total(out, 128);
+}
+
+// For i below 160: 7 * (i % 4).
+fn named(a : &Tensor<i32, [160], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([160]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..160 {
+      let w = match a[i] % 4 {
+        0 => {
+          0
+        }
+        r => {
+          r * 7
+        }
+      };
+      out[i] = w;
+    }
+  }
+  return total(out, 160);
+}
+
+// Pass `i` reads `last`, which an earlier pass set in a `match` arm. The loop runs on one
+// thread, so each pass reads the value that the pass before it left.
+fn carried_by_match(a : &Tensor<i32, [512], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    let mut last = 0;
+    for i in 0..192 {
+      out[i] = last;
+      match a[i] % 2 {
+        0 => {
+          last = a[i];
+        }
+        _ => {}
+      }
+    }
+  }
+  return total(out, 192);
+}
+
+// The same, with `last` set in a block of an `if` that gives a value.
+fn carried_by_if_value(a : &Tensor<i32, [512], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    let mut last = 0;
+    for i in 0..224 {
+      out[i] = last;
+      let even = if a[i] % 2 == 0 {
+        last = a[i];
+        1
+      } else {
+        0
+      };
+      out[i] = out[i] + even;
+    }
+  }
+  return total(out, 224);
+}
+
+// Each loop below reads `out[i + 1]`, which the next pass writes: in an assert, in the value
+// that a `match` tests, and in a tuple. So each loop runs on one thread, and reads 0 there.
+fn asserts_the_next(a : &Tensor<i32, [512], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..256 {
+      out[i] = a[i];
+      // WARN: Warning[W1033] at {{.*}}.vx:[[@LINE+1]]:17: this `spawn` loop runs on one thread: a pass reads a row of `out` that another pass writes
+      assert(out[i + 1] == 0, "the next pass wrote its row first");
+    }
+  }
+  return total(out, 256);
+}
+
+fn matches_the_next(a : &Tensor<i32, [512], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..288 {
+      out[i] = a[i];
+      // WARN: Warning[W1033] at {{.*}}.vx:[[@LINE+1]]:24: this `spawn` loop runs on one thread: a pass reads a row of `out` that another pass writes
+      let z = match out[i + 1] {
+        0 => {
+          0
+        }
+        _ => {
+          1
+        }
+      };
+      out[i] = out[i] + z;
+    }
+  }
+  return total(out, 288);
+}
+
+fn pairs_the_next(a : &Tensor<i32, [512], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..320 {
+      out[i] = a[i];
+      // WARN: Warning[W1033] at {{.*}}.vx:[[@LINE+1]]:24: this `spawn` loop runs on one thread: a pass reads a row of `out` that another pass writes
+      let (x, y) = (out[i + 1], 0);
+      out[i] = out[i] + x + y;
+    }
+  }
+  return total(out, 320);
+}
+
+// A `match` arm writes the row of the next pass.
+fn writes_the_next_in_an_arm(a : &Tensor<i32, [512], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..352 {
+      out[i] = a[i];
+      match a[i] % 2 {
+        0 => {
+          // WARN: Warning[W1033] at {{.*}}.vx:[[@LINE+1]]:14: this `spawn` loop runs on one thread: a pass reads a row of `out` that another pass writes
+          out[i + 1] = 0;
+        }
+        _ => {}
+      }
+    }
+  }
+  return total(out, 352);
+}
+
+// Each thread has its own `s`. Only the even passes set `s[0]`, in a `match` arm, so an odd
+// pass reads the value that the pass before it left.
+fn scratch_set_in_an_arm(a : &Tensor<i32, [512], Memory::GPU_HBM>) -> i32 {
+  let mut out = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    let mut s = Tensor<i32>([1]);
+    for i in 0..384 {
+      match a[i] % 2 {
+        0 => {
+          s[0] = a[i];
+        }
+        _ => {}
+      }
+      out[i] = s[0];
+    }
+  }
+  return total(out, 384);
+}
+
+fn main() -> i32 {
+  let mut h = Tensor<i32>([160]);
+  for i in 0..160 {
+    h[i] = i;
+  }
+  let a = transfer(h, Memory::GPU_HBM);
+  println!("{} {} {} {}", checked(&a), pairs(&a), picked(&a), named(&a));
+  let mut h2 = Tensor<i32>([512]);
+  for i in 0..512 {
+    h2[i] = i;
+  }
+  let b = transfer(h2, Memory::GPU_HBM);
+  println!("{} {}", carried_by_match(&b), carried_by_if_value(&b));
+  println!("{} {} {}", asserts_the_next(&b), matches_the_next(&b), pairs_the_next(&b));
+  println!("{} {}", writes_the_next_in_an_arm(&b), scratch_set_in_an_arm(&b));
+  return 0;
+}

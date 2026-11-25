@@ -219,6 +219,7 @@ impl ModuleLoader {
             }
         }
         self.rename_clashes(&mut programs)?;
+        self.name_packages(&mut programs);
         Ok(programs)
     }
 
@@ -247,6 +248,39 @@ impl ModuleLoader {
             )));
         }
         Ok(())
+    }
+
+    /// Give each module its package: the `--package` that its import path starts with, `std` or
+    /// the first name of the import path for a module of the standard library, or the empty
+    /// name for a file of the program itself. A module whose file is not known gets none, so a
+    /// `pkg fn` in it is visible only to its own file.
+    fn name_packages(&self, programs: &mut [Program]) {
+        let canonical = |p: &Path| fs::canonicalize(p).ok();
+        let std_roots: Vec<(PathBuf, bool)> = (self.std_roots.iter())
+            .filter_map(|r| Some((canonical(r)?, r.file_name() == Some("std".as_ref()))))
+            .collect();
+        for program in programs {
+            let Some(file) = (self.paths.get(&program.module_path)).and_then(|p| canonical(p))
+            else {
+                program.package = None;
+                continue;
+            };
+            let path: Vec<&str> = program.module_path.as_ref().split("::").collect();
+            let in_package =
+                path.len() > 1 && self.packages.iter().any(|(name, _)| name == path[0]);
+            let package = if in_package {
+                path[0]
+            } else if let Some((_, is_std)) = std_roots.iter().find(|(r, _)| file.starts_with(r)) {
+                if *is_std {
+                    "std"
+                } else {
+                    path[0]
+                }
+            } else {
+                ""
+            };
+            program.package = Some(package.into());
+        }
     }
 
     /// Parse again each module that declares or sees a name another module also declares, with
@@ -306,6 +340,7 @@ impl ModuleLoader {
         );
         let mut programs: Vec<Program> = self.loaded_modules.values().cloned().collect();
         self.rename_clashes(&mut programs)?;
+        self.name_packages(&mut programs);
         Ok(programs)
     }
 

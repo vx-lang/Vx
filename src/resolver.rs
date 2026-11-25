@@ -347,12 +347,13 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 ensures: signature.ensures.clone(),
                 where_transfers: Vec::new(),
                 is_unsafe: false,
-                is_pub: false,
+                visibility: crate::gid::Visibility::Private,
                 exported: false,
                 body,
                 doc_comment: None,
                 span: crate::syntax::Span::default(),
                 file: file.clone(),
+                package: None,
             });
         }
     }

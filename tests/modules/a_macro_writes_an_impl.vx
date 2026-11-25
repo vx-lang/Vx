@@ -31,6 +31,6 @@ fn double(x : i64) -> i64 {
   return x * 2;
 }
 
-fn library_double(x : i64) -> i64 {
+pub fn library_double(x : i64) -> i64 {
   return double(x);
 }
