@@ -7,17 +7,17 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
-// A `match` on a reference gives names to parts of a value that the reference does not own.
-// Moving such a name would drop that part twice, so each way to move one is an error (E4008).
+// A `match` on a reference gives each name a reference to a part of a value that the
+// reference does not own. Moving that part out would drop it twice, so each way to move one is
+// an error: a return or an assignment of the reference where the code needs the value (E3002,
+// E3004), and a call or a field move that takes the value from behind it (E4008).
 
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:68:14: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:81:15: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:93:14: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:106:14: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:118:17: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:132:16: `p.left` cannot be moved out: `p` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:151:17: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK: 7 error(s) emitted
+// CHECK-DAG: Error[E3002] at {{.*}}.vx:68:7: Type mismatch on return. Expected Noisy, got &Noisy
+// CHECK-DAG: Error[E3002] at {{.*}}.vx:81:7: Type mismatch on return. Expected Noisy, got &Noisy
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:94:16: `into_id` takes `self` by value, so this call moves a value of type `Noisy` out from behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:105:16: `p.left` cannot be moved out: `p` is a reference and does not own it
+// CHECK-DAG: Error[E3004] at {{.*}}.vx:124:11: Type mismatch in assignment: cannot assign &Noisy to Noisy
+// CHECK: 5 error(s) emitted
 
 import core::ops;
 
@@ -75,18 +75,6 @@ fn return_the_payload(h : &Holder) -> Noisy {
   }
 }
 
-fn copy_the_payload_into_a_variable(h : &mut Holder) -> i32 {
-  match h {
-    Holder::Full(n) => {
-      let m = n;
-      return m.id;
-    }
-    Holder::Empty => {
-      return 0;
-    }
-  }
-}
-
 fn return_the_payload_of_a_generic_enum(h : &Maybe<Noisy>) -> Noisy {
   match h {
     Maybe<Noisy>::Some(n) => {
@@ -104,21 +92,6 @@ fn call_a_method_that_takes_the_payload(h : &Holder) -> i32 {
   match h {
     Holder::Full(n) => {
       return n.into_id();
-    }
-    Holder::Empty => {
-      return 0;
-    }
-  }
-}
-
-fn capture_the_payload_in_a_closure(h : &Holder) -> i32 {
-  match h {
-    Holder::Full(n) => {
-      let f = || {
-        let m = n;
-        m.id
-      };
-      return f();
     }
     Holder::Empty => {
       return 0;

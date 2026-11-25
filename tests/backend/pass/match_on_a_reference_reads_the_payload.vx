@@ -69,7 +69,7 @@ fn read_generic(m : &Maybe<Noisy>) -> i32 {
 fn copy_out(v : &Num) -> i32 {
   match v {
     Num::Val(x) => {
-      return x;
+      return *x;
     }
     Num::Zero => {
       return 0;

@@ -24,7 +24,7 @@ enum Shape {
 fn size(s : &Shape) -> i32 {
   match s {
     Shape::Circle(r) => {
-      return r;
+      return *r;
     }
   }
 }
@@ -40,7 +40,7 @@ fn grow(s : &mut Shape) -> i32 {
 fn size_as_a_value(s : &Shape) -> i32 {
   let r : i32 = match s {
     Shape::Circle(r) => {
-      r
+      *r
     }
   };
   return r;
