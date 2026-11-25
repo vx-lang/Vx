@@ -1143,6 +1143,33 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// The names of `pattern`, in a `match` on the reference `scrutinee`, are references into
+    /// the same value. So each one holds what `scrutinee` holds, as after `let x = scrutinee`.
+    fn hold_what_the_matched_reference_holds(&mut self, pattern: &Pattern, scrutinee: &Expr) {
+        if self.speculating {
+            return;
+        }
+        let mut bound = Vec::new();
+        pattern_names(pattern, &mut bound);
+        let provenance = self.ref_provenance_of(scrutinee);
+        let store_target = self.store_target_of(scrutinee);
+        for name in bound {
+            if let Expr::Identifier(from) = scrutinee {
+                self.borrow
+                    .copy_borrows(from.name.as_ref(), name.as_ref(), self.scopes.len());
+                self.reborrow_mut_variable(from.name.as_ref(), name.as_ref());
+            }
+            match provenance {
+                Some(p) => self.borrow.ref_provenance.insert(name.clone(), p),
+                None => self.borrow.ref_provenance.remove(name.as_ref()),
+            };
+            match store_target {
+                Some(t) => self.borrow.store_targets.insert(name.clone(), t),
+                None => self.borrow.store_targets.remove(name.as_ref()),
+            };
+        }
+    }
+
     pub(crate) fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
             Pattern::Identifier(name) => {
@@ -1159,7 +1186,22 @@ impl<'a> TypeChecker<'a> {
                         return;
                     };
                     for (i, p) in payloads.iter().enumerate() {
-                        let p_ty = types.get(i).cloned().unwrap_or(Type::Unknown);
+                        let mut p_ty = types.get(i).cloned().unwrap_or(Type::Unknown);
+                        // Through a reference, a name binds a reference to its part of the value.
+                        if let Type::Borrow {
+                            mem_space,
+                            is_mut,
+                            region_id,
+                            ..
+                        } = expr_ty
+                        {
+                            p_ty = Type::Borrow {
+                                inner: Box::new(p_ty),
+                                mem_space: mem_space.clone(),
+                                is_mut: *is_mut,
+                                region_id: (*region_id).max(self.scopes.len()),
+                            };
+                        }
                         self.bind_pattern_variables(p, &p_ty);
                     }
                 } else {
@@ -1239,6 +1281,7 @@ impl<'a> TypeChecker<'a> {
             expr: subject,
             arms,
             span,
+            ..
         }) = expr
         else {
             return None;
@@ -1333,6 +1376,7 @@ impl<'a> TypeChecker<'a> {
                 expr: match_expr,
                 arms,
                 span: match_span,
+                binds_references,
             }) => {
                 // Matching a variable, or what a reference points at, reads it: only an arm
                 // that binds a value which has to move moves it (below). Any other scrutinee
@@ -1362,6 +1406,11 @@ impl<'a> TypeChecker<'a> {
                 let behind_ref = matches!(expr_ty, Type::Borrow { .. })
                     || matches!(&**match_expr, Expr::Identifier(id)
                         if self.is_bound_behind_ref(id.name.as_ref()));
+                // Only a pattern with payload names binds a part of the value.
+                *binds_references = matches!(expr_ty, Type::Borrow { .. })
+                    && arms.iter().any(|arm| {
+                        matches!(&arm.pattern, Pattern::EnumVariant(_, _, Some(parts)) if !parts.is_empty())
+                    });
                 // When only some arms move a part, the value may still be there after the
                 // `match`, as after an `if` that moves it in one branch.
                 let every_arm_moves = place
@@ -1441,7 +1490,10 @@ impl<'a> TypeChecker<'a> {
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty, &arm.span);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
                     let mut takes_value = !place;
-                    if behind_ref {
+                    if *binds_references {
+                        self.hold_what_the_matched_reference_holds(&arm.pattern, match_expr);
+                        takes_value = false;
+                    } else if behind_ref {
                         self.mark_bound_behind_ref(&arm.pattern);
                         takes_value = false;
                     } else if place

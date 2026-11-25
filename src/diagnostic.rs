@@ -535,8 +535,8 @@ pub enum DiagnosticCode {
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
     /// away. Copy or clone it instead. A method that takes `self` by value, called as `r.f()`,
     /// takes `*r` the same way, and so does a call through `f : &F` of a closure that moves a value
-    /// it captures. A `match` on a reference names parts of the value behind
-    /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
+    /// it captures. A `match` on a reference binds references to parts of the value behind it,
+    /// so `match r { Two::Both(p) => p.left }` cannot move `p.left` either. Through a raw pointer,
     /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
     /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take
     /// it out.

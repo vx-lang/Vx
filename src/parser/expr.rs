@@ -1037,11 +1037,7 @@ impl<'a> Parser<'a> {
                     },
                 });
             }
-            let expr = Expr::Match(MatchExpr {
-                expr: Box::new(expr),
-                arms,
-                span: match_span,
-            });
+            let expr = Expr::Match(MatchExpr::new(Box::new(expr), arms, match_span));
             return Ok(self.wrap_try(expr));
         }
 

@@ -203,6 +203,27 @@ fn main() -> i32 {
 }
 ```
 
+A `match` on a reference gives each name in a pattern a reference to its part of the value.
+Through a `&mut`, an arm can change that part in place. To get a copy of each part instead,
+match on `*o`.
+
+```rust
+import std::vec;
+
+fn add_one(o : &mut Option<i32>) -> void {
+    match o {
+        Option::Some(x) => { *x = *x + 1; }
+        Option::None => {}
+    }
+}
+
+fn main() -> i32 {
+    let mut o = Option<i32>::Some(4);
+    add_one(&mut o);
+    return o.unwrap() - 5;
+}
+```
+
 ## Where to next
 
 - [Ownership and borrowing](ownership.md) — who owns a value, and who may look at it

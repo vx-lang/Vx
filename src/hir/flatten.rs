@@ -2556,6 +2556,9 @@ impl<'r> Lowerer<'r> {
         let index = pats
             .iter()
             .position(|p| matches!(p, crate::syntax::Pattern::Identifier(n) if *n == id.name))?;
+        if m.binds_references {
+            return Some(LoweredTy::Ptr);
+        }
         let enum_ty = self
             .infer_ast_type(&m.expr)
             .unwrap_or_else(|| Type::Enum(pattern_en.to_string().into(), None));
@@ -3243,6 +3246,10 @@ impl<'r> Lowerer<'r> {
                     what: "an enum with no modelled instance layout",
                 })?;
         let slot = self.lower_data_match_slot(&m.expr, gid)?;
+        let subject_is_mut = matches!(
+            self.infer_ast_type(&m.expr),
+            Some(Type::Borrow { is_mut: true, .. })
+        );
         let tag_field = self.enum_field_index(gid, 0)?;
         let registry = self.registry;
         let data = registry
@@ -3347,6 +3354,39 @@ impl<'r> Lowerer<'r> {
                                         what: "an enum payload type that is not modelled",
                                     },
                                 )?;
+                                if m.binds_references {
+                                    let addr_gid =
+                                        match &lty {
+                                            LoweredTy::Aggregate(gid) => *gid,
+                                            LoweredTy::Scalar(e) => scalar_gid(e),
+                                            LoweredTy::Ptr => ptr_gid(),
+                                            _ => return Err(Decline::TypeNotModelled {
+                                                what: "a reference to an enum payload of this type",
+                                            }),
+                                        };
+                                    let access = self.enum_field_index(gid, payload_field + 1)?;
+                                    let reg = self.emit_field_addr(slot, addr_gid, access);
+                                    self.note_shadow(pname);
+                                    self.ast_types.insert(
+                                        pname.clone(),
+                                        Type::Borrow {
+                                            inner: Box::new(payload_type),
+                                            mem_space: None,
+                                            is_mut: subject_is_mut,
+                                            region_id: 0,
+                                        },
+                                    );
+                                    self.bind_local(
+                                        pname.clone(),
+                                        Val {
+                                            reg,
+                                            ty: LoweredTy::Ptr,
+                                        },
+                                        false,
+                                        false,
+                                    );
+                                    continue;
+                                }
                                 let pval = self.emit_typed(
                                     Opcode::EnumPayloadLoad,
                                     slot,

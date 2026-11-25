@@ -5421,6 +5421,7 @@ fn payload_binding_type(
     arm: &syntax::MatchArm,
     value: &Expr,
     scrutinee_ty: Option<&syntax::Type>,
+    binds_references: bool,
 ) -> Option<syntax::Type> {
     let (Expr::Identifier(id), syntax::Pattern::EnumVariant(en, vn, Some(pats))) =
         (value, &arm.pattern)
@@ -5433,7 +5434,21 @@ fn payload_binding_type(
     let position = pats
         .iter()
         .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;
-    variant_payload_type(gen, en, vn, position, scrutinee_ty)
+    match scrutinee_ty {
+        // A `match` through a reference binds a reference to the payload.
+        Some(syntax::Type::Borrow {
+            inner,
+            mem_space,
+            is_mut,
+            region_id,
+        }) if binds_references => Some(syntax::Type::Borrow {
+            inner: Box::new(variant_payload_type(gen, en, vn, position, Some(inner))?),
+            mem_space: mem_space.clone(),
+            is_mut: *is_mut,
+            region_id: *region_id,
+        }),
+        _ => variant_payload_type(gen, en, vn, position, scrutinee_ty),
+    }
 }
 
 /// The type of the payload at `position` of the variant `vn` of `en`, with the type arguments
@@ -5480,11 +5495,18 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         // Read before the scrutinee is generated, which may set it for its own operands.
         let outer_expected = gen.expected_type;
         let (mut match_val, mut match_ty, block) = gen.generate_expr(&self.expr, block)?;
+        let mut matched_reference = None;
         // `match self` with `self : &Op`: the scrutinee is a pointer, and the arms read the
         // tag out of the enum it points at.
         if match_ty == gen.ptr_ty {
-            if let Some(syntax::Type::Borrow { inner, .. }) = gen.infer_ast_type(&self.expr) {
-                let enum_ty = gen.lower_type(&inner)?;
+            if let Some(subject_ty @ syntax::Type::Borrow { .. }) = gen.infer_ast_type(&self.expr) {
+                let syntax::Type::Borrow { inner, .. } = &subject_ty else {
+                    unreachable!("the pattern above is a reference");
+                };
+                let enum_ty = gen.lower_type(inner)?;
+                if self.binds_references {
+                    matched_reference = Some((match_val, subject_ty.clone()));
+                }
                 match_val = block
                     .append_operation(
                         OperationBuilder::new("llvm.load", gen.loc())
@@ -5540,16 +5562,22 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
             }
             // A name that the arm's pattern binds hides any outer local of that name, so the
             // payload type comes first.
-            other => payload_binding_type(gen, arm, other, scrutinee_ty.as_ref())
-                .or_else(|| gen.infer_ast_type(other))
-                .or_else(|| match other {
-                    // `r * 3`: the checker gives the operands' type, which is the result's.
-                    Expr::BinaryOp(b) if b.op != syntax::expr::BinaryOp::MatMul => {
-                        b.operand_ty.clone().map(syntax::Type::Scalar)
-                    }
-                    _ => None,
-                })
-                .and_then(|t| gen.lower_type(&t).ok()),
+            other => payload_binding_type(
+                gen,
+                arm,
+                other,
+                scrutinee_ty.as_ref(),
+                self.binds_references,
+            )
+            .or_else(|| gen.infer_ast_type(other))
+            .or_else(|| match other {
+                // `r * 3`: the checker gives the operands' type, which is the result's.
+                Expr::BinaryOp(b) if b.op != syntax::expr::BinaryOp::MatMul => {
+                    b.operand_ty.clone().map(syntax::Type::Scalar)
+                }
+                _ => None,
+            })
+            .and_then(|t| gen.lower_type(&t).ok()),
         };
         let value_ty = if tail_expr.is_none() || in_statement {
             None
@@ -5571,11 +5599,18 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
             Some(ty) => parent_region.append_block(melior::ir::Block::new(&[(ty, gen.loc())])),
             None => parent_region.append_block(melior::ir::Block::new(&[])),
         };
+        // The checker binds references, so the arms need the address of the enum.
+        if self.binds_references && matched_reference.is_none() {
+            return Err(LowerError::from(
+                "a `match` through a reference whose value is not an address".to_string(),
+            ));
+        }
         generate_match_chain(
             gen,
             &self.arms,
             match_val,
             match_ty,
+            matched_reference.as_ref(),
             block,
             merge_block,
             value_ty,
