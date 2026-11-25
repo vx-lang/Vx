@@ -10,8 +10,10 @@
 // A function with no `pub` is private to its file, as in Rust. Only code in that file can call
 // it or use it as a value. The imported module has a private function, method, associated
 // function, generic function and C function. This file can call its `pub` functions and the
-// methods of its trait impl, and nothing else.
+// methods of its trait impl, and nothing else. A `pkg` function of the package `tests`
+// is visible to the files of that package only, and this file is not one of them.
 import tests::modules::a_module_with_private_functions;
+import tests::modules::a_module_with_pkg_functions;
 
 fn main() -> i32 {
   let mut c = Counter::new();
@@ -28,6 +30,8 @@ fn main() -> i32 {
   let f = twice;
   // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:11: `same` is private to `a_module_with_private_functions.vx`. Write `pub fn same` there, so that other files can call it
   let g = same(3i64);
-  return (total + a + z.n + b + f(1i64) + g) as i32;
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:11: `pkg_twice` is `pkg` in `a_module_with_pkg_functions.vx`, so only the package `tests` can call it. Write `pub fn pkg_twice` there, so that other packages can call it
+  let h = pkg_twice(1);
+  return (total + a + z.n + b + f(1i64) + g + h) as i32;
 }
-// CHECK: 6 error(s) emitted
+// CHECK: 7 error(s) emitted

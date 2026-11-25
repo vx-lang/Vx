@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::gid::Visibility;
 use crate::hir::check_state::ComptimeCheckProblemKind;
 use crate::hir::expr::{expected_numeric_elem, int_dim_expr};
 use std::collections::HashMap;
@@ -1596,48 +1597,65 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    /// E5005 when the code being checked is in another file than a private function that it
-    /// calls or names. `shown` is the function as the program writes it, and `short` its own
-    /// name.
+    /// E5005 when the current function may not call `place`, a function that it calls or
+    /// names. `shown` is the function as the program writes it, and `short` its own name.
     pub(crate) fn refuse_a_private_function(
         &mut self,
         shown: &str,
         short: &str,
-        place: (&Option<crate::symbol::Symbol>, bool),
+        place: &FunctionPlace,
         at: &crate::syntax::Span,
     ) {
-        let (theirs, is_pub) = place;
-        if is_pub || self.speculating {
+        if place.visibility == Visibility::Public || self.speculating {
             return;
         }
-        let (Some(theirs), Some(ours)) = (theirs, &self.errors.file) else {
+        let (Some(theirs), Some(ours)) = (&place.file, &self.errors.file) else {
             return;
         };
         if theirs == ours {
+            return;
+        }
+        let our_package = self.env.file_packages.get(ours);
+        let package = place.package.as_ref();
+        if place.visibility == Visibility::Package && package.is_some() && package == our_package {
             return;
         }
         let file = std::path::Path::new(theirs.as_ref())
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| theirs.to_string());
-        self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E5005,
-            format!(
+        let message = match (place.visibility, package) {
+            (Visibility::Package, Some(package)) => {
+                format!(
+                    "`{shown}` is `pkg` in `{file}`, so only the package `{}` can call it. \
+                 Write `pub fn {short}` there, so that other packages can call it",
+                    if package.is_empty() {
+                        "of the program"
+                    } else {
+                        package.as_ref()
+                    }
+                )
+            }
+            _ => format!(
                 "`{shown}` is private to `{file}`. Write `pub fn {short}` there, so that other \
                  files can call it"
             ),
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E5005,
+            message,
             Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
         );
     }
 
-    /// E5005 for a call of `name`, a function or `Type::method`, when the function is private
-    /// to another file. A method of a trait impl is public, because the trait is.
+    /// E5005 for a call of `name`, a function or `Type::method`, that the current function may
+    /// not call. A method of a trait impl is public, because the trait is.
     pub(crate) fn refuse_a_call_of_a_private_function(
         &mut self,
         name: &str,
         at: &crate::syntax::Span,
     ) {
-        let place = match top_level_path_sep(name) {
+        let found = match top_level_path_sep(name) {
             Some(idx) => {
                 let ty = name[..idx].split('<').next().unwrap_or_default();
                 let method = name[idx + 2..].split('<').next().unwrap_or_default();
@@ -1649,7 +1667,7 @@ impl<'a> TypeChecker<'a> {
                     .filter(|ib| ib.trait_name.is_none() && impl_type_name(&ib.target_type) == ty)
                     .flat_map(|ib| ib.methods.iter())
                     .find(|m| m.name.as_ref() == method)
-                    .map(|m| (m.file.clone(), m.is_pub));
+                    .map(FunctionPlace::of);
                 place.map(|p| (format!("{ty}::{method}"), method.to_string(), p))
             }
             None => {
@@ -1658,24 +1676,25 @@ impl<'a> TypeChecker<'a> {
                     .map(|p| (base.to_string(), base.to_string(), p))
             }
         };
-        if let Some((shown, short, (file, is_pub))) = place {
-            self.refuse_a_private_function(&shown, &short, (&file, is_pub), at);
+        if let Some((shown, short, place)) = found {
+            self.refuse_a_private_function(&shown, &short, &place, at);
         }
     }
 
-    /// The file and the `pub` of the function, generic function or C function `name`.
-    pub(crate) fn place_of_function(
-        &self,
-        name: &str,
-    ) -> Option<(Option<crate::symbol::Symbol>, bool)> {
+    /// The file, package and visibility of the function, generic function or C function `name`.
+    pub(crate) fn place_of_function(&self, name: &str) -> Option<FunctionPlace> {
         if let Some(f) = self.env.syntax_functions.get(name) {
-            return Some((f.file.clone(), f.is_pub));
+            return Some(FunctionPlace::of(f));
         }
         if let Some((f, _)) = self.env.generic_functions.get(name) {
-            return Some((f.file.clone(), f.is_pub));
+            return Some(FunctionPlace::of(f));
         }
         let e = self.env.externs.iter().find(|e| e.name.as_ref() == name)?;
-        Some((e.file.clone(), e.is_pub))
+        Some(FunctionPlace {
+            file: e.file.clone(),
+            package: e.package.clone(),
+            visibility: e.visibility,
+        })
     }
 
     pub(crate) fn file_name(&self) -> String {
@@ -4061,7 +4080,7 @@ impl<'a> TypeChecker<'a> {
                         self.refuse_a_private_function(
                             &shown,
                             _method.as_ref(),
-                            (&generic_method.file, generic_method.is_pub),
+                            &FunctionPlace::of(&generic_method),
                             &method_span,
                         );
                     }
@@ -4970,6 +4989,23 @@ impl<'a> TypeChecker<'a> {
             }
         }
         None
+    }
+}
+
+/// The file and package of a function, and which files can call it.
+pub(crate) struct FunctionPlace {
+    pub file: Option<crate::symbol::Symbol>,
+    pub package: Option<crate::symbol::Symbol>,
+    pub visibility: Visibility,
+}
+
+impl FunctionPlace {
+    fn of(f: &crate::syntax::Function) -> Self {
+        Self {
+            file: f.file.clone(),
+            package: f.package.clone(),
+            visibility: f.visibility,
+        }
     }
 }
 

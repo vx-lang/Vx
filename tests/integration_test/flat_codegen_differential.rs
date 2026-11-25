@@ -2827,11 +2827,12 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .clone();
     let synth = Function {
         is_unsafe: false,
-        is_pub: false,
+        visibility: vxc::gid::Visibility::Private,
         exported: false,
         name: body.name.clone(),
         span: vxc::syntax::Span::default(),
         file: None,
+        package: None,
         generics: vec![],
         params: body
             .params

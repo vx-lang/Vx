@@ -6,7 +6,8 @@
 //
 // This file calls only the `pub` functions of the imported module and the methods of its trait
 // impl. They call the private functions of that module. The copy of the generic `first_of` that
-// this file uses calls them too.
+// this file uses calls them too. `pkg` is a level only where an item starts, so here it is a
+// variable.
 // EXPECT: 3 3 4 7
 
 import tests::modules::a_module_with_private_functions;
@@ -19,6 +20,7 @@ fn main() -> i32 {
   print!(" ");
   print(twice_of(2));
   print!(" ");
-  print(first_of(7i64, 8i64));
+  let pkg = first_of(7i64, 8i64);
+  print(pkg);
   return 0;
 }

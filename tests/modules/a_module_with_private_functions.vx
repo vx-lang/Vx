@@ -6,7 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // A module for `a_call_of_a_private_function_from_another_file.vx`. Each function with no `pub`
-// is private to this file. This file calls each of them, so a call from this file is fine.
+// is private to this file. This file calls each of them, so a call from this file is fine. It
+// also calls a `pkg` function of another file of the package `tests`.
+import tests::modules::a_module_with_pkg_functions;
 
 extern {
   fn labs(x : i64) -> i64;
@@ -55,7 +57,7 @@ fn twice(x : i64) -> i64 {
 }
 
 pub fn twice_of(x : i64) -> i64 {
-  return twice(x) + unsafe { labs(0) };
+  return pkg_twice(x) + unsafe { labs(0) };
 }
 
 // A copy of a generic function belongs to the file of the generic function. So another file can
