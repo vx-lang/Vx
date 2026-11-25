@@ -1,0 +1,205 @@
+//===- core_num_checked_and_wrapping_euclid.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `checked_div_euclid`, `checked_rem_euclid`, `wrapping_div_euclid` and
+// `wrapping_rem_euclid` at every integer width. The answers are the ones Rust gives.
+//
+// The signed cases use negative operands, because there the Euclidean answer differs from
+// `/` and `%`: -7 by 2 gives -4 and 1, where `/` and `%` give -3 and -1. The smallest
+// value by -1 is the one division that overflows. The checked forms give nothing there,
+// and the wrapping forms give the smallest value and 0. The smallest value by -2 and the
+// largest value by -1 must still give an answer, so a test of only one operand fails.
+// The smallest value is also used as a divisor. A zero divisor gives nothing in the
+// checked forms.
+//
+// EXPECT: i32 div=-4 -3 4 rem=1 1 1 zero=1 1 min_by_m1=1 1 min_by_m2=1073741824 max_by_m1=-2147483647 0 min_by_3=-715827883 1 by_min=1 2147483643 0 | wrap min_by_m1=-2147483648 0 neg=-4 1 4 min_by_3=-715827883 1 max_by_m1=-2147483647 0 | i8 1 1 -128 0 -43 1 -127 | i16 1 -32768 0 -4682 6 | i64 1 1 -9223372036854775808 0 -922337203685477581 2 | u8 1 1 36 3 255 0 | u16 1 255 255 | u32 1 1 1431655765 0 | u64 1 9223372036854775807 1 5 | usize 1 1 3 2 4 7
+import core::num;
+import core::option;
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let lo : i32 = -2147483647 - 1;
+  let hi : i32 = 2147483647;
+  let seven : i32 = 7;
+  let minus_seven : i32 = -7;
+  let minus_five : i32 = -5;
+
+  // Checked, with each sign of each operand.
+  print!("i32 div=");
+  print(minus_seven.checked_div_euclid(2).unwrap_or(-99));
+  print!(" ");
+  print(seven.checked_div_euclid(-2).unwrap_or(-99));
+  print!(" ");
+  print(minus_seven.checked_div_euclid(-2).unwrap_or(-99));
+  print!(" rem=");
+  print(minus_seven.checked_rem_euclid(2).unwrap_or(-99));
+  print!(" ");
+  print(seven.checked_rem_euclid(-2).unwrap_or(-99));
+  print!(" ");
+  print(minus_seven.checked_rem_euclid(-2).unwrap_or(-99));
+
+  // Checked, where it gives nothing.
+  print!(" zero=");
+  show(seven.checked_div_euclid(0).is_none());
+  print!(" ");
+  show(seven.checked_rem_euclid(0).is_none());
+  print!(" min_by_m1=");
+  show(lo.checked_div_euclid(-1).is_none());
+  print!(" ");
+  show(lo.checked_rem_euclid(-1).is_none());
+
+  // Checked, next to the overflow, where it must still give an answer.
+  print!(" min_by_m2=");
+  print(lo.checked_div_euclid(-2).unwrap_or(-99));
+  print!(" max_by_m1=");
+  print(hi.checked_div_euclid(-1).unwrap_or(-99));
+  print!(" ");
+  print(hi.checked_rem_euclid(-1).unwrap_or(-99));
+  print!(" min_by_3=");
+  print(lo.checked_div_euclid(3).unwrap_or(-99));
+  print!(" ");
+  print(lo.checked_rem_euclid(3).unwrap_or(-99));
+
+  // Checked, with the smallest value as the divisor.
+  print!(" by_min=");
+  print(minus_five.checked_div_euclid(lo).unwrap_or(-99));
+  print!(" ");
+  print(minus_five.checked_rem_euclid(lo).unwrap_or(-99));
+  print!(" ");
+  print(lo.checked_rem_euclid(lo).unwrap_or(-99));
+
+  // Wrapping.
+  print!(" | wrap min_by_m1=");
+  print(lo.wrapping_div_euclid(-1));
+  print!(" ");
+  print(lo.wrapping_rem_euclid(-1));
+  print!(" neg=");
+  print(minus_seven.wrapping_div_euclid(2));
+  print!(" ");
+  print(minus_seven.wrapping_rem_euclid(-2));
+  print!(" ");
+  print(minus_seven.wrapping_div_euclid(-2));
+  print!(" min_by_3=");
+  print(lo.wrapping_div_euclid(3));
+  print!(" ");
+  print(lo.wrapping_rem_euclid(3));
+  print!(" max_by_m1=");
+  print(hi.wrapping_div_euclid(-1));
+  print!(" ");
+  print(hi.wrapping_rem_euclid(-1));
+
+  // i8: the overflow, both wrapping answers, a negative quotient, and the largest by -1.
+  let lo8 : i8 = -127 - 1;
+  let hi8 : i8 = 127;
+  print!(" | i8 ");
+  show(lo8.checked_div_euclid(-1).is_none());
+  print!(" ");
+  show(lo8.checked_rem_euclid(0).is_none());
+  print!(" ");
+  print(lo8.wrapping_div_euclid(-1));
+  print!(" ");
+  print(lo8.wrapping_rem_euclid(-1));
+  print!(" ");
+  print(lo8.checked_div_euclid(3).unwrap_or(99));
+  print!(" ");
+  print(lo8.checked_rem_euclid(3).unwrap_or(99));
+  print!(" ");
+  print(hi8.checked_div_euclid(-1).unwrap_or(99));
+
+  let lo16 : i16 = -32767 - 1;
+  print!(" | i16 ");
+  show(lo16.checked_div_euclid(-1).is_none());
+  print!(" ");
+  print(lo16.wrapping_div_euclid(-1));
+  print!(" ");
+  print(lo16.wrapping_rem_euclid(-1));
+  print!(" ");
+  print(lo16.checked_div_euclid(7).unwrap_or(99));
+  print!(" ");
+  print(lo16.checked_rem_euclid(7).unwrap_or(99));
+
+  let lo64 : i64 = -9223372036854775807 - 1;
+  print!(" | i64 ");
+  show(lo64.checked_div_euclid(-1).is_none());
+  print!(" ");
+  show(lo64.checked_rem_euclid(-1).is_none());
+  print!(" ");
+  print(lo64.wrapping_div_euclid(-1));
+  print!(" ");
+  print(lo64.wrapping_rem_euclid(-1));
+  print!(" ");
+  print(lo64.checked_div_euclid(10).unwrap_or(99));
+  print!(" ");
+  print(lo64.checked_rem_euclid(10).unwrap_or(99));
+
+  // Unsigned: only a zero divisor fails, and the answers are `/` and `%`.
+  let top8 : u8 = 255;
+  print!(" | u8 ");
+  show(top8.checked_div_euclid(0).is_none());
+  print!(" ");
+  show(top8.checked_rem_euclid(0).is_none());
+  print!(" ");
+  print(top8.checked_div_euclid(7).unwrap_or(99));
+  print!(" ");
+  print(top8.checked_rem_euclid(7).unwrap_or(99));
+  print!(" ");
+  print(top8.wrapping_div_euclid(1));
+  print!(" ");
+  print(top8.wrapping_rem_euclid(1));
+
+  let top16 : u16 = 65535;
+  print!(" | u16 ");
+  show(top16.checked_div_euclid(0).is_none());
+  print!(" ");
+  print(top16.checked_rem_euclid(256).unwrap_or(0));
+  print!(" ");
+  print(top16.wrapping_div_euclid(256));
+
+  let top32 : u32 = 4294967295;
+  print!(" | u32 ");
+  show(top32.checked_div_euclid(0).is_none());
+  print!(" ");
+  show(top32.checked_rem_euclid(0).is_none());
+  print!(" ");
+  print(top32.wrapping_div_euclid(3));
+  print!(" ");
+  print(top32.wrapping_rem_euclid(3));
+
+  let top64 : u64 = 18446744073709551615;
+  print!(" | u64 ");
+  show(top64.checked_div_euclid(0).is_none());
+  print!(" ");
+  print(top64.checked_div_euclid(2).unwrap_or(0));
+  print!(" ");
+  print(top64.checked_rem_euclid(2).unwrap_or(0));
+  print!(" ");
+  print(top64.wrapping_rem_euclid(10));
+
+  let seventeen : usize = 17;
+  let top : usize = 9223372036854775807;
+  print!(" | usize ");
+  show(seventeen.checked_div_euclid(0).is_none());
+  print!(" ");
+  show(seventeen.checked_rem_euclid(0).is_none());
+  print!(" ");
+  print(seventeen.checked_div_euclid(5).unwrap_or(99));
+  print!(" ");
+  print(seventeen.checked_rem_euclid(5).unwrap_or(99));
+  print!(" ");
+  print(seventeen.wrapping_div_euclid(4));
+  print!(" ");
+  print(top.wrapping_rem_euclid(10));
+  return 0;
+}
