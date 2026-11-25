@@ -3091,7 +3091,7 @@ impl<'a> TypeChecker<'a> {
                 if is_verified {
                     self.errors
                         .push(format!("Contract violated for Verified return type: {}", m));
-                } else {
+                } else if self.consteval.uncertain_branch_depth == 0 {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E8002,
                         format!("Comptime assert failed: {}", m),
