@@ -55,7 +55,7 @@ enum FpCategory {
 /// build the name `i32_max` from the parameter `i32`. The free functions above are the
 /// same values under a name a caller can write.
 macro_rules stamp_signed_int {
-  ($t : ident , $bits : expr , $min : expr , $max : expr , $byte_mask : expr) => {
+  ($t : ident , $bits : expr , $min : expr , $max : expr) => {
     impl $t {
       /// The smallest value of this width.
       fn min_value(self : $t) -> $t {
@@ -417,38 +417,12 @@ macro_rules stamp_signed_int {
         return self.rotate_left(self.bits() - k);
       }
 
-      /// The bytes reversed. The mask is a parameter because 255 does not fit in an
-      /// `i8`; it is accepted there and wraps to -1, which is right by luck.
-      fn swap_bytes(self : $t) -> $t {
-        let eight : $t = 8;
-        let mask : $t = $byte_mask;
-        let mut out : $t = 0;
-        let mut i : $t = 0;
-        loop {
-          if i == self.bits() {
-            break;
-          }
-          let byte = (self >> i) & mask;
-          out = out | (byte << (self.bits() - eight - i));
-          i += eight;
-        }
-        return out;
-      }
-
-      /// The bits reversed.
+      /// The bits reversed. The hardware instruction.
       fn reverse_bits(self : $t) -> $t {
-        let one : $t = 1;
-        let mut out : $t = 0;
-        let mut i : $t = 0;
-        loop {
-          if i == self.bits() {
-            break;
-          }
-          let bit = (self >> i) & one;
-          out = out | (bit << (self.bits() - one - i));
-          i += one;
-        }
-        return out;
+        return unsafe { mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["llvm"]) {
+            %r = llvm.intr.bitreverse(%a) : ($t) -> $t
+            macro.yield %r : $t
+          } };
       }
 
       /// Nothing if it would not fit. The bound is rearranged so the check itself
@@ -639,10 +613,37 @@ macro_rules stamp_signed_int {
   };
 }
 
-stamp_signed_int!(i8 , 8 , -127 - 1 , 127 , -1);
-stamp_signed_int!(i16 , 16 , -32767 - 1 , 32767 , 255);
-stamp_signed_int!(i32 , 32 , -2147483647 - 1 , 2147483647 , 255);
-stamp_signed_int!(i64 , 64 , -9223372036854775807 - 1 , 9223372036854775807 , 255);
+stamp_signed_int!(i8 , 8 , -127 - 1 , 127);
+stamp_signed_int!(i16 , 16 , -32767 - 1 , 32767);
+stamp_signed_int!(i32 , 32 , -2147483647 - 1 , 2147483647);
+stamp_signed_int!(i64 , 64 , -9223372036854775807 - 1 , 9223372036854775807);
+
+/// `swap_bytes` for the signed widths of two bytes or more. `llvm.intr.bswap` needs whole
+/// byte pairs, so `i8` has its own copy below.
+macro_rules stamp_signed_swap_bytes {
+  ($t : ident) => {
+    impl $t {
+      /// The bytes reversed. The hardware instruction.
+      fn swap_bytes(self : $t) -> $t {
+        return unsafe { mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["llvm"]) {
+            %r = llvm.intr.bswap(%a) : ($t) -> $t
+            macro.yield %r : $t
+          } };
+      }
+    }
+  };
+}
+
+stamp_signed_swap_bytes!(i16);
+stamp_signed_swap_bytes!(i32);
+stamp_signed_swap_bytes!(i64);
+
+impl i8 {
+  /// One byte has nothing to reverse.
+  fn swap_bytes(self : i8) -> i8 {
+    return self;
+  }
+}
 
 /// Stamps the integer methods for one unsigned width.
 ///
@@ -950,37 +951,12 @@ macro_rules stamp_unsigned_int {
         return self.rotate_left(self.bits() - k);
       }
 
-      /// The bytes reversed.
-      fn swap_bytes(self : $t) -> $t {
-        let eight : $t = 8;
-        let mask : $t = 255;
-        let mut out : $t = 0;
-        let mut i : $t = 0;
-        loop {
-          if i == self.bits() {
-            break;
-          }
-          let byte = (self >> i) & mask;
-          out = out | (byte << (self.bits() - eight - i));
-          i += eight;
-        }
-        return out;
-      }
-
-      /// The bits reversed.
+      /// The bits reversed. The hardware instruction.
       fn reverse_bits(self : $t) -> $t {
-        let one : $t = 1;
-        let mut out : $t = 0;
-        let mut i : $t = 0;
-        loop {
-          if i == self.bits() {
-            break;
-          }
-          let bit = (self >> i) & one;
-          out = out | (bit << (self.bits() - one - i));
-          i += one;
-        }
-        return out;
+        return unsafe { mlir!( inputs : (%a = self : $mlir), returns : $t, dialects : ["llvm"]) {
+            %r = llvm.intr.bitreverse(%a) : ($mlir) -> $mlir
+            macro.yield %r : $mlir
+          } };
       }
 
       /// Nothing if it would not fit. The bound is rearranged so the check cannot overflow.
@@ -1117,6 +1093,33 @@ stamp_unsigned_int!(u8 , i8 , 8 , 255);
 stamp_unsigned_int!(u16 , i16 , 16 , 65535);
 stamp_unsigned_int!(u32 , i32 , 32 , 4294967295);
 stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
+
+/// `swap_bytes` for the unsigned widths of two bytes or more. `$mlir` is the MLIR type, as
+/// above. `u8` has its own copy below.
+macro_rules stamp_unsigned_swap_bytes {
+  ($t : ident , $mlir : ident) => {
+    impl $t {
+      /// The bytes reversed. The hardware instruction.
+      fn swap_bytes(self : $t) -> $t {
+        return unsafe { mlir!( inputs : (%a = self : $mlir), returns : $t, dialects : ["llvm"]) {
+            %r = llvm.intr.bswap(%a) : ($mlir) -> $mlir
+            macro.yield %r : $mlir
+          } };
+      }
+    }
+  };
+}
+
+stamp_unsigned_swap_bytes!(u16 , i16);
+stamp_unsigned_swap_bytes!(u32 , i32);
+stamp_unsigned_swap_bytes!(u64 , i64);
+
+impl u8 {
+  /// One byte has nothing to reverse.
+  fn swap_bytes(self : u8) -> u8 {
+    return self;
+  }
+}
 
 /// The integer methods for `usize`, written out rather than stamped.
 ///
