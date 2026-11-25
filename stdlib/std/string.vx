@@ -14,6 +14,8 @@ extern {
   pub fn vx_string_new() -> *mut i8;
   /// The Rust core behind `String::from_c_str`.
   pub fn vx_string_from_c_str(ptr : *const i8) -> *mut i8;
+  /// A copy of a NUL-terminated C string, or null when its bytes are not UTF-8.
+  pkg fn vx_string_try_from_c_str(ptr : *const i8) -> *mut i8;
   /// The Rust core behind `String::push_c_str`.
   pub fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
   /// The Rust core behind `String::len`.
