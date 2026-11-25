@@ -57,10 +57,13 @@ fn first_unknown_token<'t, 'a>(tokens: &'t [Token<'a>]) -> Option<&'t Token<'a>>
                     if let Some(t) = first_unknown_token(&tokens[i + 1..open]) {
                         return Some(t);
                     }
-                    assert!(tokens[open..close].iter().all(|t| match t.kind {
-                        TokenType::Unknown(c) => t.length == c.len_utf8(),
-                        _ => true,
-                    }));
+                    assert!(
+                        tokens[open..close].iter().all(|t| match t.kind {
+                            TokenType::Unknown(c) => t.length == c.len_utf8(),
+                            _ => true,
+                        }),
+                        "an unknown token in an mlir! block is longer than one character"
+                    );
                     i = close;
                 }
             }
