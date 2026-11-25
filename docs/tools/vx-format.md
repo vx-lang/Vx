@@ -78,6 +78,7 @@ It prints a unified diff for each file that needs formatting.
 The `---` header names the original file, and the `+++` header names the formatted version.
 Numbered `@@` hunks show removed lines with `-`, added lines with `+`, and three surrounding context lines.
 Unchanged files produce no output.
+If the lexer cannot read a file, vx-format leaves the file unchanged and prints a warning with the file, line, and column to stderr.
 CI uses this mode for Vx files in `tests` and `stdlib`.
 
 | Exit status | Meaning |
