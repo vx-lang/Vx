@@ -1,0 +1,56 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A `+`, `-` or `*` on usize has no value when the result is out of range. But one operation on
+// the same operands has the same value each time, in range or not. So a fact about `a + b`
+// proves a goal about `a + b`.
+//
+// CHECK-NOT: Error
+// CHECK: func.func @main
+
+fn the_result_is_the_sum(a : usize, b : usize) -> usize
+ensures return == a + b {
+  return a + b;
+}
+
+fn sum_is_below(a : usize, b : usize, n : usize) -> usize
+requires a + b < n {
+  return a;
+}
+
+fn passes_its_precondition_on(a : usize, b : usize, n : usize) -> usize
+requires a + b < n {
+  return sum_is_below(a, b, n);
+}
+
+fn tests_the_sum_then_calls(a : usize, b : usize, n : usize) -> usize {
+  if a + b < n {
+    return sum_is_below(a, b, n);
+  }
+  return 0usize;
+}
+
+fn difference_is_below(a : usize, b : usize, n : usize) -> usize
+requires a - b < n {
+  return a;
+}
+
+fn tests_the_difference_then_calls(a : usize, b : usize, n : usize) -> usize {
+  if a - b < n {
+    return difference_is_below(a, b, n);
+  }
+  return 0usize;
+}
+
+fn reads_a_grid(p : *const i32, rows : usize, columns : usize) -> i32
+requires valid(p, rows * columns) {
+  return 0;
+}
+
+fn passes_its_grid_on(p : *const i32, rows : usize, columns : usize) -> i32
+requires valid(p, rows * columns) {
+  return reads_a_grid(p, rows, columns);
+}
+
+fn main() -> i32 {
+  return 0;
+}

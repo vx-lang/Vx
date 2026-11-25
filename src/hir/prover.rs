@@ -197,17 +197,16 @@ impl SmtProver {
     }
 
     /// `exact`, an integer `+`, `-` or `*`, with the result the machine gives. A `usize` operation
-    /// stops the program on overflow, so then it has no value. Like a remainder by zero, it
-    /// becomes a name with no facts. Each other integer type wraps.
+    /// stops the program on overflow, so then it has no value. It becomes a name with no facts.
+    /// The name is the text of the operation, so that one operation on the same operands has
+    /// one value in a query: the fact `a + b < n` proves the goal `a + b < n`. Each other
+    /// integer type wraps.
     fn machine_result(&mut self, exact: String, ty: Option<ElementType>) -> Result<String, String> {
         if ty != Some(ElementType::USize) {
             return wrap(exact, ty);
         }
         let (lo, hi) = int_range(&ElementType::USize).expect("the range of usize");
-        let undefined = self.name(
-            &format!("overflow.undefined.{}", self.declarations.len()),
-            Some(Sort::Int),
-        )?;
+        let undefined = self.name(&format!("overflow.undefined.{exact}"), Some(Sort::Int))?;
         Ok(format!("(ite (<= {lo} {exact} {hi}) {exact} {undefined})"))
     }
 
