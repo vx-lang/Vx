@@ -437,22 +437,22 @@ macro_rules stamp_signed_int {
 
       /// The value in big-endian order. Vx cannot ask for the target's byte order yet,
       /// so this assumes a little-endian target and swaps the bytes.
-      fn to_be(self : $t) -> $t {
+      pub fn to_be(self : $t) -> $t {
         return self.swap_bytes();
       }
 
       /// The value in little-endian order. On a little-endian target nothing changes.
-      fn to_le(self : $t) -> $t {
+      pub fn to_le(self : $t) -> $t {
         return self;
       }
 
       /// Reads a big-endian value. On a little-endian target the bytes are swapped.
-      fn from_be(self : $t) -> $t {
+      pub fn from_be(self : $t) -> $t {
         return self.swap_bytes();
       }
 
       /// Reads a little-endian value. On a little-endian target nothing changes.
-      fn from_le(self : $t) -> $t {
+      pub fn from_le(self : $t) -> $t {
         return self;
       }
 
@@ -990,22 +990,22 @@ macro_rules stamp_unsigned_int {
 
       /// The value in big-endian order. Vx cannot ask for the target's byte order yet,
       /// so this assumes a little-endian target and swaps the bytes.
-      fn to_be(self : $t) -> $t {
+      pub fn to_be(self : $t) -> $t {
         return self.swap_bytes();
       }
 
       /// The value in little-endian order. On a little-endian target nothing changes.
-      fn to_le(self : $t) -> $t {
+      pub fn to_le(self : $t) -> $t {
         return self;
       }
 
       /// Reads a big-endian value. On a little-endian target the bytes are swapped.
-      fn from_be(self : $t) -> $t {
+      pub fn from_be(self : $t) -> $t {
         return self.swap_bytes();
       }
 
       /// Reads a little-endian value. On a little-endian target nothing changes.
-      fn from_le(self : $t) -> $t {
+      pub fn from_le(self : $t) -> $t {
         return self;
       }
 
@@ -1174,12 +1174,12 @@ stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 /// change nothing.
 impl usize {
   /// The value in little-endian order. On a little-endian target nothing changes.
-  fn to_le(self : usize) -> usize {
+  pub fn to_le(self : usize) -> usize {
     return self;
   }
 
   /// Reads a little-endian value. On a little-endian target nothing changes.
-  fn from_le(self : usize) -> usize {
+  pub fn from_le(self : usize) -> usize {
     return self;
   }
 
