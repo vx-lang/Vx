@@ -1,0 +1,36 @@
+//===- tensor_extent_and_len_with_bad_calls.vx - Vx Compiler --------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `t.extent(i)` takes one number literal that is less than the tensor's rank.
+// `t.len()` takes no arguments and needs a tensor of rank 1 or more.
+// Each wrong call reports error E3025 at the method name.
+
+fn index_out_of_range() -> i32 {
+  let t = Tensor<f32, [4]>::fill(0.0f32);
+  return t.extent(3);
+}
+
+fn index_not_a_literal() -> i32 {
+  let t = Tensor<f32, [4]>::fill(0.0f32);
+  let n = 0;
+  return t.extent(n);
+}
+
+fn len_with_an_argument() -> i32 {
+  let t = Tensor<f32, [4]>::fill(0.0f32);
+  return t.len(0);
+}
+
+fn len_of_a_rank_0_tensor() -> i32 {
+  let t = Tensor<f32, []>::fill(0.0f32);
+  return t.len();
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E3025] at {{.*}}tensor_extent_and_len_with_bad_calls.vx:10:12: `extent(3)` is out of range: the tensor has rank 1
+// CHECK: Error[E3025] at {{.*}}tensor_extent_and_len_with_bad_calls.vx:16:12: `extent(i)` takes one literal dimension index
+// CHECK: Error[E3025] at {{.*}}tensor_extent_and_len_with_bad_calls.vx:21:12: `len()` takes no arguments; `extent(i)` reads one axis
+// CHECK: Error[E3025] at {{.*}}tensor_extent_and_len_with_bad_calls.vx:26:12: `len()` on a rank-0 tensor: a scalar has no outermost axis to count
