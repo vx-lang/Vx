@@ -1448,6 +1448,15 @@ pub extern "C" fn vx_test_select_pause() {
     test_pause(&PAUSE, "VX_TEST_SELECT_PAUSE_MS");
 }
 
+/// For a test: VX_TEST_ACQUIRE_PAUSE_MS holds an `acquire` of a `Semaphore` after each of its
+/// waits, so that its time limit can pass between its wake and its next step. The thread sleeps,
+/// so on the shared runtime the worker stops too.
+#[no_mangle]
+pub extern "C" fn vx_test_acquire_pause() {
+    static PAUSE: OnceLock<Option<Duration>> = OnceLock::new();
+    test_pause(&PAUSE, "VX_TEST_ACQUIRE_PAUSE_MS");
+}
+
 /// Sleeps for the milliseconds in the environment variable `name`, when it is set. `pause` keeps
 /// the value of the variable after the first call.
 fn test_pause(pause: &OnceLock<Option<Duration>>, name: &str) {

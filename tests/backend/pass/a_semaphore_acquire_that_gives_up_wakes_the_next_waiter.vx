@@ -1,0 +1,78 @@
+//===- a_semaphore_acquire_that_gives_up_wakes_the_next_waiter.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The drop of a `Permit` wakes one waiter. That waiter can give up before it takes the permit.
+// Then it must wake the next waiter, or the permit stays free while a task waits for it.
+//
+// The main code holds the only permit. The first task waits for it in a call of `within` with a
+// limit of 0.4 seconds. The second task starts to wait 0.1 seconds later, with no limit. The main
+// code drops the `Permit` 0.1 seconds after that, and the drop wakes the first task.
+// VX_TEST_ACQUIRE_PAUSE_MS holds a woken `acquire` for 0.4 seconds, so the limit of the first
+// task passes before it looks for the permit. Its `acquire` gives `Cancelled`, and it wakes the
+// second task, which takes the permit. Without that wake, the second task waits forever, and
+// the runtime stops the program with a deadlock report.
+//
+// Only a waiter that sleeps as a thread can lose this wake. On the shared runtime, the timer
+// wakes each task that waits for the permit when the limit of one of them passes. On a slow
+// machine, the first task can reach its limit before the drop. The test then passes without
+// this wake.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 VX_TEST_ACQUIRE_PAUSE_MS=400 vxc %s 2>&1 | FileCheck %s --implicit-check-not=deadlock --implicit-check-not=Error
+// RUN: env VX_TEST_ACQUIRE_PAUSE_MS=400 vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=deadlock --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=2 VX_TEST_ACQUIRE_PAUSE_MS=400 vxc %s 2>&1 | FileCheck %s --implicit-check-not=deadlock --implicit-check-not=Error
+// CHECK: {{^}}the second task got the permit{{$}}
+// CHECK-NEXT: {{^}}the first task gave up: true{{$}}
+// CHECK-NEXT: {{^}}free permits at the end: 1{{$}}
+
+import core::mem;
+import core::sync::atomic;
+import core::time;
+import std::sync::semaphore;
+import std::sync::wait;
+import std::time;
+
+// Waits for the permit for at most 0.4 seconds. Gives true when `acquire` gave no `Permit`.
+fn wait_with_a_limit(s : &Semaphore) -> bool {
+  return within(Duration::from_millis(400), || -> bool {
+    let got = s.acquire();
+    return got.is_err();
+  });
+}
+
+fn main() -> i32 {
+  let s = Semaphore::new(1);
+  let held = s.acquire().unwrap();
+  let gave_up = AtomicI64::new(0);
+  // 1 when the first task starts to wait, and 2 when the second task does.
+  let step = AtomicI64::new(0);
+  tasks {
+    spawn {
+      step.store(1, AtomicOrdering::SeqCst);
+      if wait_with_a_limit(&s) {
+        gave_up.store(1, AtomicOrdering::SeqCst);
+      }
+    };
+    spawn {
+      while step.load(AtomicOrdering::SeqCst) != 1 {
+        sleep(Duration::from_millis(1));
+      }
+      sleep(Duration::from_millis(100));
+      step.store(2, AtomicOrdering::SeqCst);
+      let permit = s.acquire().unwrap();
+      println!("the second task got the permit");
+      drop(permit);
+    };
+    while step.load(AtomicOrdering::SeqCst) != 2 {
+      sleep(Duration::from_millis(1));
+    }
+    sleep(Duration::from_millis(100));
+    drop(held);
+  };
+  println!("the first task gave up: {}", gave_up.load(AtomicOrdering::SeqCst) == 1);
+  println!("free permits at the end: {}", s.available_permits());
+  return 0;
+}

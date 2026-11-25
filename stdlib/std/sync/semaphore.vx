@@ -10,12 +10,17 @@
 //
 // The word `permits` holds the free permits. An `acquire` takes one with a compare-exchange, and
 // sleeps on `permits` while it holds 0 (`std::sync::wait`). The drop of a `Permit` adds 1, and
-// wakes the sleepers. All accesses are `SeqCst`, as in the `Mutex`: with release and acquire, a
+// wakes one sleeper. All accesses are `SeqCst`, as in the `Mutex`: with release and acquire, a
 // drop could miss a sleeper while the sleeper misses the new permit, and the wake would be lost.
 //
-// The tasks do not get the permits in the order of their `acquire` calls. A drop wakes all the
-// sleepers, and they race for the permit. So when many tasks compete, one waiter can wait without
-// limit: a task that drops a permit and takes it again at once can win each time.
+// One drop wakes one sleeper, so each wake must reach a task that takes the permit. An `acquire`
+// that wakes and then gives up, at its time limit or at a cancel, does not take it. So it wakes
+// the next sleeper when a permit is free (`wake_a_sleeper`).
+//
+// The tasks do not get the permits in the order of their `acquire` calls. A drop wakes the
+// sleeper that waits the longest, but another `acquire` can take the permit before that sleeper
+// runs. So when many tasks compete, one waiter can wait without limit: a task that drops a permit
+// and takes it again at once can win each time.
 //
 // A `select` can wait for a free permit. It adds 1 to `watchers` and watches `permits`. The drop
 // of a `Permit` then wakes it, as a `send` wakes a `select` on a channel.
@@ -29,6 +34,11 @@ import core::time;
 import std::sync::select;
 import std::sync::wait;
 import std::time;
+
+extern {
+  /// For a test: sleep for `VX_TEST_ACQUIRE_PAUSE_MS`, when it is set.
+  pub fn vx_test_acquire_pause() -> void;
+}
 
 /// Why an `acquire` gave no `Permit`.
 enum AcquireError {
@@ -109,11 +119,22 @@ impl Semaphore {
         self.sleepers.fetch_add(1, AtomicOrdering::SeqCst);
         waiting_for_acquire(at, self.made);
         wait_while_until(&self.permits, 0, deadline, true);
+        unsafe { vx_test_acquire_pause(); }
         self.sleepers.fetch_sub(1, AtomicOrdering::SeqCst);
         now = self.permits.load(AtomicOrdering::SeqCst);
       }
     }
+    // The drop of a `Permit` may have woken this `acquire`, and no other sleeper.
+    self.wake_a_sleeper();
     return Result<Permit, AcquireError>::Err(why);
+  }
+
+  // Wakes one sleeper when a permit is free. A caller that reads no free permit wakes no one:
+  // the `Permit` that holds the permit wakes a sleeper at its drop.
+  fn wake_a_sleeper(self : &Semaphore) -> void {
+    if self.permits.load(AtomicOrdering::SeqCst) > 0 && self.sleepers.load(AtomicOrdering::SeqCst) > 0 {
+      wake_one(&self.permits);
+    }
   }
 
   /// A permit, if one is free now. It does not wait.
@@ -144,7 +165,7 @@ impl Drop for Permit {
   fn drop(self : &mut Permit) -> void {
     self.semaphore.permits.fetch_add(1, AtomicOrdering::SeqCst);
     if self.semaphore.sleepers.load(AtomicOrdering::SeqCst) > 0 {
-      wake_all(&self.semaphore.permits);
+      wake_one(&self.semaphore.permits);
     }
     if self.semaphore.watchers.load(AtomicOrdering::SeqCst) > 0 {
       wake_watchers(&self.semaphore.permits);

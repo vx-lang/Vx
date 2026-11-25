@@ -27,11 +27,14 @@ the atomic orders that vxc chose.
 Stubs, in `harness.c`:
 
 - A `spawn` is a `pthread_create`, and the end of a `tasks` block joins each thread.
-- `wait_while` and `wake_all` work as the Rust runtime does: a lock and a count of wakes. A wait
-  sleeps until a wake. With `--check-liveness`, GenMC reports a thread that sleeps forever, so a
-  lost wake is an error.
+- `wait_while`, `wake_all` and `wake_one` work as the Rust runtime does: a lock and a list of the
+  threads that sleep. A wait sleeps until a wake takes it off the list. `wake_all` takes each
+  thread, and `wake_one` takes the thread that waits the longest on the word. With
+  `--check-liveness`, GenMC reports a thread that sleeps forever, so a lost wake is an error.
 - No block is cancelled, and the clock does not move. So the paths for a cancel and a deadline
-  are not checked.
+  are not checked. An `acquire` that gives up must wake the next waiter. The model check in
+  `tests/integration_test/library_model_check.rs` and the test
+  `a_semaphore_acquire_that_gives_up_wakes_the_next_waiter.vx` check that.
 - `malloc`, `free` and `llvm.memset` go to the versions of GenMC.
 
 ## Changes to the IR before GenMC reads it
@@ -48,7 +51,7 @@ GenMC cannot read IR that loads or stores a whole struct, so the script optimize
 | Client | Executions at each level | Time |
 | --- | --- | --- |
 | `mutex_three_tasks.vx` | 33678 | 21 s |
-| `semaphore_three_tasks.vx` | 15690, and 538 blocked | 15 s |
+| `semaphore_three_tasks.vx` | 14160, and 490 blocked | 15 s |
 | `channel_keeps_the_order_of_one_sender.vx` | 15537 | 10 s |
 | `arc_two_holders.vx` | 4 | < 1 s |
 
@@ -67,6 +70,9 @@ Each of these changes to a copy of the library made the check fail:
   Without the flag the check passes.
 - The drop of a `Permit` gives the permit back with `Relaxed`: a data race on the value.
 - The drop of a `Permit` wakes only when two threads sleep: a lost wake.
+- The drop of a `Permit` wakes no thread: a lost wake.
+- The drop of a `Permit` wakes one thread before it gives the permit back: a lost wake.
+- `acquire` does not add itself to `sleepers` before it sleeps: a lost wake.
 - The drop of an `Arc` takes 1 from the count with `Relaxed`: an access to freed memory.
 - `send` marks its slot full with a `Relaxed` store: a data race on the slot.
 
