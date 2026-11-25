@@ -489,8 +489,11 @@ pub type CheckedModules = (
 /// them to the AST code generator. The entry module gets every generic instance, in the order
 /// the sequential driver makes them, so the two compiles emit the same bytes.
 ///
-/// `Ok(None)` when a check gave a name from a counter, such as `Closure_1`. Each check starts
-/// its counters again, so the names are not the ones the sequential driver gives.
+/// `Ok(None)` when the program has a closure. The checker names a closure with a counter, as in
+/// `Closure_1`, and the name is in the MLIR. Each check starts the counter again, so the names
+/// are not the ones the sequential driver gives. The other names from counters, such as those
+/// of `?` and `vec!`, are local to one function, and the sequential driver also gives them again
+/// in each function.
 pub fn check_modules_for_ast_codegen(
     modules: Vec<VxModule>,
     sched: Schedule,
@@ -510,7 +513,7 @@ pub fn check_modules_for_ast_codegen(
         auto_schedule_levels,
         Reported::OnlyEntry(entry.clone()),
     )?;
-    if checks.iter().any(|c| c.named_by_counter) {
+    if checks.iter().any(|c| c.made_closure) {
         return Ok(None);
     }
     report_warnings(&warnings);
@@ -545,12 +548,6 @@ pub fn check_modules_for_ast_codegen(
         .filter(|f| seen.insert(f.name.clone()))
         .cloned()
         .collect();
-    // Only a closure makes a struct, and a program with a closure returned above.
-    assert!(
-        checks.iter().all(|c| c.generated_structs.is_empty()),
-        "a check made a struct, but only a closure makes one, and a closure goes to the \
-         sequential driver"
-    );
     let comptime: std::collections::HashSet<&str> = checks
         .iter()
         .filter(|c| c.module_idx == entry_idx && c.item == CheckedItem::Function && c.was_comptime)
@@ -715,8 +712,8 @@ struct FunctionCheck {
     item: CheckedItem,
     /// The function was a comptime function before its check folded it.
     was_comptime: bool,
-    /// The check named something with a counter of its checker, such as a closure.
-    named_by_counter: bool,
+    /// The check made a closure, which the checker names with a counter.
+    made_closure: bool,
 }
 
 /// The kind of item a check read. The sequential driver checks the kinds in a fixed order,
@@ -1436,7 +1433,6 @@ fn check_one_function(
     // else the edge is `None` and they do not (Vx#353).
     checker.seam.lowering_edge = lowering_edge;
     checker.check_function(func);
-    let named_by_counter = checker.named_by_counter();
 
     let errors = checker.errors;
     // A comptime lambda's generated body is not emitted: every call to it folded, so
@@ -1452,6 +1448,8 @@ fn check_one_function(
         })
         .collect();
     let gen_structs = checker.mono.generated_structs;
+    // Only a closure makes a struct.
+    let made_closure = !gen_structs.is_empty();
     let capacity_summaries = std::mem::take(&mut checker.traffic.capacity_summaries);
 
     // Lower this function's type references to the flat GID stream (Phase 3).
@@ -1467,7 +1465,7 @@ fn check_one_function(
         capacity_summaries,
         item,
         was_comptime,
-        named_by_counter,
+        made_closure,
     }
 }
 
@@ -2339,7 +2337,7 @@ mod gid_stream_tests {
                 capacity_summaries: Vec::new(),
                 item: CheckedItem::Function,
                 was_comptime: false,
-                named_by_counter: false,
+                made_closure: false,
             }];
             let (_s, arena, offsets, slow, gen) = deduplication_phase(&results, &session);
             let mut streams = extract_type_streams(&mut results);

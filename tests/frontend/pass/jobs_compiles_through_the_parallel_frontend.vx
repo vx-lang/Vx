@@ -8,7 +8,7 @@
 // `-j N` compiles through the parallel frontend and then the ordinary backend. The note on
 // stderr says which frontend ran; the function in the MLIR says the backend got its output.
 //
-// RUN: vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s # flat-codegen
 
 fn double(x: i32) -> i32 {
   return x + x;
@@ -19,5 +19,5 @@ fn main() -> i32 {
 }
 
 // CHECK: [parallel-frontend] emitted module with -j 4
-// CHECK-DAG: func.func @double
-// CHECK-DAG: func.func @main
+// CHECK: func.func @double
+// CHECK: func.func @main

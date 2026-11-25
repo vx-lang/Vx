@@ -251,12 +251,6 @@ const TASK_PREFIX: &str = "task#";
 const COPY_SUFFIX: &str = "/copy";
 
 impl TypeChecker<'_> {
-    /// Whether this checker gave a name from one of its counters, such as `Closure_1`, a task
-    /// or a `tasks` block. Such a name depends on what the checker checked before.
-    pub(crate) fn named_by_counter(&self) -> bool {
-        self.next_id != 1 || self.tasks.next_id != 0 || self.tasks.next_block != 0
-    }
-
     /// Sentences to add to a borrow error on `var` when the borrow `b` belongs to a task. They
     /// name the `spawn` of the task, the line where it uses `var`, and the join that ends it.
     fn held_by_task_note(&self, b: &crate::hir::env::BorrowRecord, var: &str) -> String {

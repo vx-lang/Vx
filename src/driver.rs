@@ -614,9 +614,9 @@ impl CompilerDriver {
                 .map_err(failed)?;
                 let Some(checked) = checked else {
                     eprintln!(
-                        "[parallel-frontend] the program has a closure, a task or a `vec!` value. \
-                         The names the checks give them depend on the order of the checks, so the \
-                         sequential driver compiles the program"
+                        "[parallel-frontend] the program has a closure. The name of a closure \
+                         depends on the order of the checks, so the sequential driver compiles \
+                         the program"
                     );
                     return Ok(None);
                 };

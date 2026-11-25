@@ -32,6 +32,6 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: [parallel-frontend] the program has a closure, a task or a `vec!` value. The names
+// CHECK: [parallel-frontend] the program has a closure. The name of a closure
 // CHECK: {{^}}11{{$}}
 // CHECK-NEXT: {{^}}6{{$}}
