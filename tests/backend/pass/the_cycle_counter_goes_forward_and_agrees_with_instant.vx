@@ -1,0 +1,58 @@
+//===- the_cycle_counter_goes_forward_and_agrees_with_instant.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `cycles` never goes back, and it moves during a sleep. Two readings 10 ms apart, given to
+// `cycles_to_ns`, agree with `Instant` to within 1%. A busy test machine can stop the program
+// between two reads, so the check gets three tries. Zero ticks are zero nanoseconds.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the counter never went back: true{{$}}
+// CHECK-NEXT: {{^}}the counter moved during a sleep: true{{$}}
+// CHECK-NEXT: {{^}}10 ms of ticks agree with Instant to 1%: true{{$}}
+// CHECK-NEXT: {{^}}0 ticks are 0 ns: true{{$}}
+
+import core::time;
+import std::time;
+
+// Whether `cycles_to_ns` of a 10 ms sleep is within 1% of what `Instant` measured.
+fn agrees_with_instant() -> bool {
+  let c0 = cycles();
+  let i0 = Instant::now();
+  sleep(Duration::from_millis(10));
+  let c1 = cycles();
+  let i1 = Instant::now();
+  let by_cycles = cycles_to_ns(c1 - c0);
+  let by_instant = (i1 - i0).as_nanos_i64();
+  let mut diff = by_cycles - by_instant;
+  if diff < 0 {
+    diff = 0 - diff;
+  }
+  return diff * 100 <= by_instant;
+}
+
+fn main() -> i32 {
+  let mut forward = true;
+  let mut last = cycles();
+  let mut i = 0;
+  while i < 1000 {
+    let now = cycles();
+    if now < last {
+      forward = false;
+    }
+    last = now;
+    i = i + 1;
+  }
+  println!("the counter never went back: {}", forward);
+  let before = cycles();
+  sleep(Duration::from_millis(1));
+  println!("the counter moved during a sleep: {}", cycles() > before);
+  let agrees = agrees_with_instant() || agrees_with_instant() || agrees_with_instant();
+  println!("10 ms of ticks agree with Instant to 1%: {}", agrees);
+  println!("0 ticks are 0 ns: {}", cycles_to_ns(0) == 0);
+  return 0;
+}

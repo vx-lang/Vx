@@ -127,6 +127,85 @@ pub extern "C" fn vx_unix_timestamp() -> f64 {
         .unwrap_or(Duration::ZERO)
         .as_secs_f64()
 }
+
+/// The CPU's counter that ticks at a constant rate: the time stamp counter on x86-64. The rate
+/// is constant only on a CPU with an invariant TSC.
+#[cfg(target_arch = "x86_64")]
+#[no_mangle]
+pub extern "C" fn vx_cycles() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// The CPU's counter that ticks at a constant rate: the virtual count of the generic timer on
+/// aarch64. `llvm.readcyclecounter` reads `pmccntr_el0` there, which Linux does not let user
+/// code read. Without the `isb`, the CPU can read the counter early, so a later reading can be
+/// smaller than an earlier one. Linux puts the same `isb` before its own read.
+#[cfg(target_arch = "aarch64")]
+#[no_mangle]
+pub extern "C" fn vx_cycles() -> u64 {
+    let count: u64;
+    unsafe { std::arch::asm!("isb", "mrs {}, cntvct_el0", out(reg) count, options(nostack)) };
+    count
+}
+
+/// How many ticks of `vx_cycles` there are in one second. On x86-64 the first call measures it
+/// against `vx_clock_ns` for 10 ms. When the thread moved to a core whose counter is behind, the
+/// counter went back. Then it measures again, at most three times.
+#[cfg(target_arch = "x86_64")]
+fn cycles_per_second() -> u64 {
+    static RATE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *RATE.get_or_init(|| {
+        for _ in 0..3 {
+            let (c0, t0) = cycles_and_clock_ns();
+            let (mut c1, mut t1) = (c0, t0);
+            while t1 - t0 < 10_000_000 {
+                (c1, t1) = cycles_and_clock_ns();
+            }
+            if c1 > c0 {
+                return ((c1 - c0) as u128 * 1_000_000_000 / (t1 - t0) as u128) as u64;
+            }
+        }
+        panic!("vx_cycles: the time stamp counter did not go forward in three tries of 10 ms");
+    })
+}
+
+/// A reading of `vx_cycles` and of `vx_clock_ns` at the same moment. The counter is read before
+/// and after the clock, and the middle is taken. Of three tries, the one with the shortest gap
+/// wins, so a thread switch between the reads does not change the rate much.
+#[cfg(target_arch = "x86_64")]
+fn cycles_and_clock_ns() -> (u64, i64) {
+    let mut best = (u64::MAX, 0, 0);
+    for _ in 0..3 {
+        let before = vx_cycles();
+        let ns = crate::ffi::wait::vx_clock_ns();
+        // A counter that went back gives a very large gap, so this try loses.
+        let gap = vx_cycles().wrapping_sub(before);
+        if gap < best.0 {
+            best = (gap, before.wrapping_add(gap / 2), ns);
+        }
+    }
+    (best.1, best.2)
+}
+
+/// How many ticks of `vx_cycles` there are in one second, as `cntfrq_el0` gives it.
+#[cfg(target_arch = "aarch64")]
+fn cycles_per_second() -> u64 {
+    let rate: u64;
+    unsafe { std::arch::asm!("mrs {}, cntfrq_el0", out(reg) rate, options(nomem, nostack)) };
+    assert!(
+        rate > 0,
+        "vx_cycles: cntfrq_el0 is 0, so the counter rate is not known"
+    );
+    rate
+}
+
+/// `cycles` ticks of `vx_cycles` in nanoseconds, or -1 when the answer does not fit in an `i64`.
+#[no_mangle]
+pub extern "C" fn vx_cycles_to_ns(cycles: u64) -> i64 {
+    let ns = cycles as u128 * 1_000_000_000 / cycles_per_second() as u128;
+    i64::try_from(ns).unwrap_or(-1)
+}
+
 #[no_mangle]
 pub extern "C" fn trace_start() {
     println!("[TRACE START] Event ID: 100");
@@ -191,5 +270,62 @@ pub extern "C-unwind" fn vx_catch_unwind(f: extern "C-unwind" fn() -> i32) -> i3
             println!("Caught panic!");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod cycle_counter_tests {
+    use super::{cycles_per_second, vx_cycles, vx_cycles_to_ns};
+    use crate::ffi::wait::vx_clock_ns;
+
+    #[test]
+    fn the_cycle_counter_goes_forward() {
+        let mut last = vx_cycles();
+        for _ in 0..1000 {
+            let now = vx_cycles();
+            assert!(now >= last, "the counter went back from {last} to {now}");
+            last = now;
+        }
+        let start = vx_cycles();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        assert!(vx_cycles() > start, "the counter did not move in 1 ms");
+    }
+
+    #[test]
+    fn one_second_of_ticks_is_one_billion_nanoseconds() {
+        assert_eq!(vx_cycles_to_ns(0), 0);
+        assert_eq!(vx_cycles_to_ns(cycles_per_second()), 1_000_000_000);
+        assert_eq!(vx_cycles_to_ns(3 * cycles_per_second()), 3_000_000_000);
+    }
+
+    // Only a counter slower than about 2 GHz has a `u64` of ticks that is too many nanoseconds
+    // for an `i64`. On a faster counter there is nothing to check.
+    #[test]
+    fn ticks_that_do_not_fit_in_an_i64_of_nanoseconds_give_minus_one() {
+        let rate = cycles_per_second() as u128;
+        let too_many = ((i64::MAX as u128 + 1) * rate).div_ceil(1_000_000_000);
+        if let Ok(too_many) = u64::try_from(too_many) {
+            assert_eq!(vx_cycles_to_ns(too_many), -1);
+            assert!(vx_cycles_to_ns(too_many - 1) > i64::MAX - 1_000_000_000);
+        }
+    }
+
+    // Two readings 10 ms apart, in nanoseconds, agree with `vx_clock_ns` to within 1%. A test
+    // machine can stop the thread between the two reads of one end, so it gets three tries.
+    #[test]
+    fn ticks_in_nanoseconds_agree_with_the_clock() {
+        let mut errors = Vec::new();
+        for _ in 0..3 {
+            let (c0, t0) = (vx_cycles(), vx_clock_ns());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let (c1, t1) = (vx_cycles(), vx_clock_ns());
+            let by_cycles = vx_cycles_to_ns(c1 - c0);
+            let by_clock = t1 - t0;
+            if (by_cycles - by_clock).abs() * 100 <= by_clock {
+                return;
+            }
+            errors.push((by_cycles, by_clock));
+        }
+        panic!("(ns by the counter, ns by the clock) did not agree to 1%: {errors:?}");
     }
 }
