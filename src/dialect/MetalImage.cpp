@@ -1381,16 +1381,18 @@ bool Printer::atomicAt(Operation *o, Value ptr, Type t, Address &out) {
 
 // A Relaxed read is an Acquire read in Vx (docs/lang/semantics.md, section
 // 2.5). Metal atomics take only `memory_order_relaxed`, so a fence after the
-// read gives the Acquire.
+// read gives the Acquire. Metal names `memory_order_acquire` from version 4.1
+// only, so the fence takes `memory_order_seq_cst`, which every Metal with
+// fences has and which is at least as strong as an acquire fence.
 void Printer::acquireFence(const Address &a) {
   if (weakRelaxed)
     return;
   if (a.space == "threadgroup")
     line() << "atomic_thread_fence(mem_flags::mem_threadgroup, "
-              "memory_order_acquire, thread_scope_threadgroup);\n";
+              "memory_order_seq_cst, thread_scope_threadgroup);\n";
   else
     line() << "atomic_thread_fence(mem_flags::mem_device, "
-              "memory_order_acquire, thread_scope_device);\n";
+              "memory_order_seq_cst, thread_scope_device);\n";
 }
 
 bool Printer::atomicOp(Operation *o) {
