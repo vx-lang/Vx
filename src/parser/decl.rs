@@ -1972,27 +1972,11 @@ impl<'a> Parser<'a> {
             } else if self.peek().kind == TokenType::Unknown('"') {
                 return Err(self.error(super::UNCLOSED_STRING));
             } else if self.peek().kind == TokenType::Identifier("use") {
-                // A Rust programmer writes `use core::option;` first. Vx has `import`.
-                let mut path = String::new();
-                let mut offset = 1;
-                while let TokenType::Identifier(name) = &self.peek_n(offset).kind {
-                    path.push_str(name);
-                    let continues = self.peek_n(offset + 1).kind == TokenType::DoubleColon
-                        && matches!(self.peek_n(offset + 2).kind, TokenType::Identifier(_));
-                    if !continues {
-                        break;
-                    }
-                    path.push_str("::");
-                    offset += 2;
-                }
-                let example = if path.is_empty() {
-                    "`import core::option;`".to_string()
-                } else {
-                    format!("`import {path};`")
-                };
-                return Err(self.error(&format!(
-                    "Vx has no `use`: write {example} to import a module"
-                )));
+                // A Rust programmer writes `use core::option::Option;` first. Vx has `import`,
+                // and it takes a module path, so the message does not repeat the user's path.
+                return Err(self.error(
+                    "Vx has no `use`: write `import` with a module path, as in `import core::option;`",
+                ));
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
