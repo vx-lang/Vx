@@ -467,6 +467,12 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_named_type(&mut self) -> ParseResult<'a, Type> {
+        if self.check(&TokenType::Impl) {
+            return Err(self.error(
+                "Vx has no `impl Trait` type yet: write a generic parameter instead, \
+                 as in `fn show<T : Get>(g : &T)`",
+            ));
+        }
         let ident = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),
