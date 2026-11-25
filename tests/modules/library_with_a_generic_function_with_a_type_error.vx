@@ -13,7 +13,7 @@ struct Point {
 }
 
 // `Point` has no field `y`.
-fn first<T>(v : T) -> i64 {
+pub fn first<T>(v : T) -> i64 {
   let p = Point {
     x : 1i64
   };

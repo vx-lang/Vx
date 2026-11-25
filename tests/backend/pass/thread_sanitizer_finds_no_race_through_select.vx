@@ -38,7 +38,7 @@ fn read_and_free(n : Note) -> i64 {
   let p = n.number;
   let v = unsafe { p[0] };
   let bytes : *mut i8 = p;
-  dealloc(bytes, 8);
+  unsafe { dealloc(bytes, 8) };
   return v;
 }
 
