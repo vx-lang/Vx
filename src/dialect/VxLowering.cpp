@@ -4171,18 +4171,20 @@ static void expandLaneMatmulOnHost(OpBuilder &b, vx::LaneMatmulOp op) {
 /// `l`, `l + 32` and so on, in row order. The subgroup barrier after the op
 /// makes the elements visible to the other lanes.
 static void expandLaneMatmulOnDevice(OpBuilder &b, vx::LaneMatmulOp op) {
-  assert(op.getSubgroup() &&
-         "the checker allows a lane matmul only in the code "
-         "of a subgroup");
   Location loc = op.getLoc();
   Value lanes = b.create<arith::ConstantIndexOp>(loc, 32);
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
-  Value lane = b.create<arith::RemUIOp>(loc, tid, lanes);
+  Value lb = b.create<arith::RemUIOp>(loc, tid, lanes);
+  Value step = lanes;
+  if (!op.getSubgroup()) {
+    lb = tid;
+    step = b.create<gpu::BlockDimOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  }
   Value cols = b.create<memref::DimOp>(loc, op.getAcc(), 1);
   Value all = b.create<arith::MulIOp>(
       loc, b.create<memref::DimOp>(loc, op.getAcc(), 0), cols);
-  b.create<scf::ForOp>(loc, lane, all, lanes, ValueRange{},
+  b.create<scf::ForOp>(loc, lb, all, step, ValueRange{},
                        [&](OpBuilder &nb, Location l, Value e, ValueRange) {
                          Value i = nb.create<arith::DivUIOp>(l, e, cols);
                          Value j = nb.create<arith::RemUIOp>(l, e, cols);
@@ -4721,7 +4723,7 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
         ctx, SmallVector<Type>(regs.size(), f32));
     std::string constraints;
     for (size_t r = 0; r < regs.size(); ++r)
-      constraints += (r ? ",+f" : "+f");
+      constraints += (r ? ",=f" : "=f");
     Value packed = b.create<LLVM::InlineAsmOp>(
         loc, type, regs, "", constraints, /*has_side_effects=*/true,
         /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
@@ -4757,7 +4759,7 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
       std::string text = "wgmma.mma_async.sync.aligned." + mma.kind + " {" +
                          regList + "}, $" + std::to_string(regsPerTile) +
                          ", $" + std::to_string(regsPerTile + 1) + ", " +
-                         scaleD + ", 1, 1, 0, 0;";
+                         scaleD + ", 1, 1;";
       auto type = LLVM::LLVMStructType::getLiteral(
           ctx, SmallVector<Type>(regsPerTile, f32));
       Value packed = b.create<LLVM::InlineAsmOp>(
@@ -4809,8 +4811,11 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
             OpBuilder::atBlockTerminator(&ifInBounds.getThenRegion().front());
         Value old =
             ib.create<memref::LoadOp>(loc, op.getAcc(), ValueRange{row, col});
-        ib.create<memref::StoreOp>(loc, ib.create<arith::AddFOp>(loc, old, sum),
-                                   op.getAcc(), ValueRange{row, col});
+        Value toStore = sum;
+        if (op.getAccumulate()) {
+          toStore = ib.create<arith::AddFOp>(loc, old, sum);
+        }
+        ib.create<memref::StoreOp>(loc, toStore, op.getAcc(), ValueRange{row, col});
       }
     }
   }
@@ -5310,10 +5315,14 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
   };
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value blockDimX =
+      b.create<gpu::BlockDimOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value numWarps = b.create<arith::DivUIOp>(loc, blockDimX, index(32));
   Value lane = b.create<arith::RemUIOp>(loc, tid, index(32));
   Value group = b.create<arith::DivUIOp>(loc, lane, index(4));
   Value quad = b.create<arith::RemUIOp>(loc, lane, index(4));
   Value pair = b.create<arith::MulIOp>(loc, quad, index(2));
+  Value warpId = b.create<arith::DivUIOp>(loc, tid, index(32));
   bool lhsLdmatrix = ldmatrixFits(op.getLhs());
   bool rhsLdmatrix = ldmatrixFits(op.getRhs());
   auto lhsSpace = dyn_cast_or_null<IntegerAttr>(
@@ -5571,13 +5580,17 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                    ValueRange{ij.first, ij.second});
     }
   };
-  if (fragments) {
-    for (int64_t top = 0; top < m; top += 16)
-      for (int64_t left = 0; left < n; left += 8)
-        piece(b, loc, index(top), index(left), (top / 16) * (n / 8) + left / 8);
-    return;
+  Value outerLb = zero;
+  Value outerStep = index(16);
+  if (!op.getSubgroup()) {
+    Value blockDimX =
+        b.create<gpu::BlockDimOp>(loc, b.getIndexType(), gpu::Dimension::x);
+    Value numWarps = b.create<arith::DivUIOp>(loc, blockDimX, index(32));
+    outerLb = b.create<arith::MulIOp>(loc, warpId, index(16));
+    outerStep = b.create<arith::MulIOp>(loc, numWarps, index(16));
   }
-  b.create<scf::ForOp>(loc, zero, index(m), index(16), ValueRange{},
+
+  b.create<scf::ForOp>(loc, outerLb, index(m), outerStep, ValueRange{},
                        [&](OpBuilder &nb, Location l, Value top, ValueRange) {
                          nb.create<scf::ForOp>(l, zero, index(n), index(8),
                                                ValueRange{},
