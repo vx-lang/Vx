@@ -739,6 +739,7 @@ impl CompilerDriver {
             let out = crate::jit::execute_mlir_streams(
                 &mlir_src,
                 self.options.program_args.clone(),
+                None,
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
                 self.options.thread_sanitizer(),
@@ -1824,6 +1825,7 @@ impl CompilerDriver {
                 let out = crate::jit::execute_mlir_streams(
                     &mlir_str,
                     self.options.program_args.clone(),
+                    None,
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
                     self.options.thread_sanitizer(),

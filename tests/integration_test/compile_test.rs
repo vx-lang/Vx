@@ -688,7 +688,8 @@ fn run_expect_lines_on_the_ast_code_generator(path: &Path) -> Result<(), String>
     }
 
     let _watchdog = super::time_limit::Watchdog::new(path.display().to_string());
-    let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
+    let out = execute_mlir(&mlir_str, vec![], super::time_limit::PROGRAM, 0, false)
+        .expect("JIT execution failed");
 
     for expect in expect_lines {
         if !expect_matches(&out, &expect) {
@@ -1507,7 +1508,8 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     }
 
     let _watchdog = super::time_limit::Watchdog::new(path.display().to_string());
-    let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
+    let out = execute_mlir(&mlir_str, vec![], super::time_limit::PROGRAM, 0, false)
+        .expect("JIT execution failed");
 
     for expect in expect_lines {
         if !mlir_str.contains(&expect) && !out.contains(&expect) {

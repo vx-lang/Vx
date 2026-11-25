@@ -62,7 +62,7 @@ fn exit_code(llvm_mlir: &str) -> i32 {
 /// to LLVM IR `!alias.scope`/`!noalias`) then `opt -passes=default<O{opt}>` — so `opt > 0` is where an
 /// optimizer actually *consumes* the alias metadata. Used by the §16.3 `-O0`-vs-`-O2` differential.
 fn exit_code_at_opt(llvm_mlir: &str, opt: u8) -> i32 {
-    match execute_mlir(llvm_mlir, vec![], opt, false) {
+    match execute_mlir(llvm_mlir, vec![], super::time_limit::PROGRAM, opt, false) {
         Ok(_) => 0,
         Err(e) => e
             .rsplit(':')
@@ -89,10 +89,22 @@ fn normalize(s: &str) -> String {
     out
 }
 
+/// `execute_mlir` kills a program that runs longer than its time limit, and returns an error.
+#[test]
+fn a_program_that_never_ends_is_killed_at_its_time_limit() {
+    let spin =
+        ast_llvm("fn main() -> i32 { let mut x = 0; while x == 0 { x = x * 1; } return x; }");
+    let answer = execute_mlir(&spin, vec![], std::time::Duration::from_secs(2), 0, false);
+    assert_eq!(
+        answer.unwrap_err(),
+        "Program did not finish in 2 s and was killed"
+    );
+}
+
 /// The (normalized) stdout of running the given LLVM-dialect MLIR through the JIT.
 /// Panics if the program exits non-zero (a printing program returns 0).
 fn run_output(llvm_mlir: &str) -> String {
-    match execute_mlir(llvm_mlir, vec![], 0, false) {
+    match execute_mlir(llvm_mlir, vec![], super::time_limit::PROGRAM, 0, false) {
         Ok(out) => normalize(&out),
         Err(e) => panic!("printing program exited non-zero: {e}"),
     }

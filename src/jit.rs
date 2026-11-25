@@ -341,6 +341,58 @@ fn run_cmd(mut cmd: Command, desc: &str) -> Result<std::process::Output, String>
     Ok(output)
 }
 
+/// Runs `cmd` and collects its output, as `Command::output` does. With a `time_limit`, it kills
+/// the program when the limit passes and returns an error. The caller then drops the temporary
+/// directory of the program.
+fn output_within(
+    cmd: &mut Command,
+    time_limit: Option<std::time::Duration>,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let Some(limit) = time_limit else {
+        return cmd.output().map_err(|e| e.to_string());
+    };
+    // `output` gives the program no input. `spawn` gives it ours unless told otherwise.
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    // Each stream is read on its own thread. A program that fills one pipe while nobody reads
+    // it waits forever.
+    fn read_all(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    }
+    let stdout = read_all(child.stdout.take().expect("stdout is piped"));
+    let stderr = read_all(child.stderr.take().expect("stderr is piped"));
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Program did not finish in {} s and was killed",
+                limit.as_secs()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().expect("the stdout reader does not panic"),
+        stderr: stderr.join().expect("the stderr reader does not panic"),
+    })
+}
+
 /// What the compiled program wrote, with its two streams kept apart.
 ///
 /// They used to be concatenated into one string before anyone saw them, which is lossy in a way
@@ -359,19 +411,22 @@ pub struct ProgramOutput {
     pub stderr: String,
 }
 
-/// Run a program and return its streams concatenated, stdout first.
+/// Run a program and return its streams concatenated, stdout first. When the program runs
+/// longer than `time_limit`, it is killed and the result is an error.
 ///
 /// Kept for callers that only want "what did it print" and do not care which stream it came from,
 /// notably the fixture harnesses whose EXPECT lines match against either.
 pub fn execute_mlir(
     mlir_src: &str,
     program_args: Vec<String>,
+    time_limit: std::time::Duration,
     opt_level: u8,
     disable_llvm_optimizations: bool,
 ) -> Result<String, String> {
     let out = execute_mlir_streams(
         mlir_src,
         program_args,
+        Some(time_limit),
         opt_level,
         disable_llvm_optimizations,
         false,
@@ -521,6 +576,7 @@ pub fn compile_mlir_to_object_with_codegen_level(
 pub fn execute_mlir_streams(
     mlir_src: &str,
     program_args: Vec<String>,
+    time_limit: Option<std::time::Duration>,
     opt_level: u8,
     disable_llvm_optimizations: bool,
     thread_sanitizer: bool,
@@ -719,7 +775,7 @@ pub fn execute_mlir_streams(
         );
     }
 
-    let exe_out = exe_cmd.output().map_err(|e| e.to_string())?;
+    let exe_out = output_within(&mut exe_cmd, time_limit)?;
 
     if !exe_out.status.success() {
         let err_str = String::from_utf8_lossy(&exe_out.stderr);
@@ -862,6 +918,50 @@ fn killed_by_signal(status: &std::process::ExitStatus) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A program that never ends is killed at its time limit, and nothing of it keeps running.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_spins_is_killed_at_its_time_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let mut spin = Command::new("sh");
+        spin.args(["-c", "echo $$ > \"$0\"; while :; do :; done"])
+            .arg(&pid_file);
+        let start = std::time::Instant::now();
+        let answer = output_within(&mut spin, Some(std::time::Duration::from_secs(1)));
+        assert_eq!(
+            answer.unwrap_err(),
+            "Program did not finish in 1 s and was killed"
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        // `kill -0` sends no signal. It fails when no process has the number.
+        let alive = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the program {} still runs", pid.trim());
+    }
+
+    /// A program that ends within its time limit gives the same answer as `Command::output`.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_within_its_time_limit_keeps_its_output_and_exit_code() {
+        let mut quick = Command::new("sh");
+        // Each stream gets more bytes than a pipe holds. A program blocks when a full pipe is not
+        // read, so both pipes must be read while the program runs.
+        quick.args([
+            "-c",
+            "head -c 200000 /dev/zero; head -c 300000 /dev/zero >&2; exit 3",
+        ]);
+        let out = output_within(&mut quick, Some(std::time::Duration::from_secs(60))).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout.len(), 200000);
+        assert_eq!(out.stderr.len(), 300000);
+    }
 
     /// Without the shared library every test that runs a program fails, and each one reports
     /// only a clang error naming a file it has never heard of. This one names the cause.
