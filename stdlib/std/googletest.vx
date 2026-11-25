@@ -47,6 +47,6 @@ impl GoogletestEq for i32 {
 }
 
 /// `actual.expect_eq(expected)` written the way a test reads: the value under test first.
-fn expect_eq<T : GoogletestEq>(actual : T, expected : T, at : Caller) -> i32 {
+pub fn expect_eq<T : GoogletestEq>(actual : T, expected : T, at : Caller) -> i32 {
   return actual.expect_eq(expected, at);
 }

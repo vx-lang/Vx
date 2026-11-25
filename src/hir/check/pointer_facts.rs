@@ -2460,10 +2460,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The callee `name` as the program wrote it: an instance of a generic function, such as
-    /// `sum$i64`, is shown as `sum`.
+    /// `sum$i64`, is shown as `sum`, and a method, such as `Rng$fill_f32`, as `Rng::fill_f32`.
     pub(crate) fn shown_callee(&self, name: &str) -> String {
         match name.split_once('$') {
             Some((first, _)) if self.env.generic_functions.contains_key(first) => first.to_string(),
+            Some((ty, method))
+                if !method.contains('$')
+                    && (self.env.structs.contains_key(ty) || self.env.enums.contains_key(ty)) =>
+            {
+                format!("{ty}::{method}")
+            }
             _ => name.to_string(),
         }
     }
