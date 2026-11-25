@@ -1,0 +1,364 @@
+//===- core_num_shifts.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The shift methods of `core::num`: `wrapping_shl`, `checked_shl`, `overflowing_shl` and
+// the three `shr` forms, at every width.
+//
+// Each width shifts 1 left, and its smallest (signed) or largest (unsigned) value right, by
+// 3, by the width minus one, by the width, and past the width. At the width and past it,
+// `wrapping_*` shifts by the amount modulo the width, `checked_*` gives `none` and
+// `overflowing_*` gives 1 after its value. The last amount has every bit set: -1 on a signed
+// width, the largest value on an unsigned one. The expected values are what Rust prints.
+//
+// The largest signed value is also shifted, since its top bit is clear: 1 left gives -2.
+//
+// A `usize` holds 63 bits, so its edges are 62, 63 and 64. It wraps modulo 2^63, as its
+// other `wrapping_*` methods do, so a 1 shifted into the top place gives 0.
+//
+// The last check is the mask. x86 masks a shift amount itself, so an unmasked shift by 32
+// on an `i32` prints the same value, and only the generated code shows the mask is there.
+//
+// RUN: vxc %s --action emit-llvm > %t 2>&1
+// RUN: FileCheck %s --check-prefix=SHL32 < %t
+// RUN: FileCheck %s --check-prefix=SHR32 < %t
+// RUN: FileCheck %s --check-prefix=SHL64 < %t
+// RUN: FileCheck %s --check-prefix=SHR64 < %t
+// RUN: FileCheck %s --check-prefix=SHLUSIZE < %t
+// RUN: FileCheck %s --check-prefix=SHRUSIZE < %t
+//
+// EXPECT: i8: 8 -128 1 2 -128 | -1 -128 -64 -1 | -128 none none | -1 none none | -128 0 1 1 -128 1 | -1 0 -128 1 -1 1 | -2 0
+// EXPECT: i16: 8 -32768 1 2 -32768 | -1 -32768 -16384 -1 | -32768 none none | -1 none none | -32768 0 1 1 -32768 1 | -1 0 -32768 1 -1 1 | -2 0
+// EXPECT: i32: 8 -2147483648 1 2 -2147483648 | -1 -2147483648 -1073741824 -1 | -2147483648 none none | -1 none none | -2147483648 0 1 1 -2147483648 1 | -1 0 -2147483648 1 -1 1 | -2 0
+// EXPECT: i64: 8 -9223372036854775808 1 2 -9223372036854775808 | -1 -9223372036854775808 -4611686018427387904 -1 | -9223372036854775808 none none | -1 none none | -9223372036854775808 0 1 1 -9223372036854775808 1 | -1 0 -9223372036854775808 1 -1 1 | -2 0
+// EXPECT: u8: 8 128 1 2 128 | 1 255 127 1 | 128 none none | 1 none none | 128 0 1 1 128 1 | 1 0 255 1 1 1
+// EXPECT: u16: 8 32768 1 2 32768 | 1 65535 32767 1 | 32768 none none | 1 none none | 32768 0 1 1 32768 1 | 1 0 65535 1 1 1
+// EXPECT: u32: 8 2147483648 1 2 2147483648 | 1 4294967295 2147483647 1 | 2147483648 none none | 1 none none | 2147483648 0 1 1 2147483648 1 | 1 0 4294967295 1 1 1
+// EXPECT: u64: 8 9223372036854775808 1 2 9223372036854775808 | 1 18446744073709551615 9223372036854775807 1 | 9223372036854775808 none none | 1 none none | 9223372036854775808 0 1 1 9223372036854775808 1 | 1 0 18446744073709551615 1 1 1
+// EXPECT: usize: 8 4611686018427387904 0 1 2 0 9223372036854775806 | 1 0 9223372036854775807 4611686018427387903 0 | 0 none | 0 none | 0 0 1 1 0 1 | 0 0 9223372036854775807 1
+import core::num;
+import core::option;
+
+macro_rules signed_shifts {
+  ($name : ident , $show : ident , $t : ident , $w : expr) => {
+    fn $show(r : Option<$t>) -> i32 {
+      if r.is_some() {
+        print(r.unwrap());
+        print!(" ");
+      } else {
+        print!("none ");
+      }
+      return 0;
+    }
+
+    fn $name() -> i32 {
+      let one : $t = 1;
+      let min : $t = one.min_value();
+      let three : $t = 3;
+      let below : $t = $w - 1;
+      let width : $t = $w;
+      let past : $t = $w + 1;
+      let minus : $t = (0 as $t) - one;
+      print(one.wrapping_shl(three));
+      print!(" ");
+      print(one.wrapping_shl(below));
+      print!(" ");
+      print(one.wrapping_shl(width));
+      print!(" ");
+      print(one.wrapping_shl(past));
+      print!(" ");
+      print(one.wrapping_shl(minus));
+      print!(" ");
+      print!("| ");
+      print(min.wrapping_shr(below));
+      print!(" ");
+      print(min.wrapping_shr(width));
+      print!(" ");
+      print(min.wrapping_shr(past));
+      print!(" ");
+      print(min.wrapping_shr(minus));
+      print!(" ");
+      print!("| ");
+      $show(one.checked_shl(below));
+      $show(one.checked_shl(width));
+      $show(one.checked_shl(minus));
+      print!("| ");
+      $show(min.checked_shr(below));
+      $show(min.checked_shr(width));
+      $show(min.checked_shr(minus));
+      print!("| ");
+      let r0 = one.overflowing_shl(below);
+      let r0_value : $t = r0._0;
+      print(r0_value);
+      print!(" ");
+      flag(r0._1);
+      let r1 = one.overflowing_shl(width);
+      let r1_value : $t = r1._0;
+      print(r1_value);
+      print!(" ");
+      flag(r1._1);
+      let r2 = one.overflowing_shl(minus);
+      let r2_value : $t = r2._0;
+      print(r2_value);
+      print!(" ");
+      flag(r2._1);
+      print!("| ");
+      let r3 = min.overflowing_shr(below);
+      let r3_value : $t = r3._0;
+      print(r3_value);
+      print!(" ");
+      flag(r3._1);
+      let r4 = min.overflowing_shr(width);
+      let r4_value : $t = r4._0;
+      print(r4_value);
+      print!(" ");
+      flag(r4._1);
+      let r5 = min.overflowing_shr(minus);
+      let r5_value : $t = r5._0;
+      print(r5_value);
+      print!(" ");
+      flag(r5._1);
+      print!("| ");
+      let max : $t = one.max_value();
+      print(max.wrapping_shl(one));
+      print!(" ");
+      print(max.wrapping_shr(below));
+      print!("\n");
+      return 0;
+    }
+  };
+}
+
+macro_rules unsigned_shifts {
+  ($name : ident , $show : ident , $t : ident , $w : expr) => {
+    fn $show(r : Option<$t>) -> i32 {
+      if r.is_some() {
+        print(r.unwrap());
+        print!(" ");
+      } else {
+        print!("none ");
+      }
+      return 0;
+    }
+
+    fn $name() -> i32 {
+      let one : $t = 1;
+      let max : $t = one.max_value();
+      let three : $t = 3;
+      let below : $t = $w - 1;
+      let width : $t = $w;
+      let past : $t = $w + 1;
+
+      print(one.wrapping_shl(three));
+      print!(" ");
+      print(one.wrapping_shl(below));
+      print!(" ");
+      print(one.wrapping_shl(width));
+      print!(" ");
+      print(one.wrapping_shl(past));
+      print!(" ");
+      print(one.wrapping_shl(max));
+      print!(" ");
+      print!("| ");
+      print(max.wrapping_shr(below));
+      print!(" ");
+      print(max.wrapping_shr(width));
+      print!(" ");
+      print(max.wrapping_shr(past));
+      print!(" ");
+      print(max.wrapping_shr(max));
+      print!(" ");
+      print!("| ");
+      $show(one.checked_shl(below));
+      $show(one.checked_shl(width));
+      $show(one.checked_shl(max));
+      print!("| ");
+      $show(max.checked_shr(below));
+      $show(max.checked_shr(width));
+      $show(max.checked_shr(max));
+      print!("| ");
+      let r0 = one.overflowing_shl(below);
+      let r0_value : $t = r0._0;
+      print(r0_value);
+      print!(" ");
+      flag(r0._1);
+      let r1 = one.overflowing_shl(width);
+      let r1_value : $t = r1._0;
+      print(r1_value);
+      print!(" ");
+      flag(r1._1);
+      let r2 = one.overflowing_shl(max);
+      let r2_value : $t = r2._0;
+      print(r2_value);
+      print!(" ");
+      flag(r2._1);
+      print!("| ");
+      let r3 = max.overflowing_shr(below);
+      let r3_value : $t = r3._0;
+      print(r3_value);
+      print!(" ");
+      flag(r3._1);
+      let r4 = max.overflowing_shr(width);
+      let r4_value : $t = r4._0;
+      print(r4_value);
+      print!(" ");
+      flag(r4._1);
+      let r5 = max.overflowing_shr(max);
+      let r5_value : $t = r5._0;
+      print(r5_value);
+      print!(" ");
+      flag(r5._1);
+      print!("\n");
+      return 0;
+    }
+  };
+}
+
+signed_shifts!(shifts_i8 , show_i8 , i8 , 8);
+signed_shifts!(shifts_i16 , show_i16 , i16 , 16);
+signed_shifts!(shifts_i32 , show_i32 , i32 , 32);
+signed_shifts!(shifts_i64 , show_i64 , i64 , 64);
+unsigned_shifts!(shifts_u8 , show_u8 , u8 , 8);
+unsigned_shifts!(shifts_u16 , show_u16 , u16 , 16);
+unsigned_shifts!(shifts_u32 , show_u32 , u32 , 32);
+unsigned_shifts!(shifts_u64 , show_u64 , u64 , 64);
+
+fn flag(b : bool) -> i32 {
+  if b {
+    print!("1 ");
+  } else {
+    print!("0 ");
+  }
+  return 0;
+}
+
+fn show_usize(r : Option<usize>) -> i32 {
+  if r.is_some() {
+    print(r.unwrap());
+    print!(" ");
+  } else {
+    print!("none ");
+  }
+  return 0;
+}
+
+// A `usize` has 64 bits in memory but holds only 63, so its edges are 62, 63 and 64.
+fn shifts_usize() -> i32 {
+  let one : usize = 1;
+  let max : usize = one.max_value();
+  print(one.wrapping_shl(3));
+  print!(" ");
+  print(one.wrapping_shl(62));
+  print!(" ");
+  print(one.wrapping_shl(63));
+  print!(" ");
+  print(one.wrapping_shl(64));
+  print!(" ");
+  print(one.wrapping_shl(65));
+  print!(" ");
+  print(one.wrapping_shl(max));
+  print!(" ");
+  print(max.wrapping_shl(1));
+  print!(" | ");
+  print(max.wrapping_shr(62));
+  print!(" ");
+  print(max.wrapping_shr(63));
+  print!(" ");
+  print(max.wrapping_shr(64));
+  print!(" ");
+  print(max.wrapping_shr(65));
+  print!(" ");
+  print(max.wrapping_shr(max));
+  print!(" ");
+  print!("| ");
+  show_usize(one.checked_shl(63));
+  show_usize(one.checked_shl(64));
+  print!("| ");
+  show_usize(max.checked_shr(63));
+  show_usize(max.checked_shr(64));
+  print!("| ");
+  let r0 = one.overflowing_shl(63);
+  let r0_value : usize = r0._0;
+  print(r0_value);
+  print!(" ");
+  flag(r0._1);
+  let r1 = one.overflowing_shl(64);
+  let r1_value : usize = r1._0;
+  print(r1_value);
+  print!(" ");
+  flag(r1._1);
+  let r2 = one.overflowing_shl(max);
+  let r2_value : usize = r2._0;
+  print(r2_value);
+  print!(" ");
+  flag(r2._1);
+  print!("| ");
+  let r3 = max.overflowing_shr(63);
+  let r3_value : usize = r3._0;
+  print(r3_value);
+  print!(" ");
+  flag(r3._1);
+  let r4 = max.overflowing_shr(64);
+  let r4_value : usize = r4._0;
+  print(r4_value);
+  print!(" ");
+  flag(r4._1);
+  print!("\n");
+  return 0;
+}
+
+fn main() -> i32 {
+  print!("i8: ");
+  shifts_i8();
+  print!("i16: ");
+  shifts_i16();
+  print!("i32: ");
+  shifts_i32();
+  print!("i64: ");
+  shifts_i64();
+  print!("u8: ");
+  shifts_u8();
+  print!("u16: ");
+  shifts_u16();
+  print!("u32: ");
+  shifts_u32();
+  print!("u64: ");
+  shifts_u64();
+  print!("usize: ");
+  shifts_usize();
+  return 0;
+}
+
+// Each `wrapping_*` method masks the amount to the width minus one before it shifts.
+// SHL32-LABEL: llvm.func hidden @i32$wrapping_shl(
+// SHL32: [[BITS:%[0-9]+]] = llvm.call @i32$bits(%arg0)
+// SHL32-NEXT: [[MASK:%[0-9]+]] = llvm.sub [[BITS]], {{%[0-9]+}} : i32
+// SHL32-NEXT: [[K:%[0-9]+]] = llvm.and %arg1, [[MASK]] : i32
+// SHL32-NEXT: llvm.shl %arg0, [[K]] : i32
+// SHR32-LABEL: llvm.func hidden @i32$wrapping_shr(
+// SHR32: [[BITS:%[0-9]+]] = llvm.call @i32$bits(%arg0)
+// SHR32-NEXT: [[MASK:%[0-9]+]] = llvm.sub [[BITS]], {{%[0-9]+}} : i32
+// SHR32-NEXT: [[K:%[0-9]+]] = llvm.and %arg1, [[MASK]] : i32
+// SHR32-NEXT: llvm.ashr %arg0, [[K]] : i32
+// SHL64-LABEL: llvm.func hidden @i64$wrapping_shl(
+// SHL64: [[BITS:%[0-9]+]] = llvm.call @i64$bits(%arg0)
+// SHL64-NEXT: [[MASK:%[0-9]+]] = llvm.sub [[BITS]], {{%[0-9]+}} : i64
+// SHL64-NEXT: [[K:%[0-9]+]] = llvm.and %arg1, [[MASK]] : i64
+// SHL64-NEXT: llvm.shl %arg0, [[K]] : i64
+// SHR64-LABEL: llvm.func hidden @i64$wrapping_shr(
+// SHR64: [[BITS:%[0-9]+]] = llvm.call @i64$bits(%arg0)
+// SHR64-NEXT: [[MASK:%[0-9]+]] = llvm.sub [[BITS]], {{%[0-9]+}} : i64
+// SHR64-NEXT: [[K:%[0-9]+]] = llvm.and %arg1, [[MASK]] : i64
+// SHR64-NEXT: llvm.ashr %arg0, [[K]] : i64
+// SHLUSIZE-LABEL: llvm.func hidden @usize$wrapping_shl(
+// SHLUSIZE: [[MASK:%[0-9]+]] = llvm.mlir.constant(63 : i64)
+// SHLUSIZE: [[K:%[0-9]+]] = llvm.and %arg1, [[MASK]] : i64
+// SHLUSIZE-NOT: llvm.func
+// SHLUSIZE: llvm.shl {{%[0-9]+}}, [[K]]
+// SHRUSIZE-LABEL: llvm.func hidden @usize$wrapping_shr(
+// SHRUSIZE-NEXT: [[MASK:%[0-9]+]] = llvm.mlir.constant(63 : i64)
+// SHRUSIZE-NEXT: [[K:%[0-9]+]] = llvm.and %arg1, [[MASK]] : i64
+// SHRUSIZE-NEXT: llvm.lshr %arg0, [[K]] : i64
