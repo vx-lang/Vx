@@ -196,6 +196,21 @@ impl SmtProver {
         self.assertions.iter().any(|a| a == smt)
     }
 
+    /// `exact`, an integer `+`, `-` or `*`, with the result the machine gives. A `usize` operation
+    /// stops the program on overflow, so then it has no value. Like a remainder by zero, it
+    /// becomes a name with no facts. Each other integer type wraps.
+    fn machine_result(&mut self, exact: String, ty: Option<ElementType>) -> Result<String, String> {
+        if ty != Some(ElementType::USize) {
+            return wrap(exact, ty);
+        }
+        let (lo, hi) = int_range(&ElementType::USize).expect("the range of usize");
+        let undefined = self.name(
+            &format!("overflow.undefined.{}", self.declarations.len()),
+            Some(Sort::Int),
+        )?;
+        Ok(format!("(ite (<= {lo} {exact} {hi}) {exact} {undefined})"))
+    }
+
     /// `expected` supplies context for literal arithmetic. Remainder requires its own operand type.
     /// `want` is the sort that the place of `expr` needs, when the place tells it.
     fn lower_expr(
@@ -292,7 +307,7 @@ impl SmtProver {
                 {
                     self.nonlinear = true;
                 }
-                wrap(format!("({} {} {})", op, lhs, rhs), ty)
+                self.machine_result(format!("({} {} {})", op, lhs, rhs), ty)
             }
             Expr::RelationalOp(r) => {
                 let side = r
@@ -356,10 +371,15 @@ impl SmtProver {
                     {
                         Ok(format!("(- {inner})"))
                     }
-                    UnaryOp::Neg => wrap(
-                        format!("(- {})", inner),
-                        int_type(&u.expr, type_of).or(expected),
-                    ),
+                    UnaryOp::Neg => {
+                        let exact = format!("(- {inner})");
+                        match int_type(&u.expr, type_of).or(expected) {
+                            // A program cannot negate a usize. The pointer checker does, for
+                            // the offset of `sub(p, n)`, and it means the exact value.
+                            Some(ElementType::USize) => Ok(exact),
+                            ty => wrap(exact, ty),
+                        }
+                    }
                     UnaryOp::Try => Err("the `?` operator".to_string()),
                 }
             }
@@ -722,14 +742,18 @@ fn int_range(ty: &ElementType) -> Option<(String, String)> {
     })
 }
 
-/// `exact`, an integer `+`, `-`, `*` or negation, with the result the machine gives. It wraps at
-/// the width of the type. A `usize` result is exact: an overflow there stops the program. A float
-/// stays as it is. `None` means the type is not known, and the prover cannot model the operation.
+/// `exact`, an integer `+`, `-`, `*` or negation, wrapped at the width of the type, as the machine
+/// does for each integer type but `usize`. A float stays as it is. `None` means the type is not
+/// known, and the prover cannot model the operation.
 fn wrap(exact: String, ty: Option<ElementType>) -> Result<String, String> {
     let Some(ty) = ty else {
         return Err("an operation whose integer type is not known".to_string());
     };
-    if ty.is_float() || ty == ElementType::USize {
+    assert!(
+        ty != ElementType::USize,
+        "a usize operation does not wrap: it stops the program on overflow"
+    );
+    if ty.is_float() {
         return Ok(exact);
     }
     let Some(bits) = ty.int_bits().filter(|_| ty != ElementType::Bool) else {
