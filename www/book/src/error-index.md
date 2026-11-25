@@ -16,10 +16,10 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1039` (30 codes)
+- [Warnings](#warnings) — `W1001`–`W1038` (29 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3069` (68 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3067` (66 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5005` (5 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
@@ -61,7 +61,6 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside the body of a call of `within`. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them gets the warning too, because it runs before the drop and should only return a time. |
 | [`W1037`](/errors/W1037/) | The tile of the sums of a lane matmul in a GPU kernel stays in shared memory, which makes the kernel slower. On a GPU with tensor cores, the compiler keeps the tile in registers when each use of the tile takes the row of its subgroup. The warning names the use or the matmul that keeps the tile in memory. With the tile in `Memory::REG`, the compiler keeps the tile in registers or reports an error (E6033). |
 | [`W1038`](/errors/W1038/) | A `tasks` block that can fail, whose value nothing uses. When the block fails, the code after it goes on, and nothing sees the error. |
-| [`W1039`](/errors/W1039/) | `?n` gives an extent the name of a constant or a const parameter. In the function, `n` is the extent, so the function cannot use the constant. |
 
 ## Parser Errors
 
@@ -113,7 +112,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3008`](/errors/E3008/) | Enum payload type mismatch |
 | [`E3009`](/errors/E3009/) | Enum payload arity mismatch |
 | [`E3010`](/errors/E3010/) | Function argument count mismatch |
-| [`E3011`](/errors/E3011/) | An `as` cast between two types that it does not convert, such as from an integer or a float to `bool`. Rust refuses the same casts. A comparison such as `x != 0` says which values count as true. |
+| [`E3011`](/errors/E3011/) | An `as` cast between two types that it does not convert, such as from an integer or a float to `bool`. Rust refuses the same casts. A comparison such as `x != 0` says which values count as true. A raw pointer cast can change the element type to or from `i8`, as an assignment can, or to `void`. It cannot change the memory that a pointer points into. |
 | [`E3012`](/errors/E3012/) | Type mismatch in struct field initialization |
 | [`E3013`](/errors/E3013/) | Missing struct field in initialization |
 | [`E3014`](/errors/E3014/) | Range type mismatch |
@@ -169,8 +168,6 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3065`](/errors/E3065/) | A range index `q[a..b]` with ends that are not literal numbers, or with no rows (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so it must be known while compiling. A range past the last row is E8003. |
 | [`E3066`](/errors/E3066/) | An `impl` in the wrong file, or with the wrong `extern`. Only the file that declares a struct or an enum writes a plain `impl` of it. `core` and `std` declare the built-in types, such as `i32` and `Tensor`. An impl in another file, for example to break an import cycle, is `extern impl`, so that a review finds each one. An `extern impl` in the file of the type is an error too. A macro cannot write `extern impl`: write it in the file. |
 | [`E3067`](/errors/E3067/) | A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an address, for example one that `p as *const void` made to give to a C function. It has no element type, so the compiler does not know what to read. |
-| [`E3068`](/errors/E3068/) | A call that gives one extent name two different extents. In `fn add(a : Tensor<f32, [?n]>, b : Tensor<f32, [?n]>)`, both `?n` are one extent, so `add(x, y)` with the extents 5 and 7 is an error. When the compiler does not know an extent, it does not check it. |
-| [`E3069`](/errors/E3069/) | A variable of the body with the name of an extent, or an assignment to an extent name. `?n` in the type of a parameter makes `n` a variable of the body that nothing changes. |
 
 ## Borrow/Ownership Errors
 
@@ -183,9 +180,9 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4003`](/errors/E4003/) | Cannot borrow as mutable (already immutably borrowed) |
 | [`E4004`](/errors/E4004/) | Cannot borrow (already mutably borrowed) |
 | [`E4005`](/errors/E4005/) | A value that points into this function's stack frame would outlive the function: a reference to a local, or a closure that uses one, returned (on its own or inside a struct), stored through a reference, or passed to a call that could store it there. What it points at is gone once the function returns. The same holds inside a function for a block: a variable declared outside a block cannot be given a value that points at a variable declared inside it. Nor can a variable keep a reference into a value with no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at the end of its statement. A closure cannot return a reference to its own parameter, or to the copy it keeps of a variable it uses (`|| &x`): each call has its own frame. |
-| [`E4006`](/errors/E4006/) | An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a `*const T` pointer and for a view of memory made from one: a write, a `&mut` borrow or a `&mut self` call through it. Writing needs a `*mut T`. A call through `f : &F` of a closure that changes a value it captures is one too. Pass the closure by value or as `&mut`. |
+| [`E4006`](/errors/E4006/) | An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a `*const T` pointer and for a view of memory made from one: a write, a `&mut` borrow or a `&mut self` call through it. Writing needs a `*mut T`. |
 | [`E4007`](/errors/E4007/) | A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;` followed by a use of `r`. The borrow would point at a value that has moved away. |
-| [`E4008`](/errors/E4008/) | A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a type that is not `Copy`. The reference does not own the value, so it cannot give it away. Copy or clone it instead. A method that takes `self` by value, called as `r.f()`, takes `*r` the same way, and so does a call through `f : &F` of a closure that moves a value it captures. A `match` on a reference names parts of the value behind it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer, `let b = *p;` and `let b = p[i];` are refused when the value has something to drop, since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take it out. |
+| [`E4008`](/errors/E4008/) | A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a type that is not `Copy`. The reference does not own the value, so it cannot give it away. Copy or clone it instead. A method that takes `self` by value, called as `r.f()`, takes `*r` the same way. A `match` on a reference names parts of the value behind it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer, `let b = *p;` and `let b = p[i];` are refused when the value has something to drop, since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take it out. |
 | [`E4009`](/errors/E4009/) | An assignment to a variable, or a field or element of it, while a `&` borrow of it is still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see the value change under it. |
 | [`E4010`](/errors/E4010/) | A change to a variable declared without `mut`: assigning it, or a field or element of it, borrowing it `&mut`, or calling a method that takes `&mut self` on it. Declare it `let mut x`, or for a parameter `mut x : T`. |
 | [`E4011`](/errors/E4011/) | A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is held: stored in a variable that already exists (`t = q[i]`) or a struct field (`h.t = q[i]`, `Holder { t : q[i] }`), passed to a function that takes the tensor by value (`f(q[i])`), or returned from a function that returns a tensor by value (`return q[i]`). A view shares its owner's memory and is not a copy. Bind it to a new variable with `let`, pass `q[i].clone()`, take the parameter by reference, or return a reference (`-> &mut Tensor<..>`). |
@@ -293,4 +290,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-202 diagnostics.
+199 diagnostics.

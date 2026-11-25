@@ -10,16 +10,10 @@
 // needs it. A library gets only the capabilities that its caller passes. So a library that gets
 // no `&Files` cannot open a file, and a library that gets no `&Network` cannot open a connection.
 // `docs/discussions/capability_types.md` explains the design.
-//
-// The command line is data, not a right. So it is not in `Root`. A `main` that wants it takes a
-// second parameter, `fn main(root : Root, args : Vec<String>) -> i32`, and owns the words.
 //===----------------------------------------------------------------------===//
 
-import core::ptr;
 import std::fs;
 import std::net;
-import std::string;
-import std::vec;
 
 /// The capabilities of a program. Only this file can make a `Root`, and the compiler makes one
 /// for a `main` that takes it.
@@ -39,23 +33,4 @@ pub unsafe fn root_of_the_program() -> Root {
     network : unsafe { network_of_the_program() },
     files : unsafe { files_of_the_program() }
   };
-}
-
-/// The `argc` words of `argv` that C gives `main`, for a `main` that takes them. The caller of
-/// the program chooses every word, the first one too. A `String` holds only UTF-8 text, so a word
-/// that is not UTF-8 stops the program. Unsafe because `argv` must hold `argc` C strings.
-pub unsafe fn arguments_of_the_program(argc : i32, argv : *mut *mut i8) -> Vec<String> {
-  let mut args : Vec<String> = Vec::new();
-  let mut i = 0;
-  while i < argc {
-    let word : *const i8 = unsafe { argv[i] };
-    let text = unsafe { vx_string_try_from_c_str(word) };
-    if is_null_mut(text) {
-      eprintln!("argument {} of the command line is not UTF-8 text", i);
-      panic("an argument of the command line is not UTF-8 text");
-    }
-    args.push(unsafe { String::from_raw(text) });
-    i = i + 1;
-  }
-  return args;
 }

@@ -38,32 +38,6 @@ program gets the length before it prints `greeting`.
 `parse_int` stops at the first byte that is not a digit. So `"12abc"` gives 12, and `"abc"`
 gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
-## The command line
-
-A `main` written `fn main(root : Root, args : Vec<String>) -> i32` gets the words of its command
-line in `args`. The program owns them, so it can move them and change them. Each argument comes
-after the first word. Whoever starts the program chooses every word, the first one too.
-Usually the first word is the name or the path of the program, but it can be empty. A `String`
-holds only UTF-8 text, so an argument that is not UTF-8 stops the program before `main` runs.
-
-```vx
-import std::root;
-import std::string;
-import std::vec;
-
-fn main(_root : Root, args : Vec<String>) -> i32 {
-  let mut i = 1;
-  while i < args.len() {
-    println!("{}", args.get_ref(i));
-    i = i + 1;
-  }
-  return 0;
-}
-```
-
-`vxc args.vx -- one two` prints `one` and `two`. The words are data and not a right, so they are
-not part of `Root`. The test is `main_gets_the_words_of_the_command_line.vx`.
-
 ## Files
 
 To open a file, a call needs the right to open files: a `&Files`. Only `main` gets it. A `main`
@@ -130,20 +104,6 @@ part, or a symbolic link. So a function that gets only a `&Folder` can read the 
 folder, and no others. For example, a model server can give the code that loads its weights a
 `Folder`, and give the code that reads requests no right at all
 (`a_folder_right_reads_only_the_files_inside_its_folder.vx`).
-
-`file.map()` gives the whole file in memory, read-only, as a `Mapping`. It copies nothing: the
-system reads each part of the file when the program first reads it. So a program can map a file
-of many gigabytes and read only the parts that it needs.
-
-- `mapping.len()` is the size of the file in bytes.
-- `mapping.byte(i)` is byte `i`. It stops the program when `i` is outside the file.
-- `mapping.as_ptr()` is the address of the first byte, for code that reads through raw
-  pointers. An example is a tensor over the weights of a model.
-
-A dropped `Mapping` unmaps the file. A `Mapping` stays valid after its `File` closes. A file open
-only for writing gives `FileError::PermissionDenied` (`a_file_mapped_into_memory.vx`). When
-another program shortens the file while it is mapped, a read past the new end stops the program
-with the signal SIGBUS.
 
 ## Standard input and output
 

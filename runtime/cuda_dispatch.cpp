@@ -2188,55 +2188,6 @@ static vx::NcclCollective &collective() {
         return device;
       },
       [](int device) { VX_CUDA_CHECK(cudaSetDevice(device)); },
-      [](size_t bytes) -> void * {
-        void *ptr = nullptr;
-        if (cudaMalloc(&ptr, bytes) != cudaSuccess) {
-          return nullptr;
-        }
-        VX_CUDA_CHECK(cudaMemset(ptr, 0, bytes));
-        VX_CUDA_CHECK(cudaDeviceSynchronize());
-        return ptr;
-      },
-      [](void *ptr) { VX_CUDA_CHECK(cudaFree(ptr)); },
-      [](void *device, const void *host, size_t bytes) {
-        VX_CUDA_CHECK(cudaMemcpy(device, host, bytes, cudaMemcpyHostToDevice));
-      },
-      [](void *host, const void *device, size_t bytes) {
-        VX_CUDA_CHECK(cudaMemcpy(host, device, bytes, cudaMemcpyDeviceToHost));
-      },
-      [](void *stream) {
-        VX_CUDA_CHECK(cudaStreamSynchronize(static_cast<cudaStream_t>(stream)));
-      },
-      [](void *ptr, void *handle) -> std::string {
-        static_assert(sizeof(cudaIpcMemHandle_t) == vx::kPeerHandleBytes,
-                      "a CUDA IPC handle is 64 bytes");
-        cudaIpcMemHandle_t h;
-        cudaError_t e = cudaIpcGetMemHandle(&h, ptr);
-        if (e != cudaSuccess) {
-          return std::string("cudaIpcGetMemHandle failed: ") +
-                 cudaGetErrorString(e);
-        }
-        memcpy(handle, &h, sizeof h);
-        return "";
-      },
-      [](const void *handle, void **ptr) -> std::string {
-        cudaIpcMemHandle_t h;
-        memcpy(&h, handle, sizeof h);
-        cudaError_t e =
-            cudaIpcOpenMemHandle(ptr, h, cudaIpcMemLazyEnablePeerAccess);
-        if (e != cudaSuccess) {
-          return std::string("cudaIpcOpenMemHandle failed: ") +
-                 cudaGetErrorString(e);
-        }
-        return "";
-      },
-      [](void *ptr) -> std::string {
-        cudaError_t e = cudaIpcCloseMemHandle(ptr);
-        return e == cudaSuccess
-                   ? ""
-                   : std::string("cudaIpcCloseMemHandle failed: ") +
-                         cudaGetErrorString(e);
-      },
   });
   return c;
 }
@@ -2310,25 +2261,6 @@ void vx_collective_all_gather_bf16(const uint16_t *input, uint16_t *output,
                        ? collective().all_gather(input, output, count,
                                                  vx::NcclBfloat16, name)
                        : one_rank.copy(input, output, count, 2, name));
-}
-
-void *vx_peer_buffer_create(int64_t bytes) {
-  void *buffer = nullptr;
-  collective_check(cuda_available()
-                       ? collective().peer_buffer_create(bytes, &buffer)
-                       : one_rank.peer_buffer_create(bytes, &buffer));
-  return buffer;
-}
-
-void vx_peer_buffer_pointers(void *buffer, uint64_t *out) {
-  collective_check(cuda_available()
-                       ? collective().peer_buffer_pointers(buffer, out)
-                       : one_rank.peer_buffer_pointers(buffer, out));
-}
-
-void vx_peer_buffer_destroy(void *buffer) {
-  collective_check(cuda_available() ? collective().peer_buffer_destroy(buffer)
-                                    : one_rank.peer_buffer_destroy(buffer));
 }
 
 static vx::ArrivalCounts &arrival_counts() {

@@ -49,6 +49,13 @@ Any pointer can be cast to `*const void` or `*mut void` in the same memory, as i
 example to give to a C function. It has no element type, so a read or a write through it is error
 E3067.
 
+A cast can also change the element type to or from `i8` in the same memory, as an assignment
+with a declared type can. So `raw as *mut R` turns the `*mut i8` from `malloc` into a `*mut R`,
+and `s as *const u8` gives the bytes of a string literal to a function that takes `*const u8`.
+The cast itself is safe. A read or a write through the new pointer needs `unsafe`, as for any
+raw pointer. A cast between two other element types, such as `*const i32` to `*const i64`, is
+error E3011.
+
 ## unsafe functions
 
 A function whose *body* is not the dangerous part — but whose *contract* is — should be marked

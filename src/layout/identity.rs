@@ -245,7 +245,7 @@ fn aggregate_type_key(ty: &Type, identities: &AggregateIdentities) -> Option<Str
                 key.begin("dimensions");
                 for dim in dims {
                     match dim {
-                        Dim::Dyn(_) => key.atom("dynamic", ""),
+                        Dim::Dyn => key.atom("dynamic", ""),
                         Dim::Static(expr) => write_const_key(expr, key)?,
                     }
                 }

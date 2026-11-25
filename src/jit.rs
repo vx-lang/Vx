@@ -365,7 +365,7 @@ pub struct ProgramOutput {
 /// notably the fixture harnesses whose EXPECT lines match against either.
 pub fn execute_mlir(
     mlir_src: &str,
-    program_args: Vec<std::ffi::OsString>,
+    program_args: Vec<String>,
     opt_level: u8,
     disable_llvm_optimizations: bool,
 ) -> Result<String, String> {
@@ -520,7 +520,7 @@ pub fn compile_mlir_to_object_with_codegen_level(
 
 pub fn execute_mlir_streams(
     mlir_src: &str,
-    program_args: Vec<std::ffi::OsString>,
+    program_args: Vec<String>,
     opt_level: u8,
     disable_llvm_optimizations: bool,
     thread_sanitizer: bool,

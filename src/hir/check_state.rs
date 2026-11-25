@@ -121,10 +121,6 @@ pub struct ConstEvalState {
     /// Set just before checking a `comptime` block whose `return` gives its value: the whole
     /// body of a closure, or the value of a `return`.
     pub comptime_return_is_value: bool,
-    /// How many branches around the statement being checked may not run: an `if` branch whose
-    /// condition is not known at compile time, or an arm of a `match` with more arms. A false
-    /// assert there stops the program only on some inputs, so it stays a run-time check.
-    pub uncertain_branch_depth: u32,
 }
 
 /// Provenance carried by a value while a `comptime` block is interpreted.
@@ -729,7 +725,6 @@ impl Default for ConstEvalState {
             comptime_depth: 0,
             comptime_return_is_value: false,
             closure_body_depth: 0,
-            uncertain_branch_depth: 0,
         }
     }
 }
@@ -760,9 +755,6 @@ pub struct MonoState {
     /// The closures that run at most once, by their `Closure_N` struct name, each with a
     /// captured value that its body moves. A call uses up such a closure.
     pub closures_that_run_once: HashMap<Symbol, Symbol>,
-    /// The closures whose body changes a value that they capture, by their `Closure_N` struct
-    /// name, each with one such value.
-    pub closures_that_change_captures: HashMap<Symbol, Symbol>,
     /// Nesting depth of each open closure literal, innermost last.
     pub closure_depths: Vec<usize>,
     /// Variables each open closure literal captured, innermost last.

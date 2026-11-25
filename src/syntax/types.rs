@@ -716,26 +716,13 @@ pub enum ElementType {
 /// `Static` is the common case and `Dyn` the exception, so boxing the expression would cost
 /// an allocation per dimension of every tensor type to shrink the rare `?`.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Dim {
     /// `[2, 3]`, `[N, M]`, `[BATCH * CTX]`: a literal, a const-generic name, or an expression
     /// the checker folds. Everything a dimension could be before `?` existed.
     Static(Expr),
-    /// `?`: the extent is a run-time value; the rank is the list's length. `?n` also gives the
-    /// extent a name that the function's body and contracts read (`docs/lang/types.md`).
-    Dyn(Option<Symbol>),
-}
-
-/// The name of a run-time extent is not part of its type: `Tensor<f32, [?n]>` is the type
-/// `Tensor<f32, [?]>`, so a tensor of either type fits where the other is asked.
-impl PartialEq for Dim {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Dim::Static(a), Dim::Static(b)) => a == b,
-            (Dim::Dyn(_), Dim::Dyn(_)) => true,
-            _ => false,
-        }
-    }
+    /// `?`: the extent is a run-time value. Carries nothing; the rank is the list's length.
+    Dyn,
 }
 
 impl Dim {
@@ -743,15 +730,7 @@ impl Dim {
     pub fn as_static(&self) -> Option<&Expr> {
         match self {
             Dim::Static(e) => Some(e),
-            Dim::Dyn(_) => None,
-        }
-    }
-
-    /// The name that `?n` gives a run-time extent.
-    pub fn extent_name(&self) -> Option<&Symbol> {
-        match self {
-            Dim::Dyn(name) => name.as_ref(),
-            Dim::Static(_) => None,
+            Dim::Dyn => None,
         }
     }
 
@@ -766,26 +745,9 @@ impl Dim {
     pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Dim {
         match self {
             Dim::Static(e) => Dim::Static(e.substitute(mapping)),
-            Dim::Dyn(name) => Dim::Dyn(name.clone()),
+            Dim::Dyn => Dim::Dyn,
         }
     }
-}
-
-/// Each `?n` in the tensor types of `params`, in order: the name, the index of the parameter,
-/// and the axis. A parameter's tensor can be behind `&` or `&mut`; the parser refuses a name
-/// anywhere else.
-pub fn extent_names(params: &[(Symbol, Type)]) -> Vec<(Symbol, usize, usize)> {
-    let mut out = Vec::new();
-    for (p, (_, ty)) in params.iter().enumerate() {
-        if let Type::Tensor(_, dims, _) = ty.behind_refs() {
-            for (axis, d) in dims.iter().enumerate() {
-                if let Some(name) = d.extent_name() {
-                    out.push((name.clone(), p, axis));
-                }
-            }
-        }
-    }
-    out
 }
 
 /// Split a type-argument list on the commas that separate ARGUMENTS, ignoring those inside a
@@ -997,46 +959,6 @@ pub fn mangle_method(
 }
 
 impl Type {
-    /// Each name that `?n` gives an extent anywhere in this type, also in a type inside it.
-    pub fn all_extent_names(&self, out: &mut Vec<Symbol>) {
-        match self {
-            Type::Tensor(_, dims, _) => {
-                out.extend(dims.iter().filter_map(Dim::extent_name).cloned())
-            }
-            Type::Ref(inner, _)
-            | Type::Borrow { inner, .. }
-            | Type::Pointer(inner, ..)
-            | Type::Verified(inner)
-            | Type::Distinct(inner)
-            | Type::DisjointRanges(inner)
-            | Type::Pinned(inner, _) => inner.all_extent_names(out),
-            Type::GenericInstance(base, args) => {
-                base.all_extent_names(out);
-                args.iter().for_each(|a| a.all_extent_names(out));
-            }
-            Type::Function(params, ret, _) | Type::Closure(params, ret) => {
-                params.iter().for_each(|p| p.all_extent_names(out));
-                ret.all_extent_names(out);
-            }
-            Type::Module(_, symbols) => symbols.values().for_each(|t| t.all_extent_names(out)),
-            Type::Scalar(_)
-            | Type::Struct(..)
-            | Type::Enum(..)
-            | Type::Generic(..)
-            | Type::Simd(..)
-            | Type::Const(_)
-            | Type::Unknown => {}
-        }
-    }
-
-    /// The type that `&` and `&mut` layers refer to.
-    pub fn behind_refs(&self) -> &Type {
-        match self {
-            Type::Ref(inner, _) | Type::Borrow { inner, .. } => inner.behind_refs(),
-            other => other,
-        }
-    }
-
     pub fn is_linear(&self) -> bool {
         match self {
             Type::Ref(_, _)
@@ -1662,8 +1584,7 @@ impl std::fmt::Display for Type {
                             write!(f, "{}", id.name)?
                         }
                         Dim::Static(_) => write!(f, "{{..}}")?,
-                        Dim::Dyn(None) => write!(f, "?")?,
-                        Dim::Dyn(Some(name)) => write!(f, "?{name}")?,
+                        Dim::Dyn => write!(f, "?")?,
                     }
                 }
                 write!(f, "]")?;
@@ -1753,7 +1674,7 @@ impl Mangle for Type {
                         Dim::Static(Expr::Number(n)) => write!(w, "{}", n.value)?,
                         Dim::Static(Expr::Identifier(id)) => write!(w, "{}", id.name)?,
                         Dim::Static(_) => write!(w, "d")?,
-                        Dim::Dyn(_) => write!(w, "_")?,
+                        Dim::Dyn => write!(w, "_")?,
                     }
                 }
                 Ok(())
@@ -1769,22 +1690,8 @@ impl Mangle for Type {
                 }
                 Ok(())
             }
-            // The signature is part of the identity: a generic called with `fn(i64) -> i64` and
-            // with `fn(i64) -> f64` needs two symbols. The count keeps the parameters apart from
-            // the return type.
-            Type::Function(params, ret, _) | Type::Closure(params, ret) => {
-                let kind = if matches!(self, Type::Function(..)) {
-                    "fn"
-                } else {
-                    "closure"
-                };
-                write!(w, "{kind}{}", params.len())?;
-                for p in params.iter().chain(std::iter::once(&**ret)) {
-                    write!(w, "$")?;
-                    p.mangle_to(w)?;
-                }
-                Ok(())
-            }
+            Type::Function(..) => write!(w, "fn"),
+            Type::Closure(_, _) => write!(w, "closure"),
             Type::Verified(inner) => {
                 write!(w, "Verified$")?;
                 inner.mangle_to(w)

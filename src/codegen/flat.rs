@@ -271,7 +271,7 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
             let mut shape = Vec::with_capacity(dims.len());
             for d in dims {
                 shape.push(match d {
-                    Dim::Dyn(_) => DYN_DIM.to_string(),
+                    Dim::Dyn => DYN_DIM.to_string(),
                     _ => d.literal()?.parse::<i64>().ok()?.to_string(),
                 });
             }
