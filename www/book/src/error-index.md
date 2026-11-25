@@ -16,10 +16,10 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1039` (30 codes)
+- [Warnings](#warnings) — `W1001`–`W1038` (29 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3069` (68 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3067` (66 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5005` (5 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
@@ -61,7 +61,6 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside the body of a call of `within`. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them gets the warning too, because it runs before the drop and should only return a time. |
 | [`W1037`](/errors/W1037/) | The tile of the sums of a lane matmul in a GPU kernel stays in shared memory, which makes the kernel slower. On a GPU with tensor cores, the compiler keeps the tile in registers when each use of the tile takes the row of its subgroup. The warning names the use or the matmul that keeps the tile in memory. With the tile in `Memory::REG`, the compiler keeps the tile in registers or reports an error (E6033). |
 | [`W1038`](/errors/W1038/) | A `tasks` block that can fail, whose value nothing uses. When the block fails, the code after it goes on, and nothing sees the error. |
-| [`W1039`](/errors/W1039/) | `?n` gives an extent the name of a constant or a const parameter. In the function, `n` is the extent, so the function cannot use the constant. |
 
 ## Parser Errors
 
@@ -169,8 +168,6 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3065`](/errors/E3065/) | A range index `q[a..b]` with ends that are not literal numbers, or with no rows (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so it must be known while compiling. A range past the last row is E8003. |
 | [`E3066`](/errors/E3066/) | An `impl` in the wrong file, or with the wrong `extern`. Only the file that declares a struct or an enum writes a plain `impl` of it. `core` and `std` declare the built-in types, such as `i32` and `Tensor`. An impl in another file, for example to break an import cycle, is `extern impl`, so that a review finds each one. An `extern impl` in the file of the type is an error too. A macro cannot write `extern impl`: write it in the file. |
 | [`E3067`](/errors/E3067/) | A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an address, for example one that `p as *const void` made to give to a C function. It has no element type, so the compiler does not know what to read. |
-| [`E3068`](/errors/E3068/) | A call that gives one extent name two different extents. In `fn add(a : Tensor<f32, [?n]>, b : Tensor<f32, [?n]>)`, both `?n` are one extent, so `add(x, y)` with the extents 5 and 7 is an error. When the compiler does not know an extent, it does not check it. |
-| [`E3069`](/errors/E3069/) | A variable of the body with the name of an extent, or an assignment to an extent name. `?n` in the type of a parameter makes `n` a variable of the body that nothing changes. |
 
 ## Borrow/Ownership Errors
 
@@ -293,4 +290,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-202 diagnostics.
+199 diagnostics.

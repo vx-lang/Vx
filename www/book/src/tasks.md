@@ -400,7 +400,8 @@ It prints `scale 10, owners 2`, and then `owners 1`. To change a shared value, p
 
 By default, each task runs on an OS thread of its own. With `VX_TASK_RUNTIME=shared`, the program
 runs many tasks on a few OS threads instead. Each task then gets a stack of its own, and a task
-that waits gives its thread to another task. A program needs no change to use the shared runtime.
+that waits gives its thread to another task. A program needs no change to use the shared runtime,
+except for a call of `pin_current` ([Pin a task to CPUs](#pin-a-task-to-cpus)).
 Set these variables when the program starts:
 
 - `VX_TASK_RUNTIME=threads` gives the default: one OS thread for each task. A value other than
@@ -414,6 +415,39 @@ Set these variables when the program starts:
   next run. Try other seeds to find such a bug. A seed cannot go with `VX_TASK_WORKERS` or
   `VX_TASK_MAX_WORKERS`. Only a wait, such as `recv`, `lock` or `sleep`, lets another task run.
   So with a seed, a task that loops with no wait until another task acts never ends.
+
+## Pin a task to CPUs
+
+A low-latency program can give each hot task a CPU of its own. `std::task::pin_current` lets the
+task that calls it run only on the CPUs that it names, from then on:
+
+```vx
+import std::task;
+import std::vec;
+
+fn run_lane(lane : i32) -> Result<void, PinError> {
+  let mut cpus : Vec<i32> = Vec<i32>::new();
+  cpus.push(lane + 4);
+  pin_current(&cpus)?;
+  // The work of the lane runs here, on its own CPU.
+  return Result<void, PinError>::Ok();
+}
+```
+
+Each task of the default runtime runs on an OS thread of its own, so the call pins that thread.
+A task that the pinned task spawns later starts on the same CPUs. The threads of the runtime
+itself, such as the deadlock watcher, do not stay on these CPUs. A dispatch
+of a kernel whose data is on a NUMA node does not move a pinned thread to the CPUs of that node.
+
+The call gives an error, and changes nothing, in these cases:
+
+- `PinError::Unsupported`: the system is not Linux, or the task runs in the shared runtime or with
+  a seed. There a task can continue on another thread after each wait, so no pin of a thread can
+  pin it.
+- `PinError::NoSuchCpu(n)`: the machine has no CPU with the number `n`. The kernel lists the CPU
+  numbers in `/sys/devices/system/cpu/possible`.
+- `PinError::Denied`: the system did not let the task run on exactly these CPUs, for example
+  because the CPU set of the process or of its container does not hold all of them.
 
 ## Finding a data race at run time
 

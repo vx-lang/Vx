@@ -95,7 +95,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v20";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v19";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -595,11 +595,7 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             w.u64(dims.len() as u64);
             for d in dims {
                 match d {
-                    Dim::Dyn(None) => w.u8(0),
-                    Dim::Dyn(Some(name)) => {
-                        w.u8(2);
-                        w.sym(name);
-                    }
+                    Dim::Dyn => w.u8(0),
                     Dim::Static(_) => {
                         let Some(v) = d.literal() else {
                             return Err("vxlib: tensor type with dimension expressions not \
@@ -690,8 +686,7 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             let mut dims = Vec::with_capacity(n);
             for _ in 0..n {
                 dims.push(match r.u8()? {
-                    0 => Dim::Dyn(None),
-                    2 => Dim::Dyn(Some(r.sym()?)),
+                    0 => Dim::Dyn,
                     1 => Dim::Static(crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
                         r.sym()?.as_ref().to_string(),
                         Some(ElementType::I32),
@@ -1528,26 +1523,6 @@ mod tests {
     /// The signature tables round-trip too: `resolve_fn` / `resolve_method` return the same GID and
     /// return type after a serialize -> deserialize cycle, across the return-type shapes the stdlib
     /// actually uses -- scalar, nominal struct, and a (dimensionless) tensor (#220 stage 2).
-    /// `?n` in a parameter type keeps its name across the boundary: the type compares equal to
-    /// `?`, so the round trip below would not see a lost name.
-    #[test]
-    fn registry_interface_keeps_the_names_of_extents() {
-        let m = parse_and_resolve(
-            "crate::m",
-            "fn rows(t: &Tensor<f32, [?n, 4]>) -> usize requires n > 0 { return n; }\n",
-        );
-        let reg =
-            crate::pipeline::build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
-        let round = deserialize_registry_interface(&serialize_registry_interface(&reg))
-            .expect("deserialize");
-        let param = round.resolve_fn(&Symbol::from("rows")).unwrap().params[0].clone();
-        let Type::Tensor(_, dims, _) = param.behind_refs() else {
-            panic!("the parameter of rows is not a tensor: {param:?}");
-        };
-        assert_eq!(dims[0].extent_name().map(|n| n.as_ref()), Some("n"));
-        assert_eq!(dims[1].literal(), Some("4"));
-    }
-
     #[test]
     fn registry_interface_round_trips_functions_and_methods() {
         let m = parse_and_resolve(

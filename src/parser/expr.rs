@@ -1868,6 +1868,8 @@ mod tests {
             owner_type_args: _,
             name,
             args,
+            span: _,
+            type_args: _,
             ..
         }) = expr
         {
@@ -1919,6 +1921,8 @@ mod tests {
             owner_type_args: _,
             name,
             args,
+            span: _,
+            type_args: _,
             ..
         }) = expr
         {
@@ -1937,6 +1941,8 @@ mod tests {
             owner_type_args: _,
             name,
             args,
+            span: _,
+            type_args: _,
             ..
         }) = expr
         {

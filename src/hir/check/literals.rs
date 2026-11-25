@@ -364,7 +364,7 @@ impl<'a> TypeChecker<'a> {
         for (i, (p, a)) in pd.iter().zip(ad.iter()).enumerate() {
             if let (
                 crate::syntax::Dim::Static(crate::syntax::Expr::Identifier(id)),
-                crate::syntax::Dim::Dyn(None),
+                crate::syntax::Dim::Dyn,
             ) = (p, a)
             {
                 return format!(

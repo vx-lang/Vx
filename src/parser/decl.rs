@@ -58,14 +58,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The parameters of a function. With `extent_names`, a tensor type of a parameter can name
-    /// its run-time extents, as `?n` does in `t : &Tensor<f32, [?n]>`.
     fn parse_comma_separated_params(
         &mut self,
-        extent_names: bool,
     ) -> ParseResult<'a, Vec<(crate::symbol::Symbol, Type)>> {
         let mut params: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
-        let mut name_tokens = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
                 let is_mut = self.match_token(&TokenType::Mut);
@@ -84,41 +80,12 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 self.consume(&TokenType::Colon, "Expected ':'")?;
-                let outer = std::mem::replace(&mut self.extent_names_allowed, extent_names);
-                let ty = self.parse_type();
-                self.extent_names_allowed = outer;
-                let ty = ty?;
-                let mut anywhere = Vec::new();
-                ty.all_extent_names(&mut anywhere);
-                let at_top =
-                    crate::syntax::types::extent_names(&[(name.clone().into(), ty.clone())]);
-                if anywhere.len() != at_top.len() {
-                    return Err(self.error_at(
-                        &name_token,
-                        &format!(
-                            "parameter `{name}`: a name such as `?{}` can stand only in the \
-                             tensor type of the parameter itself, as in `t : &Tensor<f32, [?n]>`",
-                            anywhere[0]
-                        ),
-                    ));
-                }
+                let ty = self.parse_type()?;
                 params.push((name.into(), ty));
-                name_tokens.push(name_token);
 
                 if !self.match_token(&TokenType::Comma) {
                     break;
                 }
-            }
-        }
-        // An extent name is a variable of the body, as a parameter is.
-        for (extent, _, _) in crate::syntax::types::extent_names(&params) {
-            if let Some(i) = params.iter().position(|(p, _)| *p == extent) {
-                return Err(self.error_at(
-                    &name_tokens[i],
-                    &format!(
-                        "`?{extent}` names an extent, so no parameter can have the name `{extent}`"
-                    ),
-                ));
             }
         }
         Ok(params)
@@ -289,7 +256,7 @@ impl<'a> Parser<'a> {
 
         self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
         self.mut_params.clear();
-        let params = self.parse_comma_separated_params(true)?;
+        let params = self.parse_comma_separated_params()?;
         let mut_params = std::mem::take(&mut self.mut_params);
         self.consume(&TokenType::RightParen, "Expected ')'")?;
         if name == "main" && takes_a_root_and_more(&params) {
@@ -1435,7 +1402,7 @@ impl<'a> Parser<'a> {
             }
 
             self.consume(&TokenType::LeftParen, "Expected '('")?;
-            let params = self.parse_comma_separated_params(false)?;
+            let params = self.parse_comma_separated_params()?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
 
             self.consume(&TokenType::Arrow, "Expected '->'")?;
@@ -1526,7 +1493,7 @@ impl<'a> Parser<'a> {
             let method_generics = self.parse_generic_params()?;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
             self.mut_params.clear();
-            let params = self.parse_comma_separated_params(false)?;
+            let params = self.parse_comma_separated_params()?;
             let mut_params = std::mem::take(&mut self.mut_params);
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
@@ -2545,7 +2512,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
             func.return_type,
             Type::Verified(Box::new(Type::Tensor(
                 ElementType::F32,
-                vec![Dim::Dyn(None), Dim::Dyn(None)],
+                vec![Dim::Dyn, Dim::Dyn],
                 None
             )))
         );
@@ -2602,7 +2569,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 ty,
                 &Some(Type::Tensor(
                     ElementType::F32,
-                    vec![Dim::Dyn(None), Dim::Dyn(None)],
+                    vec![Dim::Dyn, Dim::Dyn],
                     None
                 ))
             );
@@ -2610,6 +2577,8 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 owner_type_args: _,
                 name: func_name,
                 args,
+                span: _,
+                type_args: _,
                 ..
             }) = expr
             {
@@ -3031,7 +3000,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
             assert_eq!(
                 **inner,
-                Type::Tensor(ElementType::F32, vec![Dim::Dyn(None), Dim::Dyn(None)], None)
+                Type::Tensor(ElementType::F32, vec![Dim::Dyn, Dim::Dyn], None)
             );
         } else {
             panic!("Expected pointer return type");
@@ -3062,6 +3031,8 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 owner_type_args: _,
                 name,
                 args,
+                span: _,
+                type_args: _,
                 ..
             })) = expr
             {
@@ -3087,6 +3058,8 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 owner_type_args: _,
                 name,
                 args,
+                span: _,
+                type_args: _,
                 ..
             }) = expr
             {

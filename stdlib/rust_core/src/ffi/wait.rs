@@ -732,7 +732,10 @@ mod timer {
             }));
             std::thread::Builder::new()
                 .name("vx-timer".into())
-                .spawn(move || run(t))
+                .spawn(move || {
+                    crate::ffi::sched::unpin_runtime_thread();
+                    run(t)
+                })
                 .expect("the system could not start the timer thread");
             t
         })
@@ -1139,7 +1142,10 @@ mod deadlock {
         WATCHER.call_once(|| {
             let started = std::thread::Builder::new()
                 .name("vx-deadlock".into())
-                .spawn(run);
+                .spawn(|| {
+                    crate::ffi::sched::unpin_runtime_thread();
+                    run()
+                });
             if let Err(e) = started {
                 eprintln!("vx: the system could not start the deadlock watcher: {e}");
                 std::process::abort();
