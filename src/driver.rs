@@ -742,6 +742,7 @@ impl CompilerDriver {
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
                 self.options.thread_sanitizer(),
+                std::process::Stdio::inherit(),
             )
             .map_err(|e| e.to_string())?;
             print_program_output(&out);
@@ -1825,6 +1826,7 @@ impl CompilerDriver {
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
                     self.options.thread_sanitizer(),
+                    std::process::Stdio::inherit(),
                 )
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
