@@ -1,0 +1,236 @@
+//===- a_match_on_a_number_with_no_default_arm_can_end.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on a number with no `_` arm runs no arm when the number has no arm of its own. Then
+// the code after the `match` runs. So a function that returns a value cannot end with such a
+// `match`: for that number, it would return a value that nothing wrote. Each function here ends
+// that way, or uses the value of such a `match`.
+//
+// `-j 2` is the parallel compile. It must report the same errors.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s -j 2 2>&1 | FileCheck %s --implicit-check-not=Error
+
+struct Point {
+  x : i32,
+}
+
+enum Light {
+  Red,
+  Green,
+}
+
+fn the_last_statement(x : i32) -> i32 {
+  // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:3: this `match` has no arm for some values of type `i32`, so it can end with no value. Add a `_` arm.
+  match x {
+    0 => {
+      return 1;
+    }
+    1 => {
+      return 2;
+    }
+  }
+}
+
+// With no error, this function returned a null reference.
+fn returns_a_reference(x : i32, a : &i64, b : &i64) -> &i64 {
+  // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:3: this `match` has no arm for some values of type `i32`
+  match x {
+    0 => {
+      return a;
+    }
+    1 => {
+      return b;
+    }
+  }
+}
+
+// With the `;`, the `match` is a statement, and the function has no `return` after it.
+fn the_last_statement_with_a_semicolon(x : i32) -> i32 {
+  // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:3: 'the_last_statement_with_a_semicolon' returns i32 but its body can finish without returning a value
+  match x {
+    0 => {
+      return 1;
+    }
+    1 => {
+      return 2;
+    }
+  };
+}
+
+fn in_a_branch_of_the_last_if(x : i32, c : bool) -> i32 {
+  if c {
+    // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:5: this `match` has no arm for some values of type `i32`
+    match x {
+      0 => {
+        return 1;
+      }
+      1 => {
+        return 2;
+      }
+    }
+  } else {
+    return 5;
+  }
+}
+
+fn the_value_of_an_arm(x : i32, y : i32) -> i32 {
+  match x {
+    0 => {
+      // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:7: this `match` has no arm for some values of type `i32`
+      match y {
+        0 => {
+          return 1;
+        }
+        1 => {
+          return 2;
+        }
+      }
+    }
+    _ => {
+      return 5;
+    }
+  }
+}
+
+// The inner `match` is a statement that can end, so the arm for 0 can end with no `return`.
+fn a_statement_in_an_arm(x : i32, y : i32) -> i32 {
+  match x {
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: the last `match` in this arm has no `_` arm, so the arm can end with no value and no `return`. The `match` that this arm belongs to must give a value. Add the `_` arm, or a `return` at the end of this arm.
+    0 => {
+      match y {
+        0 => {
+          return 1;
+        }
+        1 => {
+          return 2;
+        }
+      };
+    }
+    _ => {
+      return 5;
+    }
+  }
+}
+
+fn a_written_return(x : i32) -> f64 {
+  // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:10: this `match` has no arm for some values of type `i32`
+  return match x {
+    0 => {
+      return 1.5;
+    }
+  };
+}
+
+fn a_written_return_of_a_pointer(x : i32) -> *const i8 {
+  // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:10: this `match` has no arm for some values of type `i32`
+  return match x {
+    0 => {
+      return "zero";
+    }
+  };
+}
+
+fn a_written_return_of_a_struct(x : i32) -> Point {
+  // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:10: this `match` has no arm for some values of type `i32`
+  return match x {
+    0 => {
+      return Point {
+        x: 7
+      };
+    }
+  };
+}
+
+fn the_value_of_a_let(x : i32) -> i32 {
+  // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:17: this `match` has no arm for some values of type `i32`
+  let y : i32 = match x {
+    0 => {
+      return 1;
+    }
+    1 => {
+      return 2;
+    }
+  };
+  return y + 40;
+}
+
+// The function never returns, but the `let` still reads the value of the `match`. With no error,
+// `y` was a null reference.
+fn the_value_of_a_let_in_a_function_that_never_returns(x : i32) -> ! {
+  // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:18: this `match` has no arm for some values of type `i32`
+  let y : &i64 = match x {
+    0 => {
+      abort();
+    }
+    1 => {
+      abort();
+    }
+  };
+  println!("y is {}", *y);
+  abort();
+}
+
+fn in_an_unsafe_block(x : i32, p : *const i32) -> i32 {
+  unsafe {
+    let first : i32 = *p;
+    // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:5: this `match` has no arm for some values of type `i32`
+    match x {
+      0 => {
+        return first;
+      }
+    }
+  }
+}
+
+fn on_a_float(x : f64) -> i32 {
+  // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:3: this `match` has no arm for some values of type `f64`
+  match x {
+    0.0 => {
+      return 1;
+    }
+    1.0 => {
+      return 2;
+    }
+  }
+}
+
+fn in_a_closure(n : i32) -> i32 {
+  let pick = |x : i32| -> i32 {
+    // CHECK: Error[E3020] at {{.*}}.vx:[[@LINE+1]]:5: this `match` has no arm for some values of type `i32`
+    match x {
+      0 => {
+        return 1;
+      }
+      1 => {
+        return 2;
+      }
+    }
+  };
+  return pick(n);
+}
+
+// A number is not a variant of an enum. With no error, each arm compared the number with the
+// tag of its variant, and the compiler took the two arms for every value of an `i32`.
+fn variant_arms_on_a_number(x : i32) -> i32 {
+  match x {
+    // CHECK: Error[E3051] at {{.*}}.vx:[[@LINE+1]]:5: this pattern is a variant of `Light`, but the value matched has the type `i32`
+    Light::Red => {
+      return 1;
+    }
+    // CHECK: Error[E3051] at {{.*}}.vx:[[@LINE+1]]:5: this pattern is a variant of `Light`, but the value matched has the type `i32`
+    Light::Green => {
+      return 2;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 16 error(s) emitted

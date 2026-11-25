@@ -473,6 +473,97 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// Reports a `match` that can end, when its value is used and no arm gives a value: the code
+    /// that uses the `match` would read a value that nothing wrote. Such a `match` ends when no
+    /// arm takes the value (E3020). An arm also ends when a `match` in it has no arm for the value
+    /// (E3028), and `arm_that_can_end` is the first such arm.
+    fn refuse_a_used_match_that_can_end(
+        &mut self,
+        arms: &[crate::syntax::MatchArm],
+        matched: &Type,
+        span: &Span,
+        arm_that_can_end: Option<Span>,
+    ) {
+        // The `match` takes the type that a `return` gives. In a `void` function, and in a closure
+        // before its first `return`, that is no value, so nothing reads one. A `let` in a function
+        // that never returns does read one, and `is_void_ty` is true for `!` too.
+        let read = self.current_return_type.as_ref().is_some_and(|ty| {
+            *ty != Type::Unknown
+                && (!crate::syntax::is_void_ty(ty) || crate::syntax::is_never_ty(ty))
+        });
+        if self.speculating || !read {
+            return;
+        }
+        if !crate::syntax::arms_cover_every_value(arms) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3020,
+                format!(
+                    "this `match` has no arm for some values of type `{matched}`, so it can \
+                     end with no value. Add a `_` arm."
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+        if let Some(arm) = arm_that_can_end {
+            // An arm that the compiler wrote has no place in the source.
+            let at = if arm == Span::default() { *span } else { arm };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3028,
+                "the last `match` in this arm has no `_` arm, so the arm can end with no value \
+                 and no `return`. The `match` that this arm belongs to must give a value. Add the `_` \
+                 arm, or a `return` at the end of this arm."
+                    .to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+            );
+        }
+    }
+
+    /// Whether `stmts`, the body of a `match` arm, can end only because a `match` in its last
+    /// statement has no arm for some values. Any other arm that can end is not reported: it can
+    /// end in a way that this check does not see, such as a call to a method that never returns.
+    fn ends_only_past_a_match_with_no_default_arm(&self, stmts: &[Statement]) -> bool {
+        stmts.last().is_some_and(|last| {
+            self.no_path_reaches_the_end(std::slice::from_ref(last), true)
+                && !self.no_path_reaches_the_end(stmts, false)
+        })
+    }
+
+    /// Whether no path reaches the end of `stmts`. `branch_ends_early` looks for a `break` or a
+    /// `continue` in `stmts` only. This also looks in each `if`, `match` and `unsafe` block.
+    /// With `every_value_has_an_arm`, each `match` counts as if one of its arms ran for every
+    /// value.
+    fn no_path_reaches_the_end(&self, stmts: &[Statement], every_value_has_an_arm: bool) -> bool {
+        let ends =
+            |block: &[Statement]| self.no_path_reaches_the_end(block, every_value_has_an_arm);
+        stmts.iter().any(|s| match s {
+            Statement::ExprStmt(ExprStmtStmt {
+                expr:
+                    Expr::If(IfExpr {
+                        then_block,
+                        else_block: Some(else_block),
+                        ..
+                    }),
+                ..
+            }) => ends(then_block) && ends(else_block),
+            Statement::ExprStmt(ExprStmtStmt {
+                expr: Expr::Match(m),
+                ..
+            }) => {
+                let covered = if every_value_has_an_arm {
+                    !m.arms.is_empty()
+                } else {
+                    crate::syntax::arms_cover_every_value(&m.arms)
+                };
+                covered && m.arms.iter().all(|arm| ends(&arm.body))
+            }
+            Statement::ExprStmt(ExprStmtStmt {
+                expr: Expr::UnsafeBlock(u),
+                ..
+            }) => ends(&u.stmts),
+            _ => self.branch_ends_early(std::slice::from_ref(s)),
+        })
+    }
+
     /// Whether control never reaches the end of `stmts`: it returns, breaks, continues, panics,
     /// aborts or calls a function declared `-> !` on every path.
     pub(crate) fn branch_ends_early(&self, stmts: &[Statement]) -> bool {
@@ -1080,6 +1171,18 @@ impl<'a> TypeChecker<'a> {
         while let Type::Borrow { inner, .. } = matched {
             matched = inner;
         }
+        // A number has no variants. So this arm is not a case that the coverage check counts.
+        if let Type::Scalar(_) = matched {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3051,
+                format!(
+                    "this pattern is a variant of `{pattern_enum}`, but the value matched has \
+                     the type `{expr_ty}`"
+                ),
+                at,
+            );
+            return;
+        }
         let matched_enum = match matched {
             Type::Enum(n, _) | Type::Struct(n, _) => base(n),
             Type::GenericInstance(inner, _) => match &**inner {
@@ -1394,6 +1497,8 @@ impl<'a> TypeChecker<'a> {
                 let matched_number = (integer && crate::hir::prover::is_modelled(match_expr))
                     .then(|| (**match_expr).clone());
                 let mut literals_above: Vec<Expr> = Vec::new();
+                // The first arm that can end because a `match` in it has no arm for some values.
+                let mut arm_that_can_end: Option<Span> = None;
                 for (i, arm) in arms.iter_mut().enumerate() {
                     let literal_arm = self.expected_type.is_none()
                         && unsuffixed_number_tail(&mut arm.body).is_some_and(|n| n.ty.is_none());
@@ -1473,12 +1578,20 @@ impl<'a> TypeChecker<'a> {
                         literals_above.push((**lit).clone());
                     }
 
+                    let errors_before_arm = self.errors.error_count();
                     let arm_ty = if !self.speculating {
                         self.value_unused = unused;
                         self.check_expr_block(&mut arm.body, None, consume)
                     } else {
                         Type::Struct("void".into(), None)
                     };
+                    // An arm that has an error of its own gets no second error for its end.
+                    if arm_that_can_end.is_none()
+                        && self.errors.error_count() == errors_before_arm
+                        && self.ends_only_past_a_match_with_no_default_arm(&arm.body)
+                    {
+                        arm_that_can_end = Some(arm.span);
+                    }
                     self.pop_scope();
                     self.pointer_branches.pop();
                     every_arm_ends &= self.branch_ends_early(&arm.body);
@@ -1546,7 +1659,8 @@ impl<'a> TypeChecker<'a> {
                         learned: Vec::new(),
                     });
                 }
-                if every_arm_ends {
+                // A value that matches no arm reaches the code after the `match`.
+                if every_arm_ends && crate::syntax::arms_cover_every_value(arms) {
                     ends_after.clear();
                 }
                 self.consteval.constraints = facts_after_branches(prefix_before, ends_after);
@@ -1595,6 +1709,17 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                }
+                // No arm gives a value, but the value of the `match` is used, as in
+                // `return match ..`. The parser also writes that for a `match` at the end of
+                // a function.
+                if !unused && match_ty.is_none() {
+                    self.refuse_a_used_match_that_can_end(
+                        arms,
+                        &expr_ty,
+                        match_span,
+                        arm_that_can_end,
+                    );
                 }
 
                 // When no arm yields a value the match sits in diverging/statement

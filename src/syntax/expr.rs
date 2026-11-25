@@ -764,8 +764,10 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
                 else_block: Some(else_block),
                 ..
             }) => block_always_exits(then_block, never) && block_always_exits(else_block, never),
+            // A value that matches no arm goes to the code after the `match`.
             Expr::Match(MatchExpr { arms, .. }) => {
-                !arms.is_empty() && arms.iter().all(|a| block_always_exits(&a.body, never))
+                arms_cover_every_value(arms)
+                    && arms.iter().all(|a| block_always_exits(&a.body, never))
             }
             Expr::FunctionCall(c) => is_abort_or_panic(c) || never(c.name.as_ref()),
             Expr::UnsafeBlock(UnsafeBlockExpr { stmts, .. }) => block_always_exits(stmts, never),
@@ -780,6 +782,27 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
         Statement::Loop(l) => !breaks_out_of_loop(&l.body),
         _ => false,
     }
+}
+
+/// Whether one of `arms`, the arms of a `match`, runs for every value that the `match` can get.
+///
+/// A `_` arm or a name arm takes every value. Arms that are all enum variants, or all `true` and
+/// `false`, count too: the type checker reports a missing one as E3020. It refuses such an arm in
+/// a `match` on a number (E3051). A number arm takes one value, and the type checker does not
+/// count the values of a number type. So a `match` with a number arm needs a `_` arm or a name
+/// arm.
+pub fn arms_cover_every_value(arms: &[MatchArm]) -> bool {
+    let takes_every_value =
+        |arm: &MatchArm| matches!(arm.pattern, Pattern::Wildcard | Pattern::Identifier(_));
+    let checked_by_the_type_checker = |arm: &MatchArm| match &arm.pattern {
+        Pattern::EnumVariant(..) => true,
+        Pattern::Literal(lit) => {
+            matches!(&**lit, Expr::Identifier(id) if matches!(id.name.as_ref(), "true" | "false"))
+        }
+        Pattern::Wildcard | Pattern::Identifier(_) => false,
+    };
+    !arms.is_empty()
+        && (arms.iter().any(takes_every_value) || arms.iter().all(checked_by_the_type_checker))
 }
 
 /// Whether a `break` in `stmts`, the body of a loop, can leave that loop. A `break` in an inner
