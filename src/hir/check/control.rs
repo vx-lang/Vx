@@ -1638,10 +1638,10 @@ impl<'a> TypeChecker<'a> {
 
     /// The end of a closure with a block body, whose `return` or written type gives `returned`:
     /// its last value, of type `ty`, must have that type, and it must not end with no value.
-    /// E3069: the arm at `span` gives a `got`, but the `match` gives a `want`.
+    /// E3071: the arm at `span` gives a `got`, but the `match` gives a `want`.
     fn report_match_arm_type(&mut self, span: &Span, got: &Type, want: &Type) {
         self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E3069,
+            crate::diagnostic::DiagnosticCode::E3071,
             format!(
                 "this `match` arm gives a value of type {got}, but another arm gives a value of \
                  type {want}. Make every arm give the same type."

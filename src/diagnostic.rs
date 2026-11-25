@@ -494,7 +494,7 @@ pub enum DiagnosticCode {
     E3067,
     /// Two arms of a `match` whose value the program uses give values of different types, such
     /// as an `i64` and an `i32`.
-    E3069,
+    E3071,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
