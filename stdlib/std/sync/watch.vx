@@ -63,7 +63,7 @@ impl<T> ReceiverOfAChannel for WatchReceiver<T> {}
 
 /// A watch channel that holds `v`. The receiver saw `v` already, so its first `recv` waits for
 /// a `send`. Each receiver gets a clone of the value, so `T` must be `Clone`.
-fn watch<T : Send + Owned + Clone>(v : T, at : Caller) -> (WatchSender<T>, WatchReceiver<T>) {
+pub fn watch<T : Send + Owned + Clone>(v : T, at : Caller) -> (WatchSender<T>, WatchReceiver<T>) {
   let words : *mut AtomicI64 = alloc(WATCH_WORDS * 8, 8);
   let data : *mut T = alloc(sizeof<T>(), 16);
   if is_null_mut(words) || is_null_mut(data) {
@@ -106,15 +106,14 @@ fn watch_release<T>(words : *mut AtomicI64, data : *mut T) -> void {
   drop(value);
   let w : *mut i8 = words;
   let d : *mut i8 = data;
-  dealloc(w, 8);
-  dealloc(d, 16);
+  unsafe { dealloc(w, 8); dealloc(d, 16); }
 }
 
 impl<T : Clone>
 WatchSender<T> {
   /// Put `v` in place of the value, and wake the receivers. It does not wait for a receiver, so a
   /// cancel does not stop it. When each receiver was dropped, keep the old value and give `v` back.
-  fn send(self : &WatchSender<T>, v : T) -> Result<void, SendError<T>> {
+  pub fn send(self : &WatchSender<T>, v : T) -> Result<void, SendError<T>> {
     let words = self.words;
     if word(words, RECEIVER).load(AtomicOrdering::SeqCst) == 0 {
       return Result<void, SendError<T>>::Err(SendError<T> {
@@ -133,13 +132,13 @@ WatchSender<T> {
   }
 
   /// A clone of the value.
-  fn get(self : &WatchSender<T>) -> T {
+  pub fn get(self : &WatchSender<T>) -> T {
     let (value, _version) = watch_read<T>(self.words, self.data);
     return value;
   }
 
   /// A new receiver. It saw the value that the channel holds now.
-  fn subscribe(self : &WatchSender<T>) -> WatchReceiver<T> {
+  pub fn subscribe(self : &WatchSender<T>) -> WatchReceiver<T> {
     let words = self.words;
     word(words, RECEIVER).fetch_add(1, AtomicOrdering::SeqCst);
     word(words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
@@ -153,21 +152,21 @@ WatchSender<T> {
 impl<T : Clone>
 WatchReceiver<T> {
   /// A clone of the value. This receiver then saw it.
-  fn get(self : &WatchReceiver<T>) -> T {
+  pub fn get(self : &WatchReceiver<T>) -> T {
     let (value, version) = watch_read<T>(self.words, self.data);
     word(self.seen, 0).store(version, AtomicOrdering::Relaxed);
     return value;
   }
 
   /// Whether a `send` changed the value after this receiver saw it last.
-  fn has_changed(self : &WatchReceiver<T>) -> bool {
+  pub fn has_changed(self : &WatchReceiver<T>) -> bool {
     let version = word(self.words, WATCH_VERSION).load(AtomicOrdering::SeqCst);
     return version != word(self.seen, 0).load(AtomicOrdering::Relaxed);
   }
 
   /// The value, if it is new to this receiver. It does not wait. When the `WatchSender` was
   /// dropped and this receiver saw the last value, give `Closed`.
-  fn try_recv(self : &WatchReceiver<T>) -> Result<T, TryRecvError> {
+  pub fn try_recv(self : &WatchReceiver<T>) -> Result<T, TryRecvError> {
     let closed = word(self.words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
     if self.has_changed() {
       return Result<T, TryRecvError>::Ok(self.get());
@@ -182,17 +181,17 @@ WatchReceiver<T> {
   /// during the wait give only the last value. When the `WatchSender` was dropped and this receiver
   /// saw the last value, give `Closed`. When the `tasks` block of this task was cancelled, give
   /// `Cancelled`.
-  fn recv(self : &WatchReceiver<T>, at : Caller) -> Result<T, RecvError> {
+  pub fn recv(self : &WatchReceiver<T>, at : Caller) -> Result<T, RecvError> {
     return self.recv_until(Instant::never(), at);
   }
 
   /// `recv`, and give `TimedOut` when it waited `limit` for a new value.
-  fn recv_for(self : &WatchReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+  pub fn recv_for(self : &WatchReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
     return self.recv_until(deadline_after(limit), at);
   }
 
   /// `recv` until the clock reaches `deadline`.
-  fn recv_until(self : &WatchReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
+  pub fn recv_until(self : &WatchReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
     let words = self.words;
     let mut why = RecvError::Closed;
     loop {

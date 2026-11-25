@@ -565,7 +565,7 @@ requires n > 0i64
   fill_zero(p, n);
   let s = sum(p as *const i64, n);
   let bytes : *mut i8 = p;
-  dealloc(bytes, 16i64);
+  unsafe { dealloc(bytes, 16i64) };
   return s + sum(p as *const i64, n);
 }
 ```

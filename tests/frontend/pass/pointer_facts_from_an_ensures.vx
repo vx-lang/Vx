@@ -90,7 +90,7 @@ requires n > 0i64
   fill_zero(p, n);
   let s = sum(p as *const i64, n);
   let bytes : *mut i8 = p;
-  dealloc(bytes, 16i64);
+  unsafe { dealloc(bytes, 16i64) };
   return s;
 }
 
@@ -150,7 +150,7 @@ requires n > 0i64
     fill_zero(p, n);
     t = t + sum(p as *const i64, n);
     let bytes : *mut i8 = p;
-    dealloc(bytes, 16i64);
+    unsafe { dealloc(bytes, 16i64) };
   }
   return t;
 }
@@ -182,7 +182,7 @@ requires n > 0i64
   fill_zero(p, n);
   t = sum(p as *const i64, n);
   let bytes : *mut i8 = p;
-  dealloc(bytes, 16i64);
+  unsafe { dealloc(bytes, 16i64) };
   return t;
 }
 
@@ -191,7 +191,7 @@ fn after_an_assume_of_a_number(n : i64) -> i64 {
   unsafe { assume n > 0i64; }
   let p = alloc_i64(n);
   let bytes : *mut i8 = p;
-  dealloc(bytes, 16i64);
+  unsafe { dealloc(bytes, 16i64) };
   return 0i64;
 }
 
@@ -226,14 +226,14 @@ fn main() -> i32 {
   }
   let total = through_a_call(xs as *const i64, 3i64) / 2i64 + after_a_write(xs, 3i64) - 10i64;
   let xs_bytes : *mut i8 = xs;
-  dealloc(xs_bytes, 16i64);
+  unsafe { dealloc(xs_bytes, 16i64) };
   let buf = alloc_i64(4i64);
   let read = after_a_read(buf, 4i64);
   // A cast to another element type makes a pointer with no facts.
   let bytes : *mut i8 = buf;
   unsafe { assume valid(bytes, 32i64); }
   let filled = after_a_memset(bytes, 32i64);
-  dealloc(bytes, 16i64);
+  unsafe { dealloc(bytes, 16i64) };
   let one = 1i64;
   let s = alloc_and_fill(3i64) + after_a_join(2i64) + after_a_tasks_block(2i64)
   + after_an_assume_of_a_number(2i64) + through_a_reference(&one) - 1i64;
