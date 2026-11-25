@@ -3,7 +3,7 @@
 Status: proposed, for review. Issue: #3890. Needed for #3884 (safe functions of `std` that take a
 raw pointer) and #3750 (capability types).
 
-[docs/lang/visibility.md](../lang/visibility.md) is now the spec of visibility. It changes two
+`docs/lang/visibility.md` (#3934) is now the spec of visibility. It changes two
 points of this note. The level `pkg` answers the first open question: the helpers of #3884 that
 five files of `std::sync` share become `pkg fn`. And a name that a macro writes has the
 privileges of the file that defines the macro, not of the file that calls it (rule 7).
