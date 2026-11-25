@@ -1,0 +1,36 @@
+//===- macros_named_pkg_and_ws_where_an_item_goes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `pkg` and `ws` are levels of visibility only before `fn`, `unsafe`, `extern` or `safe`. So a
+// macro can still have either name, and a call of it can stand where an item goes.
+// EXPECT: 3 4
+
+macro_rules pkg {
+  ($name : ident) => {
+    fn $name() -> i32 {
+      return 3;
+    }
+  };
+}
+
+macro_rules ws {
+  ($name : ident) => {
+    fn $name() -> i32 {
+      return 4;
+    }
+  };
+}
+
+pkg!(three);
+ws!(four);
+
+fn main() -> i32 {
+  print(three());
+  print!(" ");
+  print(four());
+  return 0;
+}

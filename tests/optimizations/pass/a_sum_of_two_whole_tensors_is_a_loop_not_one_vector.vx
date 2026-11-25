@@ -1,0 +1,56 @@
+//===- a_sum_of_two_whole_tensors_is_a_loop_not_one_vector.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Arithmetic on whole 1-D tensors is a linalg op, a loop over the elements. It is not one vector
+// of the whole tensor: on an Apple Silicon Mac, llc crashed on a vector of 100000 floats. A row of
+// a larger tensor keeps the vector form. Both code generators give the same ops and values.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR --implicit-check-not="vector<100000"
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR --implicit-check-not="vector<100000"
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+
+// MLIR-DAG: linalg.add ins({{.*}} : memref<{{100000|\?}}xf32>, memref<{{100000|\?}}xf32>)
+fn add_whole(a : &Tensor<f32, [100000]>, b : &Tensor<f32, [100000]>) -> f32 {
+  let d = a + b;
+  return d[99999];
+}
+
+// MLIR-DAG: linalg.generic {{.*}} ins({{.*}} : memref<{{100000|\?}}xf32>, f32)
+// MLIR-DAG: arith.mulf %in, %in_0 : f32
+fn scale_whole(a : &Tensor<f32, [100000]>) -> f32 {
+  let d = a * 3.0;
+  return d[99999];
+}
+
+// MLIR-DAG: arith.extf %in : f16 to f32
+fn add_half_to_whole(h : &Tensor<f16, [100000]>, b : &Tensor<f32, [100000]>) -> f32 {
+  let d = h + b;
+  return d[99999];
+}
+
+// MLIR-DAG: arith.addf {{.*}} : vector<8xf32>
+fn add_rows(m : &Tensor<f32, [2, 8]>) -> f32 {
+  let r = m[0] + m[1];
+  return r[7];
+}
+
+// OUT: add 3
+// OUT-NEXT: scale 3
+// OUT-NEXT: half 6
+// OUT-NEXT: rows 10
+fn main() -> i32 {
+  let a = Tensor<f32, [100000]>::fill(1.0);
+  let b = Tensor<f32, [100000]>::fill(2.0);
+  let h = Tensor<f16, [100000]>::fill(4.0);
+  let m = Tensor<f32, [2, 8]>::fill(5.0);
+  println!("add {}", add_whole(&a, &b));
+  println!("scale {}", scale_whole(&a));
+  println!("half {}", add_half_to_whole(&h, &b));
+  println!("rows {}", add_rows(&m));
+  return 0;
+}

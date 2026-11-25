@@ -20,31 +20,31 @@ import std::time;
 
 extern {
   /// The Rust core behind `wait_while`.
-  fn vx_wait_while(word : *mut i64, value : i64) -> void;
+  pub fn vx_wait_while(word : *mut i64, value : i64) -> void;
   /// The Rust core behind `wait_while_or_cancel`.
-  fn vx_wait_while_or_cancel(word : *mut i64, value : i64) -> void;
+  pub fn vx_wait_while_or_cancel(word : *mut i64, value : i64) -> void;
   /// The Rust core behind `wake_all`.
-  fn vx_wake_all(word : *mut i64) -> void;
+  pub fn vx_wake_all(word : *mut i64) -> void;
   /// The Rust core behind `cancelled`.
-  fn vx_cancelled() -> i32;
+  pub fn vx_cancelled() -> i32;
   /// The Rust core behind `cancelled_at`.
-  fn vx_cancelled_at(at_file : *const i8, at_line : i32) -> i32;
+  pub fn vx_cancelled_at(at_file : *const i8, at_line : i32) -> i32;
   /// The Rust core behind `clock_ns`.
-  fn vx_clock_ns() -> i64;
+  pub fn vx_clock_ns() -> i64;
   /// The Rust core behind `wait_while_until`.
-  fn vx_wait_while_until(word : *mut i64, value : i64, deadline : i64, or_cancel : i32) -> void;
+  pub fn vx_wait_while_until(word : *mut i64, value : i64, deadline : i64, or_cancel : i32) -> void;
   /// The Rust core behind the start of `within`.
-  fn vx_within_start(limit_ns : i64) -> void;
+  pub fn vx_within_start(limit_ns : i64) -> void;
   /// The Rust core behind the end of `within`.
-  fn vx_within_end() -> void;
+  pub fn vx_within_end() -> void;
   /// The Rust core behind `waiting_for`.
-  fn vx_waiting_for(what : i32, at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32, channel : *mut AtomicI64) -> void;
+  pub fn vx_waiting_for(what : i32, at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32, channel : *mut AtomicI64) -> void;
   /// The Rust core behind `waiting_for_lock`.
-  fn vx_waiting_for_lock(at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32, holder : *mut i64) -> void;
+  pub fn vx_waiting_for_lock(at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32, holder : *mut i64) -> void;
   /// The Rust core behind `lock_taken`.
-  fn vx_lock_taken(holder : *mut i64) -> void;
+  pub fn vx_lock_taken(holder : *mut i64) -> void;
   /// The Rust core behind `lock_released`.
-  fn vx_lock_released(holder : *mut i64) -> void;
+  pub fn vx_lock_released(holder : *mut i64) -> void;
 }
 
 /// What a wait is for, for `waiting_for`.
@@ -57,7 +57,7 @@ const WAIT_IN_ACQUIRE : i32 = 8;
 /// with the words `channel`. When the program stops on a deadlock, the report says it for each
 /// task, with the line `at` of the wait and the line `made` that made the channel. It also counts
 /// the `Sender`s of the channel that are not dropped.
-fn waiting_for(what : i32, at : Caller, made : Location, channel : *mut AtomicI64) -> void {
+pkg fn waiting_for(what : i32, at : Caller, made : Location, channel : *mut AtomicI64) -> void {
   let l = at.location;
   unsafe {
     vx_waiting_for(what, l.file, l.line, made.file, made.line, channel);
@@ -66,7 +66,7 @@ fn waiting_for(what : i32, at : Caller, made : Location, channel : *mut AtomicI6
 
 /// `waiting_for` a `lock` at the line `at`, on a lock that the line `made` made. `holder` is the
 /// word where `lock_taken` keeps who holds the lock, so the report can name it.
-fn waiting_for_lock(at : Caller, made : Location, holder : &AtomicI64) -> void {
+pub fn waiting_for_lock(at : Caller, made : Location, holder : &AtomicI64) -> void {
   let l = at.location;
   unsafe {
     vx_waiting_for_lock(l.file, l.line, made.file, made.line, holder.as_ptr());
@@ -74,17 +74,17 @@ fn waiting_for_lock(at : Caller, made : Location, holder : &AtomicI64) -> void {
 }
 
 /// Keep in `holder` who runs here, the code that now holds a lock, for the deadlock report.
-fn lock_taken(holder : &AtomicI64) -> void {
+pub fn lock_taken(holder : &AtomicI64) -> void {
   unsafe { vx_lock_taken(holder.as_ptr()); }
 }
 
 /// The lock with the word `holder` is free. Only the code that took it calls this.
-fn lock_released(holder : &AtomicI64) -> void {
+pub fn lock_released(holder : &AtomicI64) -> void {
   unsafe { vx_lock_released(holder.as_ptr()); }
 }
 
 /// `waiting_for` an `acquire` at the line `at`, on a `Semaphore` that the line `made` made.
-fn waiting_for_acquire(at : Caller, made : Location) -> void {
+pub fn waiting_for_acquire(at : Caller, made : Location) -> void {
   let l = at.location;
   unsafe {
     vx_waiting_for(WAIT_IN_ACQUIRE, l.file, l.line, made.file, made.line, null_mut<AtomicI64>());
@@ -92,7 +92,7 @@ fn waiting_for_acquire(at : Caller, made : Location) -> void {
 }
 
 /// `waiting_for` a `select` at the line `at`. It waits on many channels, so it has no `made`.
-fn waiting_in_select(at : Caller) -> void {
+pub fn waiting_in_select(at : Caller) -> void {
   let l = at.location;
   unsafe {
     vx_waiting_for(WAIT_IN_SELECT, l.file, l.line, null<i8>(), 0, null_mut<AtomicI64>());
@@ -101,25 +101,25 @@ fn waiting_in_select(at : Caller) -> void {
 
 /// Block the thread while `word` holds `value`. It can also return when `word` did not change.
 /// So the caller reads `word` again, in a loop.
-fn wait_while(word : &AtomicI64, value : i64) -> void {
+pub fn wait_while(word : &AtomicI64, value : i64) -> void {
   unsafe { vx_wait_while(word.as_ptr(), value); }
 }
 
 /// As `wait_while`, and also return when the `tasks` block of this task was cancelled. Use it for a
 /// wait that can be cancelled, and check `cancelled` after it.
-fn wait_while_or_cancel(word : &AtomicI64, value : i64) -> void {
+pub fn wait_while_or_cancel(word : &AtomicI64, value : i64) -> void {
   unsafe { vx_wait_while_or_cancel(word.as_ptr(), value); }
 }
 
 /// Whether the `tasks` block of this task, or a block around it, was cancelled. A loop with no
 /// wait can check it.
-fn cancelled() -> bool {
+pub fn cancelled() -> bool {
   return unsafe { vx_cancelled() } != 0;
 }
 
 /// `cancelled` for a wait at the line `at`. A task that sees the cancel many times gets a warning
 /// that names the line.
-fn cancelled_at(at : Caller) -> bool {
+pub fn cancelled_at(at : Caller) -> bool {
   let l = at.location;
   return unsafe { vx_cancelled_at(l.file, l.line) } != 0;
 }
@@ -131,7 +131,7 @@ fn cancelled_at(at : Caller) -> bool {
 ///
 /// A `return` in `body` ends `body`, and not the function around the call. To give an error,
 /// `body` returns a `Result`.
-fn within<T>(limit : Duration, body : || -> T) -> T {
+pub fn within<T>(limit : Duration, body : || -> T) -> T {
   unsafe { vx_within_start(limit.as_nanos_i64()); }
   let value = body();
   unsafe { vx_within_end(); }
@@ -139,18 +139,18 @@ fn within<T>(limit : Duration, body : || -> T) -> T {
 }
 
 /// Wake each thread that waits on `word`. Change `word` before the call.
-fn wake_all(word : &AtomicI64) -> void {
+pub fn wake_all(word : &AtomicI64) -> void {
   unsafe { vx_wake_all(word.as_ptr()); }
 }
 
 /// Nanoseconds on a clock that never goes back. Only the difference of two readings means
 /// something.
-fn clock_ns() -> i64 {
+pub fn clock_ns() -> i64 {
   return unsafe { vx_clock_ns() };
 }
 
 /// The deadline `d` from now, for `wait_while_until` and the waits of a channel.
-fn deadline_after(d : Duration) -> Instant {
+pub fn deadline_after(d : Duration) -> Instant {
   match Instant::now().checked_add(&d) {
     Option<Instant>::Some(at) => {
       return at;
@@ -162,13 +162,13 @@ fn deadline_after(d : Duration) -> Instant {
 }
 
 /// Whether the clock reached `deadline`.
-fn past_deadline(deadline : Instant) -> bool {
+pub fn past_deadline(deadline : Instant) -> bool {
   return deadline != Instant::never() && Instant::now() >= deadline;
 }
 
 /// As `wait_while`, and also return at `deadline`. With `can_cancel`, also return when the
 /// `tasks` block of this task was cancelled. The caller checks `past_deadline` after it.
-fn wait_while_until(word : &AtomicI64, value : i64, deadline : Instant, can_cancel : bool) -> void {
+pub fn wait_while_until(word : &AtomicI64, value : i64, deadline : Instant, can_cancel : bool) -> void {
   if deadline == Instant::never() {
     if can_cancel {
       wait_while_or_cancel(word, value);
