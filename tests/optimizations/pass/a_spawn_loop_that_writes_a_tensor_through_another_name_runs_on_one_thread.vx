@@ -1,0 +1,228 @@
+//===- a_spawn_loop_that_writes_a_tensor_through_another_name_runs_on_one_thread.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each loop below adds 1 to one element of `out` in every pass, through a local that is another
+// name for `out`: a copy, an `if` value, a row, a copy of a row, a tuple, a struct field or a
+// `match` arm. If the passes ran at the same time, they would race on that element. So each
+// loop runs on one thread, and gets no launch size. Three loops split: `reads_through_a_copy`
+// with 64 passes, `copies_scratch` with 96 and `writes_its_own_row` with 128. The launch
+// sizes, sorted as text:
+//
+// RUN: VX_NO_AST_FALLBACK=1 vxc %s --action emit-llvm 2>/dev/null | grep -o 'launch=[0-9]*' | LC_ALL=C sort | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>/dev/null | grep -o 'launch=[0-9]*' | LC_ALL=C sort | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=
+// LAUNCH: launch=128
+// LAUNCH-NEXT: launch=64
+// LAUNCH-NEXT: launch=96
+//
+// A loop whose passes may write the same memory gets no warning. `reads_a_payload` reads the
+// row of the next pass, and W1033 says so:
+//
+// RUN: vxc %s --action emit-llvm 2>&1 >/dev/null | FileCheck %s --check-prefix=WARN --implicit-check-not=W1033
+//
+// The kernels run on this machine's CPU, split across 8 threads:
+//
+// RUN: env CUDA_VISIBLE_DEVICES= VX_HOST_THREADS=8 VX_NO_AST_FALLBACK=1 vxc %s 2>/dev/null | FileCheck %s --check-prefix=OUT
+// RUN: env CUDA_VISIBLE_DEVICES= VX_HOST_THREADS=8 vxc %s --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=OUT
+// OUT: 100000 100001 100002 100003 100004 100005 100006 100007
+// OUT-NEXT: 300
+// OUT-NEXT: 4032 4656 130816
+
+struct Holder {
+  buf : &mut Tensor<i32, [512], Memory::GPU_HBM>,
+  k : i32,
+}
+
+enum Opt {
+  Some(i32),
+  None,
+}
+
+fn total<const N : usize>(t : Tensor<i32, [N], Memory::GPU_HBM>, n : i32) -> i32 {
+  let h = transfer(t, Memory::CPU_DRAM);
+  let mut sum = 0;
+  for i in 0..n {
+    sum = sum + h[i];
+  }
+  return sum;
+}
+
+fn copy(out : &mut Tensor<i32, [512], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..100000 {
+      let t = out;
+      t[0] = t[0] + 1;
+    }
+  }
+}
+
+fn copy_of_a_copy(out : &mut Tensor<i32, [512], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..100001 {
+      let t = out;
+      let u = t;
+      u[1] = u[1] + 1;
+    }
+  }
+}
+
+fn if_value(out : &mut Tensor<i32, [512], Memory::GPU_HBM>, c : i32) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..100002 {
+      let t = if c > 0 {
+        out
+      } else {
+        out
+      };
+      t[2] = t[2] + 1;
+    }
+  }
+}
+
+fn tuple(out : &mut Tensor<i32, [512], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..100003 {
+      let (t, k) = (out, 1);
+      t[3] = t[3] + k;
+    }
+  }
+}
+
+fn struct_field(out : &mut Tensor<i32, [512], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..100004 {
+      let h = Holder {
+        buf: out, k: 1
+      };
+      let t = h.buf;
+      t[4] = t[4] + h.k;
+    }
+  }
+}
+
+fn match_arm(out : &mut Tensor<i32, [512], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..100005 {
+      match out {
+        t => {
+          t[5] = t[5] + 1;
+        }
+      }
+    }
+  }
+}
+
+fn row(m : &mut Tensor<i32, [4, 8], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..100006 {
+      let mut r = m[1];
+      r[2] = r[2] + 1;
+    }
+  }
+}
+
+fn copy_of_a_row(m : &mut Tensor<i32, [4, 8], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..100007 {
+      let mut r = m[1];
+      let mut s = r;
+      s[3] = s[3] + 1;
+    }
+  }
+}
+
+// Each pass sets its own row to 1, and adds the row of the next pass, which is still 0.
+fn reads_a_payload(out : &mut Tensor<i32, [512], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..300 {
+      out[i] = 1;
+      // WARN: Warning[W1033] at {{.*}}.vx:[[@LINE+1]]:28: this `spawn` loop runs on one thread: a pass reads a row of `out` that another pass writes
+      let h = Opt::Some(out[i + 1]);
+      let v = match h {
+        Opt::Some(x) => {
+          x
+        }
+        Opt::None => {
+          0
+        }
+      };
+      out[i] = out[i] + v;
+    }
+  }
+}
+
+// No pass writes `a`, so a pass may read it through another name.
+fn reads_through_a_copy(a : &Tensor<i32, [512], Memory::GPU_HBM>, out : &mut Tensor<i32, [512], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..64 {
+      let r = a;
+      out[i] = r[i] * 2;
+    }
+  }
+}
+
+// Each thread has its own `s`.
+fn copies_scratch(a : &Tensor<i32, [512], Memory::GPU_HBM>, out : &mut Tensor<i32, [512], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut s = Tensor<i32>([2]);
+    for i in 0..96 {
+      s[0] = a[i];
+      out[i] = s[0] + 1;
+    }
+  }
+}
+
+// Pass `i` writes row `i` of `m` through `r`, so the passes write different elements.
+fn writes_its_own_row(m : &mut Tensor<i32, [128, 4], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..128 {
+      let mut r = m[i];
+      r[0] = i * 4;
+      r[1] = i * 4 + 1;
+      r[2] = i * 4 + 2;
+      r[3] = i * 4 + 3;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  copy(&mut out);
+  copy_of_a_copy(&mut out);
+  if_value(&mut out, 1);
+  tuple(&mut out);
+  struct_field(&mut out);
+  match_arm(&mut out);
+  let mut m = transfer(Tensor<i32>([4, 8]), Memory::GPU_HBM);
+  row(&mut m);
+  copy_of_a_row(&mut m);
+  let o = transfer(out, Memory::CPU_DRAM);
+  let mh = transfer(m, Memory::CPU_DRAM);
+  println!("{} {} {} {} {} {} {} {}", o[0], o[1], o[2], o[3], o[4], o[5], mh[1][2], mh[1][3]);
+  let mut p = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  reads_a_payload(&mut p);
+  println!("{}", total(p, 300));
+  let mut h = Tensor<i32>([512]);
+  for i in 0..512 {
+    h[i] = i;
+  }
+  let a = transfer(h, Memory::GPU_HBM);
+  let mut o2 = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  reads_through_a_copy(&a, &mut o2);
+  let mut o3 = transfer(Tensor<i32>([512]), Memory::GPU_HBM);
+  copies_scratch(&a, &mut o3);
+  let mut m2 = transfer(Tensor<i32>([128, 4]), Memory::GPU_HBM);
+  writes_its_own_row(&mut m2);
+  let h2 = transfer(m2, Memory::CPU_DRAM);
+  let mut rows = 0;
+  for i in 0..128 {
+    for j in 0..4 {
+      rows = rows + h2[i][j];
+    }
+  }
+  println!("{} {} {}", total(o2, 64), total(o3, 96), rows);
+  return 0;
+}
