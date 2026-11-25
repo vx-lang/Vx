@@ -3,6 +3,11 @@
 Status: proposed, for review. Issue: #3890. Needed for #3884 (safe functions of `std` that take a
 raw pointer) and #3750 (capability types).
 
+[docs/lang/visibility.md](../lang/visibility.md) is now the spec of visibility. It changes two
+points of this note. The level `pkg` answers the first open question: the helpers of #3884 that
+five files of `std::sync` share become `pkg fn`. And a name that a macro writes has the
+privileges of the file that defines the macro, not of the file that calls it (rule 7).
+
 Today each function of a file is visible to each file that imports it. So a helper of `std`, such
 as `word(words : *mut AtomicI64, i : i64)` in `std::sync::channel`, is part of the API of `std`.
 The helper reads through its raw pointer, and any program can give it a wrong one, so safe code can
