@@ -1,0 +1,34 @@
+//===- a_program_reads_its_arguments_from_its_root.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `main` that takes a `Root` reads the words of its command line from `root.args`, with no
+// `unsafe`. The first word is the path of the program, and each argument comes after it. The
+// legacy code generator prints a `String` with no text (#3972), so only the default one checks
+// the text.
+//
+// RUN: vxc %s -- one "two words" 2>&1 | FileCheck %s --check-prefixes=CHECK,TEXT --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen -- one "two words" 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: 3 words
+// CHECK: arg 1 has 3 bytes
+// TEXT: arg 1 is one
+// CHECK: arg 2 has 9 bytes
+// TEXT: arg 2 is two words
+import std::root;
+import std::string;
+import std::vec;
+
+fn main(root : Root) -> i32 {
+  println!("{} words", root.args.len());
+  let mut i = 1;
+  while i < root.args.len() {
+    let word = root.args.get_ref(i);
+    println!("arg {} has {} bytes", i, word.len());
+    println!("arg {} is {}", i, word);
+    i = i + 1;
+  }
+  return 0;
+}

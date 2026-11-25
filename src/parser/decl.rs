@@ -2210,8 +2210,8 @@ impl<'a> Parser<'a> {
     }
 }
 /// `fn main(root : Root) -> i32` gets the capabilities of the program. Its body becomes the
-/// function `main_with_root`, and a generated `main` passes it the `Root` of `std::root`. The
-/// generated `unsafe` block is not trusted code that a program wrote, so `vxc --audit` leaves it
+/// function `main_with_root`, and a generated `main` passes it the `Root` of `std::root`, with
+/// the arguments that C gives `main`. The generated `unsafe` block is not trusted code that a program wrote, so `vxc --audit` leaves it
 /// out. Returns whether `main` takes a `Root`.
 fn give_main_its_root(functions: &mut Vec<Function>) -> bool {
     let takes_a_root = |f: &Function| {
@@ -2224,7 +2224,8 @@ fn give_main_its_root(functions: &mut Vec<Function>) -> bool {
     user.name = "main_with_root".into();
     let span = user.span;
     let mut main = Parser::parse_fn_from_str(
-        "fn main() -> i32 { return main_with_root(unsafe { root_of_the_program() }); }",
+        "fn main(argc : i32, argv : *mut *mut i8) -> i32 { \
+         return main_with_root(unsafe { root_of_the_program(argc, argv) }); }",
     );
     main.span = span;
     let Some(Statement::Return(ReturnStmt {
