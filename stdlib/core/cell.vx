@@ -22,24 +22,24 @@ struct SharedCell<T> {
 
 impl<T> SharedCell<T> {
   /// A new cell holding `v`.
-  fn new(v : T) -> SharedCell<T> {
+  pub fn new(v : T) -> SharedCell<T> {
     return SharedCell<T> {
       v : v
     };
   }
 
   /// The value, out of the cell.
-  fn into_inner(self : SharedCell<T>) -> T {
+  pub fn into_inner(self : SharedCell<T>) -> T {
     return self.v;
   }
 
   /// A pointer to the value. A write through it needs `unsafe`.
-  fn get(self : &SharedCell<T>) -> *mut T {
+  pub fn get(self : &SharedCell<T>) -> *mut T {
     return (&self.v) as *const T as *mut T;
   }
 
   /// The value, through a `&mut`, which rules out any other access at the same time.
-  fn get_mut(self : &mut SharedCell<T>) -> &mut T {
+  pub fn get_mut(self : &mut SharedCell<T>) -> &mut T {
     return &mut self.v;
   }
 }

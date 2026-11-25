@@ -53,14 +53,14 @@ import std::vec;
 
 extern {
   /// The skip set: a cancelled `send` left the send number `k` of the channel at `words` empty.
-  fn vx_channel_skip(words : *mut AtomicI64, k : i64) -> void;
+  pub fn vx_channel_skip(words : *mut AtomicI64, k : i64) -> void;
   /// 1 when `k` is in the skip set. It also takes `k` out of the set.
-  fn vx_channel_take_skip(words : *mut AtomicI64, k : i64) -> i32;
+  pub fn vx_channel_take_skip(words : *mut AtomicI64, k : i64) -> i32;
   /// Take each number of the channel at `words` out of the skip set.
-  fn vx_channel_forget_skips(words : *mut AtomicI64) -> void;
+  pub fn vx_channel_forget_skips(words : *mut AtomicI64) -> void;
   /// The task that runs holds an end of the channel at `words`: a `Sender` for 1, the `Receiver`
   /// for 0. The checker puts a call at the start of a task for each end that the task moves.
-  fn vx_task_holds_an_end(words : *mut AtomicI64, sender : i32) -> void;
+  pub fn vx_task_holds_an_end(words : *mut AtomicI64, sender : i32) -> void;
 }
 
 // The number of the next `send`.
@@ -158,7 +158,7 @@ impl<T> SenderOfAChannel for Sender<T> {}
 impl<T> ReceiverOfAChannel for Receiver<T> {}
 
 /// A channel with room for `n` values. `n` must be at least 1.
-fn channel<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, Receiver<T>) {
+pub fn channel<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, Receiver<T>) {
   assert(n >= 1, "channel: the room must be at least 1");
   let words : *mut AtomicI64 = alloc((SLOTS + n) * 8, 8);
   let data : *mut T = alloc(n * sizeof<T>(), 16);
@@ -185,13 +185,13 @@ fn channel<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, Receiver<T>) {
 }
 
 /// The word `i` of a channel.
-fn word(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
+pub fn word(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
   return unsafe { &words[i] };
 }
 
 /// Take the lock of a `broadcast` or a `watch`, at the three words from `at`: a ticket lock, as
 /// in `Mutex`. The code that holds it does not wait, so a wait for it is short.
-fn lock_channel(words : *mut AtomicI64, at : i64) -> void {
+pub fn lock_channel(words : *mut AtomicI64, at : i64) -> void {
   let ticket = word(words, at).fetch_add(1, AtomicOrdering::Relaxed);
   let serving = word(words, at + 1);
   let mut now = serving.load(AtomicOrdering::Acquire);
@@ -206,7 +206,7 @@ fn lock_channel(words : *mut AtomicI64, at : i64) -> void {
 /// A word on the heap that holds `v`: the place of one receiver of a `broadcast` or a `watch`.
 /// It is not a field of the receiver: the AST code generator copies a struct argument for each
 /// call of a method that takes `&self`, so a change to a field could be lost.
-fn new_receiver_word(v : i64) -> *mut AtomicI64 {
+pub fn new_receiver_word(v : i64) -> *mut AtomicI64 {
   let w : *mut AtomicI64 = alloc(8, 8);
   if is_null_mut(w) {
     panic("channel: out of memory");
@@ -216,13 +216,13 @@ fn new_receiver_word(v : i64) -> *mut AtomicI64 {
 }
 
 /// Free a word of `new_receiver_word`.
-fn free_receiver_word(w : *mut AtomicI64) -> void {
+pub fn free_receiver_word(w : *mut AtomicI64) -> void {
   let p : *mut i8 = w;
   dealloc(p, 8);
 }
 
 /// Free the lock that `lock_channel` took.
-fn unlock_channel(words : *mut AtomicI64, at : i64) -> void {
+pub fn unlock_channel(words : *mut AtomicI64, at : i64) -> void {
   word(words, at + 1).fetch_add(1, AtomicOrdering::SeqCst);
   if word(words, at + 2).load(AtomicOrdering::SeqCst) > 0 {
     wake_all(word(words, at + 1));
@@ -231,13 +231,13 @@ fn unlock_channel(words : *mut AtomicI64, at : i64) -> void {
 
 /// Moves the value in slot `i` out of the buffer. The caller marks the slot taken, so the
 /// buffer does not drop it again.
-unsafe fn take_slot<T>(data : *mut T, i : i64) -> T {
+pub unsafe fn take_slot<T>(data : *mut T, i : i64) -> T {
   return unsafe { data[i] };
 }
 
 /// Wake the threads that wait on a channel, and each `select` that watches it. Call it after the
 /// change.
-fn notify(words : *mut AtomicI64) -> void {
+pub fn notify(words : *mut AtomicI64) -> void {
   word(words, WAKE).fetch_add(1, AtomicOrdering::SeqCst);
   if word(words, SLEEPERS).load(AtomicOrdering::SeqCst) > 0 {
     wake_all(word(words, WAKE));
@@ -249,7 +249,7 @@ fn notify(words : *mut AtomicI64) -> void {
 
 /// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`. A
 /// cancel of the `tasks` block and the clock reaching `deadline` also end the sleep.
-fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : Instant, what : i32, at : Caller, made : Location) -> void {
+pub fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : Instant, what : i32, at : Caller, made : Location) -> void {
   word(words, SLEEPERS).fetch_add(1, AtomicOrdering::SeqCst);
   waiting_for(what, at, made, words);
   wait_while_until(word(words, WAKE), seen, deadline, true);
@@ -258,12 +258,12 @@ fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : Instant, what :
 
 /// A `select` borrows a receiver while it watches the channel, so no `select` watches a channel
 /// that is freed. Each kind of channel checks this before it frees its words.
-fn assert_no_watcher(words : *mut AtomicI64) -> void {
+pub fn assert_no_watcher(words : *mut AtomicI64) -> void {
   assert(word(words, WATCHERS).load(AtomicOrdering::SeqCst) == 0, "the library frees a channel that a select still watches");
 }
 
 /// One end is dropped. The last one drops the values that no `recv` took, and frees the channel.
-fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
+pub fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
   if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
     return;
   }
@@ -293,18 +293,18 @@ Sender<T> {
   ///
   /// A `send` that has its place in the ring and is cancelled puts the number of its place in
   /// the skip set. The `recv` of that place passes it.
-  fn send(self : &Sender<T>, v : T, at : Caller) -> Result<void, SendError<T>> {
+  pub fn send(self : &Sender<T>, v : T, at : Caller) -> Result<void, SendError<T>> {
     return self.send_until(v, Instant::never(), at);
   }
 
   /// `send`, and give `v` back when it waited `limit` for room. A `drop` runs with
   /// cancellation off, so a `send` in a `drop` uses this to wait for a limited time.
-  fn send_for(self : &Sender<T>, v : T, limit : Duration, at : Caller) -> Result<void, SendError<T>> {
+  pub fn send_for(self : &Sender<T>, v : T, limit : Duration, at : Caller) -> Result<void, SendError<T>> {
     return self.send_until(v, deadline_after(limit), at);
   }
 
   /// `send` until the clock reaches `deadline`.
-  fn send_until(self : &Sender<T>, v : T, deadline : Instant, at : Caller) -> Result<void, SendError<T>> {
+  pub fn send_until(self : &Sender<T>, v : T, deadline : Instant, at : Caller) -> Result<void, SendError<T>> {
     if cancelled_at(at) {
       return Result<void, SendError<T>>::Err(SendError<T> {
         value : v, cancelled : true, timed_out : false
@@ -343,7 +343,7 @@ Sender<T> {
 
 /// When a cancelled `send` left the receive number `k` empty, pass it: free its slot for the
 /// `send` `cap` places later. The caller then reads the receive number again.
-fn pass_a_skip(words : *mut AtomicI64, cap : i64, k : i64) -> bool {
+pub fn pass_a_skip(words : *mut AtomicI64, cap : i64, k : i64) -> bool {
   if word(words, SKIPS).load(AtomicOrdering::SeqCst) == 0 {
     return false;
   }
@@ -369,17 +369,17 @@ Receiver<T> {
   ///
   /// A channel has one `Receiver`, so `recv` takes its receive number only when it takes a value
   /// or passes a skipped one. A cancel can then stop it at any time and leave no place empty.
-  fn recv(self : &Receiver<T>, at : Caller) -> Result<T, RecvError> {
+  pub fn recv(self : &Receiver<T>, at : Caller) -> Result<T, RecvError> {
     return self.recv_until(Instant::never(), at);
   }
 
   /// `recv`, and give `TimedOut` when it waited `limit` for a value.
-  fn recv_for(self : &Receiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+  pub fn recv_for(self : &Receiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
     return self.recv_until(deadline_after(limit), at);
   }
 
   /// `recv` until the clock reaches `deadline`.
-  fn recv_until(self : &Receiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
+  pub fn recv_until(self : &Receiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
     let words = self.words;
     let mut k = word(words, RECVS).load(AtomicOrdering::SeqCst);
     let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
@@ -420,7 +420,7 @@ Receiver<T> {
 
   /// The next value, if one is in the channel now. It does not wait. A channel has one
   /// `Receiver`, so no other `recv` takes the receive number between the load and the store.
-  fn try_recv(self : &Receiver<T>) -> Result<T, TryRecvError> {
+  pub fn try_recv(self : &Receiver<T>) -> Result<T, TryRecvError> {
     let words = self.words;
     let mut k = word(words, RECVS).load(AtomicOrdering::SeqCst);
     let mut closed = false;
@@ -483,12 +483,12 @@ impl<T> WaitSource for Receiver<T> {
 /// Wake `w` at each later event on the channel with the words `words`, which the line `made`
 /// made. Each kind of channel calls it in `watch`. Its `is_ready` then reads `WAKE` with `SeqCst`
 /// first, as `Receiver` does.
-fn watch_channel(words : *mut AtomicI64, made : Location, w : &Waiter) -> void {
+pub fn watch_channel(words : *mut AtomicI64, made : Location, w : &Waiter) -> void {
   w.watch_counted(word(words, WATCHERS), word(words, WAKE), SOURCE_CHANNEL, made);
 }
 
 /// Undo `watch_channel`.
-fn unwatch_channel(words : *mut AtomicI64, w : &Waiter) -> void {
+pub fn unwatch_channel(words : *mut AtomicI64, w : &Waiter) -> void {
   w.unwatch_counted(word(words, WATCHERS), word(words, WAKE));
 }
 
@@ -501,7 +501,7 @@ struct Selector<T> {
 
 impl<T>
 Selector<T> {
-  fn new(receivers : Vec<Receiver<T>>) -> Selector<T> {
+  pub fn new(receivers : Vec<Receiver<T>>) -> Selector<T> {
     let mut open = Vec<bool>::new();
     for _i in 0..receivers.len() {
       open.push(true);
@@ -517,7 +517,7 @@ Selector<T> {
   ///
   /// The search starts after the channel of the last choice of this task (round robin). So a
   /// channel that has a value gives it within `n` calls, for `n` channels.
-  fn select(self : &mut Selector<T>, at : Caller) -> Result<Selected<T>, RecvError> {
+  pub fn select(self : &mut Selector<T>, at : Caller) -> Result<Selected<T>, RecvError> {
     loop {
       let mut any_open = false;
       for i in 0..self.open.len() {

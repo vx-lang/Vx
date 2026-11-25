@@ -55,22 +55,22 @@ struct Tuple6<A, B, C, D, E, F> {
 /// `true`, for a tuple of exactly two elements; any other tuple is a type error. A tuple `let` or
 /// `match` calls one of these, so a pattern with the wrong number of elements is rejected. They
 /// run where they are called, so a tuple pattern works in a GPU region too.
-fn has_2_elements<A, B>(_t : &Tuple2<A, B>) on Topology::Any -> bool {
+pub fn has_2_elements<A, B>(_t : &Tuple2<A, B>) on Topology::Any -> bool {
   return true;
 }
 
-fn has_3_elements<A, B, C>(_t : &Tuple3<A, B, C>) on Topology::Any -> bool {
+pub fn has_3_elements<A, B, C>(_t : &Tuple3<A, B, C>) on Topology::Any -> bool {
   return true;
 }
 
-fn has_4_elements<A, B, C, D>(_t : &Tuple4<A, B, C, D>) on Topology::Any -> bool {
+pub fn has_4_elements<A, B, C, D>(_t : &Tuple4<A, B, C, D>) on Topology::Any -> bool {
   return true;
 }
 
-fn has_5_elements<A, B, C, D, E>(_t : &Tuple5<A, B, C, D, E>) on Topology::Any -> bool {
+pub fn has_5_elements<A, B, C, D, E>(_t : &Tuple5<A, B, C, D, E>) on Topology::Any -> bool {
   return true;
 }
 
-fn has_6_elements<A, B, C, D, E, F>(_t : &Tuple6<A, B, C, D, E, F>) on Topology::Any -> bool {
+pub fn has_6_elements<A, B, C, D, E, F>(_t : &Tuple6<A, B, C, D, E, F>) on Topology::Any -> bool {
   return true;
 }

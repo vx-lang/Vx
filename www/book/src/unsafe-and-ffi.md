@@ -303,9 +303,9 @@ vxc add_one.vx --action emit-obj -o add_one.o
 cc -shared -o libadd_one.so add_one.o
 ```
 
-C, or Python's `ctypes`, can now load `libadd_one.so` and call `add_one`. Give a `pub` function
+C, or Python's `ctypes`, can now load `libadd_one.so` and call `add_one`. Give an `extern fn`
 parameters and a result that C can pass: numbers, `bool` and raw pointers. Only a top-level
-function that is not generic can be `pub` for now.
+function that is not generic can be `extern`.
 
 ## Inline MLIR
 

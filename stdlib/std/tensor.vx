@@ -33,7 +33,7 @@ macro_rules stamp_tensor_elementwise {
   ($t : ident) => {
     impl Tensor<$t, [?]> {
       /// Adds `other` to this tensor, element by element. Refused for different lengths.
-      fn add_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
+      pub fn add_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
         assert(self.len() == other.len(), "add_assign needs two tensors of the same length");
         for i in 0..self.len() {
           self[i] = self[i] + other[i];
@@ -41,7 +41,7 @@ macro_rules stamp_tensor_elementwise {
       }
 
       /// Subtracts `other` from this tensor, element by element.
-      fn sub_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
+      pub fn sub_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
         assert(self.len() == other.len(), "sub_assign needs two tensors of the same length");
         for i in 0..self.len() {
           self[i] = self[i] - other[i];
@@ -49,7 +49,7 @@ macro_rules stamp_tensor_elementwise {
       }
 
       /// Multiplies this tensor by `other`, element by element.
-      fn mul_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
+      pub fn mul_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
         assert(self.len() == other.len(), "mul_assign needs two tensors of the same length");
         for i in 0..self.len() {
           self[i] = self[i] * other[i];
@@ -57,7 +57,7 @@ macro_rules stamp_tensor_elementwise {
       }
 
       /// Divides this tensor by `other`, element by element.
-      fn div_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
+      pub fn div_assign(self : &mut Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> void {
         assert(self.len() == other.len(), "div_assign needs two tensors of the same length");
         for i in 0..self.len() {
           self[i] = self[i] / other[i];
@@ -65,21 +65,21 @@ macro_rules stamp_tensor_elementwise {
       }
 
       /// Adds `a` to every element.
-      fn add_scalar(self : &mut Tensor<$t, [?]>, a : $t) -> void {
+      pub fn add_scalar(self : &mut Tensor<$t, [?]>, a : $t) -> void {
         for i in 0..self.len() {
           self[i] = self[i] + a;
         }
       }
 
       /// Multiplies every element by `a`.
-      fn scale(self : &mut Tensor<$t, [?]>, a : $t) -> void {
+      pub fn scale(self : &mut Tensor<$t, [?]>, a : $t) -> void {
         for i in 0..self.len() {
           self[i] = self[i] * a;
         }
       }
 
       /// Adds `a` times `x` to this tensor: BLAS's `axpy`. Refused for different lengths.
-      fn scaled_add(self : &mut Tensor<$t, [?]>, a : $t, x : &Tensor<$t, [?]>) -> void {
+      pub fn scaled_add(self : &mut Tensor<$t, [?]>, a : $t, x : &Tensor<$t, [?]>) -> void {
         assert(self.len() == x.len(), "scaled_add needs two tensors of the same length");
         for i in 0..self.len() {
           self[i] = self[i] + a * x[i];
@@ -88,7 +88,7 @@ macro_rules stamp_tensor_elementwise {
 
       /// Replaces every element by `f` of it. A call per element, so the named operations
       /// below are faster where one fits.
-      fn map_inplace(self : &mut Tensor<$t, [?]>, f : Closure1<$t, $t>) -> void {
+      pub fn map_inplace(self : &mut Tensor<$t, [?]>, f : Closure1<$t, $t>) -> void {
         let p = f.func;
         for i in 0..self.len() {
           self[i] = p(f.env, self[i]);
@@ -96,21 +96,21 @@ macro_rules stamp_tensor_elementwise {
       }
 
       /// Replaces every element by its absolute value.
-      fn abs_inplace(self : &mut Tensor<$t, [?]>) -> void {
+      pub fn abs_inplace(self : &mut Tensor<$t, [?]>) -> void {
         for i in 0..self.len() {
           self[i] = self[i].abs();
         }
       }
 
       /// Replaces every element by its square root.
-      fn sqrt_inplace(self : &mut Tensor<$t, [?]>) -> void {
+      pub fn sqrt_inplace(self : &mut Tensor<$t, [?]>) -> void {
         for i in 0..self.len() {
           self[i] = self[i].sqrt();
         }
       }
 
       /// Holds every element between `lo` and `hi`, as `clamp` on a number does.
-      fn clamp_inplace(self : &mut Tensor<$t, [?]>, lo : $t, hi : $t) -> void {
+      pub fn clamp_inplace(self : &mut Tensor<$t, [?]>, lo : $t, hi : $t) -> void {
         for i in 0..self.len() {
           self[i] = self[i].clamp(lo, hi);
         }
@@ -129,7 +129,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
   ///
   /// The elements are copied, so the tensor does not alias the buffer and outlives it. `ptr`
   /// must address `d1` elements; nothing here checks.
-  fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T, [?, ?]> {
+  pub fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ 1, d1 ]);
     for i in 0..d1 {
       unsafe { t[0][i] = ptr[i]; }
@@ -139,7 +139,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
 
   /// A `d1`-by-`d2` tensor holding a copy of `d1 * d2` elements read from `ptr` in row-major
   /// order. Copied, as `from_ptr_1d` is.
-  fn from_ptr_2d(ptr: *mut T, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
+  pub fn from_ptr_2d(ptr: *mut T, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
@@ -153,7 +153,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
   ///
   /// **A copy, not a view.** Every `slice_` method here allocates and copies, so writing to
   /// the result does not touch the original and the cost is the elements moved, not constant.
-  fn slice_2d(self: &Tensor<T, [?, ?]>, row: i32, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
+  pub fn slice_2d(self: &Tensor<T, [?, ?]>, row: i32, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
@@ -164,7 +164,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
   }
 
   /// A `d1`-by-`d2` tensor read from row 0 beginning at `start`, reshaped row-major. A copy.
-  fn slice_2d_from_1d(self: &Tensor<T, [?, ?]>, start: i32, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
+  pub fn slice_2d_from_1d(self: &Tensor<T, [?, ?]>, start: i32, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
@@ -175,7 +175,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
   }
 
   /// A 1-by-`d1` tensor read from row 0 beginning at `start`. A copy.
-  fn slice_1d(self: &Tensor<T, [?, ?]>, start: i32, d1: i32) -> Tensor<T, [?, ?]> {
+  pub fn slice_1d(self: &Tensor<T, [?, ?]>, start: i32, d1: i32) -> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ 1, d1 ]);
     for i in 0..d1 {
       t[0][i] = self[0][start + i];
@@ -187,7 +187,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
   /// Set every element to `val`.
   ///
   /// Lowered through `linalg`, with a separate path chosen at compile time for AVX-512.
-  fn fill(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
+  pub fn fill(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
     unsafe { mlir!(
     inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
     clobbers: [self],
@@ -202,7 +202,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
   ///
   /// Both must have the same shape; nothing here checks, and a mismatch reads or writes past
   /// an end.
-  fn copy(self : &mut Tensor<T, [?, ?]>, src : &Tensor<T, [?, ?]>) -> void {
+  pub fn copy(self : &mut Tensor<T, [?, ?]>, src : &Tensor<T, [?, ?]>) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       unsafe { mlir!(
@@ -237,7 +237,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
 
   /// Set every element to `val`, as `fill` does. The two differ in the `linalg` form they
   /// emit, not in what they mean.
-  fn assign(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
+  pub fn assign(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       unsafe { mlir!(
@@ -274,7 +274,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
   ///
   /// Exact equality, reduced over every element, so two tensors a rounding step apart answer
   /// false. A NaN anywhere makes the answer false, including against itself.
-  fn compare(self : &Tensor<T, [?, ?]>, other : &Tensor<T, [?, ?]>) -> bool {
+  pub fn compare(self : &Tensor<T, [?, ?]>, other : &Tensor<T, [?, ?]>) -> bool {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       unsafe { mlir!(
@@ -364,7 +364,7 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   /// Set every element of a statically shaped tensor to `val`.
   ///
   /// The shape is known at compile time here, so the emitted loop has constant bounds.
-  fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void {
+  pub fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void {
     unsafe { mlir!(
     inputs: (%arg_t = self: memref<N x M x T>, %arg_v = val: T),
     clobbers: [self],
@@ -387,7 +387,7 @@ macro_rules stamp_tensor_sums {
   ($t : ident , $lanes : expr) => {
     impl Tensor<$t, [?]> {
       /// The sum of the elements. 0 for an empty tensor.
-      fn sum(self : &Tensor<$t, [?]>) -> $t {
+      pub fn sum(self : &Tensor<$t, [?]>) -> $t {
         return unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
@@ -431,7 +431,7 @@ macro_rules stamp_tensor_sums {
 
       /// The sum of the products of matching elements. Refused for tensors of different
       /// lengths.
-      fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> $t {
+      pub fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> $t {
         assert(self.len() == other.len(), "dot needs two tensors of the same length");
         return unsafe { mlir!( inputs : (%a = self : memref<?x$t>, %b = other : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
@@ -481,7 +481,7 @@ macro_rules stamp_tensor_sums {
 
       /// The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
       /// rather than calling `self.sum()`, which the legacy code generator cannot compile.
-      fn mean(self : &Tensor<$t, [?]>) -> $t {
+      pub fn mean(self : &Tensor<$t, [?]>) -> $t {
         let total : $t = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
@@ -527,7 +527,7 @@ macro_rules stamp_tensor_sums {
       /// The Euclidean length: the square root of the sum of the squares. The loop of `dot`
       /// with the tensor on both sides, written out rather than calling `self.dot(self)`,
       /// which the legacy code generator cannot compile.
-      fn norm(self : &Tensor<$t, [?]>) -> $t {
+      pub fn norm(self : &Tensor<$t, [?]>) -> $t {
         let squares : $t = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
@@ -586,7 +586,7 @@ macro_rules stamp_half_tensor_sums {
   ($t : ident , $lanes : expr) => {
     impl Tensor<$t, [?]> {
       /// The sum of the elements. 0 for an empty tensor.
-      fn sum(self : &Tensor<$t, [?]>) -> f32 {
+      pub fn sum(self : &Tensor<$t, [?]>) -> f32 {
         return unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
@@ -635,7 +635,7 @@ macro_rules stamp_half_tensor_sums {
 
       /// The sum of the products of matching elements. Refused for tensors of different
       /// lengths.
-      fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> f32 {
+      pub fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> f32 {
         assert(self.len() == other.len(), "dot needs two tensors of the same length");
         return unsafe { mlir!( inputs : (%a = self : memref<?x$t>, %b = other : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
@@ -695,7 +695,7 @@ macro_rules stamp_half_tensor_sums {
 
       /// The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
       /// rather than calling `self.sum()`, which the legacy code generator cannot compile.
-      fn mean(self : &Tensor<$t, [?]>) -> f32 {
+      pub fn mean(self : &Tensor<$t, [?]>) -> f32 {
         let total : f32 = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
@@ -746,7 +746,7 @@ macro_rules stamp_half_tensor_sums {
       /// The Euclidean length: the square root of the sum of the squares. The loop of `dot`
       /// with the tensor on both sides, written out rather than calling `self.dot(self)`,
       /// which the legacy code generator cannot compile.
-      fn norm(self : &Tensor<$t, [?]>) -> f32 {
+      pub fn norm(self : &Tensor<$t, [?]>) -> f32 {
         let squares : f32 = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
           %c0 = arith.constant 0 : index
           %c1 = arith.constant 1 : index
@@ -912,19 +912,19 @@ macro_rules stamp_tensor_extrema {
     impl Tensor<$t, [?]> {
       /// The largest element. A NaN is ignored, as `max` on a number does; negative
       /// infinity for an empty tensor.
-      fn max(self : &Tensor<$t, [?]>) -> $t {
+      pub fn max(self : &Tensor<$t, [?]>) -> $t {
         return tensor_max_loop!(self, $t, $lanes, $neg_inf);
       }
 
       /// The smallest element. A NaN is ignored; positive infinity for an empty tensor.
-      fn min(self : &Tensor<$t, [?]>) -> $t {
+      pub fn min(self : &Tensor<$t, [?]>) -> $t {
         return tensor_min_loop!(self, $t, $lanes, $pos_inf);
       }
 
       /// The index of the largest element, the first one if several are equal. A NaN is
       /// ignored, as `max` does; `None` for an empty tensor or one holding only NaN. Two
       /// passes: the vector loop of `max`, then a search for the first element equal to it.
-      fn argmax(self : &Tensor<$t, [?]>) -> Option<i32> {
+      pub fn argmax(self : &Tensor<$t, [?]>) -> Option<i32> {
         let largest : $t = tensor_max_loop!(self, $t, $lanes, $neg_inf);
         for i in 0..self.len() {
           if self[i] == largest {
@@ -936,7 +936,7 @@ macro_rules stamp_tensor_extrema {
 
       /// The index of the smallest element, the first one if several are equal. A NaN is
       /// ignored; `None` for an empty tensor or one holding only NaN.
-      fn argmin(self : &Tensor<$t, [?]>) -> Option<i32> {
+      pub fn argmin(self : &Tensor<$t, [?]>) -> Option<i32> {
         let smallest : $t = tensor_min_loop!(self, $t, $lanes, $pos_inf);
         for i in 0..self.len() {
           if self[i] == smallest {
@@ -963,7 +963,7 @@ macro_rules stamp_tensor_statistics {
       /// Replaces each element `x` with `exp(x) / (sum of exp over all elements)`, so the
       /// elements are positive and add up to 1. The largest element is subtracted before
       /// `exp`, which gives the same answer without overflowing.
-      fn softmax_inplace(self : &mut Tensor<$t, [?]>) -> i32 {
+      pub fn softmax_inplace(self : &mut Tensor<$t, [?]>) -> i32 {
         let n = self.len();
         let mut largest : $acc = 0.0;
         for i in 0..n {
@@ -1096,7 +1096,7 @@ macro_rules stamp_tensor_spread {
       /// The average squared distance from the mean, dividing by the number of elements `n`
       /// (numpy's `var`; divide by `n - 1` for the sample variance). It finds the mean first,
       /// which is more accurate than the one-pass formula. NaN for an empty tensor.
-      fn variance(self : &Tensor<$t, [?]>) -> $t {
+      pub fn variance(self : &Tensor<$t, [?]>) -> $t {
         let total : $t = tensor_sum_loop!(self, $t, $lanes);
         let mean = total / (self.len() as $t);
         let squares : $t = tensor_squared_distance_loop!(self, mean, $t, $lanes);
@@ -1104,7 +1104,7 @@ macro_rules stamp_tensor_spread {
       }
 
       /// The standard deviation: the square root of `variance`.
-      fn std_dev(self : &Tensor<$t, [?]>) -> $t {
+      pub fn std_dev(self : &Tensor<$t, [?]>) -> $t {
         let total : $t = tensor_sum_loop!(self, $t, $lanes);
         let mean = total / (self.len() as $t);
         let squares : $t = tensor_squared_distance_loop!(self, mean, $t, $lanes);
@@ -1120,7 +1120,7 @@ macro_rules stamp_half_tensor_spread {
   ($t : ident) => {
     impl Tensor<$t, [?]> {
       /// As `variance` on `f32`, computed in `f32`.
-      fn variance(self : &Tensor<$t, [?]>) -> f32 {
+      pub fn variance(self : &Tensor<$t, [?]>) -> f32 {
         let n = self.len();
         let mut total : f32 = 0.0;
         for i in 0..n {
@@ -1136,7 +1136,7 @@ macro_rules stamp_half_tensor_spread {
       }
 
       /// As `std_dev` on `f32`, computed in `f32`.
-      fn std_dev(self : &Tensor<$t, [?]>) -> f32 {
+      pub fn std_dev(self : &Tensor<$t, [?]>) -> f32 {
         let n = self.len();
         let mut total : f32 = 0.0;
         for i in 0..n {
@@ -1234,7 +1234,7 @@ impl Tensor<f32, [?]> {
   /// are positive and add up to 1. The largest element is subtracted before `exp`, which gives
   /// the same answer without overflowing. Vector loops, with the `exp` of
   /// `tensor_exp_shifted_loop`: within 1 ulp of `f32::exp`.
-  fn softmax_inplace(self : &mut Tensor<f32, [?]>) -> i32 {
+  pub fn softmax_inplace(self : &mut Tensor<f32, [?]>) -> i32 {
     let largest : f32 = tensor_max_loop!(self, f32, 16, 0xFF800000);
     let total : f32 = tensor_exp_shifted_loop!(self, largest);
     for i in 0..self.len() {
@@ -1255,7 +1255,7 @@ macro_rules stamp_tensor_rank2 {
   ($t : ident) => {
     impl Tensor<$t, [?, ?]> {
       /// Adds `other` to this tensor, element by element. Refused for different shapes.
-      fn add_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void {
+      pub fn add_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void {
         assert(self.extent(0) == other.extent(0) && self.extent(1) == other.extent(1), "add_assign needs two tensors of the same shape");
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
@@ -1265,7 +1265,7 @@ macro_rules stamp_tensor_rank2 {
       }
 
       /// Subtracts `other` from this tensor, element by element.
-      fn sub_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void {
+      pub fn sub_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void {
         assert(self.extent(0) == other.extent(0) && self.extent(1) == other.extent(1), "sub_assign needs two tensors of the same shape");
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
@@ -1275,7 +1275,7 @@ macro_rules stamp_tensor_rank2 {
       }
 
       /// Multiplies this tensor by `other`, element by element (not a matrix product).
-      fn mul_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void {
+      pub fn mul_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void {
         assert(self.extent(0) == other.extent(0) && self.extent(1) == other.extent(1), "mul_assign needs two tensors of the same shape");
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
@@ -1285,7 +1285,7 @@ macro_rules stamp_tensor_rank2 {
       }
 
       /// Divides this tensor by `other`, element by element.
-      fn div_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void {
+      pub fn div_assign(self : &mut Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> void {
         assert(self.extent(0) == other.extent(0) && self.extent(1) == other.extent(1), "div_assign needs two tensors of the same shape");
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
@@ -1295,7 +1295,7 @@ macro_rules stamp_tensor_rank2 {
       }
 
       /// Adds `a` to every element.
-      fn add_scalar(self : &mut Tensor<$t, [?, ?]>, a : $t) -> void {
+      pub fn add_scalar(self : &mut Tensor<$t, [?, ?]>, a : $t) -> void {
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
             self[i][j] = self[i][j] + a;
@@ -1304,7 +1304,7 @@ macro_rules stamp_tensor_rank2 {
       }
 
       /// Multiplies every element by `a`.
-      fn scale(self : &mut Tensor<$t, [?, ?]>, a : $t) -> void {
+      pub fn scale(self : &mut Tensor<$t, [?, ?]>, a : $t) -> void {
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
             self[i][j] = self[i][j] * a;
@@ -1313,7 +1313,7 @@ macro_rules stamp_tensor_rank2 {
       }
 
       /// Replaces every element by its absolute value.
-      fn abs_inplace(self : &mut Tensor<$t, [?, ?]>) -> void {
+      pub fn abs_inplace(self : &mut Tensor<$t, [?, ?]>) -> void {
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
             self[i][j] = self[i][j].abs();
@@ -1322,7 +1322,7 @@ macro_rules stamp_tensor_rank2 {
       }
 
       /// Replaces every element by its square root.
-      fn sqrt_inplace(self : &mut Tensor<$t, [?, ?]>) -> void {
+      pub fn sqrt_inplace(self : &mut Tensor<$t, [?, ?]>) -> void {
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
             self[i][j] = self[i][j].sqrt();
@@ -1331,7 +1331,7 @@ macro_rules stamp_tensor_rank2 {
       }
 
       /// Holds every element between `lo` and `hi`, as `clamp` on a number does.
-      fn clamp_inplace(self : &mut Tensor<$t, [?, ?]>, lo : $t, hi : $t) -> void {
+      pub fn clamp_inplace(self : &mut Tensor<$t, [?, ?]>, lo : $t, hi : $t) -> void {
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
             self[i][j] = self[i][j].clamp(lo, hi);
@@ -1461,28 +1461,28 @@ macro_rules stamp_tensor_rank2_reductions {
   ($t : ident , $lanes : expr , $neg_inf : expr , $pos_inf : expr) => {
     impl Tensor<$t, [?, ?]> {
       /// The sum of every element. 0 for an empty tensor.
-      fn sum(self : &Tensor<$t, [?, ?]>) -> $t {
+      pub fn sum(self : &Tensor<$t, [?, ?]>) -> $t {
         return tensor_reduce_2d!(self, $t, $lanes, 0.0, addf, add);
       }
 
       /// The average of every element. NaN for an empty tensor.
-      fn mean(self : &Tensor<$t, [?, ?]>) -> $t {
+      pub fn mean(self : &Tensor<$t, [?, ?]>) -> $t {
         let total : $t = tensor_reduce_2d!(self, $t, $lanes, 0.0, addf, add);
         return total / ((self.extent(0) * self.extent(1)) as $t);
       }
 
       /// The largest element. A NaN is ignored; negative infinity for an empty tensor.
-      fn max(self : &Tensor<$t, [?, ?]>) -> $t {
+      pub fn max(self : &Tensor<$t, [?, ?]>) -> $t {
         return tensor_reduce_2d!(self, $t, $lanes, $neg_inf, maxnumf, maxnumf);
       }
 
       /// The smallest element. A NaN is ignored; positive infinity for an empty tensor.
-      fn min(self : &Tensor<$t, [?, ?]>) -> $t {
+      pub fn min(self : &Tensor<$t, [?, ?]>) -> $t {
         return tensor_reduce_2d!(self, $t, $lanes, $pos_inf, minnumf, minnumf);
       }
 
       /// The sum along `axis`: of each column for axis 0, of each row for axis 1.
-      fn sum_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
+      pub fn sum_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
         assert(axis == 0 || axis == 1, "sum_axis takes axis 0 or 1");
         let mut out = Tensor<$t>([ if axis == 0 {
           self.extent(1)
@@ -1505,7 +1505,7 @@ macro_rules stamp_tensor_rank2_reductions {
       }
 
       /// The average along `axis`: of each column for axis 0, of each row for axis 1.
-      fn mean_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
+      pub fn mean_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
         assert(axis == 0 || axis == 1, "mean_axis takes axis 0 or 1");
         let mut out = Tensor<$t>([ if axis == 0 {
           self.extent(1)
@@ -1537,7 +1537,7 @@ macro_rules stamp_tensor_rank2_reductions {
 
       /// The largest element along `axis`: of each column for axis 0, of each row for axis 1.
       /// A NaN is ignored.
-      fn max_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
+      pub fn max_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
         assert(axis == 0 || axis == 1, "max_axis takes axis 0 or 1");
         let mut out = Tensor<$t>([ if axis == 0 {
           self.extent(1)
@@ -1561,7 +1561,7 @@ macro_rules stamp_tensor_rank2_reductions {
 
       /// The smallest element along `axis`: of each column for axis 0, of each row for axis 1.
       /// A NaN is ignored.
-      fn min_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
+      pub fn min_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
         assert(axis == 0 || axis == 1, "min_axis takes axis 0 or 1");
         let mut out = Tensor<$t>([ if axis == 0 {
           self.extent(1)
@@ -1592,7 +1592,7 @@ macro_rules stamp_half_tensor_rank2_reductions {
   ($t : ident) => {
     impl Tensor<$t, [?, ?]> {
       /// The sum of every element. 0 for an empty tensor.
-      fn sum(self : &Tensor<$t, [?, ?]>) -> f32 {
+      pub fn sum(self : &Tensor<$t, [?, ?]>) -> f32 {
         let mut total : f32 = 0.0;
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
@@ -1603,7 +1603,7 @@ macro_rules stamp_half_tensor_rank2_reductions {
       }
 
       /// The average of every element. NaN for an empty tensor.
-      fn mean(self : &Tensor<$t, [?, ?]>) -> f32 {
+      pub fn mean(self : &Tensor<$t, [?, ?]>) -> f32 {
         let mut total : f32 = 0.0;
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
@@ -1614,7 +1614,7 @@ macro_rules stamp_half_tensor_rank2_reductions {
       }
 
       /// The largest element. A NaN is ignored; negative infinity for an empty tensor.
-      fn max(self : &Tensor<$t, [?, ?]>) -> $t {
+      pub fn max(self : &Tensor<$t, [?, ?]>) -> $t {
         let mut best = $t::neg_infinity();
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
@@ -1625,7 +1625,7 @@ macro_rules stamp_half_tensor_rank2_reductions {
       }
 
       /// The smallest element. A NaN is ignored; positive infinity for an empty tensor.
-      fn min(self : &Tensor<$t, [?, ?]>) -> $t {
+      pub fn min(self : &Tensor<$t, [?, ?]>) -> $t {
         let mut best = $t::infinity();
         for i in 0..self.extent(0) {
           for j in 0..self.extent(1) {
@@ -1636,7 +1636,7 @@ macro_rules stamp_half_tensor_rank2_reductions {
       }
 
       /// The sum along `axis`: of each column for axis 0, of each row for axis 1.
-      fn sum_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<f32, [?]> {
+      pub fn sum_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<f32, [?]> {
         assert(axis == 0 || axis == 1, "sum_axis takes axis 0 or 1");
         let mut out = Tensor<f32>([ if axis == 0 {
           self.extent(1)
@@ -1660,7 +1660,7 @@ macro_rules stamp_half_tensor_rank2_reductions {
       }
 
       /// The average along `axis`: of each column for axis 0, of each row for axis 1.
-      fn mean_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<f32, [?]> {
+      pub fn mean_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<f32, [?]> {
         assert(axis == 0 || axis == 1, "mean_axis takes axis 0 or 1");
         let mut out = Tensor<f32>([ if axis == 0 {
           self.extent(1)
@@ -1693,7 +1693,7 @@ macro_rules stamp_half_tensor_rank2_reductions {
 
       /// The largest element along `axis`: of each column for axis 0, of each row for axis 1.
       /// A NaN is ignored.
-      fn max_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
+      pub fn max_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
         assert(axis == 0 || axis == 1, "max_axis takes axis 0 or 1");
         let mut out = Tensor<$t>([ if axis == 0 {
           self.extent(1)
@@ -1718,7 +1718,7 @@ macro_rules stamp_half_tensor_rank2_reductions {
 
       /// The smallest element along `axis`: of each column for axis 0, of each row for axis 1.
       /// A NaN is ignored.
-      fn min_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
+      pub fn min_axis(self : &Tensor<$t, [?, ?]>, axis : i32) -> Tensor<$t, [?]> {
         assert(axis == 0 || axis == 1, "min_axis takes axis 0 or 1");
         let mut out = Tensor<$t>([ if axis == 0 {
           self.extent(1)
@@ -1892,7 +1892,7 @@ macro_rules stamp_tensor_matmul {
       /// The matrix product: a new tensor with as many rows as this one and as many columns as
       /// `other`, element `[i][j]` the sum over `k` of `self[i][k] * other[k][j]`. Refused when
       /// this tensor's column count differs from `other`'s row count.
-      fn matmul(self : &Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> Tensor<$t, [?, ?]> {
+      pub fn matmul(self : &Tensor<$t, [?, ?]>, other : &Tensor<$t, [?, ?]>) -> Tensor<$t, [?, ?]> {
         assert(self.extent(1) == other.extent(0), "matmul needs as many columns on the left as rows on the right");
         let mut out = Tensor<$t>([ self.extent(0), other.extent(1) ]);
         let _done : i32 = tensor_matmul_kernel!(&mut out, self, other, $t, $lanes);

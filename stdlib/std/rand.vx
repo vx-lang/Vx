@@ -30,7 +30,7 @@ import core::num;
 ///
 /// `core::num` has the same method; this is kept because `normal` runs before an import of it
 /// would settle, and a local one keeps the dependency to `core::num` alone.
-fn sqrt_f64(x : f64) -> f64 {
+pub fn sqrt_f64(x : f64) -> f64 {
   return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
     %r = math.sqrt %a : f64
     macro.yield %r : f64
@@ -47,7 +47,7 @@ struct SplitMix64 {
 
 impl SplitMix64 {
   /// A generator started at `seed`. Every seed is valid, including zero.
-  fn seeded(seed : u64) -> SplitMix64 {
+  pub fn seeded(seed : u64) -> SplitMix64 {
     return SplitMix64 {
       state : seed
     };
@@ -56,7 +56,7 @@ impl SplitMix64 {
   /// Advance the counter by the golden-ratio constant, then scramble the value taken. The
   /// three constants are 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9 and 0x94D049BB133111EB,
   /// spelled in decimal because Vx has no hex literal.
-  fn next_u64(self : &mut SplitMix64) -> u64 {
+  pub fn next_u64(self : &mut SplitMix64) -> u64 {
     self.state = self.state + 11400714819323198485;
     let mut z = self.state;
     z = (z ^ (z >> 30)) * 13787848793156543929;
@@ -80,7 +80,7 @@ struct Rng {
 
 impl Rng {
   /// A stream from one seed word. Every seed is allowed, zero included.
-  fn seeded(seed : u64) -> Rng {
+  pub fn seeded(seed : u64) -> Rng {
     let mut mix = SplitMix64::seeded(seed);
     return Rng {
       s0 : mix.next_u64(),
@@ -97,7 +97,7 @@ impl Rng {
   /// The value handed back is computed from the state *before* the state advances, which is
   /// what xoshiro256** specifies; returning the new state instead is a different and worse
   /// generator.
-  fn next_u64(self : &mut Rng) -> u64 {
+  pub fn next_u64(self : &mut Rng) -> u64 {
     let scrambled = self.s1 * 5;
     let draw = scrambled.rotate_left(7) * 9;
     let t = self.s1 << 17;
@@ -112,72 +112,72 @@ impl Rng {
 
   /// The narrower widths take the *high* bits of a draw. The low bits of a xoshiro draw are
   /// the weakest ones, and a `% 256` would hand back exactly those.
-  fn next_u32(self : &mut Rng) -> u32 {
+  pub fn next_u32(self : &mut Rng) -> u32 {
     return (self.next_u64() >> 32) as u32;
   }
 
   /// The next 16 bits.
-  fn next_u16(self : &mut Rng) -> u16 {
+  pub fn next_u16(self : &mut Rng) -> u16 {
     return (self.next_u64() >> 48) as u16;
   }
 
   /// The next 8 bits.
-  fn next_u8(self : &mut Rng) -> u8 {
+  pub fn next_u8(self : &mut Rng) -> u8 {
     return (self.next_u64() >> 56) as u8;
   }
 
   /// Uniform over the signed range, negatives included: the bits are reinterpreted, not
   /// clamped, so half the draws are below zero.
-  fn next_i64(self : &mut Rng) -> i64 {
+  pub fn next_i64(self : &mut Rng) -> i64 {
     return self.next_u64() as i64;
   }
 
   /// The next 32 bits read as signed, so negative half the time.
-  fn next_i32(self : &mut Rng) -> i32 {
+  pub fn next_i32(self : &mut Rng) -> i32 {
     return (self.next_u64() >> 32) as i32;
   }
 
   /// The next 16 bits read as signed.
-  fn next_i16(self : &mut Rng) -> i16 {
+  pub fn next_i16(self : &mut Rng) -> i16 {
     return (self.next_u64() >> 48) as i16;
   }
 
   /// The next 8 bits read as signed.
-  fn next_i8(self : &mut Rng) -> i8 {
+  pub fn next_i8(self : &mut Rng) -> i8 {
     return (self.next_u64() >> 56) as i8;
   }
 
   /// Uniform in [0, 1), built from the top 53 bits because that is f64's mantissa. Taking
   /// more would round, and rounding up at the top of the range returns exactly 1.0 -- which
   /// a caller scaling into a half-open range does not expect.
-  fn next_f64(self : &mut Rng) -> f64 {
+  pub fn next_f64(self : &mut Rng) -> f64 {
     return ((self.next_u64() >> 11) as f64) / 9007199254740992.0f64;
   }
 
   /// Uniform in [0, 1), on the same terms with f32's 24 bits.
-  fn next_f32(self : &mut Rng) -> f32 {
+  pub fn next_f32(self : &mut Rng) -> f32 {
     return ((self.next_u64() >> 40) as f32) / 16777216.0f32;
   }
 
   /// Uniform in [0, 1) over an evenly spaced grid: 2048 points at f16 and 256 at bf16, each
   /// of them exact at that width. The draw is built from that many bits rather than narrowed
   /// from an f32, so every point is equally likely.
-  fn next_f16(self : &mut Rng) -> f16 {
+  pub fn next_f16(self : &mut Rng) -> f16 {
     return (((self.next_u64() >> 53) as f32) / 2048.0f32) as f16;
   }
 
   /// A `bf16` uniform in [0, 1). Eight bits of mantissa, so the draws are coarse.
-  fn next_bf16(self : &mut Rng) -> bf16 {
+  pub fn next_bf16(self : &mut Rng) -> bf16 {
     return (((self.next_u64() >> 56) as f32) / 256.0f32) as bf16;
   }
 
   /// One bit, from the top of a draw.
-  fn next_bool(self : &mut Rng) -> bool {
+  pub fn next_bool(self : &mut Rng) -> bool {
     return (self.next_u64() >> 63) == 1;
   }
 
   /// True with probability `p`. Outside [0, 1] it is always false or always true.
-  fn chance(self : &mut Rng, p : f64) -> bool {
+  pub fn chance(self : &mut Rng, p : f64) -> bool {
     return self.next_f64() < p;
   }
 
@@ -188,7 +188,7 @@ impl Rng {
   /// in that overhang are rejected and taken again. `floor` is where the overhang ends, and
   /// `0 - bound` is `2^64 - bound` -- the subtraction wraps, which is what makes 2^64
   /// expressible in a 64-bit word at all.
-  fn below(self : &mut Rng, bound : u64) -> u64 {
+  pub fn below(self : &mut Rng, bound : u64) -> u64 {
     assert(bound > 0, "below(0) has no value to draw");
     let floor = (0 - bound) % bound;
     let mut draw = self.next_u64();
@@ -205,7 +205,7 @@ impl Rng {
   ///
   /// The span is measured in `u64` so that a range spanning zero, or the whole of `i64`,
   /// is still one subtraction: `hi - lo` in `i64` would overflow for the widest of them.
-  fn range_i64(self : &mut Rng, lo : i64, hi : i64) -> i64 {
+  pub fn range_i64(self : &mut Rng, lo : i64, hi : i64) -> i64 {
     assert(lo < hi, "range_i64 needs lo < hi");
     let span = (hi as u64) - (lo as u64);
     return ((lo as u64) + self.below(span)) as i64;
@@ -213,12 +213,12 @@ impl Rng {
 
   /// Uniform in [lo, hi). With lo > hi the range runs backwards and the result is in
   /// (hi, lo], which is the same arithmetic and rarely what a caller meant.
-  fn range_f64(self : &mut Rng, lo : f64, hi : f64) -> f64 {
+  pub fn range_f64(self : &mut Rng, lo : f64, hi : f64) -> f64 {
     return lo + (hi - lo) * self.next_f64();
   }
 
   /// Uniform in [lo, hi), with the caveat `range_f64` gives for a backwards range.
-  fn range_f32(self : &mut Rng, lo : f32, hi : f32) -> f32 {
+  pub fn range_f32(self : &mut Rng, lo : f32, hi : f32) -> f32 {
     return lo + (hi - lo) * self.next_f32();
   }
 
@@ -232,7 +232,7 @@ impl Rng {
   /// Weights, activations and KV entries are roughly Gaussian, and a uniform fill exercises
   /// a range of magnitudes real data never has -- which matters most in f16, where the
   /// interesting failures are overflow and underflow at the tails.
-  fn normal(self : &mut Rng) -> f64 {
+  pub fn normal(self : &mut Rng) -> f64 {
     if self.has_spare {
       self.has_spare = false;
       return self.spare;
@@ -256,7 +256,7 @@ impl Rng {
   }
 
   /// A normal draw moved and stretched: mean `mean`, standard deviation `stddev`.
-  fn normal_around(self : &mut Rng, mean : f64, stddev : f64) -> f64 {
+  pub fn normal_around(self : &mut Rng, mean : f64, stddev : f64) -> f64 {
     return mean + stddev * self.normal();
   }
 
@@ -264,7 +264,7 @@ impl Rng {
   /// makes filling a real tensor practical -- a 256x8192 one is two million values.
   ///
   /// `count` elements are written, so the buffer must hold that many.
-  fn fill_f32(self : &mut Rng, out : *mut f32, count : i32) -> i32 {
+  pub fn fill_f32(self : &mut Rng, out : *mut f32, count : i32) -> i32 {
     let mut i = 0;
     loop {
       if i >= count {
@@ -279,7 +279,7 @@ impl Rng {
   /// Fill `count` elements with draws uniform in [lo, hi).
   ///
   /// `out` must have room for `count` of them; nothing here checks.
-  fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32 {
+  pub fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32 {
     let mut i = 0;
     loop {
       if i >= count {
@@ -295,7 +295,7 @@ impl Rng {
   ///
   /// `out` must have room for `count` of them. A negative `stddev` mirrors the distribution
   /// rather than being refused.
-  fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32 {
+  pub fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32 {
     let mut i = 0;
     loop {
       if i >= count {
@@ -308,7 +308,7 @@ impl Rng {
   }
 
   /// Fill `count` elements with `f16` draws uniform in [0, 1).
-  fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32 {
+  pub fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32 {
     let mut i = 0;
     loop {
       if i >= count {
@@ -322,7 +322,7 @@ impl Rng {
 
   /// The normal fill at half precision. The draw and the scaling happen in f64 and narrow
   /// once at the store, so a tail value is rounded rather than computed twice.
-  fn fill_normal_f16(self : &mut Rng, out : *mut f16, count : i32, mean : f64, stddev : f64) -> i32 {
+  pub fn fill_normal_f16(self : &mut Rng, out : *mut f16, count : i32, mean : f64, stddev : f64) -> i32 {
     let mut i = 0;
     loop {
       if i >= count {
