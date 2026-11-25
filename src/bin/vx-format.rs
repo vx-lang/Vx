@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vx_config::{default_format_config_toml, resolve_format_config, FormatConfig};
-use vxc::formatter::format_file;
+use vxc::formatter::{format_file, unformattable_position};
 
 use clap::{Parser, ValueEnum};
 use rayon::prelude::*;
@@ -75,6 +75,11 @@ fn process_file(
                 .map_err(|error| anyhow::anyhow!("{}: {}", path.display(), error))?;
             println!("Formatted {}", file_path);
         }
+    } else if let Some((line, column)) = unformattable_position(content) {
+        eprintln!(
+            "warning: {file_path}:{line}:{column}: vx-format did not format this file. \
+             The lexer could not read the text at this position."
+        );
     } else if !check {
         println!("Unchanged {}", file_path);
     }

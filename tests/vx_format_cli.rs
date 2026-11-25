@@ -158,6 +158,23 @@ fn check_honors_file_and_region_exclusions() -> Result<()> {
 }
 
 #[test]
+fn a_file_the_lexer_cannot_read_gets_a_warning_with_its_line() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
+    let source = "fn main() {\nlet value = 1 # 2;\n}\n";
+    fs::write(project.join("main.vx"), source)?;
+    let output = formatter(&project, &["main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    ensure!(output.stdout.is_empty(), "{output:?}");
+    ensure!(
+        String::from_utf8_lossy(&output.stderr).contains("warning: main.vx:2:15:"),
+        "{output:?}"
+    );
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
+    Ok(())
+}
+
+#[test]
 fn check_distinguishes_errors_from_formatting_changes() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let project = project(directory.path(), "project", Some("invalid TOML ["))?;
