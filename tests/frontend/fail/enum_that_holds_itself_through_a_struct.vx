@@ -9,7 +9,7 @@
 // an infinite size. A normal compile used to accept the program.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E3068] at {{.*}}enum_that_holds_itself_through_a_struct.vx:14:6: `Tree` holds itself by value, so its size is infinite: variant `Node` of `Tree` holds `Pair`, field `left` of `Pair` holds `Tree`. Hold the value through a pointer, for example `Box<Tree>`
+// CHECK: Error[E3070] at {{.*}}enum_that_holds_itself_through_a_struct.vx:14:6: `Tree` holds itself by value, so its size is infinite: variant `Node` of `Tree` holds `Pair`, field `left` of `Pair` holds `Tree`. Hold the value through a pointer, for example `Box<Tree>`
 
 enum Tree {
   Leaf, Node(Pair)

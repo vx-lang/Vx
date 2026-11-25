@@ -23,39 +23,53 @@ struct Step {
 }
 
 impl TypeChecker<'_> {
-    /// E3068 for each struct or enum that holds itself by value, through its own fields, other
-    /// structs, enum variants or generic instances such as `Option<Node>`.
+    /// E3070 for each struct or enum that holds itself by value, through its own fields, other
+    /// structs, enum variants or generic instances such as `Option<Node>`. A generic type, such
+    /// as `List<T>`, is checked with its own parameters as its arguments.
     pub fn check_types_have_a_size(&mut self) {
-        let mut decls: Vec<(String, &crate::syntax::DeclPlace)> = self
+        type Decl<'d> = (
+            String,
+            &'d [crate::syntax::decl::GenericParam],
+            &'d crate::syntax::DeclPlace,
+        );
+        let mut decls: Vec<Decl> = self
             .env
             .structs
             .values()
-            .filter(|s| s.generics.is_empty())
-            .map(|s| (s.name.to_string(), &s.place))
+            .map(|s| (s.name.to_string(), s.generics.as_slice(), &s.place))
             .chain(
                 self.env
                     .enums
                     .values()
-                    .filter(|e| e.generics.is_empty())
-                    .map(|e| (e.name.to_string(), &e.place)),
+                    .map(|e| (e.name.to_string(), e.generics.as_slice(), &e.place)),
             )
             .collect();
         // The tables are hash maps. In source order, a cycle is reported at its first type.
         decls.sort_by(|a, b| {
-            (&a.1.file, a.1.span.line, a.1.span.column, &a.0).cmp(&(
-                &b.1.file,
-                b.1.span.line,
-                b.1.span.column,
+            (&a.2.file, a.2.span.line, a.2.span.column, &a.0).cmp(&(
+                &b.2.file,
+                b.2.span.line,
+                b.2.span.column,
                 &b.0,
             ))
         });
         let mut reported: HashSet<String> = HashSet::new();
         let outside = self.errors.here();
-        for (name, place) in decls {
+        for (name, generics, place) in decls {
             if reported.contains(&name) {
                 continue;
             }
-            let start = Type::Struct(name.as_str().into(), None);
+            let plain = Type::Struct(name.as_str().into(), None);
+            let start = if generics.is_empty() {
+                plain
+            } else {
+                let params = generics
+                    .iter()
+                    .map(|g| Type::Generic(g.name().into(), None))
+                    .collect();
+                Type::GenericInstance(Box::new(plain), params)
+            };
+            let name = start.to_string();
             let mut chain = Vec::new();
             let mut seen = HashSet::new();
             if !self.holds_by_value(&start, &name, &mut chain, &mut seen, 0) {
@@ -68,7 +82,7 @@ impl TypeChecker<'_> {
                 .collect();
             self.errors.point_at(place, &outside);
             self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E3068,
+                crate::diagnostic::DiagnosticCode::E3070,
                 format!(
                     "`{name}` holds itself by value, so its size is infinite: {}. Hold the value \
                      through a pointer, for example `Box<{name}>`",
@@ -80,8 +94,8 @@ impl TypeChecker<'_> {
         self.errors.point_back(outside);
     }
 
-    /// Whether a value of type `ty` holds a `target` by value. On `true`, `chain` holds the
-    /// steps from `ty` to `target`.
+    /// Whether a value of type `ty` holds a value of the type named `target` by value, such as
+    /// `Node` or `List<T>`. On `true`, `chain` holds the steps from `ty` to `target`.
     fn holds_by_value(
         &self,
         ty: &Type,
@@ -110,13 +124,14 @@ impl TypeChecker<'_> {
             // A pointer, a borrow, a tensor, a closure and a scalar do not hold a struct by value.
             _ => return false,
         };
-        if depth > 0 && name.as_ref() == target && args.is_empty() {
+        let written = ty.to_string();
+        if depth > 0 && written == target {
             return true;
         }
-        if !seen.insert(ty.to_string()) {
+        if !seen.insert(written) {
             return false;
         }
-        let base = name.split('<').next().unwrap_or(name);
+        let base = base_name(name);
         let (generics, parts): (&[crate::syntax::decl::GenericParam], Vec<(String, &Type)>) =
             if let Some(s) = self.env.structs.get(base) {
                 let parts = s

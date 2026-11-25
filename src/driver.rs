@@ -1230,7 +1230,7 @@ impl CompilerDriver {
         if checker
             .errors
             .iter()
-            .any(|d| d.code == Some(crate::diagnostic::DiagnosticCode::E3068))
+            .any(|d| d.code == Some(crate::diagnostic::DiagnosticCode::E3070))
         {
             for diag in checker.errors.iter() {
                 eprintln!("{}", diag);
