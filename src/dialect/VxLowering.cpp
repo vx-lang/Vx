@@ -13715,6 +13715,9 @@ struct PromoteBuffersToStackPass
 // global, or an argument that is `noalias` (a `&mut`) or `readonly` (a `&`: two
 // of these may alias, but nothing writes through them). A buffer that is
 // viewed, cast, turned into a pointer or stored into memory skips the function.
+//
+// Fusion also looks at one block at a time. So a buffer that a loop uses, and
+// that another block reads or writes, skips the function too.
 struct FuseAndTileLoopsPass
     : public PassWrapper<FuseAndTileLoopsPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FuseAndTileLoopsPass)
@@ -13780,34 +13783,30 @@ struct FuseAndTileLoopsPass
   // own and deletes the loop that filled the real buffer.
   static bool usedByLoopAndByAnotherBlock(Value buffer) {
     Region *home = buffer.getParentRegion();
-    // Calls `visit` on each op from `user` out to the op in the region that
-    // defines the buffer. Stops when `visit` returns true.
-    auto anyEnclosingOp = [&](Operation *user, auto visit) {
-      for (Operation *op = user; op; op = op->getParentOp()) {
-        if (visit(op))
-          return true;
-        if (op->getParentRegion() == home)
-          break;
-      }
-      return false;
-    };
-    // The regions that have users of the buffer in more than one block.
+    // For each region from a user out to the region that defines the buffer:
+    // the block that leads to the user, and if that block is not the only one.
     llvm::SmallDenseMap<Region *, Block *> blockWithUser;
     llvm::SmallPtrSet<Region *, 4> usedInTwoBlocks;
-    for (Operation *user : buffer.getUsers())
-      anyEnclosingOp(user, [&](Operation *op) {
+    // The regions where an `affine.for` with a user is one of the ops of a
+    // block. Fusion looks for the other users in these regions only.
+    llvm::SmallPtrSet<Region *, 4> withLoop;
+    for (Operation *user : buffer.getUsers()) {
+      // A dealloc does not read the buffer, and fusion keeps the buffer.
+      if (isa<memref::DeallocOp>(user))
+        continue;
+      for (Operation *op = user; op; op = op->getParentOp()) {
         Block *block = op->getBlock();
-        if (blockWithUser.try_emplace(block->getParent(), block)
-                .first->second != block)
-          usedInTwoBlocks.insert(block->getParent());
-        return false;
-      });
-    return llvm::any_of(buffer.getUsers(), [&](Operation *user) {
-      bool inLoop = false;
-      return anyEnclosingOp(user, [&](Operation *op) {
-        inLoop |= isa<affine::AffineForOp>(op);
-        return inLoop && usedInTwoBlocks.contains(op->getParentRegion());
-      });
+        Region *region = block->getParent();
+        if (isa<affine::AffineForOp>(op))
+          withLoop.insert(region);
+        if (blockWithUser.try_emplace(region, block).first->second != block)
+          usedInTwoBlocks.insert(region);
+        if (region == home)
+          break;
+      }
+    }
+    return llvm::any_of(withLoop, [&](Region *region) {
+      return usedInTwoBlocks.contains(region);
     });
   }
 
