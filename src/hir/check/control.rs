@@ -1533,7 +1533,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Some(ty) = match_ty.clone() {
                     for (i, arm_ty) in literal_arms {
-                        let span = arms[i].span.clone();
+                        let span = arms[i].span;
                         let n = unsuffixed_number_tail(&mut arms[i].body)
                             .expect("a literal arm ends in a number");
                         match crate::hir::expr::expected_numeric_elem(&ty, &n.value) {
