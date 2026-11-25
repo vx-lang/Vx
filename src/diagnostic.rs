@@ -820,7 +820,7 @@ pub enum DiagnosticCode {
     /// A `where Reachable<A, B>` clause names something that is not a topology parameter of
     /// the function and not a declared or built-in topology. Write a parameter
     /// (`<D : Topology>`) or a topology such as `Topology::CPU`.
-    E6043,
+    E6045,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
