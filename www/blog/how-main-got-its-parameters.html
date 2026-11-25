@@ -71,8 +71,8 @@ hidden complexity of the simplest C program</a> follows each step.</p>
 World!" in a heterogeneous system</a> shows a host <code>main</code> that loads the device code,
 starts it and copies its result back. The device starts at its own <code>_start</code>, with no
 operating system. In Vx, <code>main</code> is the host side of that picture. A
-<code>spawn on</code> block runs on a device and gets data. Only the host program talks to the
-operating system.</p>
+<code>spawn on</code> block is code that runs on a device, and the host program gives it its data.
+Only the host program talks to the operating system.</p>
 
 <p>So <code>main</code> is the first function that the program writes, and the place where the
 words of the command line arrive. It is also the place where the program could get its rights to
@@ -115,8 +115,9 @@ words of the command line are a second parameter.</td></tr>
 
 <p>For two months, the code generator ignored the <code>return</code> of <code>main</code>. It
 did not evaluate the expression either. <code>fn main() -&gt; i32 { return 42; }</code> exited
-with 0, and <code>return f()</code> never called <code>f</code>. A test of a <code>for</code> loop
-passed because its loop body never ran. Issue
+with 0, and <code>return f()</code> never called <code>f</code>. The <code>main</code> of a test of a
+<code>for</code> loop was <code>return test_for_loop()</code>, so the loop never ran. The test
+passed anyway, because the program exited with 0. Issue
 <a href="https://github.com/vx-lang/Vx/issues/210">#210</a> found it, and named the cost of each
 fix: about 50 tests relied on the exit code 0, because the test runner counts any other code as a
 failure.</p>
@@ -167,8 +168,9 @@ code</td></tr>
 <h3 id="what-the-forms-mean-for-the-programmer"><a href="#what-the-forms-mean-for-the-programmer">What the forms mean for the programmer</a></h3>
 
 <p><strong>A global hides an input.</strong> In Rust and Go, any function can read the command line
-and the environment, so its signature does not show what it reads. A test of that function has to
-set a global first. Zig 0.16 removed its globals <code>os.argv</code> and <code>os.environ</code>,
+and the environment, so its signature does not show what it reads. To give such a function other
+words, a Go test sets the global <code>os.Args</code>. A Rust test cannot change the arguments of
+its process at all. Zig 0.16 removed its globals <code>os.argv</code> and <code>os.environ</code>,
 and gave <code>main</code> a parameter that holds them
 (<a href="https://codeberg.org/ziglang/zig/issues/30644">ziglang/zig#30644</a>). The pull request
 calls the globals "footguns". A later Zig pull request proposed to parse the arguments into a second
@@ -187,7 +189,7 @@ with it.</p>
 
 <p><strong>Nobody calls main.</strong> C lets a program call <code>main</code>. C++ does not: "The
 function main shall not be used within a program." Vx needed the C++ rule for a new reason, which
-the next section shows.</p>
+the section <a href="#main-root-root">main(root : Root)</a> shows.</p>
 
 <h3 id="what-the-forms-mean-for-security"><a href="#what-the-forms-mean-for-security">What the forms mean for security</a></h3>
 
@@ -220,7 +222,10 @@ that an attacker picks.</p>
 whether a Vx type can be a capability. It said: "Authority is ambient. Any module can
 <code>import std::fs</code> or <code>std::net</code> and open any file or socket." The design in
 <a href="https://github.com/vx-lang/Vx/blob/main/docs/discussions/capability_types.md">docs/discussions/capability_types.md</a>
-gives a capability three rules, and Vx already had each one for a type with an invariant:</p>
+gives a capability three rules. Vx already had each one for a <em>type with an invariant</em>: a
+struct that states a fact about its fields, such as the fact <code>len &lt;= capacity</code> of
+<code>Vec</code>. A capability states <code>invariant true</code>, a fact that always holds, and gets
+the same rules:</p>
 
 <ul>
 <li><strong>No forging.</strong> Only the file of a type with an invariant can build a value of
@@ -246,10 +251,11 @@ library that wants to read a file it was not given cannot build a <code>Files</c
 `Files` has an invariant, so only code in `fs.vx` can build it from its fields</code></pre>
 
 <p><code>unsafe</code> code can always make a value, because it can read one from any address.
-Rust has the same rule. So the promise is about code with no <code>unsafe</code>, no
-<code>extern</code> and no <code>mlir!</code>: it cannot get a right that its caller did not give
-it. That other code is the <em>trusted code</em> of the program, and two flags find it.
-<code>vxc --audit</code> lists each place:</p>
+Rust has the same rule. So the promise covers code without <code>unsafe</code>,
+<code>extern</code> and <code>mlir!</code> (MLIR written inline): such code gets only the rights
+that its caller gives it. Code with any of the three is the <em>trusted code</em> of the program.
+Two flags of the Vx compiler, <code>vxc</code>, find it. <code>vxc --audit</code> lists each
+place:</p>
 
 <pre><code>lib/keys.vx:6:15: trusted code: an `unsafe` block</code></pre>
 
@@ -309,9 +315,9 @@ out, because the program did not write it.</p>
 Only the runtime starts `main`. A `main` that takes a `Root` would make a new
 `Root` at each call</code></pre>
 
-<p>Second, a library could declare its own <code>main(root : Root)</code>. Now only a file that
-<code>vxc</code> compiles can declare one
-(<a href="https://github.com/vx-lang/Vx/issues/3867">#3867</a>).</p>
+<p>Second, a library could declare its own <code>main(root : Root)</code>. Now only a file on the
+command line of <code>vxc</code> can declare one, and an imported file that declares one gets an
+error (<a href="https://github.com/vx-lang/Vx/issues/3867">#3867</a>).</p>
 
 <h3 id="the-command-line-in-the-root"><a href="#the-command-line-in-the-root">The command line in the Root</a></h3>
 
@@ -320,8 +326,8 @@ Only the runtime starts `main`. A `main` that takes a `Root` would make a new
 <code>argv</code> as well. So a program with a <code>Root</code> had no safe way to read its
 arguments (<a href="https://github.com/vx-lang/Vx/issues/3973">#3973</a>). Three options came up: a field
 <code>root.args</code>, the parameters <code>main(root, argc, argv)</code>, or a function
-<code>std::env::args()</code>. Arguments carry no right, but any library could read them through a
-function. The first version of <a href="https://github.com/vx-lang/Vx/pull/3975">#3975</a> took
+<code>std::env::args()</code>. The parameters still needed <code>unsafe</code> to read a word. Any
+library could call the function, so it would hide an input, as a global does. The first version of <a href="https://github.com/vx-lang/Vx/pull/3975">#3975</a> took
 <code>root.args</code>, a <code>Vec&lt;String&gt;</code> in the <code>Root</code>.</p>
 
 <p>A review of that version found four problems:</p>
@@ -381,8 +387,10 @@ PwnKit shows.</li>
 into its options, or pass the whole vector to a parser.</li>
 <li>An argument that is not UTF-8 stops the program before <code>main</code> runs. The next
 section says why.</li>
-<li>The book says that the caller chooses every word. The first word is usually the name or the
-path of the program, and it can be empty.</li>
+<li>This answer is in the docs only. <code>args</code> still holds the first word at index 0, as
+<code>argv</code> does. <a href="/docs/files-input-time.html#the-command-line">The Vx book</a> now
+says that the caller chooses every word. The first word is usually the name or the path of the
+program, and it can be empty.</li>
 </ol>
 
 <p><code>fn main(root : Root)</code> still works. Any other second parameter is an error at
@@ -447,8 +455,8 @@ panic: an argument of the command line is not UTF-8 text</code></pre>
 <p>The cost is real. On Linux, a file name can be any bytes, so a user can make a file that a Vx
 program cannot get as an argument. But <code>File::open</code> takes a <code>&amp;String</code>
 too, so today a Vx program cannot open that file at all. The two limits agree. When Vx needs such
-files, it needs a path type that holds bytes, as Rust's <code>Path</code> does, and then a third
-form of <code>main</code> can give the words in it.</p>
+files, it needs a path type that holds bytes, as Rust's <code>PathBuf</code> does. Then another
+form of <code>main</code> can give the words in that type.</p>
 
 <p>The choice also travels well. On WASI, every word is a Unicode string, so a
 <code>Vec&lt;String&gt;</code> fits it exactly. If Vx runs on Windows one day, a word with an unpaired
