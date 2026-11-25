@@ -1545,40 +1545,75 @@ fn f(predicate: bool, value: i32) -> i32 {
     }
 
     #[test]
-    fn seam_assert_prescan_stops_at_a_return() {
-        // Each function has an assert that every run reaches, on `before`. Each other assert
-        // comes after a `return` that some run can take, or is in a statement with a `return`.
-        let cases = [
+    fn seam_assert_prescan_drops_an_assert_that_a_return_can_skip() {
+        // `before` and `after` are parameters. `x` is a `let`. An assert is a fact when each
+        // run that reaches the declaration of its name also reaches the assert.
+        // The name of the case, the body of the function, and the facts the scan must find.
+        type Case = (&'static str, &'static str, &'static [(&'static str, u64)]);
+        let cases: [Case; 11] = [
             (
                 "a return in an if",
                 "assert(before == 1); if c == 0 { return 0; } assert(after == 2); return 1;",
+                &[("before", 1)],
             ),
             (
                 "a return in a loop",
                 "assert(before == 1); for i in 0..1 { return 0; } assert(after == 2); return 1;",
+                &[("before", 1)],
             ),
             (
                 "a return in a nested block",
                 "assert(before == 1); for i in 0..1 { if c == 0 { return 0; } } \
                  assert(after == 2); return 1;",
+                &[("before", 1)],
             ),
             (
                 "a return in a let",
-                "assert(before == 1); let x = if c == 0 { return 0; } else { 1 }; \
-                 assert(after == 2); return x;",
+                "assert(before == 1); let y = if c == 0 { return 0; } else { 1 }; \
+                 assert(after == 2); return y;",
+                &[("before", 1)],
             ),
             (
                 "a plain return",
                 "assert(before == 1); return 0; assert(after == 2);",
+                &[("before", 1)],
             ),
             (
                 "asserts next to a return",
                 "assert(before == 1); \
                  if c == 0 { assert(after == 2); return 0; } else { assert(after == 2); } \
                  return 1;",
+                &[("before", 1)],
+            ),
+            (
+                "a let before the return",
+                "let x = g(); if c == 0 { return 0; } assert(x == 2); return 1;",
+                &[],
+            ),
+            (
+                "a let after the return",
+                "if c == 0 { return 0; } let x = g(); assert(x == 2); return 1;",
+                &[("x", 2)],
+            ),
+            (
+                "a let after the return, and its assert in a block",
+                "if c == 0 { return 0; } let x = g(); \
+                 spawn on(Topology::CPU) { assert(x == 2); } return 1;",
+                &[("x", 2)],
+            ),
+            (
+                "a second return between the let and the assert",
+                "if c == 0 { return 0; } let x = g(); if c == 1 { return 1; } \
+                 assert(x == 2); return 2;",
+                &[],
+            ),
+            (
+                "a return after the assert",
+                "let x = g(); assert(x == 2); if c == 0 { return 0; } return 1;",
+                &[("x", 2)],
             ),
         ];
-        for (case, body) in cases {
+        for (case, body, expected) in cases {
             let source = format!("fn f(c: i32, before: i32, after: i32) -> i32 {{ {body} }}");
             let mut lexer = Lexer::new(&source);
             let tokens = lexer.tokenize();
@@ -1586,15 +1621,12 @@ fn f(predicate: bool, value: i32) -> i32 {
             let program = parser.parse().expect("the return fixture parses");
             let mut contracts = std::collections::HashMap::new();
             TypeChecker::collect_assert_contracts(&program.functions[0].body, &mut contracts);
-            assert_eq!(
-                contracts.get("before"),
-                Some(&1),
-                "{case}: the assert before the return is a fact: {contracts:?}"
-            );
-            assert!(
-                !contracts.contains_key("after"),
-                "{case}: not every run reaches the second assert: {contracts:?}"
-            );
+            let found: std::collections::BTreeMap<String, u64> = contracts.into_iter().collect();
+            let expected: std::collections::BTreeMap<String, u64> = expected
+                .iter()
+                .map(|(name, value)| (name.to_string(), *value))
+                .collect();
+            assert_eq!(found, expected, "{case}");
         }
     }
 

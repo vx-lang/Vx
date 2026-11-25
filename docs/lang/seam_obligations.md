@@ -77,7 +77,7 @@ fn f(a: Tensor<i32, [4]>) -> Pinned<Tensor<i32, [4]>, Topology::NPU[0]> {
     }
 }
 // vxc --verify-seams  =>  E6004: relaxed transfer of 'a' across the
-//   CPUDRAM -> NPUHBM seam violates the boundary contract ('a' == 42)
+//   CPU_DRAM -> NPU_HBM seam violates the boundary contract ('a' == 42)
 //   z3 counterexample: ((tag_a #b11) (val_a #x00))
 ```
 
@@ -98,7 +98,8 @@ fn g() -> i32 {
 }
 // vxc --verify-seams  =>  E6004: the transfer of 'a' across the CPU_DRAM -> NPU_HBM
 //   seam violates the boundary contract. 'a' is 0, so 'local_a' is 0 after the
-//   transfer. The program asserts 'local_a' == 42
+//   transfer. The program asserts 'local_a' == 42, so this assert
+//   always fails
 //   z3 counterexample: ((tag_a #b01) (val_a #x0000000000000000))
 ```
 
@@ -110,9 +111,12 @@ name in any block, a parameter of the function or of a closure, a generic parame
 a loop variable, a `match` binding and a top-level `const` are all second
 declarations. Such a name can mean two values, so the compiler uses no number for it.
 
-The pre-scan for asserts stops at the first statement that is a `return` or has a
-`return` inside it. An assert after that statement is not a fact about every run. A
-call that never returns, such as `todo()`, does not stop the pre-scan.
+A `return` can end the function before an assert. After a statement that is a `return`
+or has a `return` inside it, the pre-scan keeps an assert only when a later `let`
+declares its name. Each run that reaches that `let` also reaches the assert. So a
+guard clause such as `if n == 0 { return 0; }` at the top of a function does not turn
+off the value check. A call that never returns, such as `todo()`, does not stop the
+pre-scan.
 
 The consumer's number applies only to the transfer that is the whole initializer of
 the `let`. In `let n = f(a.to_device());` the name `n` is the result of `f`, so an

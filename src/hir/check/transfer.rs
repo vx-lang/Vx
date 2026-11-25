@@ -121,7 +121,7 @@ fn whole_number(e: &Expr) -> Option<u64> {
 /// The largest whole number `n` for which an element of type `elem` holds each whole number
 /// from 0 to `n` with no rounding. A float literal above it can round to the value of another
 /// literal, so its digits do not say which value the element holds. `None` for a type that
-/// does not hold numbers.
+/// does not hold 0, or that does not hold numbers.
 fn largest_exact_whole_number(elem: &ElementType) -> Option<u64> {
     // For a float type, 2 to the power of the number of bits in its significand.
     match elem {
@@ -132,8 +132,6 @@ fn largest_exact_whole_number(elem: &ElementType) -> Option<u64> {
         ElementType::F8E4M3 => Some(1 << 4),
         ElementType::F8E5M2 => Some(1 << 3),
         ElementType::F4E2M1 => Some(1 << 2),
-        // A power of two only: 3 is the first whole number it cannot hold.
-        ElementType::F8E8M0 => Some(2),
         // The compiler refuses an integer literal that does not fit its type.
         ElementType::I4
         | ElementType::U4
@@ -148,6 +146,8 @@ fn largest_exact_whole_number(elem: &ElementType) -> Option<u64> {
         | ElementType::I128
         | ElementType::U128
         | ElementType::USize => Some(u64::MAX),
+        // This type holds only powers of two, so it does not hold 0.
+        ElementType::F8E8M0 => None,
         ElementType::Bool | ElementType::Generic(_) => None,
     }
 }
@@ -211,6 +211,31 @@ fn block_has_a_return(stmts: &[Statement]) -> bool {
     })
 }
 
+/// Adds the name of each `let` in `s` to `names`, at any depth.
+fn add_let_names(s: &Statement, names: &mut std::collections::HashSet<String>) {
+    // The `let`s of one block and of the loops in it. A block inside an expression is a
+    // block that `visit_exprs` finds.
+    fn of_block(stmts: &[Statement], names: &mut std::collections::HashSet<String>) {
+        for s in stmts {
+            match s {
+                Statement::LetDecl(l) => {
+                    names.insert(l.name.as_ref().to_string());
+                }
+                Statement::ForLoop(l) => of_block(&l.body, names),
+                Statement::Loop(l) => of_block(&l.body, names),
+                _ => {}
+            }
+        }
+    }
+    let s = std::slice::from_ref(s);
+    of_block(s, names);
+    crate::syntax::visit_exprs(s, &mut |e| {
+        for block in own_blocks(e) {
+            of_block(block, names);
+        }
+    });
+}
+
 /// Whether `s` has a `return` inside it, at any depth. For a `return` statement, the answer
 /// is about the value it returns. A `return` in the body of a closure counts too, although it
 /// leaves only the closure.
@@ -266,43 +291,56 @@ impl<'a> TypeChecker<'a> {
     /// Pre-scan a statement block for unconditional `assert(var == const)` facts that a
     /// consumer requires of `var`. It excludes closure bodies, short-circuited logical right
     /// operands, and loop bodies; branch facts are retained only when every branch agrees.
+    ///
+    /// A `return` can end the function before the statements after it. After a statement with
+    /// a `return` inside it, an assert is a fact only about a name that a later `let` declares.
+    /// Each run that reaches that `let` also reaches the assert.
     pub(crate) fn collect_assert_contracts(
         stmts: &[Statement],
         out: &mut std::collections::HashMap<String, u64>,
     ) {
+        // The names that the block declares after its last statement with a `return` inside
+        // it. `None` while the block has no such statement.
+        let mut declared_after_return: Option<std::collections::HashSet<String>> = None;
         for s in stmts {
-            // A `return` can end the function before the statements after it. An assert that
-            // not every run reaches is not a fact about every run, so the scan stops. A
-            // statement with a `return` inside it gives no facts.
+            // No run reaches the statements after a `return` statement.
+            let ends_the_block = matches!(s, Statement::Return(_));
+            // A statement with a `return` inside it gives no facts. Some runs leave the
+            // function there, so they do not reach the asserts after it.
             if has_a_return_inside(s) {
-                break;
+                if ends_the_block {
+                    break;
+                }
+                declared_after_return = Some(std::collections::HashSet::new());
+                continue;
             }
+            let mut facts = std::collections::HashMap::new();
             match s {
-                Statement::Assert(a) => Self::collect_assert_condition(&a.expr, out),
-                Statement::LetDecl(l) => Self::scan_expr_for_asserts(&l.expr, out),
-                Statement::ExprStmt(e) => Self::scan_expr_for_asserts(&e.expr, out),
+                Statement::Assert(a) => Self::collect_assert_condition(&a.expr, &mut facts),
+                Statement::LetDecl(l) => Self::scan_expr_for_asserts(&l.expr, &mut facts),
+                Statement::ExprStmt(e) => Self::scan_expr_for_asserts(&e.expr, &mut facts),
                 Statement::Return(r) => {
                     if let Some(e) = &r.expr {
-                        Self::scan_expr_for_asserts(e, out);
+                        Self::scan_expr_for_asserts(e, &mut facts);
                     }
                 }
                 Statement::ForLoop(f) => {
-                    Self::scan_expr_for_asserts(&f.iterable, out);
+                    Self::scan_expr_for_asserts(&f.iterable, &mut facts);
                     for invariant in &f.invariants {
-                        Self::collect_assert_condition(invariant, out);
+                        Self::collect_assert_condition(invariant, &mut facts);
                     }
                 }
                 Statement::Assign(a) => {
-                    Self::scan_expr_for_asserts(&a.lhs, out);
-                    Self::scan_expr_for_asserts(&a.rhs, out);
+                    Self::scan_expr_for_asserts(&a.lhs, &mut facts);
+                    Self::scan_expr_for_asserts(&a.rhs, &mut facts);
                 }
                 Statement::CompoundAssign(a) => {
-                    Self::scan_expr_for_asserts(&a.lhs, out);
-                    Self::scan_expr_for_asserts(&a.rhs, out);
+                    Self::scan_expr_for_asserts(&a.lhs, &mut facts);
+                    Self::scan_expr_for_asserts(&a.rhs, &mut facts);
                 }
                 Statement::Loop(l) => {
                     for invariant in &l.invariants {
-                        Self::collect_assert_condition(invariant, out);
+                        Self::collect_assert_condition(invariant, &mut facts);
                     }
                 }
                 // These statements have no evaluated child expression or statement block.
@@ -313,7 +351,14 @@ impl<'a> TypeChecker<'a> {
                 // Macro expansion happens before type checking, so no macro body remains here.
                 Statement::MacroCall(_) => {}
             }
-            if matches!(s, Statement::Return(_)) {
+            if let Some(declared) = &mut declared_after_return {
+                // A run can leave at the `return` between an earlier `let` and this
+                // statement, so an assert here is not a fact about that `let`.
+                add_let_names(s, declared);
+                facts.retain(|name, _| declared.contains(name));
+            }
+            out.extend(facts);
+            if ends_the_block {
                 break;
             }
         }
@@ -1774,6 +1819,7 @@ impl<'a> TypeChecker<'a> {
         buffer: &str,
         producer_val: Option<u64>,
         required: Option<(&str, u64)>,
+        float_elements: bool,
         span: Span,
     ) {
         use crate::hir::seam::{AbsState, Cell, Solver, Transfer, Verdict};
@@ -1830,16 +1876,24 @@ impl<'a> TypeChecker<'a> {
         match verdict {
             Ok(Verdict::Accept) => {}
             Ok(Verdict::Reject { counterexample }) => {
+                // A message shows a number the way the program writes it for this buffer.
+                let number = |value: u64| {
+                    if float_elements {
+                        format!("{value}.0")
+                    } else {
+                        value.to_string()
+                    }
+                };
                 let message = if relaxed {
                     format!(
-                        "relaxed transfer of '{}' across the {:?} -> {:?} seam violates \
+                        "relaxed transfer of '{}' across the {} -> {} seam violates \
                          the boundary contract{}: the buffer carries no synchronizing \
                          release, so a consumer may read it stale",
                         buffer,
-                        src,
-                        dst,
+                        src.name(),
+                        dst.name(),
                         match required.map(|(_, value)| value).or(producer_val) {
-                            Some(v) => format!(" ('{buffer}' == {v})"),
+                            Some(v) => format!(" ('{buffer}' == {})", number(v)),
                             None => String::new(),
                         }
                     )
@@ -1853,11 +1907,12 @@ impl<'a> TypeChecker<'a> {
                              that has no value contract"
                         );
                     };
+                    let (produced, required) = (number(produced), number(required));
                     format!(
                         "the transfer of '{buffer}' across the {} -> {} seam violates the \
                          boundary contract. '{buffer}' is {produced}, so '{target}' is \
                          {produced} after the transfer. The program asserts '{target}' == \
-                         {required}",
+                         {required}, so this assert always fails",
                         src.name(),
                         dst.name()
                     )
@@ -2646,10 +2701,12 @@ impl<'a> TypeChecker<'a> {
         let span = Self::buffer_span(&t.expr).unwrap_or(t.span);
         let buffer = Self::buffer_label(&t.expr);
         // A literal says which value an element holds only up to this number.
-        let largest_exact = match &edge.inner_ty {
-            Type::Tensor(elem, ..) => largest_exact_whole_number(elem),
+        let elem = match &edge.inner_ty {
+            Type::Tensor(elem, ..) => Some(elem),
             _ => None,
         };
+        let largest_exact = elem.and_then(largest_exact_whole_number);
+        let float_elements = elem.is_some_and(|elem| elem.is_float());
         let exact = |value: &u64| largest_exact.is_some_and(|largest| *value <= largest);
         // The premise: the number the producer gives the buffer.
         let producer_val = Self::buffer_name(&t.expr)
@@ -2677,6 +2734,7 @@ impl<'a> TypeChecker<'a> {
             &buffer,
             producer_val,
             required,
+            float_elements,
             span,
         );
     }
@@ -2742,6 +2800,8 @@ impl<'a> TypeChecker<'a> {
         let relaxed = std::mem::take(&mut self.seam.pending_relaxed);
         // The name this transfer gives its value to: the transfer is the whole initializer of
         // a `let`. A transfer inside the initializer, such as an argument of a call, is not.
+        // The addresses match because each rewrite of a transfer replaces `*expr` in place.
+        // A rewrite that moves the initializer loses the name, and with it the value check.
         let address = std::ptr::from_ref::<Expr>(expr) as usize;
         let bound = self
             .seam
