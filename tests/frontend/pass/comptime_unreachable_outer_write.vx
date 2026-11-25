@@ -6,7 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: [[VALUE:%.+]] = arith.constant 1 : i32
+// CHECK-NEXT: return [[VALUE]] : i32
 
 fn main() -> i32 {
   let mut outside : i32 = 0i32;
