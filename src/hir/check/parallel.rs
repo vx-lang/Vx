@@ -187,6 +187,7 @@ fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
     };
     let mut scan = ParallelScan::fresh(f.iter.clone());
     scan.explain = explain;
+    (scan.outside, scan.rows) = outside_memory(stmts);
     // A statement the compiler added, such as a drop, is not the program's to change.
     if !only_scratch_drops_after(stmts, idx) {
         match stmts[idx + 1..].iter().find(|s| !matches!(s, S::Drop(_))) {
@@ -347,6 +348,7 @@ fn two_level(stmts: &[Statement]) -> Result<(u64, TwoLevelPlan), Blocker> {
     // A region with no thread loop or no barrier is not a cooperative kernel; let the flat
     // grid-stride path have it (it maps the same work with less machinery).
     let mut scan = ParallelScan::fresh(f.iter.clone());
+    (scan.outside, scan.rows) = outside_memory(stmts);
     let why_not = |scan: ParallelScan, why: &str, span: Span| {
         Err(scan.refusal.unwrap_or(Blocker {
             why: why.to_string(),
@@ -670,7 +672,8 @@ impl TwoLevelWalk {
 }
 
 /// The names that `body` gives a value to: by `let`, by assignment to them or to an element of
-/// them, or as a loop variable.
+/// them, as a loop variable, or as a name in a `match` pattern. This includes the blocks of an
+/// `if` or a `match` anywhere in an expression, such as `let v = match c { .. };`.
 fn names_set(body: &[Statement], out: &mut HashSet<String>) {
     use crate::syntax::stmt::Statement as S;
     fn base(e: &Expr) -> Option<&str> {
@@ -681,25 +684,286 @@ fn names_set(body: &[Statement], out: &mut HashSet<String>) {
             _ => None,
         }
     }
-    for s in body {
+    // The statements of `stmts` and of the loops in them. `visit_exprs` below reaches each
+    // block inside an expression once, so this does not go into those blocks.
+    fn statements(stmts: &[Statement], out: &mut HashSet<String>) {
+        for s in stmts {
+            match s {
+                S::LetDecl(d) => {
+                    out.insert(d.name.to_string());
+                }
+                S::Assign(a) => out.extend(base(&a.lhs).map(str::to_string)),
+                S::CompoundAssign(a) => out.extend(base(&a.lhs).map(str::to_string)),
+                S::ForLoop(f) => {
+                    out.insert(f.iter.to_string());
+                    statements(&f.body, out);
+                }
+                S::Loop(l) => statements(&l.body, out),
+                _ => {}
+            }
+        }
+    }
+    statements(body, out);
+    crate::syntax::expr::visit_exprs(body, &mut |e| match e {
+        Expr::If(i) => {
+            statements(&i.then_block, out);
+            statements(i.else_block.as_deref().unwrap_or_default(), out);
+        }
+        Expr::Match(m) => {
+            for arm in &m.arms {
+                let mut bound = Vec::new();
+                crate::hir::check::control::pattern_names(&arm.pattern, &mut bound);
+                out.extend(bound.iter().map(|n| n.to_string()));
+                statements(&arm.body, out);
+            }
+        }
+        _ => {}
+    });
+}
+
+/// For each name that a region gives a value to, the names from outside the region whose memory
+/// that value may be: `out` for `let t = out;`, `let r = out[0];` or `let t = if c { out } else
+/// { u };`. A new tensor, such as `Tensor<f32>([8])`, gives none.
+///
+/// A name keeps what each of its `let`s and assignments gives it, also one that comes later in
+/// the loop: the next pass sees that value.
+///
+/// Also answers the locals that are a row of such a tensor, as `r` in `let r = out[i];`. Each
+/// has one `let`, no assignment, and indices whose names keep their values.
+#[allow(clippy::type_complexity)]
+fn outside_memory(
+    stmts: &[Statement],
+) -> (
+    HashMap<String, HashSet<String>>,
+    HashMap<String, (String, Vec<Expr>)>,
+) {
+    let mut walk = OutsideMemory::default();
+    loop {
+        walk.changed = false;
+        walk.lets.clear();
+        walk.assigned.clear();
+        walk.rows.clear();
+        walk.block(stmts);
+        if !walk.changed {
+            break;
+        }
+    }
+    let fixed = |n: &str| walk.lets.get(n).is_none_or(|&k| k == 1) && !walk.assigned.contains(n);
+    let rows = walk
+        .rows
+        .iter()
+        .filter(|(name, (_, prefix))| {
+            fixed(name)
+                && prefix.iter().all(|e| {
+                    let mut ok = true;
+                    crate::syntax::expr::visit_expr(e, &mut |e| {
+                        if let Expr::Identifier(id) = e {
+                            ok &= fixed(&id.name);
+                        }
+                    });
+                    ok
+                })
+        })
+        .map(|(name, row)| (name.clone(), row.clone()))
+        .collect();
+    (walk.of, rows)
+}
+
+#[derive(Default)]
+struct OutsideMemory {
+    of: HashMap<String, HashSet<String>>,
+    /// The names that the region declares and that are in scope here.
+    scope: Vec<String>,
+    changed: bool,
+    /// How many times the region declares each name.
+    lets: HashMap<String, usize>,
+    /// The names that an assignment gives a new value.
+    assigned: HashSet<String>,
+    /// For a `let t = out[e1]..[en];`, `t` and `(out, [e1, .., en])`.
+    rows: HashMap<String, (String, Vec<Expr>)>,
+}
+
+impl OutsideMemory {
+    /// Walks a block in a scope of its own. Answers what the block's value may be.
+    fn block(&mut self, stmts: &[Statement]) -> HashSet<String> {
+        let len = self.scope.len();
+        let mut value = HashSet::new();
+        for s in stmts {
+            value.extend(self.stmt(s));
+        }
+        self.scope.truncate(len);
+        value
+    }
+
+    fn stmt(&mut self, s: &Statement) -> HashSet<String> {
+        use crate::syntax::stmt::Statement as S;
         match s {
             S::LetDecl(d) => {
-                out.insert(d.name.to_string());
+                let v = self.value(&d.expr);
+                self.give(&d.name, v);
+                if let Some(row) = self.row(&d.expr) {
+                    self.rows.insert(d.name.to_string(), row);
+                }
+                self.declare(&d.name);
             }
-            S::Assign(a) => out.extend(base(&a.lhs).map(str::to_string)),
-            S::CompoundAssign(a) => out.extend(base(&a.lhs).map(str::to_string)),
+            S::Assign(a) => {
+                let v = self.value(&a.rhs);
+                self.assign(&a.lhs, v);
+            }
+            S::CompoundAssign(a) => {
+                let v = self.value(&a.rhs);
+                self.assign(&a.lhs, v);
+            }
             S::ForLoop(f) => {
-                out.insert(f.iter.to_string());
-                names_set(&f.body, out);
+                self.value(&f.iterable);
+                let len = self.scope.len();
+                self.declare(&f.iter);
+                self.block(&f.body);
+                self.scope.truncate(len);
             }
-            S::Loop(l) => names_set(&l.body, out),
-            S::ExprStmt(e) => {
-                if let Expr::If(i) = &e.expr {
-                    names_set(&i.then_block, out);
-                    names_set(i.else_block.as_deref().unwrap_or_default(), out);
+            S::Loop(l) => {
+                self.block(&l.body);
+            }
+            S::ExprStmt(e) => return self.value(&e.expr),
+            S::Assert(a) => {
+                self.value(&a.expr);
+            }
+            S::Return(r) => {
+                if let Some(e) = &r.expr {
+                    self.value(e);
                 }
             }
-            _ => {}
+            S::Break(_) | S::Continue(_) | S::MacroCall(_) | S::Drop(_) | S::Error(_) => {}
+        }
+        HashSet::new()
+    }
+
+    fn declare(&mut self, name: &str) {
+        *self.lets.entry(name.to_string()).or_default() += 1;
+        self.scope.push(name.to_string());
+    }
+
+    /// `out` and `[e1, .., en]` when `e` is `out[e1]..[en]` and `out` is from outside the region.
+    fn row(&self, e: &Expr) -> Option<(String, Vec<Expr>)> {
+        let mut prefix = Vec::new();
+        let mut cur = crate::syntax::bare_unsafe_value(e);
+        while let Expr::IndexAccess(ix) = cur {
+            prefix.push((*ix.index).clone());
+            cur = &ix.base;
+        }
+        let Expr::Identifier(id) = cur else {
+            return None;
+        };
+        if prefix.is_empty() || self.scope.iter().any(|n| *n == *id.name) {
+            return None;
+        }
+        prefix.reverse();
+        Some((id.name.to_string(), prefix))
+    }
+
+    /// `lhs = v`: a name gets `v`. A write to an element does not change what its base is.
+    fn assign(&mut self, lhs: &Expr, v: HashSet<String>) {
+        match lhs {
+            Expr::Identifier(id) => {
+                self.assigned.insert(id.name.to_string());
+                self.give(&id.name, v)
+            }
+            _ => {
+                self.value(lhs);
+            }
+        }
+    }
+
+    fn give(&mut self, name: &str, v: HashSet<String>) {
+        if v.is_empty() {
+            return;
+        }
+        let names = self.of.entry(name.to_string()).or_default();
+        for n in v {
+            self.changed |= names.insert(n);
+        }
+    }
+
+    /// A name of the region gives what it was given. Any other name is from outside it.
+    fn name(&self, name: &str) -> HashSet<String> {
+        if self.scope.iter().any(|n| n == name) {
+            self.of.get(name).cloned().unwrap_or_default()
+        } else {
+            HashSet::from([name.to_string()])
+        }
+    }
+
+    fn values<'e>(&mut self, es: impl IntoIterator<Item = &'e Expr>) -> HashSet<String> {
+        let mut v = HashSet::new();
+        for e in es {
+            v.extend(self.value(e));
+        }
+        v
+    }
+
+    /// The names from outside the region whose memory the value of `e` may be.
+    fn value(&mut self, e: &Expr) -> HashSet<String> {
+        match crate::syntax::bare_unsafe_value(e) {
+            Expr::Identifier(id) => self.name(&id.name),
+            Expr::Number(_) | Expr::StringLiteral(_) | Expr::SizeOf(_) => HashSet::new(),
+            // The index is a number, not memory.
+            Expr::IndexAccess(ix) => {
+                self.value(&ix.index);
+                self.value(&ix.base)
+            }
+            Expr::FunctionCall(fc) if is_tensor_alloc_call(fc) => {
+                self.values(&fc.args);
+                HashSet::new()
+            }
+            Expr::FunctionCall(fc) => self.values(&fc.args),
+            Expr::MethodCall(mc) => {
+                let mut v = self.value(&mc.base);
+                v.extend(self.values(&mc.args));
+                v
+            }
+            Expr::EnumVariant(ev) => self.values(ev.payload.iter().flatten()),
+            Expr::BinaryOp(b) => self.values([&*b.lhs, &*b.rhs]),
+            Expr::RelationalOp(b) => self.values([&*b.lhs, &*b.rhs]),
+            Expr::LogicalOp(b) => self.values([&*b.lhs, &*b.rhs]),
+            Expr::Range(r) => self.values([&*r.start, &*r.end]),
+            Expr::UnaryOp(u) => self.value(&u.expr),
+            Expr::AsCast(c) => self.value(&c.expr),
+            Expr::Borrow(b) => self.value(&b.expr),
+            Expr::MemberAccess(m) => self.value(&m.base),
+            Expr::Array(a) => self.values(&a.elements),
+            Expr::StructInit(s) => self.values(s.fields.iter().map(|(_, e)| e)),
+            Expr::If(i) => {
+                self.value(&i.cond);
+                let mut v = self.block(&i.then_block);
+                v.extend(self.block(i.else_block.as_deref().unwrap_or_default()));
+                v
+            }
+            Expr::Match(m) => {
+                let tested = self.value(&m.expr);
+                let mut v = HashSet::new();
+                for arm in &m.arms {
+                    let mut bound = Vec::new();
+                    crate::hir::check::control::pattern_names(&arm.pattern, &mut bound);
+                    let len = self.scope.len();
+                    for n in &bound {
+                        self.give(n, tested.clone());
+                        self.declare(n);
+                    }
+                    v.extend(self.block(&arm.body));
+                    self.scope.truncate(len);
+                }
+                v
+            }
+            // The proof refuses any other expression. Each name in it counts.
+            other => {
+                let mut names = Vec::new();
+                crate::syntax::expr::visit_expr(other, &mut |e| {
+                    if let Expr::Identifier(id) = e {
+                        names.push(id.name.to_string());
+                    }
+                });
+                names.iter().flat_map(|n| self.name(n)).collect()
+            }
         }
     }
 }
@@ -779,6 +1043,18 @@ fn parallel_int_literal(e: &Expr) -> Option<i64> {
     n.value.parse::<i64>().ok()
 }
 
+/// `t.$extent[i]`, the read that the checker makes of `t.len()` and `t.extent(i)`: the tensor
+/// `t` and the axis `i`.
+pub(crate) fn extent_read(e: &Expr) -> Option<(&Expr, &Expr)> {
+    let Expr::IndexAccess(ix) = e else {
+        return None;
+    };
+    let Expr::MemberAccess(m) = &*ix.base else {
+        return None;
+    };
+    (m.member.as_ref() == "$extent").then_some((&*m.base, &*ix.index))
+}
+
 /// Scalar math the walk may trust. By the time `parallel_outer_for` runs, the checker has
 /// rewritten every method call into a mangled free call — `(x).exp()` arrives as
 /// `f32$exp(x)` — so a syntactic walk meets no `MethodCall`, only calls whose names carry the
@@ -856,6 +1132,12 @@ struct ParallelScan {
     iv: String,
     declared: HashSet<String>,
     used_captured: HashSet<String>,
+    /// For each name that the region gives a value to, the names from outside the region whose
+    /// memory that value may be (see `outside_memory`). A write through such a local is not the
+    /// pass's own.
+    outside: HashMap<String, HashSet<String>>,
+    /// The locals that are a row of a tensor from outside the region (see `OutsideMemory::rows`).
+    rows: HashMap<String, (String, Vec<Expr>)>,
     /// Set while scanning a THREAD loop of a two-level region (Vx#379): `(block_iv, K)` where `K`
     /// is the thread loop's trip. Widens the captured-write rule to accept the affine first index
     /// `block_iv * K + iv` -- the (block, thread-iteration) pair's own row.
@@ -952,6 +1234,8 @@ impl ParallelScan {
             iv,
             declared: HashSet::new(),
             used_captured: HashSet::new(),
+            outside: HashMap::new(),
+            rows: HashMap::new(),
             affine: None,
             smem: HashSet::new(),
             smem_written: HashSet::new(),
@@ -1154,6 +1438,23 @@ impl ParallelScan {
         }
     }
 
+    /// The tensor from outside the region and the indices, outermost first, that the local
+    /// `name` is a row of.
+    fn row_of(&self, name: &str) -> Option<(String, Vec<Expr>)> {
+        if !self.declared.contains(name) {
+            return None;
+        }
+        self.rows.get(name).cloned()
+    }
+
+    /// A name from outside the region whose memory the local `name` may be, if there is one.
+    fn outside_of(&self, name: &str) -> Option<&str> {
+        if !self.declared.contains(name) {
+            return None;
+        }
+        self.outside.get(name)?.iter().min().map(String::as_str)
+    }
+
     /// A `let` (or loop IV) introduces a local — unless the name was already read as captured, or
     /// shadows the outer IV, either of which would let one spelling mean two memories.
     fn declare(&mut self, name: &str, span: Span) -> bool {
@@ -1294,11 +1595,14 @@ impl ParallelScan {
                 }
                 self.expr(&e.expr)
             }
-            // Return, assert, macro calls, parse errors: none of these have stridable semantics.
+            // Return, macro calls, parse errors: none of these have stridable semantics.
             // Frees nothing yet; a drop in a parallel region is decided with phase 5.
             S::Drop(_) => true,
             S::Return(r) => self.refuse("it can `return`", r.span),
-            S::Assert(a) => self.refuse("it holds an `assert`", a.span),
+            // Each pass checks its own assert. A failed one stops the program on every target,
+            // also when several threads fail at once: the host aborts, an NVIDIA kernel traps, and
+            // a SPIR-V or Metal kernel sets a flag that the runtime reads after the launch.
+            S::Assert(a) => self.expr(&a.expr),
             S::MacroCall(_) | S::Error(_) => false,
         }
     }
@@ -1329,8 +1633,8 @@ impl ParallelScan {
                     )
             }
             // An index chain `a[e0][e1]..`: peel to the base. A local base is thread-private
-            // regardless of indices; a captured base must be indexed first by the IV, giving each
-            // iteration its own row.
+            // regardless of indices, unless it may be memory from outside the region. A captured
+            // base must be indexed first by the IV, giving each iteration its own row.
             Expr::IndexAccess(_) => {
                 let mut indices = Vec::new();
                 let mut cur = lhs;
@@ -1351,6 +1655,22 @@ impl ParallelScan {
                 };
                 if !indices.iter().all(|e| self.expr(e)) {
                     return false;
+                }
+                // `t` in `let t = out[i];` is a row of `out`, so a write through it writes `out`.
+                if let Some((base, prefix)) = self.row_of(&id.name) {
+                    let mut all = indices.clone();
+                    all.extend(prefix.iter().rev());
+                    return self.captured_write(&base, &all, lhs.span());
+                }
+                if let Some(from) = self.outside_of(&id.name) {
+                    return self.refuse_write(
+                        &format!(
+                            "a pass writes through `{}`, which may be `{from}` from outside the \
+                             region",
+                            id.name
+                        ),
+                        lhs.span(),
+                    );
                 }
                 if self.declared.contains(&*id.name) {
                     if !self.smem.contains(&*id.name) {
@@ -1406,28 +1726,36 @@ impl ParallelScan {
                             lhs.span(),
                         );
                 }
-                self.note(&id.name);
-                self.captured_written.insert(id.name.to_string());
-                if !self.owns_row(&indices) {
-                    return self.refuse_write(
-                        &format!(
-                            "the compiler cannot show that each pass of the loop over `{}` \
-                             writes a different element of `{}`",
-                            self.iv, id.name
-                        ),
-                        lhs.span(),
-                    );
-                }
-                self.record_row(&id.name, first, lhs.span());
-                self.captured_write_columns
-                    .entry(id.name.to_string())
-                    .or_default()
-                    .push(columns(&indices));
-                true
+                self.captured_write(&id.name, &indices, lhs.span())
             }
             // A write through a pointer, a field or anything else may reach any memory.
             _ => self.refuse_write("it writes through a pointer or a field", lhs.span()),
         }
+    }
+
+    /// A write to the element `indices` (outermost last) of `name`, a tensor from outside the
+    /// region.
+    fn captured_write(&mut self, name: &str, indices: &[&Expr], at: Span) -> bool {
+        self.note(name);
+        self.captured_written.insert(name.to_string());
+        if !self.owns_row(indices) {
+            return self.refuse_write(
+                &format!(
+                    "the compiler cannot show that each pass of the loop over `{}` writes a \
+                     different element of `{name}`",
+                    self.iv
+                ),
+                at,
+            );
+        }
+        if let Some(first) = indices.last() {
+            self.record_row(name, first, at);
+        }
+        self.captured_write_columns
+            .entry(name.to_string())
+            .or_default()
+            .push(columns(indices));
+        true
     }
 
     /// Note which row of `name` an access the current pass owns goes to; see `row_keys`.
@@ -1617,6 +1945,20 @@ impl ParallelScan {
     /// A read-position expression: allowed unless it could hide a write (a call, a print, a
     /// transfer) or is a construct this walk has no sound story for.
     fn expr(&mut self, e: &Expr) -> bool {
+        // `t.len()` and `t.extent(i)` read the shape of `t`, and no pass writes a shape.
+        if let Some((of, axis)) = extent_read(e) {
+            let mut root = of;
+            let mut indices = vec![axis];
+            while let Expr::IndexAccess(step) = root {
+                indices.push(&*step.index);
+                root = &step.base;
+            }
+            let Expr::Identifier(id) = root else {
+                return self.expr(of) && self.expr(axis);
+            };
+            self.note(&id.name);
+            return self.read_ok(&id.name, id.span) && indices.iter().all(|i| self.expr(i));
+        }
         match e {
             // A name read whole may read every row of it.
             Expr::Identifier(id) => {
@@ -1635,9 +1977,9 @@ impl ParallelScan {
                 }
                 true
             }
-            Expr::Number(_) | Expr::StringLiteral(_) | Expr::SizeOf(_) | Expr::EnumVariant(_) => {
-                true
-            }
+            Expr::Number(_) | Expr::StringLiteral(_) | Expr::SizeOf(_) => true,
+            // A `match` arm can name the payload, so the payload is a read.
+            Expr::EnumVariant(ev) => ev.payload.iter().flatten().all(|e| self.expr(e)),
             Expr::BinaryOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
             Expr::RelationalOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
             Expr::LogicalOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
@@ -1717,15 +2059,16 @@ impl ParallelScan {
                     && self.expr(&b.expr)
             }
             // Belt for the pre-rewrite spelling, should this walk ever run on an unchecked AST: a
-            // method rooted at a captured name is refused (`&mut self` mutation is a write this
-            // walk cannot see); on a local or a computed scalar it is thread-private either way.
+            // method rooted at a captured name, or at a local that may be one, is refused (`&mut
+            // self` mutation is a write this walk cannot see). On any other local or a computed
+            // scalar it is thread-private.
             Expr::MethodCall(mc) => {
                 let mut root = &*mc.base;
                 while let Expr::IndexAccess(ix) = root {
                     root = &ix.base;
                 }
                 if let Expr::Identifier(id) = root {
-                    if !self.declared.contains(&*id.name)
+                    if (!self.declared.contains(&*id.name) || self.outside_of(&id.name).is_some())
                         && !self.refuse_write(
                             &format!("it calls a method on `{}`, which may change it", id.name),
                             mc.span,
@@ -1755,9 +2098,37 @@ impl ParallelScan {
                 self.barrier_ok = saved;
                 ok
             }
+            // Each arm is like a block of an `if`. A name in its pattern is a local of the arm,
+            // like a `let`.
+            Expr::Match(m) => {
+                let depth = self.depth;
+                let saved = self.barrier_ok;
+                self.barrier_ok = false;
+                self.branch_depth += 1;
+                let ok = self.expr(&m.expr)
+                    && m.arms.iter().all(|arm| {
+                        let mut bound = Vec::new();
+                        crate::hir::check::control::pattern_names(&arm.pattern, &mut bound);
+                        let at = if arm.span == Span::default() {
+                            m.span
+                        } else {
+                            arm.span
+                        };
+                        let outer = self.declared.clone();
+                        let ok = bound.iter().all(|n| self.declare(n, at))
+                            && self.stmts(&arm.body, depth);
+                        self.declared = outer;
+                        ok
+                    });
+                self.branch_depth -= 1;
+                self.barrier_ok = saved;
+                ok
+            }
+            // A struct or a tuple value is a local of the pass. Its fields are reads.
+            Expr::StructInit(s) => s.fields.iter().all(|(_, e)| self.expr(e)),
             // Everything else — calls, prints, transfers, spawns, closures, borrows, raw pointers,
-            // inline MLIR, autodiff, matches, struct construction — is either a possible write or
-            // a construct with no sound striding story. Reject; the loop stays serial.
+            // inline MLIR, autodiff — is either a possible write or a construct with no sound
+            // striding story. Reject; the loop stays serial.
             other => self.refuse(&format!("it holds {}", construct(other)), other.span()),
         }
     }
@@ -1782,7 +2153,6 @@ fn construct(e: &Expr) -> &'static str {
         Expr::Transfer(_) => "a `transfer`",
         Expr::SpawnOn(_) => "a `spawn` of its own",
         Expr::Closure(_) => "a closure",
-        Expr::Match(_) => "a `match`",
         Expr::UnsafeBlock(_) => "an `unsafe` block",
         Expr::IndirectCall(_) => "a call through a function value",
         Expr::Dereference(_) => "a read through `*`",

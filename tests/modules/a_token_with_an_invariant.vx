@@ -14,7 +14,7 @@ struct Token {
   invariant 0i64 <= number,
 }
 
-fn token_from_mlir() -> Token {
+pub fn token_from_mlir() -> Token {
   unsafe {
     return mlir!(inputs : (), returns : Token, dialects : ["llvm"]) {
       %u = llvm.mlir.undef : !llvm.struct<(i64)>

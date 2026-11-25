@@ -3125,9 +3125,8 @@ impl TypeChecker<'_> {
             source_ty: None,
             span: m.span,
         });
-        *expr = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr::new(
+        *expr = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr::by_the_compiler(
             "copy_end_at".into(),
-            None,
             vec![cast],
             m.span,
         ));
