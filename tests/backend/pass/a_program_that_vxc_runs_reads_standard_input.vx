@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // `vxc FILE.vx` runs the program with the standard input of vxc. The program counts the lines
-// and bytes that it reads. The second RUN line gives no input, so the program reads 0 bytes.
+// and bytes that it reads. The second RUN line gives no input, so the program reads 0 bytes. It
+// passes without the fix too, and shows that the program stops at end of input.
 // RUN: printf 'first\nsecond\nthird\n' | vxc %s 2>&1 | FileCheck %s --check-prefix=PIPED
 // RUN: vxc %s < /dev/null 2>&1 | FileCheck %s --check-prefix=EMPTY
 // PIPED: {{^}}3 lines, 19 bytes{{$}}
