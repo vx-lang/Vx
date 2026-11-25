@@ -1747,6 +1747,9 @@ impl<'a> TypeChecker<'a> {
                         continue;
                     }
                 }
+                if self.refuse_untyped_closure_parameter(callee, i, param_ty, &arg_ty, span) {
+                    continue;
+                }
                 let got = match (&args[i], &arg_ty, param_ty) {
                     (Expr::Identifier(id), Type::Struct(n, _), Type::Closure(..))
                         if n.starts_with("Closure_") =>
@@ -1773,6 +1776,50 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+    }
+
+    /// E3003: a closure literal with a parameter that has no type cannot match a closure
+    /// parameter, so say that the closure needs the type. Gives `true` when it reported.
+    fn refuse_untyped_closure_parameter(
+        &mut self,
+        callee: &str,
+        i: usize,
+        param_ty: &Type,
+        arg_ty: &Type,
+        span: &crate::syntax::Span,
+    ) -> bool {
+        let Type::Struct(closure, _) = arg_ty else {
+            return false;
+        };
+        let Some((closure_params, _)) = self.mono.closure_signatures.get(closure) else {
+            return false;
+        };
+        let Some(untyped) = closure_params.iter().position(|t| *t == Type::Unknown) else {
+            return false;
+        };
+        // The type that the callee wants for that closure parameter, when it says one.
+        let wanted = match param_ty {
+            Type::Closure(args, _) => args.get(untyped),
+            Type::GenericInstance(_, args) if untyped + 1 < args.len() => args.get(untyped),
+            _ => None,
+        };
+        let example = match wanted {
+            Some(ty) => format!(", as in `| x : {ty} | ...`"),
+            None => String::new(),
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3003,
+            format!(
+                "argument {} of '{}' is a closure whose parameter {} has no type. A closure \
+                 parameter needs a type{}",
+                i + 1,
+                callee,
+                untyped + 1,
+                example
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+        true
     }
 
     /// E6003: a generic parameter that names no memory, `Tensor<T, [4]>`, matches a tensor in
