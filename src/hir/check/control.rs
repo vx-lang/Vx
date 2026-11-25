@@ -1518,7 +1518,7 @@ impl<'a> TypeChecker<'a> {
                         let first = match_ty.as_ref().expect("an earlier arm gave a value");
                         if !crate::syntax::is_never_ty(first) && *first != arm_ty {
                             self.errors.error_with_code(
-                                crate::diagnostic::DiagnosticCode::E3068,
+                                crate::diagnostic::DiagnosticCode::E3069,
                                 format!(
                                     "this `match` arm gives a value of type {arm_ty}, but an \
                                      earlier arm gives a value of type {first}. Make every arm \
