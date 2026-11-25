@@ -43,7 +43,7 @@ fn fill(dst : &mut Tensor<f32, [?], Memory::HBM>, n : i32, scale : f32) -> void 
 }
 
 // Thread B waits for a byte on the pipe `go`, and sends one back on the pipe `done`.
-pub fn fill_two(a : &mut Tensor<f32, [?], Memory::HBM>, b : &mut Tensor<f32, [?], Memory::HBM>, n : i32, go : i32, done : i32) -> void {
+extern fn fill_two(a : &mut Tensor<f32, [?], Memory::HBM>, b : &mut Tensor<f32, [?], Memory::HBM>, n : i32, go : i32, done : i32) -> void {
   fill(a, n, 1.0);
   let mut byte : u8 = 1;
   unsafe {
@@ -54,12 +54,12 @@ pub fn fill_two(a : &mut Tensor<f32, [?], Memory::HBM>, b : &mut Tensor<f32, [?]
   return;
 }
 
-pub fn fill_one(c : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+extern fn fill_one(c : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
   fill(c, n, 3.0);
   return;
 }
 
-pub fn hand_over(t : &Tensor<f32, [?], Memory::HBM>) -> void {
+extern fn hand_over(t : &Tensor<f32, [?], Memory::HBM>) -> void {
   return;
 }
 ";

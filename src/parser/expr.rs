@@ -696,6 +696,7 @@ impl<'a> Parser<'a> {
                 type_args: parsed_type_args,
                 args,
                 span,
+                by_the_compiler: false,
             }))
         } else if self.check(&TokenType::LeftBrace) {
             let after = |n: usize| self.tokens.get(self.pos + n).map(|t| &t.kind);
@@ -798,6 +799,7 @@ impl<'a> Parser<'a> {
             type_args: Some(vec![ty]),
             args,
             span,
+            by_the_compiler: false,
         }))
     }
 
@@ -1119,6 +1121,7 @@ impl<'a> Parser<'a> {
                     type_args: None,
                     args: vec![inner],
                     span: Span::default(),
+                    by_the_compiler: false,
                 })
             }
             // `Distinct::check(t)` and `DisjointRanges::check(t)` check the values of `t` and
@@ -1161,6 +1164,7 @@ impl<'a> Parser<'a> {
                         length: peeked_token.length,
                         expansion: self.expansion(),
                     },
+                    by_the_compiler: false,
                 })
             }
             TokenType::Distinct | TokenType::DisjointRanges => {
@@ -1184,6 +1188,7 @@ impl<'a> Parser<'a> {
                         length: peeked_token.length,
                         expansion: self.expansion(),
                     },
+                    by_the_compiler: false,
                 })
             }
             TokenType::Grad => {
@@ -1862,8 +1867,7 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Option::Some");
@@ -1914,8 +1918,7 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Option<i32>::Some");
@@ -1933,8 +1936,7 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Vec<i32>::new");

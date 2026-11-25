@@ -325,11 +325,15 @@ impl TypeId {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+/// Which files can call a function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
+    /// No `pub`: only the file that declares it.
     Private,
-    CratePublic,
-    FullyPublic,
+    /// `pkg`: any file of the same package.
+    Package,
+    /// `pub`: any file.
+    Public,
 }
 
 impl TypeId {
@@ -339,8 +343,8 @@ impl TypeId {
         let vis_bits = (self.words[3] & VISIBILITY_MASK) >> 60;
         match vis_bits {
             0 => Visibility::Private,
-            1 => Visibility::CratePublic,
-            2 => Visibility::FullyPublic,
+            1 => Visibility::Package,
+            2 => Visibility::Public,
             _ => {
                 #[cfg(debug_assertions)]
                 panic!("Invalid visibility bits: {:b}", vis_bits);
@@ -376,8 +380,8 @@ impl TypeId {
         self.words[3] &= !VISIBILITY_MASK;
         let vis_bits = match vis {
             Visibility::Private => 0,
-            Visibility::CratePublic => 1,
-            Visibility::FullyPublic => 2,
+            Visibility::Package => 1,
+            Visibility::Public => 2,
         };
         self.words[3] |= vis_bits << 60;
     }
@@ -503,11 +507,11 @@ mod tests {
         let mut tid = TypeId::new(0, 0, 0, 0);
         assert_eq!(tid.visibility(), Visibility::Private);
 
-        tid.with_visibility(Visibility::CratePublic);
-        assert_eq!(tid.visibility(), Visibility::CratePublic);
+        tid.with_visibility(Visibility::Package);
+        assert_eq!(tid.visibility(), Visibility::Package);
 
-        tid.with_visibility(Visibility::FullyPublic);
-        assert_eq!(tid.visibility(), Visibility::FullyPublic);
+        tid.with_visibility(Visibility::Public);
+        assert_eq!(tid.visibility(), Visibility::Public);
     }
 
     #[test]
@@ -649,7 +653,7 @@ mod tests {
         let mut t1 = TypeId::new(1, 2, 3, 0);
         t1.with_flags(TYPE_IS_POD);
         let mut t2 = TypeId::new(4, 5, 6, 0);
-        t2.with_visibility(Visibility::FullyPublic);
+        t2.with_visibility(Visibility::Public);
 
         let dict = vec![t1, t2];
         let mut buffer = Vec::new();
@@ -666,7 +670,7 @@ mod tests {
         assert!(deserialized[0].is_trivially_copyable());
 
         assert_eq!(deserialized[1], t2);
-        assert_eq!(deserialized[1].visibility(), Visibility::FullyPublic);
+        assert_eq!(deserialized[1].visibility(), Visibility::Public);
     }
 
     /// The slot-0 return-provenance code round-trips through set/extract for every legal value (#265).

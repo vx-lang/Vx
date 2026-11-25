@@ -52,7 +52,7 @@ impl Copy for Ordering {}
 
 impl Ordering {
   /// Is this Less?
-  fn is_lt(self : Ordering) -> bool {
+  pub fn is_lt(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
         return true;
@@ -67,7 +67,7 @@ impl Ordering {
   }
 
   /// Is this Greater?
-  fn is_gt(self : Ordering) -> bool {
+  pub fn is_gt(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
         return false;
@@ -82,7 +82,7 @@ impl Ordering {
   }
 
   /// Is this Equal?
-  fn is_eq(self : Ordering) -> bool {
+  pub fn is_eq(self : Ordering) -> bool {
     match self {
       Ordering::Less() => {
         return false;
@@ -97,22 +97,22 @@ impl Ordering {
   }
 
   /// Is this anything but Equal?
-  fn is_ne(self : Ordering) -> bool {
+  pub fn is_ne(self : Ordering) -> bool {
     return !self.is_eq();
   }
 
   /// Is this Less or Equal?
-  fn is_le(self : Ordering) -> bool {
+  pub fn is_le(self : Ordering) -> bool {
     return !self.is_gt();
   }
 
   /// Is this Greater or Equal?
-  fn is_ge(self : Ordering) -> bool {
+  pub fn is_ge(self : Ordering) -> bool {
     return !self.is_lt();
   }
 
   /// Less becomes Greater and back; Equal stays.
-  fn reverse(self : Ordering) -> Ordering {
+  pub fn reverse(self : Ordering) -> Ordering {
     match self {
       Ordering::Less() => {
         return Ordering::Greater();
@@ -127,7 +127,7 @@ impl Ordering {
   }
 
   /// `then`, with the second comparison left uncomputed unless it is needed.
-  fn then_with(self : Ordering, f : Closure0<Ordering>) -> Ordering {
+  pub fn then_with(self : Ordering, f : Closure0<Ordering>) -> Ordering {
     match self {
       Ordering::Less() => {
         return Ordering::Less();
@@ -144,7 +144,7 @@ impl Ordering {
 
   /// This one unless it is Equal, in which case the other. Chains comparisons: order by
   /// the first field, and on a tie by the second.
-  fn then(self : Ordering, other : Ordering) -> Ordering {
+  pub fn then(self : Ordering, other : Ordering) -> Ordering {
     match self {
       Ordering::Less() => {
         return Ordering::Less();
@@ -342,7 +342,7 @@ trait PartialOrd {
 // that only a program comparing such a type compiles them.
 
 /// `a < b` for a `PartialOrd` type: false when the two do not compare.
-fn partial_lt<T : PartialOrd>(a : &T, b : &T) -> bool {
+pub fn partial_lt<T : PartialOrd>(a : &T, b : &T) -> bool {
   let order = a.partial_cmp(b);
   if order.is_none() {
     return false;
@@ -351,7 +351,7 @@ fn partial_lt<T : PartialOrd>(a : &T, b : &T) -> bool {
 }
 
 /// `a <= b` for a `PartialOrd` type: false when the two do not compare.
-fn partial_le<T : PartialOrd>(a : &T, b : &T) -> bool {
+pub fn partial_le<T : PartialOrd>(a : &T, b : &T) -> bool {
   let order = a.partial_cmp(b);
   if order.is_none() {
     return false;
@@ -360,7 +360,7 @@ fn partial_le<T : PartialOrd>(a : &T, b : &T) -> bool {
 }
 
 /// `a > b` for a `PartialOrd` type: false when the two do not compare.
-fn partial_gt<T : PartialOrd>(a : &T, b : &T) -> bool {
+pub fn partial_gt<T : PartialOrd>(a : &T, b : &T) -> bool {
   let order = a.partial_cmp(b);
   if order.is_none() {
     return false;
@@ -369,7 +369,7 @@ fn partial_gt<T : PartialOrd>(a : &T, b : &T) -> bool {
 }
 
 /// `a >= b` for a `PartialOrd` type: false when the two do not compare.
-fn partial_ge<T : PartialOrd>(a : &T, b : &T) -> bool {
+pub fn partial_ge<T : PartialOrd>(a : &T, b : &T) -> bool {
   let order = a.partial_cmp(b);
   if order.is_none() {
     return false;
@@ -437,7 +437,7 @@ stamp_float_cmp!(f64);
 /// A free function because it takes the comparison rather than reading it off the type.
 /// The plain `max` and `min` are `Ord` methods here, since those two names are the
 /// compiler's tensor reductions.
-fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
+pub fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
   let p = f.func;
   if p(f.env, a, b).is_gt() {
     return a;
@@ -446,7 +446,7 @@ fn max_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
 }
 
 /// The lesser of the two by `f`, answering `a` when they compare equal.
-fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
+pub fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
   let p = f.func;
   if p(f.env, a, b).is_gt() {
     return b;
@@ -455,7 +455,7 @@ fn min_by<T>(a : T, b : T, f : Closure2<T, T, Ordering>) -> T {
 }
 
 /// The greater of two values by the key `f` gives each, answering `b` on equal keys.
-fn max_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T {
+pub fn max_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T {
   let p = f.func;
   let ka = p(f.env, a);
   let kb = p(f.env, b);
@@ -466,7 +466,7 @@ fn max_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T {
 }
 
 /// The lesser of two values by the key `f` gives each, answering `a` on equal keys.
-fn min_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T {
+pub fn min_by_key<T, K : Ord>(a : T, b : T, f : Closure1<T, K>) -> T {
   let p = f.func;
   let ka = p(f.env, a);
   let kb = p(f.env, b);

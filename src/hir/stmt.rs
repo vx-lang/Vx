@@ -3758,7 +3758,7 @@ impl<'a> TypeChecker<'a> {
                 name,
                 type_args,
                 args,
-                span: _,
+                ..
             }) => {
                 // Ignored on purpose: the checker has already instantiated the call and
                 // substituted the arguments into the body, so `sort<4>` arrives with its
@@ -3913,7 +3913,7 @@ impl<'a> TypeChecker<'a> {
             name,
             type_args: None,
             args,
-            span: _,
+            ..
         } = call
         else {
             return None;
