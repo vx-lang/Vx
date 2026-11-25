@@ -80,6 +80,15 @@ fn impl_display(trait_name: &crate::symbol::Symbol, ib: &decl::ImplBlock) -> Str
     format!("{}<{}>", trait_name, args.join(", "))
 }
 
+/// Can a call run a value of type `ty`: a function, a closure value or a closure literal?
+fn is_callable(ty: &Type) -> bool {
+    match ty {
+        Type::Function(..) | Type::Closure(..) => true,
+        Type::Struct(name, _) => name.starts_with("Closure_"),
+        _ => false,
+    }
+}
+
 /// The byte index of the first `::` in `name` that is outside angle brackets.
 fn top_level_path_sep(name: &str) -> Option<usize> {
     let mut depth = 0i32;
@@ -101,7 +110,16 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(c) => (&mut c.callee, &mut c.args, c.span),
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
-        let callee_ty = self.check_expr_type_flag(callee, consume);
+        // `(*f)(x)` reads what `f` points at, and does not move it.
+        let through = match &**callee {
+            Expr::Dereference(d) => Some(self.operand_type(&d.expr)),
+            _ => None,
+        };
+        let callee_ty = self.check_expr_type_flag(callee, consume && through.is_none());
+        let shared = matches!(
+            through,
+            Some(Type::Borrow { is_mut: false, .. } | Type::Ref(..))
+        );
         // As for a call by name: the arguments are moved whatever is done with the result.
         let mut arg_types = Vec::new();
         for arg in args.iter_mut() {
@@ -110,6 +128,9 @@ impl<'a> TypeChecker<'a> {
 
         if let Type::Struct(struct_name, _) = callee_ty {
             if struct_name.starts_with("Closure_") {
+                if shared && !self.speculating {
+                    self.refuse_a_closure_call_through_a_shared_reference(&struct_name, &call_span);
+                }
                 let call_name = format!("{}_call", struct_name);
                 if let Some((param_types, closure_ret)) = self
                     .mono
@@ -209,13 +230,41 @@ impl<'a> TypeChecker<'a> {
             }
 
             return *ret_ty.clone();
-        } else if let Type::Function(..) = callee_ty {
-            if !self.speculating {
-                self.errors.push(
-                    "Function pointers are not natively callable yet; use closure interfaces."
+        } else if let Type::Function(param_types, ret_ty, callee_unsafe) = &callee_ty {
+            if *callee_unsafe && self.unsafe_is_missing() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    "Call to an unsafe function is unsafe and requires unsafe function or block"
                         .to_string(),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
                 );
             }
+            if args.len() != param_types.len() {
+                if !self.speculating {
+                    self.errors.push(format!(
+                        "Function pointer expects {} arguments, got {}",
+                        param_types.len(),
+                        args.len()
+                    ));
+                }
+            } else {
+                for (i, param_ty) in param_types.iter().enumerate() {
+                    let arg_ty = &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
+                    if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
+                        self.errors.push(format!(
+                            "Type mismatch in argument {} for function pointer. Expected {}, got {}",
+                            i + 1,
+                            param_ty,
+                            arg_ty
+                        ));
+                    }
+                }
+            }
+            let ret_ty = *ret_ty.clone();
+            if let Expr::IndirectCall(ref mut ic) = expr {
+                ic.target_func_ty = Some(callee_ty.clone());
+            }
+            return ret_ty;
         } else {
             if !self.speculating {
                 self.errors
@@ -224,6 +273,41 @@ impl<'a> TypeChecker<'a> {
         }
 
         Type::Unknown
+    }
+
+    /// A call through `&F` can run a closure many times, and at the same time from many tasks.
+    /// So the closure must not change or move a value that it captures.
+    fn refuse_a_closure_call_through_a_shared_reference(
+        &mut self,
+        closure: &crate::symbol::Symbol,
+        at: &crate::syntax::Span,
+    ) {
+        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(at));
+        if let Some(moved) = self.mono.closures_that_run_once.get(closure).cloned() {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4008,
+                format!(
+                    "this call runs a closure through a `&` reference, but the closure moves \
+                     `{moved}`, a value that it captures, so it can run only once. Pass the \
+                     closure by value"
+                ),
+                at,
+            );
+        } else if let Some(changed) = self
+            .mono
+            .closures_that_change_captures
+            .get(closure)
+            .cloned()
+        {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4006,
+                format!(
+                    "this call runs a closure through a `&` reference, but the closure changes \
+                     `{changed}`, a value that it captures. Pass the closure by value or as `&mut`"
+                ),
+                at,
+            );
+        }
     }
 
     /// Type-check `e` under an explicit expected type, restoring the previous one after. The
@@ -1013,6 +1097,23 @@ impl<'a> TypeChecker<'a> {
                 } else if resolved_name.as_ref() == "main" {
                     self.refuse_a_use_of_main(span);
                     return Type::Unknown;
+                }
+                // `f(x)` with `f : &F` calls the closure or the function that `f` points at.
+                if let Some((Type::Borrow { inner, .. }, _)) = self.lookup(&resolved_name) {
+                    if is_callable(inner) {
+                        let callee = Expr::Dereference(crate::syntax::expr::DereferenceExpr {
+                            expr: Box::new(Expr::Identifier(IdentifierExpr::new(
+                                resolved_name.clone(),
+                                *span,
+                            ))),
+                            ty: Some((**inner).clone()),
+                            span: *span,
+                        });
+                        let call =
+                            IndirectCallExpr::new(Box::new(callee), std::mem::take(args), *span);
+                        *expr = Expr::IndirectCall(call);
+                        return self.check_indirectcall_expr(expr, true);
+                    }
                 }
                 let mut base_name = resolved_name.clone();
                 let mut explicit_generic_args = type_args.clone().unwrap_or_default();

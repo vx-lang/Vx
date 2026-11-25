@@ -1823,6 +1823,14 @@ impl<'a> TypeChecker<'a> {
                         }
                     })
                     .collect();
+                if let Some((changed, _)) = captured_vars
+                    .iter()
+                    .find(|(name, _)| changed_in_body.contains(name.as_ref()))
+                {
+                    self.mono
+                        .closures_that_change_captures
+                        .insert(struct_name.clone().into(), changed.clone());
+                }
 
                 if !self.speculating {
                     // A closure whose body moves a capture takes it, so the code around the

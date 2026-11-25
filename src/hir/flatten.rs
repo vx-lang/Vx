@@ -1899,6 +1899,7 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::TaskJoin, v.reg, Register(0), 0);
                 Ok(v)
             }
+            Expr::IndirectCall(ic) => self.lower_indirect_call_expr(ic),
             Expr::FunctionCall(fc) => {
                 if is_tensor_alloc_call(fc) {
                     return self.lower_tensor_alloc(fc).ok_or(Decline::TypeNotModelled {
@@ -2163,6 +2164,23 @@ impl<'r> Lowerer<'r> {
                             reg,
                             ty: LoweredTy::Ptr,
                         });
+                    }
+                    // `&add_one`, a function by its name: a slot holds the function's address.
+                    if !self.scope.contains_key(&id.name) {
+                        if let Some(fnptr) = self.lower_func_const(&id.name) {
+                            let slot = self.emit_typed(
+                                Opcode::Alloca,
+                                Register(0),
+                                Register(0),
+                                LoweredTy::Ptr,
+                                0,
+                            );
+                            self.emit_effect(Opcode::Store, slot.reg, fnptr.reg, 0);
+                            return Ok(Val {
+                                reg: slot.reg,
+                                ty: LoweredTy::Ptr,
+                            });
+                        }
                     }
                 }
                 // `&*ptr` / `&mut *ptr`: a reborrow of a raw pointer is the pointer itself, the
@@ -6513,19 +6531,61 @@ impl<'r> Lowerer<'r> {
                 })
             }
         };
+        let callee_ty = self
+            .ast_types
+            .get(fc.name.as_ref())
+            .ok_or(Decline::TypeNotModelled {
+                what: "an indirect callee with no recorded AST type",
+            })?
+            .clone();
+        self.emit_call_indirect(fnptr, env, &callee_ty, &fc.args)
+    }
+
+    /// Lower `(*f)(args)` or `(s.op)(args)`, a call of a value. The checker gave the callee's
+    /// type: a closure value, which holds `{ env, func }`, or a plain function.
+    fn lower_indirect_call_expr(
+        &mut self,
+        ic: &crate::syntax::expr::IndirectCallExpr,
+    ) -> Lowered<Val> {
+        let callee_ty = ic.target_func_ty.clone().ok_or(Decline::TypeNotModelled {
+            what: "an indirect callee with no recorded AST type",
+        })?;
+        let callee = self.lower_expr(&ic.callee)?;
+        let (fnptr, env) = match (&callee_ty, &callee.ty) {
+            (Type::Closure(..), LoweredTy::Aggregate(gid)) => {
+                let gid = *gid;
+                let slot = self.emit_alloca(callee.ty.clone());
+                self.emit_effect(Opcode::Store, slot.reg, callee.reg, 0);
+                let env = self.load_field(slot.reg, &gid, "env")?.reg;
+                (self.load_field(slot.reg, &gid, "func")?, Some(env))
+            }
+            (Type::Function(..), LoweredTy::Ptr) => (callee, None),
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "an indirect callee that is not a function type",
+                })
+            }
+        };
+        self.emit_call_indirect(fnptr, env, &callee_ty, &ic.args)
+    }
+
+    /// Call the function pointer `fnptr` of type `callee_ty` with `args`, after `env` for a
+    /// closure.
+    fn emit_call_indirect(
+        &mut self,
+        fnptr: Val,
+        env: Option<Register>,
+        callee_ty: &Type,
+        args: &[Expr],
+    ) -> Lowered<Val> {
         if !matches!(fnptr.ty, LoweredTy::Ptr) {
             return Err(Decline::TypeNotModelled {
                 what: "a callee that is not a function pointer",
             });
         }
-        // The callee's return type comes from `f`'s AST function type: a scalar, or a pointer
+        // The return type comes from the callee's AST function type: a scalar, or a pointer
         // for a borrow, reference or raw pointer.
-        let ty = match self
-            .ast_types
-            .get(fc.name.as_ref())
-            .ok_or(Decline::TypeNotModelled {
-                what: "an indirect callee with no recorded AST type",
-            })? {
+        let ty = match callee_ty {
             Type::Function(_, ret, _) | Type::Closure(_, ret) => ret.as_ref().clone(),
             _ => {
                 return Err(Decline::TypeNotModelled {
@@ -6548,7 +6608,7 @@ impl<'r> Lowerer<'r> {
             },
         };
         let mut arg_regs: Vec<Register> = env.into_iter().collect();
-        for arg in &fc.args {
+        for arg in args {
             arg_regs.push(self.lower_expr(arg)?.reg);
         }
         let argc = arg_regs.len() as u64;
