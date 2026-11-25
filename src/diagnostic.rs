@@ -492,6 +492,11 @@ pub enum DiagnosticCode {
     /// address, for example one that `p as *const void` made to give to a C function. It has no
     /// element type, so the compiler does not know what to read.
     E3067,
+    /// A struct or an enum that holds itself by value, such as `struct Node { next: Node }` or
+    /// `struct Node { next: Option<Node> }`. A value of it would hold another value of it, without
+    /// end, so its size is infinite. The chain can go through other structs, enum variants and
+    /// generic types. Hold the value through a pointer, for example `Box<Node>`.
+    E3068,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

@@ -21,6 +21,7 @@ mod impl_files;
 mod memory;
 mod placement;
 mod safe_externs;
+mod sized_types;
 mod thread_safety_impls;
 mod topology;
 
@@ -57,6 +58,8 @@ impl TypeChecker<'_> {
         // An impl writes every method its trait gives no default body.
         self.check_impls_write_required_methods();
         self.check_no_projections_in_fields();
+        // A struct or an enum that holds itself by value, which has no finite size.
+        self.check_types_have_a_size();
         // `T : NoSuchTrait` on any declaration, called or not.
         self.check_bounds_name_a_trait();
         // Structural validity of transfer lowerings: duplicate edge, empty body.

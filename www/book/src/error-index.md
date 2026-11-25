@@ -14,12 +14,13 @@ and so on. A `W` prefix is a warning rather than an error.
 Every code below links to its own page, which carries the message the compiler emits and, where
 the test suite has one, a program that triggers it.
 
+
 ## Contents
 
 - [Warnings](#warnings) — `W1001`–`W1038` (29 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3067` (66 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3068` (67 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5004` (4 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
@@ -168,6 +169,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3065`](/errors/E3065/) | A range index `q[a..b]` with ends that are not literal numbers, or with no rows (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so it must be known while compiling. A range past the last row is E8003. |
 | [`E3066`](/errors/E3066/) | An `impl` in the wrong file, or with the wrong `extern`. Only the file that declares a struct or an enum writes a plain `impl` of it. `core` and `std` declare the built-in types, such as `i32` and `Tensor`. An impl in another file, for example to break an import cycle, is `extern impl`, so that a review finds each one. An `extern impl` in the file of the type is an error too. A macro cannot write `extern impl`: write it in the file. |
 | [`E3067`](/errors/E3067/) | A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an address, for example one that `p as *const void` made to give to a C function. It has no element type, so the compiler does not know what to read. |
+| [`E3068`](/errors/E3068/) | A struct or an enum that holds itself by value, such as `struct Node { next: Node }` or `struct Node { next: Option<Node> }`. A value of it would hold another value of it, without end, so its size is infinite. The chain can go through other structs, enum variants and generic types. Hold the value through a pointer, for example `Box<Node>`. |
 
 ## Borrow/Ownership Errors
 
@@ -289,4 +291,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-198 diagnostics.
+199 diagnostics.

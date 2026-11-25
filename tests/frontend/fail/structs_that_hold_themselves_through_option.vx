@@ -1,0 +1,35 @@
+//===- structs_that_hold_themselves_through_option.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `Option<T>` holds its `T` by value. So a struct that holds an `Option` of itself, directly
+// or through a second struct, has an infinite size. The compiler crashed in the drop checker on
+// both. Each gets an error at its struct, in a normal compile and in a parallel compile (`-j`).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc -j 2 %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E3068] at {{.*}}structs_that_hold_themselves_through_option.vx:20:8: `Node` holds itself by value, so its size is infinite: field `next` of `Node` holds `Option<Node>`, variant `Some` of `Option<Node>` holds `Node`. Hold the value through a pointer, for example `Box<Node>`
+// CHECK: Error[E3068] at {{.*}}structs_that_hold_themselves_through_option.vx:24:8: `A` holds itself by value, so its size is infinite: field `b` of `A` holds `Option<B>`, variant `Some` of `Option<B>` holds `B`, field `a` of `B` holds `A`. Hold the value through a pointer, for example `Box<A>`
+
+import core::option;
+import core::result;
+
+struct Node {
+  next: Option<Node>
+}
+
+struct A {
+  b: Option<B>
+}
+struct B {
+  a: A
+}
+
+fn main() -> i32 {
+  let r = Result<u64, Node>::Ok(5u64);
+  print(1);
+  return 0;
+}
