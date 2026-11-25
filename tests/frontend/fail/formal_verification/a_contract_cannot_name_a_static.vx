@@ -1,0 +1,67 @@
+//===- a_contract_cannot_name_a_static.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `requires` or an `ensures` cannot name a `static`. A caller proves these clauses with its
+// own names. In `caller`, the local `LIMIT` is 100, so `below(50)` would pass, but the
+// `static` is 2. `under` is correct: its `LIMIT` is a parameter.
+//
+// The prover does not know the value of a `static`. So a clause that needs the value is not
+// proved: a false one (`forty_one`), a true one (`two`), and one that a local with the name
+// of the `static` would make pass (`shadowed`, which returns 2).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+static LIMIT : i32 = 2;
+
+// CHECK: Error[E3044] at {{.*}}a_contract_cannot_name_a_static.vx:[[@LINE+2]]:14: a `requires` or an `ensures` cannot name static 'LIMIT' yet. Write the value of 'LIMIT' in its place
+fn below(x : i32) -> i32
+requires x < LIMIT {
+  return x;
+}
+
+// CHECK: Error[E3044] at {{.*}}a_contract_cannot_name_a_static.vx:[[@LINE+2]]:18: a `requires` or an `ensures` cannot name static 'LIMIT' yet. Write the value of 'LIMIT' in its place
+fn one() -> i32
+ensures return < LIMIT {
+  return 1;
+}
+
+// The prover does not know the value of `LIMIT`, so `one` is not proved.
+// CHECK: Error[E8001] {{.*}} Function 'one' cannot prove postcondition
+fn under(LIMIT : i32) -> i32
+requires LIMIT > 0
+ensures return > 0 {
+  return LIMIT;
+}
+
+fn caller() -> i32 {
+  let LIMIT = 100;
+  return below(50) + one() + under(LIMIT);
+}
+
+// CHECK: Error[E8001] {{.*}} Function 'forty_one' cannot prove postcondition
+fn forty_one() -> i32
+ensures return == 41 {
+  return LIMIT;
+}
+
+// CHECK: Error[E8001] {{.*}} Function 'two' cannot prove postcondition
+fn two() -> i32
+ensures return == 2 {
+  return LIMIT;
+}
+
+// CHECK: Error[E8001] {{.*}} Function 'shadowed' cannot prove postcondition
+fn shadowed() -> i32
+ensures return == 5 {
+  let a = LIMIT;
+  let LIMIT = 5;
+  return a + LIMIT - LIMIT;
+}
+
+fn main() -> i32 {
+  return caller() + forty_one() + two() + shadowed();
+}

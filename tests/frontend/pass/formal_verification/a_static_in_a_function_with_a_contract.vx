@@ -1,0 +1,39 @@
+//===- a_static_in_a_function_with_a_contract.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not='Warning[' --implicit-check-not='Error['
+// CHECK: 40 7 3
+//
+// The body of a function with a contract can read a `static`. In `at_most`, the prover uses
+// the condition `x > LIMIT` to prove that `LIMIT` is at most `x`. It does not need the value
+// of `LIMIT`. A parameter can have the name of a `static`, and a contract can name that
+// parameter.
+
+static LIMIT : i32 = 40;
+
+fn at_most(x : i32) -> i32
+ensures return <= x {
+  if x > LIMIT {
+    return LIMIT;
+  }
+  return x;
+}
+
+fn named_like_the_static(LIMIT : i32) -> i32
+requires LIMIT > 0
+ensures return > 0 {
+  return LIMIT;
+}
+
+fn main() -> i32 {
+  print(at_most(50));
+  print!(" ");
+  print(at_most(7));
+  print!(" ");
+  print(named_like_the_static(3));
+  return 0;
+}

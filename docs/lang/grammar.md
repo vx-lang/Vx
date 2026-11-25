@@ -7,7 +7,7 @@ This document provides a complete, formal description of the syntax and grammati
 A Vx program consists of a sequence of module-level declarations.
 
 ```ebnf
-program ::= ( import_decl | macro_def | item_macro_call | extern_block | trait_decl | impl_block | transfer_impl_decl | struct_decl | enum_decl | topology_decl | memory_decl | function_decl )*
+program ::= ( import_decl | macro_def | item_macro_call | extern_block | trait_decl | impl_block | transfer_impl_decl | struct_decl | enum_decl | const_decl | topology_decl | memory_decl | function_decl )*
 
 import_decl ::= "import" identifier ( "::" identifier )* ";"
 
@@ -43,6 +43,10 @@ impl_block ::= "unsafe"? "impl" generic_params? ( type "for" )? type "{" functio
 transfer_impl_decl ::= "impl" "Transfer" "<" memory_space "," memory_space ">" "for" topology "{" function_decl* "}"
 
 struct_decl ::= "struct" identifier generic_params? "{" ( identifier ":" type ","? )* "}"
+
+// Each use of a `const` is replaced by its value. A `static` is stored once, read-only, and
+// each use reads it. `const` and `static` are not keywords: the name and the `:` mark the item.
+const_decl ::= ( "const" | "static" ) identifier ":" type "=" expr ";"
 
 enum_decl ::= "enum" identifier generic_params? "{" ( identifier ( "(" type ( "," type )* ")" )? ","? )* "}"
 

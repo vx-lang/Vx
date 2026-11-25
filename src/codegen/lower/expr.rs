@@ -148,6 +148,33 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             } else {
                 Ok((*val, *ty, block))
             }
+        } else if let Some(table) = gen.const_tables.get(name) {
+            // A `const` table or a `static`: its read-only global, which `generate_module`
+            // added. This comes before the functions, as in the checker: a name that both a
+            // `static` and a function have is the `static` when it is read as a value.
+            let memty = Type::parse(gen.context, &table.memref_type())
+                .expect("a table's memref type parses");
+            let get = OperationBuilder::new("memref.get_global", gen.loc())
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "name"),
+                    FlatSymbolRefAttribute::new(gen.context, &table.symbol()).into(),
+                )])
+                .add_results(&[memty])
+                .build()?;
+            let get_ref = block.append_operation(get);
+            if table.len.is_some() {
+                return Ok((get_ref.result(0)?.into(), memty, block));
+            }
+            // A `static` that holds one value: read the value from its global.
+            let elem = crate::mlir_ty::mlir_scalar(&table.elem)
+                .and_then(|text| Type::parse(gen.context, text))
+                .expect("the element of a static has an MLIR type");
+            let load = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&[get_ref.result(0)?.into()])
+                .add_results(&[elem])
+                .build()?;
+            let load_ref = block.append_operation(load);
+            Ok((load_ref.result(0)?.into(), elem, block))
         } else if gen.functions.contains_key(name) {
             let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
             // The address of a function has to name the signature it was emitted with, return
@@ -172,19 +199,6 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             let cast_ref = block.append_operation(cast_op);
 
             Ok((cast_ref.result(0)?.into(), ptr_ty, block))
-        } else if let Some(table) = gen.const_tables.get(name) {
-            // A `const` table: its read-only global, which `generate_module` added.
-            let memty = Type::parse(gen.context, &table.memref_type())
-                .expect("a table's memref type parses");
-            let get = OperationBuilder::new("memref.get_global", gen.loc())
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "name"),
-                    FlatSymbolRefAttribute::new(gen.context, &table.symbol()).into(),
-                )])
-                .add_results(&[memty])
-                .build()?;
-            let get_ref = block.append_operation(get);
-            Ok((get_ref.result(0)?.into(), memty, block))
         } else {
             panic!("Undefined variable: {}", name);
         }

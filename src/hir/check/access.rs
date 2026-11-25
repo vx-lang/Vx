@@ -245,8 +245,15 @@ impl<'a> TypeChecker<'a> {
             return None;
         }
         let decl = self.env.consts.get(name).copied()?;
+        // A `static` that holds one whole number has a value too: the literal it is written
+        // with. One that has no global has no value.
+        let has_a_value = match crate::registry::ConstTable::from_decl(decl) {
+            Ok(None) => true,
+            Ok(Some(table)) => table.len.is_none(),
+            Err(_) => false,
+        };
         if !matches!(&decl.ty, Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool)
-            || !matches!(crate::registry::ConstTable::from_decl(decl), Ok(None))
+            || !has_a_value
         {
             return None;
         }
@@ -510,6 +517,11 @@ impl<'a> TypeChecker<'a> {
                         // A table stays a name, read one element at a time from its global.
                         match crate::registry::ConstTable::from_decl(decl) {
                             Ok(None) => {}
+                            // A `static` that holds one value stays a name too. The program
+                            // reads the value from the global when it runs.
+                            Ok(Some(table)) if table.len.is_none() => {
+                                return decl.ty.clone();
+                            }
                             Ok(Some(_)) if self.indexed_name.as_ref() == Some(&name) => {
                                 return decl.ty.clone();
                             }
@@ -518,14 +530,17 @@ impl<'a> TypeChecker<'a> {
                                     self.errors.error_with_code(
                                         crate::diagnostic::DiagnosticCode::E3044,
                                         format!(
-                                            "const '{name}' is a table: read it one number at a \
-                                             time, as `{name}[i]`"
+                                            "{} '{name}' is a table: read it one number at a \
+                                             time, as `{name}[i]`",
+                                            decl.keyword()
                                         ),
                                         Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                     );
                                 }
                                 return decl.ty.clone();
                             }
+                            // A `static` with no global is reported once, at its declaration.
+                            Err(_) if decl.is_static => return decl.ty.clone(),
                             Err(why) => {
                                 if !self.speculating {
                                     self.errors.error_with_code(
@@ -2018,6 +2033,31 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// E3044 when `place` names a `static` that holds one value. A `static` has one address,
+    /// and both code generators would borrow a copy of the value, which has another.
+    pub(crate) fn refuse_a_borrow_of_a_static(&mut self, place: &Expr, span: &Span) {
+        let Expr::Identifier(id) = place else {
+            return;
+        };
+        let names_a_static_value = self.lookup(id.name.as_ref()).is_none()
+            && self
+                .env
+                .consts
+                .get(id.name.as_ref())
+                .is_some_and(|d| d.is_static && matches!(d.ty, Type::Scalar(_)));
+        if names_a_static_value && !self.speculating {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3044,
+                format!(
+                    "static '{}' cannot be borrowed yet. Copy its value into a variable, and \
+                     borrow that variable",
+                    id.name
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
     pub(crate) fn check_borrow_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Borrow(BorrowExpr {
@@ -2044,6 +2084,10 @@ impl<'a> TypeChecker<'a> {
                 let inner_ty = self.check_expr_type_flag(inner, inner_is_a_call);
                 self.borrowed_name = old_borrowed;
                 self.allow_cross_topology = old_allow;
+                // `&mut` gets E4010 below.
+                if !*is_mut {
+                    self.refuse_a_borrow_of_a_static(inner, span);
+                }
                 // Quiet when a reference to a reference is what was asked for, as in
                 // `let q : &&i64 = &&a;`.
                 let asked_for = matches!(
@@ -2725,10 +2769,15 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
-        if self.lookup(name).is_none() && self.env.consts.contains_key(name) {
+        if let Some(decl) = self
+            .env
+            .consts
+            .get(name)
+            .filter(|_| self.lookup(name).is_none())
+        {
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E4010,
-                format!("`{name}` is a `const`, so {what}"),
+                format!("`{name}` is a `{}`, so {what}", decl.keyword()),
                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
             );
             return;

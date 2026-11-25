@@ -1,0 +1,14 @@
+//===- a_module_with_statics.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with a `static`, used by its own function and by the programs that import it.
+
+static WHEELS : i32 = 4;
+
+pub fn wheels_times(n : i32) -> i32 {
+  return WHEELS * n;
+}

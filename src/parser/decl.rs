@@ -1822,16 +1822,31 @@ impl<'a> Parser<'a> {
             && matches!(self.peek_n(2).kind, TokenType::Colon)
     }
 
-    /// `const NAME : T = value;`
+    /// `static NAME :` at the top level. Like `const`, `static` is not a keyword.
+    fn at_static_item(&self) -> bool {
+        matches!(&self.peek().kind, TokenType::Identifier(s) if &**s == "static")
+            && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
+            && matches!(self.peek_n(2).kind, TokenType::Colon)
+    }
+
+    /// `static mut NAME` at the top level, which this compiler refuses.
+    fn at_static_mut_item(&self) -> bool {
+        matches!(&self.peek().kind, TokenType::Identifier(s) if &**s == "static")
+            && matches!(self.peek_n(1).kind, TokenType::Mut)
+            && matches!(self.peek_n(2).kind, TokenType::Identifier(_))
+    }
+
+    /// `const NAME : T = value;` or `static NAME : T = value;`
     fn parse_const_item(&mut self) -> ParseResult<'a, crate::syntax::ConstDecl> {
         let keyword = self.advance().clone();
+        let is_static = matches!(&keyword.kind, TokenType::Identifier(s) if &**s == "static");
         let name = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
-            _ => return Err(self.error("Expected a name after 'const'")),
+            _ => return Err(self.error("Expected a name after 'const' or 'static'")),
         };
         self.consume(
             &TokenType::Colon,
-            "Expected ':' and a type after the const's name",
+            "Expected ':' and a type after the item's name",
         )?;
         let ty = self.parse_type()?;
         self.consume(&TokenType::Equals, "Expected '=' and a value")?;
@@ -1848,6 +1863,7 @@ impl<'a> Parser<'a> {
                 expansion: self.expansion(),
             },
             doc_comment: None,
+            is_static,
         })
     }
 
@@ -1967,7 +1983,16 @@ impl<'a> Parser<'a> {
                 self.declare_type(&mut type_defined_at, &e.name, &start)?;
                 e.doc_comment = doc_comment;
                 enums.push(e);
-            } else if self.at_const_item() {
+            } else if self.at_static_mut_item() {
+                let name = match &self.peek_n(2).kind {
+                    TokenType::Identifier(s) => s.to_string(),
+                    _ => unreachable!("`at_static_mut_item` saw a name"),
+                };
+                return Err(self.error(&format!(
+                    "Vx has no `static mut` yet, so a program cannot change `{name}`. Remove \
+                     `mut` to make `{name}` a read-only `static`"
+                )));
+            } else if self.at_const_item() || self.at_static_item() {
                 let mut c = self.parse_const_item()?;
                 c.doc_comment = doc_comment;
                 consts.push(c);

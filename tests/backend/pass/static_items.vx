@@ -1,0 +1,146 @@
+//===- static_items.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Top-level `static` items. The program stores each one once, as a read-only global, and each
+// use reads that global. Printed, in order: a `static` plus 2; a `static` read in another
+// function; the smallest `i64`; the largest `u64`; an `f64` times 3, which an `f32` would
+// print as 0.3; a negative `f32`; two `bool`s; a `u8` above 127; a local that has the name of
+// a `static`; a `static` table added in a loop that a `static` bounds; a `static` read in a
+// closure; a `static` read in a task; a `static` in a struct, an array, a cast, a `while` and
+// an `if`; a tensor whose length is a `static`, plus a `const` made from that `static`; a
+// `static` of an imported module, read directly and through a function of that module; and
+// a `static` plus the result of a function that has the name of that `static`.
+//
+// The first two RUN lines run the program on each code generator. The next two check the
+// MLIR of each one: the globals, and that a use of `LIMIT` reads its global.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc --package tests=tests %s 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc --package tests=tests %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+//
+// OUT: 42 41 -9223372036854775808 18446744073709551615 0.30000000000000004 -2.5 on 200 7 79 80 83 8 16 12 11
+//
+// CHECK-DAG: memref.global "private" constant @__vx_static_LIMIT : memref<i32> = dense<40>
+// CHECK-DAG: memref.global "private" constant @__vx_static_LARGEST : memref<i64> = dense<-1>
+// CHECK-DAG: memref.global "private" constant @__vx_static_THIRD : memref<f64> = dense<1.000000e-01>
+// CHECK-DAG: memref.global "private" constant @__vx_static_ON : memref<i1> = dense<true>
+// CHECK-DAG: memref.global "private" constant @__vx_static_STEPS : memref<3xi32> = dense<[1, 2, 3]>
+// CHECK-DAG: memref.global "private" constant @__vx_static_WHEELS : memref<i32> = dense<4>
+// CHECK: [[LIMIT:%[0-9a-z_]+]] = memref.get_global @__vx_static_LIMIT : memref<i32>
+// CHECK-NEXT: memref.load [[LIMIT]][] : memref<i32>
+import tests::modules::a_module_with_statics;
+
+static LIMIT : i32 = 40;
+static SMALLEST : i64 = -9223372036854775808;
+static LARGEST : u64 = 18446744073709551615;
+static THIRD : f64 = 0.1;
+static NEGATIVE : f32 = -2.5;
+static ON : bool = true;
+static OFF : bool = false;
+static BYTE : u8 = 200;
+static STEPS : Tensor<i32, [3]> = [1, 2, 3];
+static WIDTH : i32 = 3;
+const AREA : i32 = WIDTH * 2;
+
+struct Pair {
+  a : i32,
+  b : f64
+}
+
+static NAMED : i32 = 5;
+
+fn NAMED() -> i32 {
+  return 6;
+}
+
+fn add_limit(x : i32) -> i32 {
+  return x + LIMIT;
+}
+
+fn named_like_a_static() -> i32 {
+  let LIMIT = 7;
+  return LIMIT;
+}
+
+fn read_in_a_task() -> i32 {
+  let mut total = 0;
+  tasks {
+    let h = spawn {
+      LIMIT + STEPS[2]
+    };
+    total = h.join() + LIMIT;
+  }
+  return total;
+}
+
+fn used_as_values() -> i32 {
+  let p = Pair {
+    a: WIDTH, b: WIDTH as f64
+  };
+  let t : Tensor<i32, [2]> = [WIDTH, -WIDTH];
+  let mut n = 0;
+  while n < WIDTH {
+    n += WIDTH;
+  }
+  let x = if WIDTH == 3 {
+    p.a
+  } else {
+    0
+  };
+  return x + t[1] + n + (p.b as i32) + 2;
+}
+
+fn last(row : Tensor<i32, [WIDTH]>) -> i32 {
+  return row[WIDTH - 1];
+}
+
+fn main() -> i32 {
+  let copy = LIMIT;
+  print(copy + 2);
+  print!(" ");
+  print(add_limit(1));
+  print!(" ");
+  print(SMALLEST);
+  print!(" ");
+  print(LARGEST);
+  print!(" ");
+  print(THIRD * 3.0);
+  print!(" ");
+  print(NEGATIVE);
+  if ON && !OFF {
+    print!(" on ");
+  } else {
+    print!(" off ");
+  }
+  print(BYTE);
+  print!(" ");
+  print(named_like_a_static());
+  print!(" ");
+  let mut sum = 0;
+  for i in 0..LIMIT {
+    sum = sum + STEPS[i % 3];
+  }
+  print(sum);
+  print!(" ");
+  let twice = |x : i32| -> i32 {
+    return x * LIMIT;
+  };
+  print(twice(2));
+  print!(" ");
+  print(read_in_a_task());
+  print!(" ");
+  print(used_as_values());
+  print!(" ");
+  let row : Tensor<i32, [WIDTH]> = [8, 9, 10];
+  print(last(row) + AREA);
+  print!(" ");
+  print(WHEELS + wheels_times(2));
+  print!(" ");
+  print(NAMED + NAMED());
+  return 0;
+}
