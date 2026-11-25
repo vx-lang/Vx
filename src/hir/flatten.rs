@@ -8429,27 +8429,32 @@ pub(crate) fn binds_name(stmts: &[Statement], name: &Symbol) -> bool {
             _ => false,
         }
     }
-    let direct = stmts.iter().any(|s| match s {
-        Statement::LetDecl(l) => &l.name == name,
-        Statement::ForLoop(f) => f.iter.as_str() == name.as_ref() || binds_name(&f.body, name),
-        Statement::Loop(l) => binds_name(&l.body, name),
-        _ => false,
-    });
+    // The statements of one block and of its loops. It does not look into expressions:
+    // `visit_exprs` below reaches each nested block once.
+    fn statements(stmts: &[Statement], name: &Symbol) -> bool {
+        stmts.iter().any(|s| match s {
+            Statement::LetDecl(l) => &l.name == name,
+            Statement::ForLoop(f) => f.iter.as_str() == name.as_ref() || statements(&f.body, name),
+            Statement::Loop(l) => statements(&l.body, name),
+            _ => false,
+        })
+    }
+    let direct = statements(stmts, name);
     let mut nested = false;
     crate::syntax::visit_exprs(stmts, &mut |e| {
         nested |= match e {
             Expr::If(i) => {
-                binds_name(&i.then_block, name)
-                    || i.else_block.as_ref().is_some_and(|b| binds_name(b, name))
+                statements(&i.then_block, name)
+                    || i.else_block.as_ref().is_some_and(|b| statements(b, name))
             }
             Expr::Match(m) => m
                 .arms
                 .iter()
-                .any(|a| in_pattern(&a.pattern, name) || binds_name(&a.body, name)),
-            Expr::UnsafeBlock(b) => binds_name(&b.stmts, name),
-            Expr::ComptimeBlock(b) => binds_name(&b.stmts, name),
-            Expr::TaskBlock(b) => binds_name(&b.stmts, name),
-            Expr::SpawnOn(b) => binds_name(&b.stmts, name),
+                .any(|a| in_pattern(&a.pattern, name) || statements(&a.body, name)),
+            Expr::UnsafeBlock(b) => statements(&b.stmts, name),
+            Expr::ComptimeBlock(b) => statements(&b.stmts, name),
+            Expr::TaskBlock(b) => statements(&b.stmts, name),
+            Expr::SpawnOn(b) => statements(&b.stmts, name),
             _ => false,
         }
     });
