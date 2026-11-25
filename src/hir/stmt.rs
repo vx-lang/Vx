@@ -1018,7 +1018,7 @@ impl<'a> TypeChecker<'a> {
                 });
                 self.consteval.constraints.push(eq_expr);
             }
-            self.keep_call_result_ensures(name, expr, &read_before_a_change);
+            self.keep_call_result_ensures(name, expr);
         }
     }
 
@@ -1131,8 +1131,13 @@ impl<'a> TypeChecker<'a> {
                     self.note_reads_and_changes(x, order);
                 }
             }
-            Expr::FunctionCall(c) => self.note_a_call(None, &c.args, order),
-            Expr::MethodCall(m) => self.note_a_call(Some(&m.base), &m.args, order),
+            Expr::FunctionCall(c) => {
+                let params = self.call_param_types(c.name.as_ref(), e);
+                self.note_a_call(None, &c.args, params.as_deref(), order);
+            }
+            // The check of the `let` turned each method call that it found into a call of the
+            // function of the method. A method call that stays is of a built-in method.
+            Expr::MethodCall(m) => self.note_a_call(Some(&m.base), &m.args, None, order),
             // Any other expression can read and change each variable.
             _ => {
                 order
@@ -1144,8 +1149,15 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// A call reads its receiver and its arguments from left to right. Then it changes each
-    /// variable that it can write through.
-    fn note_a_call(&self, receiver: Option<&Expr>, args: &[Expr], order: &mut ReadsAndChanges) {
+    /// variable that it can write through. It cannot write through the argument of a `&`
+    /// parameter. `params` has the parameter types, when the checker knows them.
+    fn note_a_call(
+        &self,
+        receiver: Option<&Expr>,
+        args: &[Expr],
+        params: Option<&[Type]>,
+        order: &mut ReadsAndChanges,
+    ) {
         let mut changed = Vec::new();
         if let Some(receiver) = receiver {
             self.note_reads_and_changes(receiver, order);
@@ -1155,9 +1167,11 @@ impl<'a> TypeChecker<'a> {
                 || root.as_ref().is_none_or(|root| self.is_mutable(root));
             changed.extend(root.filter(|_| can_change));
         }
-        for arg in args {
+        for (i, arg) in args.iter().enumerate() {
             self.note_reads_and_changes(arg, order);
-            if self.call_may_change_argument(arg) {
+            let param = params.and_then(|p| p.get(i));
+            let reads_only = matches!(param, Some(Type::Borrow { is_mut: false, .. }));
+            if !reads_only && self.call_may_change_argument(arg) {
                 changed.extend(Self::arg_reborrow_base(arg).map(|(root, _)| root));
             }
         }
@@ -1173,17 +1187,14 @@ impl<'a> TypeChecker<'a> {
 
     /// A returned number keeps its postconditions even when a later call changes an input
     /// buffer. The equation `name == call(args)` does not: a later proof evaluates the call
-    /// again with the new buffer. A postcondition that names a variable in `read_before_a_change`
-    /// is not kept.
-    fn keep_call_result_ensures(
-        &mut self,
-        name: &crate::symbol::Symbol,
-        value: &Expr,
-        read_before_a_change: &[String],
-    ) {
-        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+    /// again with the new buffer. A postcondition is not kept when it names a variable that the
+    /// call read before a call in an argument changed it.
+    fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
+        let value = crate::syntax::bare_unsafe_value(value);
+        let Expr::FunctionCall(call) = value else {
             return;
         };
+        let read_before_a_change = self.variables_read_before_a_change(value);
         let Some((params, return_type, ensures)) = self.declared_callee(&call.name) else {
             return;
         };
@@ -1220,7 +1231,7 @@ impl<'a> TypeChecker<'a> {
             .filter(|e| {
                 !changed
                     .iter()
-                    .chain(read_before_a_change)
+                    .chain(&read_before_a_change)
                     .any(|root| crate::hir::check::raw::expr_mentions(e, root))
             })
             .collect();
