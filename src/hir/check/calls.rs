@@ -75,9 +75,17 @@ fn params_accept(m: &Function, arg_types: &[Type]) -> bool {
 
 /// Whether `a` and `b` are one impl block: the same place in the same file. A file that the
 /// program both compiles and imports is read twice, and the module loader gives the two copies
-/// one file name.
+/// one file name. A test that checks a program in its own process gives the impls no file
+/// name. There, the two copies are the impls with the same place and the same text.
 fn same_impl(a: &decl::ImplBlock, b: &decl::ImplBlock) -> bool {
-    a.place.file.is_some() && a.place.file == b.place.file && a.place.span == b.place.span
+    if a.place.span != b.place.span {
+        return false;
+    }
+    match (&a.place.file, &b.place.file) {
+        (Some(file_a), Some(file_b)) => file_a == file_b,
+        (None, None) => a == b,
+        _ => false,
+    }
 }
 
 /// An impl with no trait as its file writes it, and where: `impl<T : Short> Wrap<T>` at
