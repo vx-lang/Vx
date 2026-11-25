@@ -26,32 +26,32 @@ import std::vec;
 
 extern {
   /// Until `vx_unwatch`, `vx_wake_watchers(key)` adds 1 to `waiter` and wakes it.
-  fn vx_watch(key : *mut i64, waiter : *mut i64) -> void;
+  pub fn vx_watch(key : *mut i64, waiter : *mut i64) -> void;
   /// `vx_watch`, and the deadlock report names the source: its kind, and the line that made it.
-  fn vx_watch_source(key : *mut i64, waiter : *mut i64, kind : i32, made_file : *const i8, made_line : i32) -> void;
+  pub fn vx_watch_source(key : *mut i64, waiter : *mut i64, kind : i32, made_file : *const i8, made_line : i32) -> void;
   /// Undo one `vx_watch` of the same pair.
-  fn vx_unwatch(key : *mut i64, waiter : *mut i64) -> void;
+  pub fn vx_unwatch(key : *mut i64, waiter : *mut i64) -> void;
   /// Add 1 to each waiter that watches `key`, and wake it.
-  fn vx_wake_watchers(key : *mut i64) -> void;
+  pub fn vx_wake_watchers(key : *mut i64) -> void;
   /// The index after the last choice of a `select` in this task.
-  fn vx_select_turn() -> i64;
+  pub fn vx_select_turn() -> i64;
   /// A `select` of this task chose the index `next - 1`.
-  fn vx_select_chose(next : i64) -> void;
+  pub fn vx_select_chose(next : i64) -> void;
   /// For a test: sleep for `VX_TEST_SELECT_PAUSE_MS`, when it is set.
-  fn vx_test_select_pause() -> void;
+  pub fn vx_test_select_pause() -> void;
   /// Until `vx_unwatch_fd`, the I/O poller adds 1 to `waiter` and wakes it when a read of `fd`
   /// does not wait.
-  fn vx_watch_fd(fd : i32, waiter : *mut i64) -> void;
+  pub fn vx_watch_fd(fd : i32, waiter : *mut i64) -> void;
   /// Undo one `vx_watch_fd` of the same pair.
-  fn vx_unwatch_fd(fd : i32, waiter : *mut i64) -> void;
+  pub fn vx_unwatch_fd(fd : i32, waiter : *mut i64) -> void;
   /// The key of the copy of a `transfer_async` into `at`: the address as a number.
-  fn vx_copy_key<M : Memory>(at : *const void in Memory::M) -> i64;
+  pub fn vx_copy_key<M : Memory>(at : *const void in Memory::M) -> i64;
   /// 1 when no copy into the address `key` may still run.
-  fn vx_copy_ended(key : i64) -> i32;
+  pub fn vx_copy_ended(key : i64) -> i32;
   /// Until `vx_unwatch_copy`, the end of the copy into `key` adds 1 to `waiter` and wakes it.
-  fn vx_watch_copy(key : i64, waiter : *mut i64) -> void;
+  pub fn vx_watch_copy(key : i64, waiter : *mut i64) -> void;
   /// Undo one `vx_watch_copy` of the same pair.
-  fn vx_unwatch_copy(key : i64, waiter : *mut i64) -> void;
+  pub fn vx_unwatch_copy(key : i64, waiter : *mut i64) -> void;
 }
 
 // The kinds of source that the deadlock report names. The key of a channel is its `WAKE` word.
@@ -66,12 +66,12 @@ struct Waiter {
 impl Waiter {
   /// Until `unwatch_key`, each `wake_watchers(key)` wakes this waiter. A source calls it in
   /// `watch`, with a word that it owns as `key`.
-  fn watch_key(self : &Waiter, key : &AtomicI64) -> void {
+  pub fn watch_key(self : &Waiter, key : &AtomicI64) -> void {
     unsafe { vx_watch(key.as_ptr(), self.word.as_ptr()); }
   }
 
   /// Undo one `watch_key`. After it, `wake_watchers(key)` does not touch this waiter.
-  fn unwatch_key(self : &Waiter, key : &AtomicI64) -> void {
+  pub fn unwatch_key(self : &Waiter, key : &AtomicI64) -> void {
     unsafe { vx_unwatch(key.as_ptr(), self.word.as_ptr()); }
   }
 
@@ -79,7 +79,7 @@ impl Waiter {
   /// calls `wake_watchers(key)` only when `count` is not 0. Its `is_ready` reads its state with
   /// `SeqCst` after this, so that it sees each change whose wake missed the watch. The deadlock
   /// report names the source by `kind` and by the line `made`.
-  fn watch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64, kind : i32, made : Location) -> void {
+  pub fn watch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64, kind : i32, made : Location) -> void {
     count.fetch_add(1, AtomicOrdering::SeqCst);
     unsafe {
       vx_watch_source(key.as_ptr(), self.word.as_ptr(), kind, made.file, made.line);
@@ -87,26 +87,26 @@ impl Waiter {
   }
 
   /// Undo `watch_counted`.
-  fn unwatch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64) -> void {
+  pub fn unwatch_counted(self : &Waiter, count : &AtomicI64, key : &AtomicI64) -> void {
     self.unwatch_key(key);
     count.fetch_sub(1, AtomicOrdering::SeqCst);
   }
 
   /// Until `unwatch_fd`, the I/O poller wakes this waiter when a read of the file descriptor
   /// `fd` does not wait. A socket calls it in `watch`.
-  fn watch_fd(self : &Waiter, fd : i32) -> void {
+  pub fn watch_fd(self : &Waiter, fd : i32) -> void {
     unsafe { vx_watch_fd(fd, self.word.as_ptr()); }
   }
 
   /// Undo one `watch_fd`. After it, the poller does not touch this waiter.
-  fn unwatch_fd(self : &Waiter, fd : i32) -> void {
+  pub fn unwatch_fd(self : &Waiter, fd : i32) -> void {
     unsafe { vx_unwatch_fd(fd, self.word.as_ptr()); }
   }
 }
 
 /// Wake each waiter that watches `key`. A source calls it after each change that can make it
 /// ready.
-fn wake_watchers(key : &AtomicI64) -> void {
+pub fn wake_watchers(key : &AtomicI64) -> void {
   unsafe { vx_wake_watchers(key.as_ptr()); }
 }
 
@@ -142,7 +142,7 @@ trait WaitSources {
 }
 
 /// The earlier of two times.
-fn earlier(a : Instant, b : Instant) -> Instant {
+pub fn earlier(a : Instant, b : Instant) -> Instant {
   if a < b {
     return a;
   }
@@ -151,7 +151,7 @@ fn earlier(a : Instant, b : Instant) -> Instant {
 
 /// The index of a ready source, or -1. The search starts after the last choice of this task
 /// (round robin), so a source that stays ready gets picked within `n` calls.
-fn first_ready<S : WaitSources>(sources : &S) -> i32 {
+pub fn first_ready<S : WaitSources>(sources : &S) -> i32 {
   let n = sources.count() as i64;
   if n == 0 {
     return -1;
@@ -170,7 +170,7 @@ fn first_ready<S : WaitSources>(sources : &S) -> i32 {
 /// The index of the first source of `sources` that is ready. Wait while none is ready. Give
 /// `Cancelled` when the `tasks` block of this task was cancelled, or at the time limit of
 /// `within`.
-fn select_from<S : WaitSources>(sources : &S, at : Caller) -> Result<i32, SelectError> {
+pub fn select_from<S : WaitSources>(sources : &S, at : Caller) -> Result<i32, SelectError> {
   let w = Waiter {
     word : AtomicI64::new(0)
   };
@@ -463,7 +463,7 @@ impl<A : WaitSource> WaitSources for SourceList<A> {
 /// The index of the first of `a` and `b` that is ready: 0 for `a`, 1 for `b`. Wait while neither
 /// is ready. Give `Cancelled` when the `tasks` block of this task was cancelled, or at the time
 /// limit of `within`.
-fn select2<A : WaitSource, B : WaitSource>(a : &A, b : &B, at : Caller) -> Result<i32, SelectError> {
+pub fn select2<A : WaitSource, B : WaitSource>(a : &A, b : &B, at : Caller) -> Result<i32, SelectError> {
   let sources = Sources2<A, B> {
     a : a, b : b
   };
@@ -471,7 +471,7 @@ fn select2<A : WaitSource, B : WaitSource>(a : &A, b : &B, at : Caller) -> Resul
 }
 
 /// `select2` with three sources.
-fn select3<A : WaitSource, B : WaitSource, C : WaitSource>(a : &A, b : &B, c : &C, at : Caller) -> Result<i32, SelectError> {
+pub fn select3<A : WaitSource, B : WaitSource, C : WaitSource>(a : &A, b : &B, c : &C, at : Caller) -> Result<i32, SelectError> {
   let sources = Sources3<A, B, C> {
     a : a, b : b, c : c
   };
@@ -479,7 +479,7 @@ fn select3<A : WaitSource, B : WaitSource, C : WaitSource>(a : &A, b : &B, c : &
 }
 
 /// `select2` with four sources.
-fn select4<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource>(a : &A, b : &B, c : &C, d : &D, at : Caller) -> Result<i32, SelectError> {
+pub fn select4<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource>(a : &A, b : &B, c : &C, d : &D, at : Caller) -> Result<i32, SelectError> {
   let sources = Sources4<A, B, C, D> {
     a : a, b : b, c : c, d : d
   };
@@ -487,7 +487,7 @@ fn select4<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource>(a : &
 }
 
 /// `select2` with five sources.
-fn select5<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource>(a : &A, b : &B, c : &C, d : &D, e : &E, at : Caller) -> Result<i32, SelectError> {
+pub fn select5<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource>(a : &A, b : &B, c : &C, d : &D, e : &E, at : Caller) -> Result<i32, SelectError> {
   let sources = Sources5<A, B, C, D, E> {
     a : a, b : b, c : c, d : d, e : e
   };
@@ -495,7 +495,7 @@ fn select5<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : W
 }
 
 /// `select2` with six sources. For more, give some of them to a task that sends on a channel.
-fn select6<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource, F : WaitSource>(a : &A, b : &B, c : &C, d : &D, e : &E, f : &F, at : Caller) -> Result<i32, SelectError> {
+pub fn select6<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : WaitSource, F : WaitSource>(a : &A, b : &B, c : &C, d : &D, e : &E, f : &F, at : Caller) -> Result<i32, SelectError> {
   let sources = Sources6<A, B, C, D, E, F> {
     a : a, b : b, c : c, d : d, e : e, f : f
   };
@@ -504,7 +504,7 @@ fn select6<A : WaitSource, B : WaitSource, C : WaitSource, D : WaitSource, E : W
 
 /// `select2` with the sources of a list, all of one type. The index is the index in the list. A
 /// `select_list` of an empty list waits for a cancel.
-fn select_list<A : WaitSource>(sources : &Vec<A>, at : Caller) -> Result<i32, SelectError> {
+pub fn select_list<A : WaitSource>(sources : &Vec<A>, at : Caller) -> Result<i32, SelectError> {
   let list = SourceList<A> {
     list : sources
   };
@@ -519,7 +519,7 @@ struct When<A> {
 }
 
 /// `source` when `active` is true, and a source that is never ready when it is false.
-fn when<A : WaitSource>(active : bool, source : &A) -> When<A> {
+pub fn when<A : WaitSource>(active : bool, source : &A) -> When<A> {
   return When<A> {
     active : active, source : source
   };
@@ -559,14 +559,14 @@ impl Copy for Deadline {}
 
 impl Deadline {
   /// A source that gets ready `d` from now.
-  fn after(d : Duration) -> Deadline {
+  pub fn after(d : Duration) -> Deadline {
     return Deadline {
       at : deadline_after(d)
     };
   }
 
   /// A source that gets ready when the clock reaches `t`.
-  fn until(t : Instant) -> Deadline {
+  pub fn until(t : Instant) -> Deadline {
     return Deadline {
       at : t
     };
@@ -613,7 +613,7 @@ struct CopyEnd {
 }
 
 /// The end of the copy into `at`. The compiler calls it for `t.copy_end()`.
-fn copy_end_at<M : Memory>(at : *const void in Memory::M) -> CopyEnd {
+pub fn copy_end_at<M : Memory>(at : *const void in Memory::M) -> CopyEnd {
   return CopyEnd {
     key : unsafe { vx_copy_key(at) }
   };

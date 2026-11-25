@@ -19,7 +19,7 @@ use std::path::Path;
 use std::process::Command;
 
 const KERNELS: &str = "
-pub fn blur_rows(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+extern fn blur_rows(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
   spawn on(Topology::Device) {
     for y in 0..h across blocks {
       for x in 0..w across lanes(256) {
@@ -41,7 +41,7 @@ pub fn blur_rows(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32,
   return;
 }
 
-pub fn brighten(dst : &mut Tensor<u8, [?, ?], Memory::HBM>, src : &Tensor<u8, [?, ?], Memory::HBM>, h : i32, w : i32, gain : f32) -> void {
+extern fn brighten(dst : &mut Tensor<u8, [?, ?], Memory::HBM>, src : &Tensor<u8, [?, ?], Memory::HBM>, h : i32, w : i32, gain : f32) -> void {
   spawn on(Topology::Device) {
     for y in 0..h across blocks {
       for x in 0..w across lanes(256) {

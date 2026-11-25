@@ -30,19 +30,19 @@ struct Holder {
   p : *const i64,
 }
 
-// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:11: `frees_it` says `!frees(p)`, but its body can free memory through `p`: it gives `p` to 'dealloc', which has no `!frees` for that parameter
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:20: `frees_it` says `!frees(p)`, but its body can free memory through `p`: it gives `p` to 'dealloc', which has no `!frees` for that parameter
 fn frees_it(p : *mut i8) -> void
 ensures !frees(p)
 {
-  dealloc(p, 8i64);
+  unsafe { dealloc(p, 8i64) };
 }
 
-// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+5]]:11: `frees_a_moved_pointer` says `!frees(p)`, but its body can free memory through `p`: it gives `q` to 'dealloc', which has no `!frees` for that parameter
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+5]]:20: `frees_a_moved_pointer` says `!frees(p)`, but its body can free memory through `p`: it gives `q` to 'dealloc', which has no `!frees` for that parameter
 fn frees_a_moved_pointer(p : *mut i8) -> void
 ensures !frees(p)
 {
   let q = offset_mut(p, 0i64);
-  dealloc(q, 8i64);
+  unsafe { dealloc(q, 8i64) };
 }
 
 // CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+4]]:9: `stores_it` says `!frees(p)`, but its body can free memory through `p`: it stores `p` in `h.p`
@@ -85,13 +85,13 @@ ensures !frees(p)
   v.push(p);
 }
 
-// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+6]]:15: `frees_a_name_that_a_match_binds` says `!frees(o)`, but its body can free memory through `o`: it gives `q` to 'dealloc', which has no `!frees` for that parameter
+// CHECK: E8012] at {{.*}}frees_clause_that_a_body_breaks.vx:[[@LINE+6]]:24: `frees_a_name_that_a_match_binds` says `!frees(o)`, but its body can free memory through `o`: it gives `q` to 'dealloc', which has no `!frees` for that parameter
 fn frees_a_name_that_a_match_binds(o : Option<*mut i8>) -> void
 ensures !frees(o)
 {
   match o {
     Option::Some(q) => {
-      dealloc(q, 8i64);
+      unsafe { dealloc(q, 8i64) };
     }
     Option::None => {}
   }
