@@ -7,7 +7,8 @@
 //===----------------------------------------------------------------------===//
 // `.map_err(|c : i64| AddError::NotADigit(c))` gives a `Result<i64, AddError>`, although the
 // closure does not write its return type. A `?` on that value passes the `AddError` up to a
-// function, to a `tasks` block and to a task that each give a `Result<_, AddError>`.
+// function, to a `tasks` block and to a task that each give a `Result<_, AddError>`. A task
+// with no `?` can also give that value as its own failure, to a `tasks` block of that type.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -17,6 +18,8 @@
 // CHECK-NEXT: {{^}}tasks block: not a digit 12{{$}}
 // CHECK-NEXT: {{^}}task: ok 5{{$}}
 // CHECK-NEXT: {{^}}task: not a digit 12{{$}}
+// CHECK-NEXT: {{^}}failing task: ok 5{{$}}
+// CHECK-NEXT: {{^}}failing task: not a digit 12{{$}}
 
 import core::result;
 
@@ -57,6 +60,17 @@ fn in_a_task(c : i64) -> Result<i64, AddError> {
   return r;
 }
 
+fn in_a_failing_task(c : i64) -> Result<i64, AddError> {
+  let r : Result<i64, AddError> = tasks {
+    let h = spawn {
+      digit(c).map_err(|c : i64| AddError::NotADigit(c))
+    };
+    let v = h.join();
+    Result<i64, AddError>::Ok(v + 1)
+  };
+  return r;
+}
+
 fn show(name : *const i8, r : Result<i64, AddError>) -> void {
   match r {
     Result<i64, AddError>::Ok(v) => {
@@ -79,5 +93,7 @@ fn main() -> i32 {
   show("tasks block", in_a_tasks_block(12));
   show("task", in_a_task(4));
   show("task", in_a_task(12));
+  show("failing task", in_a_failing_task(4));
+  show("failing task", in_a_failing_task(12));
   return 0;
 }
