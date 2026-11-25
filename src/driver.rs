@@ -287,7 +287,7 @@ pub struct DriverOptions {
 
     /// Arguments to pass to the running program
     #[arg(last = true)]
-    pub program_args: Vec<std::ffi::OsString>,
+    pub program_args: Vec<String>,
 }
 
 impl DriverOptions {
@@ -1522,9 +1522,10 @@ impl CompilerDriver {
     /// An MLIR context with every dialect, every pass and the Vx dialect registered, and a
     /// diagnostic handler attached. Shared by the sequential driver and `-j`.
     fn backend_context(&self) -> melior::Context {
-        codegen::init_codegen_globals();
+        codegen::register_vx_passes();
         let registry = melior::dialect::DialectRegistry::new();
         melior::utility::register_all_dialects(&registry);
+        melior::utility::register_all_passes();
         let context = melior::Context::new();
         let emit_diagnostics = self.options.emit_backend_diagnostics;
         context.attach_diagnostic_handler(move |diagnostic| {

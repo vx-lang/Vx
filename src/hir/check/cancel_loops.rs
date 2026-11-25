@@ -105,26 +105,21 @@ fn assigns(stmts: &[Statement], vars: &[String]) -> bool {
     if vars.is_empty() {
         return false;
     }
-    // The statements of one block and of its loops. It does not look into expressions:
-    // `visit_exprs` below reaches each nested block once.
-    fn statements(stmts: &[Statement], vars: &[String]) -> bool {
-        let changes =
-            |lhs: &Expr| matches!(lhs, Expr::Identifier(id) if vars.contains(&id.name.to_string()));
-        stmts.iter().any(|s| match s {
-            Statement::Assign(a) => changes(&a.lhs),
-            Statement::CompoundAssign(a) => changes(&a.lhs),
-            Statement::Loop(l) => statements(&l.body, vars),
-            Statement::ForLoop(l) => statements(&l.body, vars),
-            _ => false,
-        })
-    }
-    let mut found = statements(stmts, vars);
+    let changes =
+        |lhs: &Expr| matches!(lhs, Expr::Identifier(id) if vars.contains(&id.name.to_string()));
+    let mut found = stmts.iter().any(|s| match s {
+        Statement::Assign(a) => changes(&a.lhs),
+        Statement::CompoundAssign(a) => changes(&a.lhs),
+        Statement::Loop(l) => assigns(&l.body, vars),
+        Statement::ForLoop(l) => assigns(&l.body, vars),
+        _ => false,
+    });
     crate::syntax::visit_exprs(stmts, &mut |e| match e {
         Expr::If(i) => {
-            found |= statements(&i.then_block, vars)
-                || i.else_block.as_deref().is_some_and(|b| statements(b, vars));
+            found |= assigns(&i.then_block, vars)
+                || i.else_block.as_deref().is_some_and(|b| assigns(b, vars));
         }
-        Expr::Match(m) => found |= m.arms.iter().any(|a| statements(&a.body, vars)),
+        Expr::Match(m) => found |= m.arms.iter().any(|a| assigns(&a.body, vars)),
         _ => {}
     });
     found
@@ -155,22 +150,13 @@ fn leaves_the_loop(stmts: &[Statement]) -> bool {
         Statement::Loop(l) => returns(&l.body),
         Statement::ForLoop(l) => returns(&l.body),
         _ => {
-            // The statements of one block. `visit_exprs` reaches each nested block once.
-            let statements = |stmts: &[Statement]| {
-                stmts.iter().any(|s| match s {
-                    Statement::Break(_) | Statement::Return(_) => true,
-                    Statement::Loop(l) => returns(&l.body),
-                    Statement::ForLoop(l) => returns(&l.body),
-                    _ => false,
-                })
-            };
             let mut found = false;
             crate::syntax::visit_exprs(std::slice::from_ref(s), &mut |e| match e {
                 Expr::If(i) => {
-                    found |= statements(&i.then_block)
-                        || i.else_block.as_deref().is_some_and(statements);
+                    found |= leaves_the_loop(&i.then_block)
+                        || i.else_block.as_deref().is_some_and(leaves_the_loop);
                 }
-                Expr::Match(m) => found |= m.arms.iter().any(|a| statements(&a.body)),
+                Expr::Match(m) => found |= m.arms.iter().any(|a| leaves_the_loop(&a.body)),
                 Expr::FunctionCall(c) => found |= crate::syntax::is_abort_or_panic(c),
                 _ => {}
             });
@@ -181,14 +167,12 @@ fn leaves_the_loop(stmts: &[Statement]) -> bool {
 
 /// Whether `stmts` hold a `return`, at any depth.
 fn returns(stmts: &[Statement]) -> bool {
-    // `visit_exprs` reaches each nested block once, so only the statements of a block here.
-    let direct = |stmts: &[Statement]| stmts.iter().any(|s| matches!(s, Statement::Return(_)));
-    let mut found = direct(stmts);
+    let mut found = stmts.iter().any(|s| matches!(s, Statement::Return(_)));
     crate::syntax::visit_exprs(stmts, &mut |e| match e {
         Expr::If(i) => {
-            found |= direct(&i.then_block) || i.else_block.as_deref().is_some_and(direct);
+            found |= returns(&i.then_block) || i.else_block.as_deref().is_some_and(returns);
         }
-        Expr::Match(m) => found |= m.arms.iter().any(|a| direct(&a.body)),
+        Expr::Match(m) => found |= m.arms.iter().any(|a| returns(&a.body)),
         _ => {}
     });
     found

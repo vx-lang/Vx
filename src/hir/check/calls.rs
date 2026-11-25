@@ -81,15 +81,6 @@ fn impl_display(trait_name: &crate::symbol::Symbol, ib: &decl::ImplBlock) -> Str
     format!("{}<{}>", trait_name, args.join(", "))
 }
 
-/// Can a call run a value of type `ty`: a function, a closure value or a closure literal?
-fn is_callable(ty: &Type) -> bool {
-    match ty {
-        Type::Function(..) | Type::Closure(..) => true,
-        Type::Struct(name, _) => name.starts_with("Closure_"),
-        _ => false,
-    }
-}
-
 /// The byte index of the first `::` in `name` that is outside angle brackets.
 fn top_level_path_sep(name: &str) -> Option<usize> {
     let mut depth = 0i32;
@@ -111,16 +102,7 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(c) => (&mut c.callee, &mut c.args, c.span),
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
-        // `(*f)(x)` reads what `f` points at, and does not move it.
-        let through = match &**callee {
-            Expr::Dereference(d) => Some(self.operand_type(&d.expr)),
-            _ => None,
-        };
-        let callee_ty = self.check_expr_type_flag(callee, consume && through.is_none());
-        let shared = matches!(
-            through,
-            Some(Type::Borrow { is_mut: false, .. } | Type::Ref(..))
-        );
+        let callee_ty = self.check_expr_type_flag(callee, consume);
         // As for a call by name: the arguments are moved whatever is done with the result.
         let mut arg_types = Vec::new();
         for arg in args.iter_mut() {
@@ -129,9 +111,6 @@ impl<'a> TypeChecker<'a> {
 
         if let Type::Struct(struct_name, _) = callee_ty {
             if struct_name.starts_with("Closure_") {
-                if shared && !self.speculating {
-                    self.refuse_a_closure_call_through_a_shared_reference(&struct_name, &call_span);
-                }
                 let call_name = format!("{}_call", struct_name);
                 if let Some((param_types, closure_ret)) = self
                     .mono
@@ -232,41 +211,13 @@ impl<'a> TypeChecker<'a> {
             }
 
             return *ret_ty.clone();
-        } else if let Type::Function(param_types, ret_ty, callee_unsafe) = &callee_ty {
-            if *callee_unsafe && self.unsafe_is_missing() {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E5001,
-                    "Call to an unsafe function is unsafe and requires unsafe function or block"
+        } else if let Type::Function(..) = callee_ty {
+            if !self.speculating {
+                self.errors.push(
+                    "Function pointers are not natively callable yet; use closure interfaces."
                         .to_string(),
-                    Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
                 );
             }
-            if args.len() != param_types.len() {
-                if !self.speculating {
-                    self.errors.push(format!(
-                        "Function pointer expects {} arguments, got {}",
-                        param_types.len(),
-                        args.len()
-                    ));
-                }
-            } else {
-                for (i, param_ty) in param_types.iter().enumerate() {
-                    let arg_ty = &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
-                    if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
-                        self.errors.push(format!(
-                            "Type mismatch in argument {} for function pointer. Expected {}, got {}",
-                            i + 1,
-                            param_ty,
-                            arg_ty
-                        ));
-                    }
-                }
-            }
-            let ret_ty = *ret_ty.clone();
-            if let Expr::IndirectCall(ref mut ic) = expr {
-                ic.target_func_ty = Some(callee_ty.clone());
-            }
-            return ret_ty;
         } else {
             if !self.speculating {
                 self.errors
@@ -275,41 +226,6 @@ impl<'a> TypeChecker<'a> {
         }
 
         Type::Unknown
-    }
-
-    /// A call through `&F` can run a closure many times, and at the same time from many tasks.
-    /// So the closure must not change or move a value that it captures.
-    fn refuse_a_closure_call_through_a_shared_reference(
-        &mut self,
-        closure: &crate::symbol::Symbol,
-        at: &crate::syntax::Span,
-    ) {
-        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(at));
-        if let Some(moved) = self.mono.closures_that_run_once.get(closure).cloned() {
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E4008,
-                format!(
-                    "this call runs a closure through a `&` reference, but the closure moves \
-                     `{moved}`, a value that it captures, so it can run only once. Pass the \
-                     closure by value"
-                ),
-                at,
-            );
-        } else if let Some(changed) = self
-            .mono
-            .closures_that_change_captures
-            .get(closure)
-            .cloned()
-        {
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E4006,
-                format!(
-                    "this call runs a closure through a `&` reference, but the closure changes \
-                     `{changed}`, a value that it captures. Pass the closure by value or as `&mut`"
-                ),
-                at,
-            );
-        }
     }
 
     /// Type-check `e` under an explicit expected type, restoring the previous one after. The
@@ -930,29 +846,19 @@ impl<'a> TypeChecker<'a> {
                 .find(|(f, _)| f.name.as_ref() == name)
                 .map(|(f, _)| f)
         });
-        let Some((callee_params, callee_requires, callee_return)) =
-            callee.map(|f| (f.params.clone(), f.requires.clone(), f.return_type.clone()))
-        else {
+        let Some((params, requires)) = callee.filter(|f| !f.requires.is_empty()).map(|f| {
+            let params: Vec<_> = f.params.iter().map(|(p, _)| p.clone()).collect();
+            (
+                params,
+                f.requires
+                    .iter()
+                    .map(|req| self.typed_callee_contract(req, &f.params, &f.return_type))
+                    .collect::<Vec<_>>(),
+            )
+        }) else {
             return;
         };
-        // The callee's extent names are the extents of the arguments. The prover knows nothing
-        // about an extent that the caller does not know.
-        let extents = self.callee_extent_values(&callee_params, args, &mut |name| {
-            Expr::Identifier(IdentifierExpr {
-                name: format!("$extent_{}_{}_{name}", span.line, span.column).into(),
-                span: *span,
-            })
-        });
-        self.report_extent_mismatches(shown, &extents.mismatches, span);
-        if callee_requires.is_empty() {
-            return;
-        }
-        let params: Vec<_> = callee_params.iter().map(|(p, _)| p.clone()).collect();
-        let requires = callee_requires
-            .iter()
-            .map(|req| self.typed_callee_contract(req, &callee_params, &callee_return))
-            .collect::<Vec<_>>();
-        let mut names = extents.values;
+        let mut names = HashMap::new();
         for (i, (param, arg)) in params.iter().zip(args).enumerate() {
             let arg = crate::hir::prover::without_borrow(arg);
             let value = if crate::hir::prover::is_modelled(arg) {
@@ -1112,23 +1018,6 @@ impl<'a> TypeChecker<'a> {
                     return Type::Unknown;
                 } else if !*by_the_compiler {
                     self.refuse_a_call_of_a_private_function(resolved_name.as_ref(), span);
-                }
-                // `f(x)` with `f : &F` calls the closure or the function that `f` points at.
-                if let Some((Type::Borrow { inner, .. }, _)) = self.lookup(&resolved_name) {
-                    if is_callable(inner) {
-                        let callee = Expr::Dereference(crate::syntax::expr::DereferenceExpr {
-                            expr: Box::new(Expr::Identifier(IdentifierExpr::new(
-                                resolved_name.clone(),
-                                *span,
-                            ))),
-                            ty: Some((**inner).clone()),
-                            span: *span,
-                        });
-                        let call =
-                            IndirectCallExpr::new(Box::new(callee), std::mem::take(args), *span);
-                        *expr = Expr::IndirectCall(call);
-                        return self.check_indirectcall_expr(expr, true);
-                    }
                 }
                 let mut base_name = resolved_name.clone();
                 let mut explicit_generic_args = type_args.clone().unwrap_or_default();
@@ -1720,13 +1609,20 @@ impl<'a> TypeChecker<'a> {
         place: &FunctionPlace,
         at: &crate::syntax::Span,
     ) {
-        if self.speculating || self.may_call(place) {
+        if place.visibility == Visibility::Public || self.speculating {
             return;
         }
-        let Some(theirs) = &place.file else {
+        let (Some(theirs), Some(ours)) = (&place.file, &self.errors.file) else {
             return;
         };
+        if theirs == ours {
+            return;
+        }
+        let our_package = self.env.file_packages.get(ours);
         let package = place.package.as_ref();
+        if place.visibility == Visibility::Package && package.is_some() && package == our_package {
+            return;
+        }
         let file = std::path::Path::new(theirs.as_ref())
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1788,28 +1684,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Whether the current function may call a function at `place`: a `pub` function, one of
-    /// its own file, or a `pkg` function of its own package.
-    fn may_call(&self, place: &FunctionPlace) -> bool {
-        if place.visibility == Visibility::Public {
-            return true;
-        }
-        let (Some(theirs), Some(ours)) = (&place.file, &self.errors.file) else {
-            return true;
-        };
-        if theirs == ours {
-            return true;
-        }
-        let package = place.package.as_ref();
-        place.visibility == Visibility::Package
-            && package.is_some()
-            && package == self.env.file_packages.get(ours)
-    }
-
     /// The file, package and visibility of the function, generic function or C function `name`.
-    /// Every `extern` declaration of a C function names the same C symbol, so a C function has
-    /// the place of a declaration that the current function may call, when one exists. The order
-    /// of the declarations is not fixed.
     pub(crate) fn place_of_function(&self, name: &str) -> Option<FunctionPlace> {
         if let Some(f) = self.env.syntax_functions.get(name) {
             return Some(FunctionPlace::of(f));
@@ -1817,19 +1692,12 @@ impl<'a> TypeChecker<'a> {
         if let Some((f, _)) = self.env.generic_functions.get(name) {
             return Some(FunctionPlace::of(f));
         }
-        let mut first = None;
-        for e in self.env.externs.iter().filter(|e| e.name.as_ref() == name) {
-            let place = FunctionPlace {
-                file: e.file.clone(),
-                package: e.package.clone(),
-                visibility: e.visibility,
-            };
-            if self.may_call(&place) {
-                return Some(place);
-            }
-            first.get_or_insert(place);
-        }
-        first
+        let e = self.env.externs.iter().find(|e| e.name.as_ref() == name)?;
+        Some(FunctionPlace {
+            file: e.file.clone(),
+            package: e.package.clone(),
+            visibility: e.visibility,
+        })
     }
 
     pub(crate) fn file_name(&self) -> String {
@@ -3154,7 +3022,7 @@ impl<'a> TypeChecker<'a> {
             // takes exactly the arguments the other cannot. `::fill(v)` adds one on top: the
             // value, which no other constructor takes.
             let fills = resolved_name == "Tensor::fill";
-            let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn(_))));
+            let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn)));
             let wanted = usize::from(dynamic) + usize::from(fills);
             if args.len() != wanted {
                 let why = if fills {
@@ -3342,7 +3210,7 @@ impl<'a> TypeChecker<'a> {
                     if self.eval_expr(&d, &env).is_some() {
                         Dim::Static(d)
                     } else {
-                        Dim::Dyn(None)
+                        Dim::Dyn
                     }
                 })
                 .collect::<Vec<_>>();
@@ -3497,11 +3365,11 @@ impl<'a> TypeChecker<'a> {
                                 if self.eval_expr(a, &env).is_some() {
                                     Dim::Static(a.clone())
                                 } else {
-                                    Dim::Dyn(None)
+                                    Dim::Dyn
                                 }
                             })
                             .collect(),
-                        None => vec![Dim::Dyn(None); rank],
+                        None => vec![Dim::Dyn; rank],
                     };
                     Some(Type::Tensor(e, dims, place))
                 }

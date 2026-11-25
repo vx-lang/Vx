@@ -351,10 +351,16 @@ impl<'a> TypeChecker<'a> {
             {
                 return target_ty;
             }
-            // `*const T` to `*mut T` and back: the same address, only the promise changes.
-            // A different pointee would reinterpret memory, which stays refused.
-            (Type::Pointer(from, from_space, _), Type::Pointer(to, to_space, _))
-                if from == to && from_space == to_space =>
+            // `*const T` to `*mut T` and back: the same address, only the promise changes. A
+            // cast may also change the element type where an assignment would, as in
+            // `let p : *mut R = raw` for a `raw : *mut i8`. Making the pointer is safe, and a
+            // read or a write through it needs `unsafe`. A cast between two other element
+            // types would reinterpret memory, which stays refused.
+            (Type::Pointer(from, from_space, _), Type::Pointer(_, _, to_mut))
+                if self.is_assignable(
+                    &target_ty,
+                    &Type::Pointer(from.clone(), from_space.clone(), *to_mut),
+                ) =>
             {
                 return target_ty;
             }
@@ -378,9 +384,27 @@ impl<'a> TypeChecker<'a> {
             _ => {}
         }
 
-        self.errors.push(format!(
-            "Unsupported cast: cannot cast from `{source_ty}` to `{target_ty}`"
-        ));
+        let reason = match (&source_ty, &target_ty) {
+            (Type::Pointer(_, from_space, _), Type::Pointer(_, to_space, _))
+                if from_space != to_space =>
+            {
+                ". A pointer cast cannot change the memory that a pointer points into"
+            }
+            (Type::Pointer(..), Type::Pointer(..)) => {
+                ". A pointer cast can change the element type only to `i8` or `void`, or from `i8`"
+            }
+            _ => "",
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3011,
+            format!("Unsupported cast: cannot cast from `{source_ty}` to `{target_ty}`{reason}"),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+        );
+        // The rest of the function uses the pointer type that the cast names, so no other
+        // error about the same value follows.
+        if matches!(target_ty, Type::Pointer(..)) {
+            return target_ty;
+        }
         Type::Unknown
     }
 

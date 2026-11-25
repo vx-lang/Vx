@@ -397,11 +397,8 @@ is one rank. The dispatch library has these C functions (`runtime/vx_collective.
 | `int32_t vx_collective_rank(void)`, `vx_collective_ranks(void)` | The rank and the size of the job, or -1 and 0 before `init`. |
 | `vx_collective_all_reduce_sum_f32(in, out, count)` | `out[i]` becomes the sum of `in[i]` over all ranks. |
 | `vx_collective_all_gather_f32(in, out, count)` | `out` becomes the `count` elements of rank 0, then of rank 1, and so on. |
-| `void *vx_peer_buffer_create(int64_t bytes)` | Makes `bytes` of GPU memory on each rank, all 0, that every rank can address. |
-| `void vx_peer_buffer_pointers(void *buffer, uint64_t *out)` | Writes the address of each rank's part to `out`, in rank order: `ranks` addresses. |
-| `void vx_peer_buffer_destroy(void *buffer)` | Frees the buffer. |
 
-`all_reduce_sum_f32` and `all_gather_f32` also have a `_bf16` form, with `uint16_t` elements. `in` and `out` can be
+Each of the last two also has a `_bf16` form, with `uint16_t` elements. `in` and `out` can be
 the same buffer. Vx stops the program with a message on a wrong argument or an NCCL error.
 A Vx program uses them through `std::collective`: `join_job`, `leave_job`, `job_rank`,
 `job_ranks`, `all_reduce_sum_f32(&mut t)` and `all_gather_f32(&t, &mut out)`, and the `_bf16`
@@ -419,17 +416,7 @@ right of the program, because it uses the id file and NCCL connects the ranks.
   with Vx's kernels, so a CUDA graph can record it. Call `init` before the recording.
 - **One rank.** A backend with no library that joins several ranks runs a job of one rank
   only: the CPU backends, the CUDA backend on a machine with no GPU, the Intel GPU backend,
-  and the Apple one. There, each collective copies `in` to `out`, and a peer buffer is host
-  memory.
-- **Peer buffers.** A kernel that gets the addresses of a peer buffer can read and write the part of
-  every rank, for example to add the partial sums of all ranks in one kernel. Every rank calls
-  `create` and `destroy` with the same sizes, in the same order. `create` returns after every rank's
-  part is 0 and open. `destroy` first waits for the work on the stream, and it frees no part before
-  every rank closes it. `finish` frees each buffer that is still there. `create` and `destroy` stop
-  the program during a CUDA graph recording. The addresses stay the same until `destroy`, so a graph
-  can record kernels that use them. Vx does not order a write on one rank before a read on another:
-  the kernels must do that, for example with flags in the buffer. The CUDA backend shares the parts
-  with CUDA IPC (`cudaIpcGetMemHandle`), so the GPUs of a job must be in one machine.
+  and the Apple one. There, each collective copies `in` to `out`.
 
 ### 3.8 Calling a Vx function that launches Apple GPU kernels
 

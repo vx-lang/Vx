@@ -5,17 +5,8 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-11-25T18:00:00Z</updated>
+  <updated>2026-11-20T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
-
-  <entry>
-    <title>How main got its parameters</title>
-    <link href="https://vxlang.org/blog/how-main-got-its-parameters.html"/>
-    <id>https://vxlang.org/blog/how-main-got-its-parameters.html</id>
-    <updated>2026-11-25T18:00:00Z</updated>
-    <author><name>Aditya Kumar</name></author>
-    <summary>In Vx, main is where a program gets its rights to use the operating system. A library can open a file only when its caller gives it the right to, and at the start only main has the rights. In six months, main went from returning any type, to returning an i32 exit code, to main(root : Root), and then to main(root : Root, args : Vec&lt;String&gt;). For two months the code generator ignored the return of main, and a test passed because its loop body never ran. C, C++, Rust, Go and Java give every function the rights of the process. Zig 0.16 moved the command line from globals into a parameter of main, and Pony and Austral pass a root capability. PwnKit shows that the caller of a program chooses every word of argv, the first one too. A review of root.args found four problems, and the words became a second parameter of main. An argument that is not UTF-8 now stops the program before main runs, as Rust's std::env::args does. The post says what that costs on Linux, Windows and WASI.</summary>
-  </entry>
 
   <entry>
     <title>Let Vx handle Lean proofs for you</title>

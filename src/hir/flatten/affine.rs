@@ -18,55 +18,41 @@ use crate::bytecode::AFFINE_FOR_BRANCHES;
 /// Whether the body of a loop can be the body of an `affine.for`: nothing in it leaves the loop,
 /// and it holds no region that the MLIR passes lower by splitting its block.
 pub(super) fn affine_body(body: &[Statement]) -> bool {
-    stays_in(body, false, &mut HashMap::new())
+    stays_in(body, false)
 }
-
-/// The answers of `stays_in` for each block and `in_loop`. The deep visit in `exprs_stay_in`
-/// reaches a nested block again for each block around it, so without them the time doubles with
-/// each `else if` of a chain.
-type Answers = HashMap<(*const Statement, usize, bool), bool>;
 
 /// Whether nothing in `stmts` leaves the loop. In a nested loop, `in_loop` is set, and a
 /// `break` or `continue` stays in that loop.
-fn stays_in(stmts: &[Statement], in_loop: bool, answers: &mut Answers) -> bool {
-    if let Some(&ok) = answers.get(&(stmts.as_ptr(), stmts.len(), in_loop)) {
-        return ok;
-    }
-    let ok = stmts.iter().all(|s| match s {
+fn stays_in(stmts: &[Statement], in_loop: bool) -> bool {
+    stmts.iter().all(|s| match s {
         Statement::Return(_) => false,
         Statement::Break(_) | Statement::Continue(_) => in_loop,
         Statement::ForLoop(f) => {
-            exprs_stay_in(std::slice::from_ref(s), in_loop, answers)
-                && stays_in(&f.body, true, answers)
+            exprs_stay_in(std::slice::from_ref(s), in_loop) && stays_in(&f.body, true)
         }
         Statement::Loop(l) => {
-            exprs_stay_in(std::slice::from_ref(s), in_loop, answers)
-                && stays_in(&l.body, true, answers)
+            exprs_stay_in(std::slice::from_ref(s), in_loop) && stays_in(&l.body, true)
         }
         // An unexpanded macro may hold anything.
         Statement::MacroCall(_) | Statement::Error(_) => false,
-        _ => exprs_stay_in(std::slice::from_ref(s), in_loop, answers),
-    });
-    answers.insert((stmts.as_ptr(), stmts.len(), in_loop), ok);
-    ok
+        _ => exprs_stay_in(std::slice::from_ref(s), in_loop),
+    })
 }
 
 /// Whether the expressions of `stmts`, and the blocks in them, stay in the loop.
-fn exprs_stay_in(stmts: &[Statement], in_loop: bool, answers: &mut Answers) -> bool {
+fn exprs_stay_in(stmts: &[Statement], in_loop: bool) -> bool {
     let mut ok = true;
     let mut check = |e: &Expr| {
         ok &= match e {
             Expr::If(i) => {
-                stays_in(&i.then_block, in_loop, answers)
-                    && i.else_block
-                        .as_ref()
-                        .is_none_or(|b| stays_in(b, in_loop, answers))
+                stays_in(&i.then_block, in_loop)
+                    && i.else_block.as_ref().is_none_or(|b| stays_in(b, in_loop))
             }
-            Expr::Match(m) => m.arms.iter().all(|a| stays_in(&a.body, in_loop, answers)),
+            Expr::Match(m) => m.arms.iter().all(|a| stays_in(&a.body, in_loop)),
             // The checker makes a `tasks` block and a task body an `UnsafeBlock` with a `task`
             // mark, and the lowering of a task splits its block.
-            Expr::UnsafeBlock(b) => b.task.is_none() && stays_in(&b.stmts, in_loop, answers),
-            Expr::ComptimeBlock(b) => stays_in(&b.stmts, in_loop, answers),
+            Expr::UnsafeBlock(b) => b.task.is_none() && stays_in(&b.stmts, in_loop),
+            Expr::ComptimeBlock(b) => stays_in(&b.stmts, in_loop),
             Expr::SpawnOn(_)
             | Expr::TaskBlock(_)
             | Expr::InlineMlir(_)

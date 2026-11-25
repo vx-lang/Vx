@@ -1,18 +1,54 @@
-//===- pointer_cast_to_another_element_type.vx - Vx Compiler -------*- Vx -*-===//
+//===- pointer_cast_to_another_element_type.vx - Vx Compiler -----*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A pointer cast may change `const` to `mut`, not what the pointer points at. Only a cast to
-// `void` drops the element type (a_void_pointer_cannot_be_read.vx).
+// A pointer cast changes the element type only where an assignment would: to or from `i8`,
+// or to `void`. A cast between two other element types, or into another memory, is E3011 at
+// the cast. The code after a refused cast uses the type that the cast names, so no other
+// error follows. A cast that changes the element type keeps no `valid` fact, because the
+// fact counts elements of the old type.
 //
-// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+struct R {
+  m : u64,
+  n : u64,
+}
+
+impl Copy for R {}
+
+fn need(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn bytes_are_not_i64s(raw : *const i8) -> i64
+requires valid(raw, 16i64)
+{
+  let p = raw as *const i64;
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+1]]:10: this call to 'need' may not meet its precondition `valid(p, n)`
+  return need(p, 16i64);
+}
 
 fn main() -> i32 {
-  let lit : *const i8 = "xyz";
-  // CHECK: Unsupported cast: cannot cast from `*const i8` to `*const i64`
-  let wide : *const i64 = lit as *const i64;
+  let mut x : i32 = 1;
+  let q : *mut i32 = &mut x;
+  // CHECK: Error[E3011] at {{.*}}.vx:[[@LINE+1]]:13: Unsupported cast: cannot cast from `*mut i32` to `*mut R`. A pointer cast can change the element type only to `i8` or `void`, or from `i8`
+  let p = q as *mut R;
+  let r : &mut R = unsafe { &mut p[0u64] };
+  r.n = 8u64;
+  let c : *const i32 = q as *const i32;
+  // CHECK: Error[E3011] at {{.*}}.vx:[[@LINE+1]]:30: Unsupported cast: cannot cast from `*const i32` to `*const i64`. A pointer cast can change the element type only to `i8` or `void`, or from `i8`
+  let _wide : *const i64 = c as *const i64;
+  let numbers = Tensor<f32, [4]>::fill(1.0);
+  let on_gpu = transfer(Tensor<f32, [4]>::fill(2.0), Memory::GPU_HBM);
+  // CHECK: Error[E3011] at {{.*}}.vx:[[@LINE+1]]:28: Unsupported cast: cannot cast from `*const f32 in Memory::GPU_HBM` to `*const i8`. A pointer cast cannot change the memory that a pointer points into
+  let _g = on_gpu.as_ptr() as *const i8;
+  let _h = numbers.as_ptr() as *const i8;
   return 0;
 }
+// CHECK: 4 error(s) emitted

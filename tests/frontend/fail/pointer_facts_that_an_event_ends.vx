@@ -103,7 +103,7 @@ requires valid(p, n)
 // A closure in a field can have captured anything. The parser gives this call no place, so the
 // note gives the line of its statement.
 // CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
-// CHECK-NEXT: note: a fact that proves it ended at the call of the closure `h.f`, which can free memory through what it captures (at [[@LINE+4]]:14)
+// CHECK-NEXT: note: a fact that proves it ended at the call of the closure `h.f`, which can free memory through what it captures (at [[@LINE+4]]:3)
 fn after_a_call_of_a_closure_in_a_field(p : *const i64, n : i64, h : Holder) -> i64
 requires valid(p, n)
 {

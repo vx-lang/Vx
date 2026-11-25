@@ -422,27 +422,25 @@ fn chip_number(chip: &str) -> u32 {
 
 /// Counts the `let`s of each name in `stmts`, inside blocks and loops too.
 fn count_lets(stmts: &[Statement], lets: &mut HashMap<String, usize>) {
-    // The `let`s of one block and of its loops. It does not look into expressions:
-    // `visit_exprs` below reaches each nested block once.
-    fn statements(stmts: &[Statement], lets: &mut HashMap<String, usize>) {
-        for s in stmts {
-            match s {
-                Statement::LetDecl(l) => *lets.entry(l.name.to_string()).or_default() += 1,
-                Statement::ForLoop(f) => statements(&f.body, lets),
-                Statement::Loop(l) => statements(&l.body, lets),
-                _ => {}
-            }
+    for s in stmts {
+        match s {
+            Statement::LetDecl(l) => *lets.entry(l.name.to_string()).or_default() += 1,
+            Statement::ForLoop(f) => count_lets(&f.body, lets),
+            Statement::Loop(l) => count_lets(&l.body, lets),
+            _ => {}
         }
     }
-    statements(stmts, lets);
-    crate::syntax::visit_exprs(stmts, &mut |e| match e {
-        Expr::UnsafeBlock(b) => statements(&b.stmts, lets),
-        Expr::SpawnOn(b) => statements(&b.stmts, lets),
-        Expr::If(i) => {
-            statements(&i.then_block, lets);
-            statements(i.else_block.as_deref().unwrap_or(&[]), lets);
-        }
-        _ => {}
+    crate::syntax::visit_exprs(stmts, &mut |e| {
+        let inner: &[Statement] = match e {
+            Expr::UnsafeBlock(b) => &b.stmts,
+            Expr::SpawnOn(b) => &b.stmts,
+            Expr::If(i) => {
+                count_lets(&i.then_block, lets);
+                i.else_block.as_deref().unwrap_or(&[])
+            }
+            _ => &[],
+        };
+        count_lets(inner, lets);
     });
 }
 

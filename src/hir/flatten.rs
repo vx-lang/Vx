@@ -263,7 +263,7 @@ fn tensor_dim_string(d: &Dim) -> Option<String> {
         Dim::Static(Expr::Number(n)) => Some(n.value.as_ref().to_string()),
         Dim::Static(Expr::Identifier(id)) => Some(id.name.as_ref().to_string()),
         Dim::Static(_) => None,
-        Dim::Dyn(_) => Some(DYN_DIM.to_string()),
+        Dim::Dyn => Some(DYN_DIM.to_string()),
     }
 }
 
@@ -1899,7 +1899,6 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::TaskJoin, v.reg, Register(0), 0);
                 Ok(v)
             }
-            Expr::IndirectCall(ic) => self.lower_indirect_call_expr(ic),
             Expr::FunctionCall(fc) => {
                 if is_tensor_alloc_call(fc) {
                     return self.lower_tensor_alloc(fc).ok_or(Decline::TypeNotModelled {
@@ -2164,23 +2163,6 @@ impl<'r> Lowerer<'r> {
                             reg,
                             ty: LoweredTy::Ptr,
                         });
-                    }
-                    // `&add_one`, a function by its name: a slot holds the function's address.
-                    if !self.scope.contains_key(&id.name) {
-                        if let Some(fnptr) = self.lower_func_const(&id.name) {
-                            let slot = self.emit_typed(
-                                Opcode::Alloca,
-                                Register(0),
-                                Register(0),
-                                LoweredTy::Ptr,
-                                0,
-                            );
-                            self.emit_effect(Opcode::Store, slot.reg, fnptr.reg, 0);
-                            return Ok(Val {
-                                reg: slot.reg,
-                                ty: LoweredTy::Ptr,
-                            });
-                        }
                     }
                 }
                 // `&*ptr` / `&mut *ptr`: a reborrow of a raw pointer is the pointer itself, the
@@ -2477,14 +2459,16 @@ impl<'r> Lowerer<'r> {
             Expr::UnaryOp(u) => self.infer_expr_ty(&u.expr),
             Expr::RelationalOp(_) => Some(LoweredTy::Scalar(ElementType::Bool)),
             Expr::LogicalOp(_) => Some(LoweredTy::Scalar(ElementType::Bool)),
-            Expr::StructInit(si) => self.lower_ty_synth(&Type::Struct(si.name.clone(), si.type_id)),
+            Expr::StructInit(si) => {
+                lowered_ty(&Type::Struct(si.name.clone(), si.type_id), self.registry)
+            }
             Expr::Topology(_) => Some(LoweredTy::Scalar(ElementType::I32)),
             Expr::AsCast(c) => Some(LoweredTy::Scalar(scalar_of(&c.target_ty)?)),
             Expr::FunctionCall(fc) => match crate::syntax::task_join_handle(e) {
                 Some(h) => self.infer_expr_ty(h),
                 None => {
-                    let ret_ty = self.registry.fn_sigs.get(&fc.name)?.ret_ty.clone();
-                    self.lower_ty_synth(&ret_ty)
+                    let sig = self.registry.fn_sigs.get(&fc.name)?;
+                    lowered_ty(&sig.ret_ty, self.registry)
                 }
             },
             // A name that the arm's pattern binds hides any outer local of that name, so the
@@ -2569,9 +2553,7 @@ impl<'r> Lowerer<'r> {
             .iter()
             .find(|(n, _)| n.as_ref() == variant.as_ref())?;
         let ty = substitute_generics(payload.get(index)?, &data.generics, &args);
-        // A payload struct with an enum field (`Output { extra : Option<i32> }`) has no layout in
-        // the registry, so it needs the layout that this function makes for it.
-        self.lower_ty_synth(&ty)
+        lowered_ty(&ty, self.registry)
     }
 
     /// The inferred type of a block's trailing semicolon-less value expression (a branch's value).
@@ -3739,13 +3721,11 @@ impl<'r> Lowerer<'r> {
         // An `across` loop starts at its own pass and steps over the passes of the others.
         let (start, step) = match across {
             Some((offset, step)) => {
-                if elem.int_bits().is_none() || elem == ElementType::Bool {
+                if elem != ElementType::I32 {
                     return Err(Decline::Unsupported {
-                        what: "an `across` loop over a range that is not of integers",
+                        what: "an `across` loop over a range that is not `i32`",
                     });
                 }
-                let offset = self.widen_index(offset, &elem);
-                let step = self.widen_index(step, &elem);
                 let first = self.emit_value(Opcode::Add, start.reg, offset.reg, elem.clone(), 0);
                 (first, Some(step))
             }
@@ -4128,7 +4108,11 @@ impl<'r> Lowerer<'r> {
                     }
                 };
                 let size = self.read_rank0(size);
-                let size = self.launch_count(size, f.span.line)?;
+                if !matches!(size.ty, LoweredTy::Scalar(ElementType::I32)) {
+                    return Err(Decline::Unsupported {
+                        what: "an `across` loop of blocks whose size is not `i32`",
+                    });
+                }
                 shape.push((axis, size));
                 axis += 1;
                 level = Some(f.body.as_slice());
@@ -5786,7 +5770,7 @@ impl<'r> Lowerer<'r> {
             };
             let local_dims: Vec<bool> = dims.iter().map(local_dim).collect();
             let dynamic =
-                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn(_)));
+                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn));
             let mut extents: Vec<Register> = Vec::new();
             let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
@@ -5796,7 +5780,7 @@ impl<'r> Lowerer<'r> {
                 };
                 for (i, d) in dims.iter().enumerate() {
                     let extent = match d {
-                        Dim::Dyn(_) => written_shape
+                        Dim::Dyn => written_shape
                             .filter(|s| s.len() == dims.len())
                             .map(|s| &s[i])?,
                         Dim::Static(e) if local_dims[i] => e,
@@ -6529,61 +6513,19 @@ impl<'r> Lowerer<'r> {
                 })
             }
         };
-        let callee_ty = self
-            .ast_types
-            .get(fc.name.as_ref())
-            .ok_or(Decline::TypeNotModelled {
-                what: "an indirect callee with no recorded AST type",
-            })?
-            .clone();
-        self.emit_call_indirect(fnptr, env, &callee_ty, &fc.args)
-    }
-
-    /// Lower `(*f)(args)` or `(s.op)(args)`, a call of a value. The checker gave the callee's
-    /// type: a closure value, which holds `{ env, func }`, or a plain function.
-    fn lower_indirect_call_expr(
-        &mut self,
-        ic: &crate::syntax::expr::IndirectCallExpr,
-    ) -> Lowered<Val> {
-        let callee_ty = ic.target_func_ty.clone().ok_or(Decline::TypeNotModelled {
-            what: "an indirect callee with no recorded AST type",
-        })?;
-        let callee = self.lower_expr(&ic.callee)?;
-        let (fnptr, env) = match (&callee_ty, &callee.ty) {
-            (Type::Closure(..), LoweredTy::Aggregate(gid)) => {
-                let gid = *gid;
-                let slot = self.emit_alloca(callee.ty.clone());
-                self.emit_effect(Opcode::Store, slot.reg, callee.reg, 0);
-                let env = self.load_field(slot.reg, &gid, "env")?.reg;
-                (self.load_field(slot.reg, &gid, "func")?, Some(env))
-            }
-            (Type::Function(..), LoweredTy::Ptr) => (callee, None),
-            _ => {
-                return Err(Decline::TypeNotModelled {
-                    what: "an indirect callee that is not a function type",
-                })
-            }
-        };
-        self.emit_call_indirect(fnptr, env, &callee_ty, &ic.args)
-    }
-
-    /// Call the function pointer `fnptr` of type `callee_ty` with `args`, after `env` for a
-    /// closure.
-    fn emit_call_indirect(
-        &mut self,
-        fnptr: Val,
-        env: Option<Register>,
-        callee_ty: &Type,
-        args: &[Expr],
-    ) -> Lowered<Val> {
         if !matches!(fnptr.ty, LoweredTy::Ptr) {
             return Err(Decline::TypeNotModelled {
                 what: "a callee that is not a function pointer",
             });
         }
-        // The return type comes from the callee's AST function type: a scalar, or a pointer
+        // The callee's return type comes from `f`'s AST function type: a scalar, or a pointer
         // for a borrow, reference or raw pointer.
-        let ty = match callee_ty {
+        let ty = match self
+            .ast_types
+            .get(fc.name.as_ref())
+            .ok_or(Decline::TypeNotModelled {
+                what: "an indirect callee with no recorded AST type",
+            })? {
             Type::Function(_, ret, _) | Type::Closure(_, ret) => ret.as_ref().clone(),
             _ => {
                 return Err(Decline::TypeNotModelled {
@@ -6606,7 +6548,7 @@ impl<'r> Lowerer<'r> {
             },
         };
         let mut arg_regs: Vec<Register> = env.into_iter().collect();
-        for arg in args {
+        for arg in &fc.args {
             arg_regs.push(self.lower_expr(arg)?.reg);
         }
         let argc = arg_regs.len() as u64;
@@ -8206,7 +8148,7 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 /// corpus sweep's histogram measures the gap.
 fn is_dyn_tensor(ty: &Type) -> bool {
     match ty {
-        Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn(_))),
+        Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
         Type::Verified(inner)
         | Type::Distinct(inner)
         | Type::DisjointRanges(inner)
@@ -8429,32 +8371,27 @@ pub(crate) fn binds_name(stmts: &[Statement], name: &Symbol) -> bool {
             _ => false,
         }
     }
-    // The statements of one block and of its loops. It does not look into expressions:
-    // `visit_exprs` below reaches each nested block once.
-    fn statements(stmts: &[Statement], name: &Symbol) -> bool {
-        stmts.iter().any(|s| match s {
-            Statement::LetDecl(l) => &l.name == name,
-            Statement::ForLoop(f) => f.iter.as_str() == name.as_ref() || statements(&f.body, name),
-            Statement::Loop(l) => statements(&l.body, name),
-            _ => false,
-        })
-    }
-    let direct = statements(stmts, name);
+    let direct = stmts.iter().any(|s| match s {
+        Statement::LetDecl(l) => &l.name == name,
+        Statement::ForLoop(f) => f.iter.as_str() == name.as_ref() || binds_name(&f.body, name),
+        Statement::Loop(l) => binds_name(&l.body, name),
+        _ => false,
+    });
     let mut nested = false;
     crate::syntax::visit_exprs(stmts, &mut |e| {
         nested |= match e {
             Expr::If(i) => {
-                statements(&i.then_block, name)
-                    || i.else_block.as_ref().is_some_and(|b| statements(b, name))
+                binds_name(&i.then_block, name)
+                    || i.else_block.as_ref().is_some_and(|b| binds_name(b, name))
             }
             Expr::Match(m) => m
                 .arms
                 .iter()
-                .any(|a| in_pattern(&a.pattern, name) || statements(&a.body, name)),
-            Expr::UnsafeBlock(b) => statements(&b.stmts, name),
-            Expr::ComptimeBlock(b) => statements(&b.stmts, name),
-            Expr::TaskBlock(b) => statements(&b.stmts, name),
-            Expr::SpawnOn(b) => statements(&b.stmts, name),
+                .any(|a| in_pattern(&a.pattern, name) || binds_name(&a.body, name)),
+            Expr::UnsafeBlock(b) => binds_name(&b.stmts, name),
+            Expr::ComptimeBlock(b) => binds_name(&b.stmts, name),
+            Expr::TaskBlock(b) => binds_name(&b.stmts, name),
+            Expr::SpawnOn(b) => binds_name(&b.stmts, name),
             _ => false,
         }
     });

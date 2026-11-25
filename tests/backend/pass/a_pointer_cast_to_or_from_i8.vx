@@ -1,0 +1,64 @@
+//===- a_pointer_cast_to_or_from_i8.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `as` casts a raw pointer to or from `*const i8` or `*mut i8`, as an assignment with a
+// declared type converts it. A string literal is a `*const i8`, so its bytes go to
+// `stdout_write`, which takes a `*const u8`. A cast from `*const i8` to `*mut u8` changes
+// both the element type and `const` to `mut`. Memory from `malloc` becomes a `*mut R`. The cast
+// itself needs no `unsafe`. A read or a write through the new pointer needs it.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}A|{{$}}
+// CHECK-NEXT: {{^}}A{{$}}
+// CHECK: {{^}}struct 8{{$}}
+// CHECK: {{^}}back to bytes 8{{$}}
+// CHECK: {{^}}const to mut 5 8{{$}}
+
+import std::io;
+
+extern "C" {
+  fn malloc(n : u64) -> *mut i8;
+  fn free(p : *mut i8) -> void;
+}
+
+struct R {
+  m : u64,
+  n : u64,
+}
+
+impl Copy for R {}
+
+fn main() -> i32 {
+  let a : *const i8 = "A|\n";
+  unsafe { stdout_write(a as *const u8, 3u64); }
+  let line : *mut i8 = unsafe { malloc(4u64) };
+  let text = (line as *const i8) as *mut u8;
+  unsafe {
+    text[0u64] = a[0u64] as u8;
+    text[1u64] = 10u8;
+    stdout_write(text as *const u8, 2u64);
+  }
+
+  let raw : *mut i8 = unsafe { malloc(64u64) };
+  let p = raw as *mut R;
+  let r : &mut R = unsafe { &mut p[0u64] };
+  r.n = 8u64;
+  println!("struct {}", r.n);
+
+  let bytes = p as *mut i8;
+  let again : *const R = bytes as *const R;
+  let back : R = unsafe { again[0u64] };
+  println!("back to bytes {}", back.n);
+
+  let writable = again as *mut R;
+  unsafe { writable[0u64].m = 5u64; }
+  let written : R = unsafe { writable[0u64] };
+  println!("const to mut {} {}", written.m, written.n);
+  unsafe { free(raw); free(line); }
+  return 0;
+}

@@ -1614,12 +1614,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
-                let span = expr.span();
                 expr = Expr::IndirectCall(IndirectCallExpr {
                     callee: Box::new(expr),
                     args,
                     target_func_ty: None,
-                    span,
+                    span: Span::default(),
                 });
             } else if self.check(&TokenType::LeftBracket) {
                 // The `[` token, so a diagnostic about the index points at it.

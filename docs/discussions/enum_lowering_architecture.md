@@ -356,7 +356,7 @@ Similarly, [Lowerer::lower_ty_synth](../../src/hir/flatten.rs) handles supported
 Do not skip unsupported fields, substitute a smaller layout, or read inactive payloads to extend this support.
 Future changes must preserve the storage contract, variant metadata, and conflict checks together.
 
-[VXLIB_FORMAT_TAG](../../src/metadata.rs) currently identifies `vxlib-interface-v20`.
+[VXLIB_FORMAT_TAG](../../src/metadata.rs) currently identifies `vxlib-interface-v19`.
 Version 19 requires explicit field indices and aggregate layout checks in serialized function bodies.
 Version 17 and version 18 artifacts require rebuilding.
 Older interface versions are rejected. Affected module artifacts and compiled objects require rebuilding.

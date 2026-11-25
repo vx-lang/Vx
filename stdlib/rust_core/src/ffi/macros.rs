@@ -194,22 +194,6 @@ macro_rules! instantiate_string_ffi {
             Box::into_raw(s) as *mut std::ffi::c_void
         }
 
-        /// A copy of a NUL-terminated C string, or null when its bytes are not UTF-8.
-        /// `vx_string_from_c_str` replaces such bytes instead.
-        #[no_mangle]
-        pub extern "C" fn vx_string_try_from_c_str(
-            c_str: *const std::ffi::c_char,
-        ) -> *mut std::ffi::c_void {
-            if c_str.is_null() {
-                return vx_string_new();
-            }
-            let c_str = unsafe { std::ffi::CStr::from_ptr(c_str) };
-            match c_str.to_str() {
-                Ok(text) => Box::into_raw(Box::new(text.to_owned())) as *mut std::ffi::c_void,
-                Err(_) => std::ptr::null_mut(),
-            }
-        }
-
         #[no_mangle]
         pub extern "C" fn vx_string_push_c_str(
             ptr: *mut std::ffi::c_void,
@@ -936,12 +920,7 @@ macro_rules! instantiate_stdio_ffi {
                 return 0;
             }
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
-            let mut out = std::io::stdout().lock();
-            let taken = std::io::Write::write(&mut out, buf_slice).unwrap_or(0) as u64;
-            // `print!` flushes after each write too. Nothing flushes this buffer when a Vx
-            // program ends, so the bytes after the last newline would be lost.
-            let _ = std::io::Write::flush(&mut out);
-            taken
+            std::io::Write::write(&mut std::io::stdout(), buf_slice).unwrap_or(0) as u64
         }
 
         #[no_mangle]

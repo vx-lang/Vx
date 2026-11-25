@@ -42,12 +42,6 @@ extern {
   pub fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   /// The Rust core behind dropping a `File`.
   pub fn vx_file_drop(ptr : *mut i8) -> void;
-  /// The Rust core behind `File::map`: 0 with the address in `*base` and the size in `*len`, or
-  /// the category of the error and the error number of the system.
-  fn vx_file_try_map(ptr : *mut i8, base : *mut *mut u8, len : *mut i64,
-  native_code : *mut i32) -> i32;
-  /// The Rust core behind dropping a `Mapping`.
-  fn vx_file_unmap(base : *mut u8, len : i64) -> void;
 
   // libc bindings for high-level I/O
   /// C's `fopen`, for code that wants a `FILE*` rather than the Rust-backed `File`.
@@ -277,73 +271,12 @@ impl File {
   pub fn seek(self : &mut File, offset : i64, whence : i32) -> i64 {
     unsafe { vx_file_seek(self.ptr, offset, whence) }
   }
-
-  /// The whole file in memory, read-only, with no copy: the system reads each part of the file
-  /// when the program first reads it. The file must be open for reading, else the result is
-  /// `PermissionDenied`. The `Mapping` stays valid after the `File` closes.
-  pub fn map(self : &File) -> Result<Mapping, FileError> {
-    let mut base : *mut u8 = unsafe { 0 as *mut u8 };
-    let mut len : i64 = 0;
-    let mut native_code : i32 = 0;
-    let status = unsafe {
-      vx_file_try_map(self.ptr, (&mut base) as *mut *mut u8, (&mut len) as *mut i64,
-      (&mut native_code) as *mut i32)
-    };
-    if status != 0 {
-      return Result<Mapping, FileError>::Err(file_error(status, native_code));
-    }
-    return Result<Mapping, FileError>::Ok(Mapping {
-      base : base, len : len
-    });
-  }
 }
 
 impl Drop for File {
   /// Close the file and release it.
   fn drop(self : &mut File) -> void {
     unsafe { vx_file_drop(self.ptr) };
-  }
-}
-
-/// A read-only view of a whole file in memory, from `File::map`. A drop unmaps it. The
-/// invariant lets only this file make a `Mapping` or change its fields.
-///
-/// The view shows the file as it is now. When another program shortens the file, a read past
-/// its new end stops the program with the signal SIGBUS.
-struct Mapping {
-  base : *mut u8,
-  len : i64,
-
-  invariant true,
-}
-
-// The memory does not change through a `Mapping`, so tasks may share it.
-unsafe impl Send for Mapping {}
-unsafe impl Sync for Mapping {}
-
-impl Mapping {
-  /// The size of the file in bytes, when it was mapped.
-  pub fn len(self : &Mapping) -> i64 {
-    return self.len;
-  }
-
-  /// The address of the first byte of the file, or null for an empty file. Code that reads
-  /// through it must keep the `Mapping` until it stops reading.
-  pub fn as_ptr(self : &Mapping) -> *const u8 {
-    return self.base as *const u8;
-  }
-
-  /// Byte `i` of the file. Panics when `i` is outside the file.
-  pub fn byte(self : &Mapping, i : i64) -> u8 {
-    assert(i >= 0 && i < self.len, "the index is outside the mapped file");
-    return unsafe { self.base[i] };
-  }
-}
-
-impl Drop for Mapping {
-  /// Unmap the file.
-  fn drop(self : &mut Mapping) -> void {
-    unsafe { vx_file_unmap(self.base, self.len) };
   }
 }
 
