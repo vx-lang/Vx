@@ -263,8 +263,11 @@ impl Rng {
   /// Fill a buffer in place. One call per buffer rather than one per element, which is what
   /// makes filling a real tensor practical -- a 256x8192 one is two million values.
   ///
-  /// `count` elements are written, so the buffer must hold that many.
-  pub fn fill_f32(self : &mut Rng, out : *mut f32, count : i32) -> i32 {
+  /// `count` elements are written, so the buffer must hold that many. A call in safe code
+  /// proves it (`valid`).
+  pub fn fill_f32(self : &mut Rng, out : *mut f32, count : i32) -> i32
+  requires valid(out, count)
+  {
     let mut i = 0;
     loop {
       if i >= count {
@@ -278,8 +281,10 @@ impl Rng {
 
   /// Fill `count` elements with draws uniform in [lo, hi).
   ///
-  /// `out` must have room for `count` of them; nothing here checks.
-  pub fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32 {
+  /// `out` must have room for `count` of them.
+  pub fn fill_range_f32(self : &mut Rng, out : *mut f32, count : i32, lo : f32, hi : f32) -> i32
+  requires valid(out, count)
+  {
     let mut i = 0;
     loop {
       if i >= count {
@@ -295,7 +300,9 @@ impl Rng {
   ///
   /// `out` must have room for `count` of them. A negative `stddev` mirrors the distribution
   /// rather than being refused.
-  pub fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32 {
+  pub fn fill_normal_f32(self : &mut Rng, out : *mut f32, count : i32, mean : f32, stddev : f32) -> i32
+  requires valid(out, count)
+  {
     let mut i = 0;
     loop {
       if i >= count {
@@ -308,7 +315,9 @@ impl Rng {
   }
 
   /// Fill `count` elements with `f16` draws uniform in [0, 1).
-  pub fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32 {
+  pub fn fill_f16(self : &mut Rng, out : *mut f16, count : i32) -> i32
+  requires valid(out, count)
+  {
     let mut i = 0;
     loop {
       if i >= count {
@@ -322,7 +331,9 @@ impl Rng {
 
   /// The normal fill at half precision. The draw and the scaling happen in f64 and narrow
   /// once at the store, so a tail value is rounded rather than computed twice.
-  pub fn fill_normal_f16(self : &mut Rng, out : *mut f16, count : i32, mean : f64, stddev : f64) -> i32 {
+  pub fn fill_normal_f16(self : &mut Rng, out : *mut f16, count : i32, mean : f64, stddev : f64) -> i32
+  requires valid(out, count)
+  {
     let mut i = 0;
     loop {
       if i >= count {

@@ -56,7 +56,7 @@ fn vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mu
   if old_bytes == 0 {
     return vec_alloc(elem_size, new_cap);
   }
-  let p = grow(ptr, old_bytes, bytes, vec_align());
+  let p = unsafe { grow(ptr, old_bytes, bytes, vec_align()) };
   if is_null_mut(p) {
     panic("Vec: out of memory");
   }
@@ -314,7 +314,7 @@ impl<T> Drop for Vec<T> {
     // A buffer of zero bytes was not allocated.
     if self.capacity > 0 && sizeof<T>() > 0 {
       let ptr_i8 : *mut i8 = self.data;
-      dealloc(ptr_i8, vec_align());
+      unsafe { dealloc(ptr_i8, vec_align()) };
     }
   }
 }

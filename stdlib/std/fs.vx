@@ -268,7 +268,7 @@ impl File {
   /// `whence` is 0 from the start, 1 from the current position, 2 from the end, as libc's
   /// `SEEK_SET`, `SEEK_CUR` and `SEEK_END`. Answers -1 for a null file, an unknown `whence`,
   /// or a seek the operating system refuses.
-  pub fn seek(self : *mut File, offset : i64, whence : i32) -> i64 {
+  pub fn seek(self : &mut File, offset : i64, whence : i32) -> i64 {
     unsafe { vx_file_seek(self.ptr, offset, whence) }
   }
 }

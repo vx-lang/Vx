@@ -128,8 +128,11 @@ impl<T : Float> Tensor<T, [?, ?]> {
   /// A 1-by-`d1` tensor holding a copy of `d1` elements read from `ptr`.
   ///
   /// The elements are copied, so the tensor does not alias the buffer and outlives it. `ptr`
-  /// must address `d1` elements; nothing here checks.
-  pub fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T, [?, ?]> {
+  /// must address `d1` elements that hold values, and a call in safe code proves it.
+  pub fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T, [?, ?]>
+  requires valid(ptr, d1)
+  requires initialized(ptr, d1)
+  {
     let mut t = Tensor<T>([ 1, d1 ]);
     for i in 0..d1 {
       unsafe { t[0][i] = ptr[i]; }
@@ -139,7 +142,10 @@ impl<T : Float> Tensor<T, [?, ?]> {
 
   /// A `d1`-by-`d2` tensor holding a copy of `d1 * d2` elements read from `ptr` in row-major
   /// order. Copied, as `from_ptr_1d` is.
-  pub fn from_ptr_2d(ptr: *mut T, d1: i32, d2: i32) -> Tensor<T, [?, ?]> {
+  pub fn from_ptr_2d(ptr: *mut T, d1: i32, d2: i32) -> Tensor<T, [?, ?]>
+  requires valid(ptr, d1 * d2)
+  requires initialized(ptr, d1 * d2)
+  {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {

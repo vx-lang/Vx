@@ -191,7 +191,7 @@ fn main() -> i32 {
     }
     let x = first(p as *const i64);
     let bytes : *mut i8 = p;
-    dealloc(bytes, 16i64);
+    unsafe { dealloc(bytes, 16i64) };
     return (x - 7i64) as i32;
 }
 ```

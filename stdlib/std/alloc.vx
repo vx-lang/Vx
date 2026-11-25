@@ -22,8 +22,8 @@ pub fn alloc(bytes : i64, align : i64) -> *mut i8 {
 
 /// The block at `p`, of `old_bytes`, resized to `new_bytes`, with its contents and its
 /// alignment. Null when there is no memory, and then `p` is still valid. A null `p` makes a new
-/// block.
-pub fn grow(p : *mut i8, old_bytes : i64, new_bytes : i64, align : i64) -> *mut i8 {
+/// block. Unsafe because `p` must be null or a block from `alloc` or `grow` that is not freed.
+pub unsafe fn grow(p : *mut i8, old_bytes : i64, new_bytes : i64, align : i64) -> *mut i8 {
   return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %o = old_bytes : i64, %n = new_bytes : i64, %a = align : i64), returns : *mut i8, dialects : ["vx"]) {
       %q = vx.heap_grow %p, %o, %n, %a {
         topology = 0 : i32
@@ -33,8 +33,8 @@ pub fn grow(p : *mut i8, old_bytes : i64, new_bytes : i64, align : i64) -> *mut 
 }
 
 /// Gives back a block from `alloc` or `grow`, with the alignment it was made with. Null is a
-/// no-op.
-pub fn dealloc(p : *mut i8, align : i64) -> void {
+/// no-op. Unsafe because a second free of one block, or a free of other memory, breaks the heap.
+pub unsafe fn dealloc(p : *mut i8, align : i64) -> void {
   unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %a = align : i64), dialects : ["vx"]) {
       vx.heap_free %p, %a {
         topology = 0 : i32

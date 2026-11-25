@@ -218,7 +218,7 @@ pub fn new_receiver_word(v : i64) -> *mut AtomicI64 {
 /// Free a word of `new_receiver_word`.
 pkg fn free_receiver_word(w : *mut AtomicI64) -> void {
   let p : *mut i8 = w;
-  dealloc(p, 8);
+  unsafe { dealloc(p, 8) };
 }
 
 /// Free the lock that `lock_channel` took.
@@ -282,8 +282,7 @@ pkg fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
   }
   let w : *mut i8 = words;
   let d : *mut i8 = data;
-  dealloc(w, 8);
-  dealloc(d, 16);
+  unsafe { dealloc(w, 8); dealloc(d, 16); }
 }
 
 impl<T>
