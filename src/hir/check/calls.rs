@@ -1609,20 +1609,13 @@ impl<'a> TypeChecker<'a> {
         place: &FunctionPlace,
         at: &crate::syntax::Span,
     ) {
-        if place.visibility == Visibility::Public || self.speculating {
+        if self.speculating || self.may_call(place) {
             return;
         }
-        let (Some(theirs), Some(ours)) = (&place.file, &self.errors.file) else {
+        let Some(theirs) = &place.file else {
             return;
         };
-        if theirs == ours {
-            return;
-        }
-        let our_package = self.env.file_packages.get(ours);
         let package = place.package.as_ref();
-        if place.visibility == Visibility::Package && package.is_some() && package == our_package {
-            return;
-        }
         let file = std::path::Path::new(theirs.as_ref())
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1684,7 +1677,28 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether the current function may call a function at `place`: a `pub` function, one of
+    /// its own file, or a `pkg` function of its own package.
+    fn may_call(&self, place: &FunctionPlace) -> bool {
+        if place.visibility == Visibility::Public {
+            return true;
+        }
+        let (Some(theirs), Some(ours)) = (&place.file, &self.errors.file) else {
+            return true;
+        };
+        if theirs == ours {
+            return true;
+        }
+        let package = place.package.as_ref();
+        place.visibility == Visibility::Package
+            && package.is_some()
+            && package == self.env.file_packages.get(ours)
+    }
+
     /// The file, package and visibility of the function, generic function or C function `name`.
+    /// Every `extern` declaration of a C function names the same C symbol, so a C function has
+    /// the place of a declaration that the current function may call, when one exists. The order
+    /// of the declarations is not fixed.
     pub(crate) fn place_of_function(&self, name: &str) -> Option<FunctionPlace> {
         if let Some(f) = self.env.syntax_functions.get(name) {
             return Some(FunctionPlace::of(f));
@@ -1692,12 +1706,19 @@ impl<'a> TypeChecker<'a> {
         if let Some((f, _)) = self.env.generic_functions.get(name) {
             return Some(FunctionPlace::of(f));
         }
-        let e = self.env.externs.iter().find(|e| e.name.as_ref() == name)?;
-        Some(FunctionPlace {
-            file: e.file.clone(),
-            package: e.package.clone(),
-            visibility: e.visibility,
-        })
+        let mut first = None;
+        for e in self.env.externs.iter().filter(|e| e.name.as_ref() == name) {
+            let place = FunctionPlace {
+                file: e.file.clone(),
+                package: e.package.clone(),
+                visibility: e.visibility,
+            };
+            if self.may_call(&place) {
+                return Some(place);
+            }
+            first.get_or_insert(place);
+        }
+        first
     }
 
     pub(crate) fn file_name(&self) -> String {
