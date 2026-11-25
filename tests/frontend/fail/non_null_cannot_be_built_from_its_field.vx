@@ -1,0 +1,22 @@
+//===- non_null_cannot_be_built_from_its_field.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A `NonNull` must never hold a null pointer. So safe code outside `ptr.vx` cannot build one
+// from a struct literal, and cannot change its field. It has to call `NonNull::new`.
+import core::ptr;
+
+fn main() -> i32 {
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:15: this struct literal builds a `NonNull`. `NonNull` has an invariant, so only code in `ptr.vx` can build it from its fields{{$}}
+  let mut n = NonNull<f32> {
+    ptr : null_mut<f32>()
+  };
+  // CHECK: Error[E8014] at {{.*}}.vx:[[@LINE+1]]:5: this assignment changes the field `ptr` of `NonNull`. `NonNull` has an invariant, so only code in `ptr.vx` can change its fields{{$}}
+  n.ptr = null_mut<f32>();
+  return 0;
+}
