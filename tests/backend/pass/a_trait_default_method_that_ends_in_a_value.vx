@@ -1,0 +1,35 @@
+//===- a_trait_default_method_that_ends_in_a_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A trait default method can end in an expression with no `;`, and that expression is its result,
+// as in a normal function. Both code generators compile it.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}42{{$}}
+
+trait Answer {
+  fn base(self : &Self) -> i32;
+
+  fn answer(self : &Self) -> i32 {
+    self.base() + 1
+  }
+}
+
+struct Guess {}
+
+impl Answer for Guess {
+  fn base(self : &Guess) -> i32 {
+    return 41;
+  }
+}
+
+fn main() -> i32 {
+  let guess = Guess {};
+  println!("{}", guess.answer());
+  return 0;
+}

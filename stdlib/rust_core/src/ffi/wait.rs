@@ -1153,6 +1153,7 @@ mod deadlock {
             && WAITING.load(Ordering::SeqCst) == THREADS.load(Ordering::SeqCst)
             && !super::timer::pending()
             && !crate::ffi::io::pending()
+            && !crate::ffi::copies::pending()
     }
 
     /// One check of the watcher. `seen` is the progress count of the last check, if that check

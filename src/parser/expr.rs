@@ -696,6 +696,7 @@ impl<'a> Parser<'a> {
                 type_args: parsed_type_args,
                 args,
                 span,
+                by_the_compiler: false,
             }))
         } else if self.check(&TokenType::LeftBrace) {
             let after = |n: usize| self.tokens.get(self.pos + n).map(|t| &t.kind);
@@ -739,6 +740,7 @@ impl<'a> Parser<'a> {
                     name: call_name.into(),
                     fields,
                     type_id: None,
+                    made_by_the_compiler: false,
                     span,
                 }))
             } else if self.match_token(&TokenType::DoubleColon) {
@@ -797,6 +799,7 @@ impl<'a> Parser<'a> {
             type_args: Some(vec![ty]),
             args,
             span,
+            by_the_compiler: false,
         }))
     }
 
@@ -1118,6 +1121,7 @@ impl<'a> Parser<'a> {
                     type_args: None,
                     args: vec![inner],
                     span: Span::default(),
+                    by_the_compiler: false,
                 })
             }
             // `Distinct::check(t)` and `DisjointRanges::check(t)` check the values of `t` and
@@ -1160,6 +1164,7 @@ impl<'a> Parser<'a> {
                         length: peeked_token.length,
                         expansion: self.expansion(),
                     },
+                    by_the_compiler: false,
                 })
             }
             TokenType::Distinct | TokenType::DisjointRanges => {
@@ -1183,6 +1188,7 @@ impl<'a> Parser<'a> {
                         length: peeked_token.length,
                         expansion: self.expansion(),
                     },
+                    by_the_compiler: false,
                 })
             }
             TokenType::Grad => {
@@ -1303,6 +1309,7 @@ impl<'a> Parser<'a> {
                                     .map(|(i, e)| (format!("_{i}").into(), e))
                                     .collect(),
                                 type_id: None,
+                                made_by_the_compiler: false,
                                 span: Span::default(),
                             })
                         } else {
@@ -1862,6 +1869,7 @@ mod tests {
             args,
             span: _,
             type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Option::Some");
@@ -1914,6 +1922,7 @@ mod tests {
             args,
             span: _,
             type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Option<i32>::Some");
@@ -1933,6 +1942,7 @@ mod tests {
             args,
             span: _,
             type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Vec<i32>::new");

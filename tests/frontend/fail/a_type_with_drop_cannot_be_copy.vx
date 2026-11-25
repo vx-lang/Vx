@@ -1,0 +1,50 @@
+//===- a_type_with_drop_cannot_be_copy.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=E3031
+//
+// The drop of a `Copy` value does not run. So a type with a `Drop` impl cannot be `Copy`: a
+// handle that closes a file in its drop would never close it.
+import core::marker;
+import core::ops;
+
+struct Handle {
+  id : i64,
+}
+
+impl Drop for Handle {
+  fn drop(self : &mut Handle) -> void {
+    println!("drop {}", self.id);
+  }
+}
+
+// CHECK: Error[E3031] at {{.*}}.vx:[[@LINE+1]]:1: 'Handle' cannot be `Copy`: it has a `Drop` impl, and the drop of a `Copy` value does not run
+impl Copy for Handle {}
+
+struct Boxed<T> {
+  value : T,
+}
+
+impl<T> Drop for Boxed<T> {
+  fn drop(self : &mut Boxed<T>) -> void {
+  }
+}
+
+// CHECK: Error[E3031] at {{.*}}.vx:[[@LINE+1]]:1: 'Boxed' cannot be `Copy`: it has a `Drop` impl, and the drop of a `Copy` value does not run
+impl<T : Copy> Copy for Boxed<T> {}
+
+// A type with no `Drop` impl can be `Copy`.
+struct Point {
+  x : i64,
+}
+
+impl Copy for Point {}
+
+fn main() -> i32 {
+  return 0;
+}
+// CHECK: 2 error(s) emitted

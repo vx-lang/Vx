@@ -1,0 +1,38 @@
+//===- a_method_that_takes_self_moves_its_receiver_under_a_borrow.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `unwrap()` takes `self` by value, so it moves the value out of `r`, also when the program
+// only borrows the result or calls a method on it. A later use of `r` is an error.
+
+import core::result;
+import std::vec;
+
+fn show(values : &Vec<i64>) -> void {
+  println!("{}", values.len());
+}
+
+fn borrowed() -> void {
+  let r : Result<Vec<i64>, i32> = Result<Vec<i64>, i32>::Ok(Vec<i64>::new());
+  show(&r.unwrap());
+  // CHECK: [[@LINE+1]]:11: Use of moved or consumed linear variable: r
+  let z = r.unwrap();
+}
+
+fn chained() -> void {
+  let r : Result<Vec<i64>, i32> = Result<Vec<i64>, i32>::Ok(Vec<i64>::new());
+  let n = r.unwrap().len();
+  // CHECK: [[@LINE+1]]:11: Use of moved or consumed linear variable: r
+  let z = r.unwrap();
+}
+
+fn main() -> i32 {
+  borrowed();
+  chained();
+  return 0;
+}

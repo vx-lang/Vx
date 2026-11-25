@@ -1,0 +1,68 @@
+//===- a_trait_default_method_that_ends_in_a_match.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A trait default method can end in a `match` whose every arm returns. Both code generators
+// compile it, and the default one does not fall back to the other one.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}rewound{{$}}
+// CHECK-NEXT: {{^}}error 7{{$}}
+
+import core::result;
+
+trait Rewinder {
+  fn position(self : &mut Self) -> Result<u64, i32>;
+
+  fn rewind(self : &mut Self) -> Result<void, i32> {
+    let position = self.position();
+    match position {
+      Result<u64, i32>::Ok(_) => {
+        return Result<void, i32>::Ok();
+      }
+      Result<u64, i32>::Err(error) => {
+        return Result<void, i32>::Err(error);
+      }
+    }
+  }
+}
+
+struct Reader {
+  fails : bool,
+}
+
+impl Rewinder for Reader {
+  fn position(self : &mut Reader) -> Result<u64, i32> {
+    if self.fails {
+      return Result<u64, i32>::Err(7);
+    }
+    return Result<u64, i32>::Ok(0);
+  }
+}
+
+fn report(reader : &mut Reader) -> void {
+  match reader.rewind() {
+    Result<void, i32>::Ok(_) => {
+      println!("rewound");
+    }
+    Result<void, i32>::Err(code) => {
+      println!("error {}", code);
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut good = Reader {
+    fails: false
+  };
+  report(&mut good);
+  let mut bad = Reader {
+    fails: true
+  };
+  report(&mut bad);
+  return 0;
+}

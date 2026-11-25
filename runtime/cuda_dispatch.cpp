@@ -353,8 +353,13 @@ static cudaError_t device_alloc(void **ptr, size_t bytes) {
    stream of its GPU and records an event. A use of the device memory waits for
    that event: a launch waits on the GPU, and a read, a peer copy or a free
    waits on the host. */
+struct CopyInFlight {
+  cudaEvent_t event;
+  /// The copy stream that the copy went on.
+  cudaStream_t stream;
+};
 static std::mutex copies_mutex;
-static std::unordered_map<void *, cudaEvent_t> copies_in_flight;
+static std::unordered_map<void *, CopyInFlight> copies_in_flight;
 
 /// The copy stream of the current GPU. It does not wait for the legacy default
 /// stream, so a copy runs while a kernel runs.
@@ -375,7 +380,7 @@ static cudaStream_t copy_stream() {
 static cudaEvent_t copy_into(void *ptr) {
   std::lock_guard<std::mutex> lock(copies_mutex);
   auto found = copies_in_flight.find(ptr);
-  return found == copies_in_flight.end() ? nullptr : found->second;
+  return found == copies_in_flight.end() ? nullptr : found->second.event;
 }
 
 /// Makes the work that comes next on `stream` wait for the copy into `ptr`.
@@ -394,7 +399,7 @@ static void finish_copy_into(void *ptr) {
     if (found == copies_in_flight.end()) {
       return;
     }
-    event = found->second;
+    event = found->second.event;
     copies_in_flight.erase(found);
   }
   VX_CUDA_CHECK(cudaEventSynchronize(event));
@@ -405,13 +410,60 @@ static void finish_copy_into(void *ptr) {
 static void forget_ended_copies() {
   std::lock_guard<std::mutex> lock(copies_mutex);
   for (auto it = copies_in_flight.begin(); it != copies_in_flight.end();) {
-    if (cudaEventQuery(it->second) == cudaSuccess) {
-      VX_CUDA_CHECK(cudaEventDestroy(it->second));
+    if (cudaEventQuery(it->second.event) == cudaSuccess) {
+      VX_CUDA_CHECK(cudaEventDestroy(it->second.event));
       it = copies_in_flight.erase(it);
     } else {
       ++it;
     }
   }
+}
+
+/* A `select` waits for the end of a copy through these two calls. The Vx
+   runtime finds them by name when the program runs
+   (stdlib/rust_core/src/ffi/copies.rs). */
+
+/// 1 when no copy into `ptr` may still run.
+extern "C" int vx_backend_copy_ended(void *ptr) {
+  std::lock_guard<std::mutex> lock(copies_mutex);
+  auto found = copies_in_flight.find(ptr);
+  if (found == copies_in_flight.end()) {
+    return 1;
+  }
+  const cudaError_t state = cudaEventQuery(found->second.event);
+  if (state == cudaErrorNotReady) {
+    return 0;
+  }
+  VX_CUDA_CHECK(state);
+  return 1;
+}
+
+namespace {
+struct CopyWake {
+  void *ptr;
+  void (*wake)(const int64_t *);
+};
+} // namespace
+
+/// Runs on a thread of CUDA after the copy, so it calls no CUDA function.
+static void CUDART_CB wake_after_copy(void *data) {
+  auto *w = static_cast<CopyWake *>(data);
+  w->wake(static_cast<const int64_t *>(w->ptr));
+  delete w;
+}
+
+/// Calls `wake(ptr)` once after the copy into `ptr` ended. A function on the
+/// copy stream runs after the copy, because a stream runs its work in order.
+/// Returns at once when no copy into `ptr` runs.
+extern "C" void vx_backend_watch_copy(void *ptr,
+                                      void (*wake)(const int64_t *)) {
+  std::lock_guard<std::mutex> lock(copies_mutex);
+  auto found = copies_in_flight.find(ptr);
+  if (found == copies_in_flight.end()) {
+    return;
+  }
+  VX_CUDA_CHECK(cudaLaunchHostFunc(found->second.stream, wake_after_copy,
+                                   new CopyWake{ptr, wake}));
 }
 
 /* Pinned memory for `transfer_async`. CUDA copies from pageable memory through
@@ -1287,7 +1339,7 @@ void *vx_plugin_alloc_and_transfer_async(size_t bytes, void *host_ptr,
   VX_CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
   VX_CUDA_CHECK(cudaEventRecord(event, stream));
   std::lock_guard<std::mutex> lock(copies_mutex);
-  copies_in_flight[device_ptr] = event;
+  copies_in_flight[device_ptr] = {event, stream};
   return device_ptr;
 }
 

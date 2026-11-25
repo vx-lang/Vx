@@ -11,28 +11,28 @@ import core::num;
 
 extern {
   /// The Rust core behind `String::new`.
-  fn vx_string_new() -> *mut i8;
+  pub fn vx_string_new() -> *mut i8;
   /// The Rust core behind `String::from_c_str`.
-  fn vx_string_from_c_str(ptr : *const i8) -> *mut i8;
+  pub fn vx_string_from_c_str(ptr : *const i8) -> *mut i8;
   /// The Rust core behind `String::push_c_str`.
-  fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
+  pub fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
   /// The Rust core behind `String::len`.
-  fn vx_string_len(ptr : *mut i8) -> i32;
+  pub fn vx_string_len(ptr : *mut i8) -> i32;
   /// The Rust core behind `==` on two strings: 1 when they hold the same bytes.
-  fn vx_string_eq(a : *mut i8, b : *mut i8) -> i32;
+  pub fn vx_string_eq(a : *mut i8, b : *mut i8) -> i32;
   /// Allocate a NUL-terminated copy and hand out its raw pointer. The caller owns it and
   /// releases it with `vx_string_free_c_str`; `String::as_c_str` does not, and leaks.
-  fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
+  pub fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
   /// `vx_string_as_c_str`, but null when the string holds a NUL byte. `std::net` uses it.
-  fn vx_string_try_as_c_str(ptr : *mut i8) -> *const i8;
+  pub fn vx_string_try_as_c_str(ptr : *mut i8) -> *const i8;
   /// Release what `vx_string_as_c_str` or `vx_string_try_as_c_str` returned.
-  fn vx_string_free_c_str(ptr : *const i8) -> i32;
+  pub fn vx_string_free_c_str(ptr : *const i8) -> i32;
   /// The Rust core behind `String::drop`.
-  fn vx_string_drop(ptr : *mut i8) -> i32;
+  pub fn vx_string_drop(ptr : *mut i8) -> i32;
   /// A string of `len` NUL bytes, for `to_string` to overwrite with digits.
-  fn vx_string_with_len(len : i64) -> *mut i8;
+  pub fn vx_string_with_len(len : i64) -> *mut i8;
   /// The bytes of a string made by `vx_string_with_len`, writable.
-  fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8;
+  pub fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8;
 }
 
 /// A growable, owned string, held by the Rust core behind an opaque pointer.
@@ -40,6 +40,8 @@ extern {
 /// Released when it is dropped.
 struct String {
   ptr : *mut i8,
+
+  invariant true,
 }
 
 // The Rust core owns the text, and no method changes it through `&String`.
@@ -48,7 +50,7 @@ unsafe impl Sync for String {}
 
 impl String {
   /// An empty string.
-  fn new ()->String {
+  pub fn new ()->String {
     let ptr = unsafe { vx_string_new() };
     String {
       ptr:
@@ -60,7 +62,7 @@ impl String {
   ///
   /// Unsafe because nothing here checks that `c_str` is a valid pointer to a NUL-terminated
   /// run of bytes. The copy is owned by the new `String`; the argument is not taken.
-  unsafe fn from_c_str(c_str : *const i8) -> String {
+  pub unsafe fn from_c_str(c_str : *const i8) -> String {
     let ptr = unsafe { vx_string_from_c_str(c_str) };
     String {
       ptr:
@@ -68,13 +70,24 @@ impl String {
     }
   }
 
+  /// The string that `ptr` holds, such as one from `vx_string_with_len`.
+  ///
+  /// Unsafe because `ptr` must come from a string function of the Rust core, and no other value
+  /// may own it. The new `String` frees it when it drops.
+  pub unsafe fn from_raw(ptr : *mut i8) -> String {
+    String {
+      ptr:
+      ptr
+    }
+  }
+
   /// Append a NUL-terminated C string, with the same requirement `from_c_str` has.
-  unsafe fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
+  pub unsafe fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
     return unsafe { vx_string_push_c_str(self.ptr, c_str) };
   }
 
   /// The length in bytes, not in characters: this counts UTF-8 code units.
-  fn len(self : *mut String) -> i32 {
+  pub fn len(self : &String) -> i32 {
     return unsafe { vx_string_len(self.ptr) };
   }
 
@@ -84,7 +97,7 @@ impl String {
   /// raw pointer, so every call costs a copy that is never released: the matching
   /// `vx_string_free_c_str` is declared in the extern block and is not wrapped as a method
   /// here. Calling this in a loop grows the process without bound.
-  fn as_c_str(self : *mut String) -> *const i8 {
+  pub fn as_c_str(self : &String) -> *const i8 {
     return unsafe { vx_string_as_c_str(self.ptr) };
   }
 }
@@ -111,7 +124,7 @@ macro_rules stamp_to_string {
   ($t : ident) => {
     impl $t {
       /// This number in decimal, as an owned `String` the caller must `drop`.
-      fn to_string(self : $t) -> String {
+      pub fn to_string(self : $t) -> String {
         let ptr = unsafe { vx_string_with_len(self.decimal_len()) };
         unsafe { self.write_decimal(vx_string_as_mut_ptr(ptr), 0i64) };
         return String {
@@ -136,7 +149,7 @@ stamp_to_string!(u64);
 ///
 /// Unsafe because it walks until it finds one: a pointer to bytes with no NUL runs off the
 /// end. `core::str` replaces this once a string literal carries its length (Vx#532).
-unsafe fn string_length(s: *const i8) -> i32 {
+pub unsafe fn string_length(s: *const i8) -> i32 {
   let mut len: i32 = 0;
   unsafe { loop { if s[len] == 0 { break; } len = len + 1; } }
   return len;
@@ -147,7 +160,7 @@ unsafe fn string_length(s: *const i8) -> i32 {
 ///
 /// The magnitude is the difference between the first bytes that differ, which callers should
 /// not read anything into beyond its sign. Unsafe for the reason `string_length` is.
-unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
+pub unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
   let mut i: i32 = 0;
   let mut result: i32 = 0;
   unsafe {
@@ -169,7 +182,7 @@ unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
 /// `"abc"` is 0 -- there is no way to tell that second case from a genuine zero. A leading `-`
 /// is not a sign, it is a stop. Nothing checks for overflow: a run longer than `i32` holds
 /// wraps. `core::str`'s `parse` replaces it (Vx#532).
-unsafe fn parse_int(s: *const i8) -> i32 {
+pub unsafe fn parse_int(s: *const i8) -> i32 {
   let mut val: i32 = 0;
   let mut i: i32 = 0;
   unsafe {

@@ -139,8 +139,8 @@ fn report(who : *const i8, result : Result<u64, NetError>) -> void {
 }
 
 /// Writes two lines at once, and one more line after a value on `go`.
-fn client(go : Receiver<i64>) -> Result<u64, NetError> {
-  let mut stream = TcpStream::connect(&address("127.0.0.1:41785"))?;
+fn client(network : &Network, go : Receiver<i64>) -> Result<u64, NetError> {
+  let mut stream = TcpStream::connect(network, &address("127.0.0.1:41785"))?;
   let _two = stream.write_all(&bytes("a\nb\n"))?;
   let _go = go.recv();
   pause();
@@ -169,13 +169,13 @@ fn server(listener : TcpListener, go : Sender<i64>) -> Result<u64, NetError> {
   return read_one_line(&mut reader);
 }
 
-fn reader_step() -> void {
+fn reader_step(network : &Network) -> void {
   let (go_tx, go_rx) = channel<i64>(1);
-  match TcpListener::bind(&address("127.0.0.1:41785")) {
+  match TcpListener::bind(network, &address("127.0.0.1:41785")) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
-          report("client", client(go_rx));
+          report("client", client(network, go_rx));
         };
         report("server", server(listener, go_tx));
       };
@@ -186,9 +186,10 @@ fn reader_step() -> void {
   }
 }
 
-fn main() -> i32 {
+fn main(root : Root) -> i32 {
+  let network = &root.network;
   semaphore_step();
   interval_step();
-  reader_step();
+  reader_step(network);
   return 0;
 }

@@ -156,6 +156,6 @@ enum Infallible {
 }
 
 /// Returns its argument. Useful where a function is wanted and nothing should happen.
-fn identity<T>(x : T) -> T {
+pub fn identity<T>(x : T) -> T {
   return x;
 }
