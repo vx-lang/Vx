@@ -1,5 +1,13 @@
-// Every keyword of the Vx lexer must also be in the VS Code mode and in the Emacs mode.
-// If this test fails, add the listed words to the mode that does not have them.
+//===- editor_modes_have_lexer_keywords.rs - modes follow the lexer -*- Rust -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//! Every keyword of the Vx lexer must also be in the VS Code mode and in the Emacs mode.
+//! If this test fails, add the listed words to the mode that does not have them.
 
 use regex::Regex;
 use std::collections::BTreeSet;
