@@ -1895,11 +1895,15 @@ impl<'a> TypeChecker<'a> {
         arg_ty: &Type,
         span: &crate::syntax::Span,
     ) -> bool {
-        let Type::Struct(closure, _) = arg_ty else {
-            return false;
-        };
-        let Some((closure_params, _)) = self.mono.closure_signatures.get(closure) else {
-            return false;
+        // A closure literal is a `Closure_N` struct, or a `Type::Closure` when the callee wrote
+        // its parameter as a closure type such as `| i64 | -> i64`.
+        let closure_params = match arg_ty {
+            Type::Closure(params, _) => params,
+            Type::Struct(closure, _) => match self.mono.closure_signatures.get(closure) {
+                Some((params, _)) => params,
+                None => return false,
+            },
+            _ => return false,
         };
         let Some(untyped) = closure_params.iter().position(|t| *t == Type::Unknown) else {
             return false;
