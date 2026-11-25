@@ -13,9 +13,10 @@
 // value by -1 is the one division that overflows. The checked forms give nothing there,
 // and the wrapping forms give the smallest value and 0. The smallest value by -2 and the
 // largest value by -1 must still give an answer, so a test of only one operand fails.
-// A zero divisor gives nothing in the checked forms.
+// The smallest value is also used as a divisor. A zero divisor gives nothing in the
+// checked forms.
 //
-// EXPECT: i32 div=-4 -3 4 rem=1 1 1 zero=1 1 min_by_m1=1 1 min_by_m2=1073741824 max_by_m1=-2147483647 0 min_by_3=-715827883 1 | wrap min_by_m1=-2147483648 0 neg=-4 1 min_by_3=-715827883 1 max_by_m1=-2147483647 0 | i8 1 1 -128 0 -43 1 -127 | i16 1 -32768 0 -4682 6 | i64 1 1 -9223372036854775808 0 -922337203685477581 2 | u8 1 1 36 3 255 0 | u32 1 1 1431655765 0 | u64 1 9223372036854775807 1 5 | usize 1 1 3 2 4 7
+// EXPECT: i32 div=-4 -3 4 rem=1 1 1 zero=1 1 min_by_m1=1 1 min_by_m2=1073741824 max_by_m1=-2147483647 0 min_by_3=-715827883 1 by_min=1 2147483643 0 | wrap min_by_m1=-2147483648 0 neg=-4 1 4 min_by_3=-715827883 1 max_by_m1=-2147483647 0 | i8 1 1 -128 0 -43 1 -127 | i16 1 -32768 0 -4682 6 | i64 1 1 -9223372036854775808 0 -922337203685477581 2 | u8 1 1 36 3 255 0 | u16 1 255 255 | u32 1 1 1431655765 0 | u64 1 9223372036854775807 1 5 | usize 1 1 3 2 4 7
 import core::num;
 import core::option;
 
@@ -33,6 +34,7 @@ fn main() -> i32 {
   let hi : i32 = 2147483647;
   let seven : i32 = 7;
   let minus_seven : i32 = -7;
+  let minus_five : i32 = -5;
 
   // Checked, with each sign of each operand.
   print!("i32 div=");
@@ -70,6 +72,14 @@ fn main() -> i32 {
   print!(" ");
   print(lo.checked_rem_euclid(3).unwrap_or(-99));
 
+  // Checked, with the smallest value as the divisor.
+  print!(" by_min=");
+  print(minus_five.checked_div_euclid(lo).unwrap_or(-99));
+  print!(" ");
+  print(minus_five.checked_rem_euclid(lo).unwrap_or(-99));
+  print!(" ");
+  print(lo.checked_rem_euclid(lo).unwrap_or(-99));
+
   // Wrapping.
   print!(" | wrap min_by_m1=");
   print(lo.wrapping_div_euclid(-1));
@@ -79,6 +89,8 @@ fn main() -> i32 {
   print(minus_seven.wrapping_div_euclid(2));
   print!(" ");
   print(minus_seven.wrapping_rem_euclid(-2));
+  print!(" ");
+  print(minus_seven.wrapping_div_euclid(-2));
   print!(" min_by_3=");
   print(lo.wrapping_div_euclid(3));
   print!(" ");
@@ -146,6 +158,14 @@ fn main() -> i32 {
   print(top8.wrapping_div_euclid(1));
   print!(" ");
   print(top8.wrapping_rem_euclid(1));
+
+  let top16 : u16 = 65535;
+  print!(" | u16 ");
+  show(top16.checked_div_euclid(0).is_none());
+  print!(" ");
+  print(top16.checked_rem_euclid(256).unwrap_or(0));
+  print!(" ");
+  print(top16.wrapping_div_euclid(256));
 
   let top32 : u32 = 4294967295;
   print!(" | u32 ");

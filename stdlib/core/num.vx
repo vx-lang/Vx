@@ -789,7 +789,7 @@ macro_rules stamp_unsigned_int {
         return Option<$t>::Some(self / rhs);
       }
 
-      /// Refused on a zero divisor, as `checked_div_euclid` is.
+      /// Nothing on a zero divisor, as for `checked_div_euclid`.
       pub fn checked_rem_euclid(self : $t, rhs : $t) -> Option<$t> {
         if rhs == (0 as $t) {
           return Option<$t>::None();
@@ -797,12 +797,12 @@ macro_rules stamp_unsigned_int {
         return Option<$t>::Some(self % rhs);
       }
 
-      /// Plain division, since an unsigned quotient never wraps. Refused on a zero divisor.
+      /// Plain division, since an unsigned quotient never wraps. A zero divisor stops the program.
       pub fn wrapping_div_euclid(self : $t, rhs : $t) -> $t {
         return self / rhs;
       }
 
-      /// Plain remainder, since an unsigned remainder never wraps. Refused on a zero divisor.
+      /// Plain remainder, since an unsigned remainder never wraps. A zero divisor stops the program.
       pub fn wrapping_rem_euclid(self : $t, rhs : $t) -> $t {
         return self % rhs;
       }
@@ -1289,7 +1289,7 @@ impl usize {
     return Option<usize>::Some(self / rhs);
   }
 
-  /// Nothing on a zero divisor, as `checked_div_euclid`.
+  /// Nothing on a zero divisor, as for `checked_div_euclid`.
   pub fn checked_rem_euclid(self : usize, rhs : usize) -> Option<usize> {
     if rhs == 0 {
       return Option<usize>::None();
@@ -1297,12 +1297,12 @@ impl usize {
     return Option<usize>::Some(self % rhs);
   }
 
-  /// Plain division, since a `usize` quotient never wraps. Refused on a zero divisor.
+  /// Plain division, since a `usize` quotient never wraps. A zero divisor stops the program.
   pub fn wrapping_div_euclid(self : usize, rhs : usize) -> usize {
     return self / rhs;
   }
 
-  /// Plain remainder, since a `usize` remainder never wraps. Refused on a zero divisor.
+  /// Plain remainder, since a `usize` remainder never wraps. A zero divisor stops the program.
   pub fn wrapping_rem_euclid(self : usize, rhs : usize) -> usize {
     return self % rhs;
   }
