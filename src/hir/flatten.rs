@@ -3721,11 +3721,13 @@ impl<'r> Lowerer<'r> {
         // An `across` loop starts at its own pass and steps over the passes of the others.
         let (start, step) = match across {
             Some((offset, step)) => {
-                if elem != ElementType::I32 {
+                if elem.int_bits().is_none() || elem == ElementType::Bool {
                     return Err(Decline::Unsupported {
-                        what: "an `across` loop over a range that is not `i32`",
+                        what: "an `across` loop over a range that is not of integers",
                     });
                 }
+                let offset = self.widen_index(offset, &elem);
+                let step = self.widen_index(step, &elem);
                 let first = self.emit_value(Opcode::Add, start.reg, offset.reg, elem.clone(), 0);
                 (first, Some(step))
             }
@@ -4108,11 +4110,7 @@ impl<'r> Lowerer<'r> {
                     }
                 };
                 let size = self.read_rank0(size);
-                if !matches!(size.ty, LoweredTy::Scalar(ElementType::I32)) {
-                    return Err(Decline::Unsupported {
-                        what: "an `across` loop of blocks whose size is not `i32`",
-                    });
-                }
+                let size = self.launch_count(size, f.span.line)?;
                 shape.push((axis, size));
                 axis += 1;
                 level = Some(f.body.as_slice());
