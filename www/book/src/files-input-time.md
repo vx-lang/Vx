@@ -131,6 +131,20 @@ folder, and no others. For example, a model server can give the code that loads 
 `Folder`, and give the code that reads requests no right at all
 (`a_folder_right_reads_only_the_files_inside_its_folder.vx`).
 
+`file.map()` gives the whole file in memory, read-only, as a `Mapping`. It copies nothing: the
+system reads each part of the file when the program first reads it. So a program can map a file
+of many gigabytes and read only the parts that it needs.
+
+- `mapping.len()` is the size of the file in bytes.
+- `mapping.byte(i)` is byte `i`. It stops the program when `i` is outside the file.
+- `mapping.as_ptr()` is the address of the first byte, for code that reads through raw
+  pointers. An example is a tensor over the weights of a model.
+
+A dropped `Mapping` unmaps the file. A `Mapping` stays valid after its `File` closes. A file open
+only for writing gives `FileError::PermissionDenied` (`a_file_mapped_into_memory.vx`). When
+another program shortens the file while it is mapped, a read past the new end stops the program
+with the signal SIGBUS.
+
 ## Standard input and output
 
 `std::io` has three functions. `stdin_read(buffer, len)` reads up to `len` bytes of standard input

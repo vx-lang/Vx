@@ -19,6 +19,7 @@ instantiate_file_ffi!(crate::ffi::io::off_the_worker);
 instantiate_stdio_ffi!();
 
 pub mod folder;
+pub mod map;
 
 /// While a task runs, each thread keeps what it prints until a newline, and then writes the
 /// whole line at once. So the lines of tasks that print at the same time do not mix. With no
