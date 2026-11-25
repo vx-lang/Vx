@@ -1012,8 +1012,8 @@ impl<'a> Parser<'a> {
                         // A Rust programmer writes `0 => 7,`. The statement stops at the comma
                         // because it wants a ';', which hides that the body should be a block.
                         return Err(match error {
-                            ParserError::UnexpectedToken { found, .. }
-                                if found.kind == TokenType::Comma =>
+                            ParserError::UnexpectedToken { found, expected }
+                                if found.kind == TokenType::Comma && expected == "Expected ';'" =>
                             {
                                 self.error_at(
                                     &body_start,
