@@ -13,7 +13,7 @@ import std::vec;
 import graph::core;
 
 // (6) Number of connected components (treating edges as undirected), via BFS floods.
-fn connected_components(g: &Graph) -> i32 {
+pub fn connected_components(g: &Graph) -> i32 {
   let n: i32 = g.node_count();
   let mut visited: Vec<i32> = Vec<i32>::with_capacity(n);
   for k in 0..n {
@@ -49,7 +49,7 @@ fn connected_components(g: &Graph) -> i32 {
 
 // (7) Topological sort (Kahn's algorithm): returns 1 if a full topological order
 // exists (the directed graph is acyclic), else 0.
-fn is_dag(g: &Graph) -> i32 {
+pub fn is_dag(g: &Graph) -> i32 {
   let n: i32 = g.node_count();
   let mut indeg: Vec<i32> = Vec<i32>::with_capacity(n);
   for k in 0..n {
@@ -94,7 +94,7 @@ fn is_dag(g: &Graph) -> i32 {
 }
 
 // (8) Directed cycle detection: the complement of `is_dag`.
-fn has_cycle(g: &Graph) -> i32 {
+pub fn has_cycle(g: &Graph) -> i32 {
   if is_dag(g) == 0 {
     return 1;
   }
@@ -103,7 +103,7 @@ fn has_cycle(g: &Graph) -> i32 {
 
 // (9) Prim's minimum spanning tree: total weight of the MST of the (undirected,
 // connected) graph, O(n^2).
-fn prim_mst_weight(g: &Graph) -> i32 {
+pub fn prim_mst_weight(g: &Graph) -> i32 {
   let n: i32 = g.node_count();
   let inf: i32 = graph_inf();
   let mut inmst: Vec<i32> = Vec<i32>::with_capacity(n);
@@ -147,7 +147,7 @@ fn prim_mst_weight(g: &Graph) -> i32 {
 
 // (10) Transitive closure: number of ordered pairs (u, v), u != v, with a
 // directed path from u to v (Warshall's reachability).
-fn reachable_pair_count(g: &Graph) -> i32 {
+pub fn reachable_pair_count(g: &Graph) -> i32 {
   let n: i32 = g.node_count();
   let mut r: Vec<i32> = Vec<i32>::with_capacity(n * n);
   for i in 0..n {

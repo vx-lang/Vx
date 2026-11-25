@@ -9,6 +9,6 @@
 
 import core::result;
 
-fn pass_through<T, E>(r: Result<T, E>) -> Result<T, E> {
+pub fn pass_through<T, E>(r: Result<T, E>) -> Result<T, E> {
   return r;
 }

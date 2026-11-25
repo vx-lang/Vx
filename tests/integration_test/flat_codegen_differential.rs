@@ -2579,8 +2579,8 @@ fn flat_matches_ast_scalar_casts() {
 fn same_named_pointer_targets_use_their_own_module_layout(#[case] jobs: Option<usize>) {
     let directory = tempfile::tempdir().unwrap();
     for (name, source) in [
-        ("left.vx", "struct Node { count: i32, value: i64 } struct Left { node: *const Node } fn read_left() -> i64 { let node = Node { count: 1, value: 42 }; let holder = Left { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
-        ("right.vx", "struct Node { count: i32, value: i32 } struct Right { node: *const Node } fn read_right() -> i32 { let node = Node { count: 1, value: 7 }; let holder = Right { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
+        ("left.vx", "struct Node { count: i32, value: i64 } struct Left { node: *const Node } pub fn read_left() -> i64 { let node = Node { count: 1, value: 42 }; let holder = Left { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
+        ("right.vx", "struct Node { count: i32, value: i32 } struct Right { node: *const Node } pub fn read_right() -> i32 { let node = Node { count: 1, value: 7 }; let holder = Right { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
         ("app.vx", "import left; import right; fn main() -> i32 { print(read_left()); print(\" \"); print(read_right()); return 0; }"),
     ] {
         std::fs::write(directory.path().join(name), source).unwrap();
@@ -2624,7 +2624,7 @@ struct Fields { marker: Empty, number: i32 }
 fn read_number(fields: &Fields) -> i32 { return fields.number; }
 fn write_number(fields: &mut Fields, number: i32) -> void { fields.number = number; }
 fn number_address(fields: &Fields) -> &i32 { return &fields.number; }
-fn answer() -> i32 {
+pub fn answer() -> i32 {
     let mut fields = Fields { marker: Empty {}, number: 7 };
     let initial = read_number(&fields);
     write_number(&mut fields, initial + 35);
@@ -2827,11 +2827,12 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .clone();
     let synth = Function {
         is_unsafe: false,
-        is_pub: false,
+        visibility: vxc::gid::Visibility::Private,
         exported: false,
         name: body.name.clone(),
         span: vxc::syntax::Span::default(),
         file: None,
+        package: None,
         generics: vec![],
         params: body
             .params
@@ -4272,8 +4273,8 @@ fn flat_reference_returning_call_aliases_the_mutated_local() {
 fn pipeline_emits_mlir_that_matches_the_ast_oracle() {
     use std::io::Write;
 
-    let a = "fn add(x: i32, y: i32) -> i32 { return x + y; }\n\
-             fn tri(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }\n";
+    let a = "pub fn add(x: i32, y: i32) -> i32 { return x + y; }\n\
+             pub fn tri(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }\n";
     let b = "fn twice(n: i32) -> i32 { return n * 2; }\n\
              fn main() -> i32 { return add(twice(tri(5)), 4); }\n";
 
@@ -4341,8 +4342,8 @@ fn pipeline_llvm(tag: &str, files: &[(&str, &str)]) -> Option<String> {
 fn pipeline_emits_mlir_for_a_call_to_a_generic_method() {
     let a = "struct Holder<T> { v : T, }\n\
              impl<T> Holder<T> {\n\
-               fn bump(self : &mut Holder<T>, x : T) -> i32 { self.v = x; return 1; }\n\
-               fn get(self : &Holder<T>) -> T { return self.v; }\n\
+               pub fn bump(self : &mut Holder<T>, x : T) -> i32 { self.v = x; return 1; }\n\
+               pub fn get(self : &Holder<T>) -> T { return self.v; }\n\
              }\n";
     let b = "fn main() -> i32 {\n\
                let mut h = Holder<i32> { v : 0, };\n\
