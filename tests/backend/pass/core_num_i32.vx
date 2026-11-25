@@ -12,8 +12,8 @@
 // The negative cases carry most of the weight, because they are where a signed right
 // shift differs from a logical one. `count_ones(-1)` is 32 only if the hardware
 // instruction is used; a loop shifting right would sign-extend and never finish.
-// `swap_bytes` and `rotate_left` mask each shifted piece for the same reason, and their
-// entries here start from values whose top bit is set.
+// `rotate_left` masks each shifted piece for the same reason, and its entries here start
+// from values whose top bit is set. `swap_bytes` has no shift, but it gets the same inputs.
 //
 // `rem_euclid(-7, 4)` is 1 where `-7 % 4` is -3: that pair is the whole reason the
 // method exists, so both appear.

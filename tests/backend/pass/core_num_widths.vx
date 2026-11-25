@@ -13,8 +13,8 @@
 // `leading_zeros(1)` is 7, 15 and 63, `reverse_bits(1)` is the smallest value of each
 // width, and `swap_bytes(1)` is 1 at one byte, 256 at two and 1 << 56 at eight.
 //
-// `swap_bytes` at `i8` is the identity, which is the case worth having: the loop runs
-// once with no shift, and the mask handed to the macro is -1 rather than 255.
+// `swap_bytes` at `i8` is the identity, which is the case worth having: one byte has no
+// pair of bytes to swap, so it does not use the LLVM byte swap instruction.
 import core::num;
 import core::option;
 
