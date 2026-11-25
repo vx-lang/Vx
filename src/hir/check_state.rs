@@ -121,6 +121,10 @@ pub struct ConstEvalState {
     /// Set just before checking a `comptime` block whose `return` gives its value: the whole
     /// body of a closure, or the value of a `return`.
     pub comptime_return_is_value: bool,
+    /// How many branches around the statement being checked may not run: an `if` branch whose
+    /// condition is not known at compile time, or an arm of a `match` with more arms. A false
+    /// assert there stops the program only on some inputs, so it stays a run-time check.
+    pub uncertain_branch_depth: u32,
 }
 
 /// Provenance carried by a value while a `comptime` block is interpreted.
@@ -725,6 +729,7 @@ impl Default for ConstEvalState {
             comptime_depth: 0,
             comptime_return_is_value: false,
             closure_body_depth: 0,
+            uncertain_branch_depth: 0,
         }
     }
 }

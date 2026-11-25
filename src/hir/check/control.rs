@@ -611,7 +611,10 @@ impl<'a> TypeChecker<'a> {
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
             self.value_unused = unused;
+            let uncertain = (taken != Some(true)) as u32;
+            self.consteval.uncertain_branch_depth += uncertain;
             then_ty = self.check_expr_block(&mut if_expr.then_block, None, consume);
+            self.consteval.uncertain_branch_depth -= uncertain;
         }
         self.pop_scope();
         if named {
@@ -640,7 +643,10 @@ impl<'a> TypeChecker<'a> {
                 self.push_releasing_scope();
                 if !self.speculating {
                     self.value_unused = unused;
+                    let uncertain = (taken != Some(false)) as u32;
+                    self.consteval.uncertain_branch_depth += uncertain;
                     else_ty = self.check_expr_block(else_b, None, consume);
+                    self.consteval.uncertain_branch_depth -= uncertain;
                 }
                 self.pop_scope();
                 if named {
@@ -1394,6 +1400,7 @@ impl<'a> TypeChecker<'a> {
                 let matched_number = (integer && crate::hir::prover::is_modelled(match_expr))
                     .then(|| (**match_expr).clone());
                 let mut literals_above: Vec<Expr> = Vec::new();
+                let uncertain = (arms.len() > 1) as u32;
                 for (i, arm) in arms.iter_mut().enumerate() {
                     let literal_arm = self.expected_type.is_none()
                         && unsuffixed_number_tail(&mut arm.body).is_some_and(|n| n.ty.is_none());
@@ -1475,7 +1482,10 @@ impl<'a> TypeChecker<'a> {
 
                     let arm_ty = if !self.speculating {
                         self.value_unused = unused;
-                        self.check_expr_block(&mut arm.body, None, consume)
+                        self.consteval.uncertain_branch_depth += uncertain;
+                        let ty = self.check_expr_block(&mut arm.body, None, consume);
+                        self.consteval.uncertain_branch_depth -= uncertain;
+                        ty
                     } else {
                         Type::Struct("void".into(), None)
                     };
