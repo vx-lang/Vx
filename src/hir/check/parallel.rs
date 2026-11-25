@@ -1043,6 +1043,18 @@ fn parallel_int_literal(e: &Expr) -> Option<i64> {
     n.value.parse::<i64>().ok()
 }
 
+/// `t.$extent[i]`, the read that the checker makes of `t.len()` and `t.extent(i)`: the tensor
+/// `t` and the axis `i`.
+pub(crate) fn extent_read(e: &Expr) -> Option<(&Expr, &Expr)> {
+    let Expr::IndexAccess(ix) = e else {
+        return None;
+    };
+    let Expr::MemberAccess(m) = &*ix.base else {
+        return None;
+    };
+    (m.member.as_ref() == "$extent").then_some((&*m.base, &*ix.index))
+}
+
 /// Scalar math the walk may trust. By the time `parallel_outer_for` runs, the checker has
 /// rewritten every method call into a mangled free call — `(x).exp()` arrives as
 /// `f32$exp(x)` — so a syntactic walk meets no `MethodCall`, only calls whose names carry the
@@ -1933,6 +1945,20 @@ impl ParallelScan {
     /// A read-position expression: allowed unless it could hide a write (a call, a print, a
     /// transfer) or is a construct this walk has no sound story for.
     fn expr(&mut self, e: &Expr) -> bool {
+        // `t.len()` and `t.extent(i)` read the shape of `t`, and no pass writes a shape.
+        if let Some((of, axis)) = extent_read(e) {
+            let mut root = of;
+            let mut indices = vec![axis];
+            while let Expr::IndexAccess(step) = root {
+                indices.push(&*step.index);
+                root = &step.base;
+            }
+            let Expr::Identifier(id) = root else {
+                return self.expr(of) && self.expr(axis);
+            };
+            self.note(&id.name);
+            return self.read_ok(&id.name, id.span) && indices.iter().all(|i| self.expr(i));
+        }
         match e {
             // A name read whole may read every row of it.
             Expr::Identifier(id) => {
