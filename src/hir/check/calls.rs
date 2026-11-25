@@ -2097,6 +2097,20 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A sentence that names the import a common standard type needs, or an empty string when
+    /// the type is not in the table or the program defines a type with that name.
+    pub(crate) fn missing_import_hint(&self, type_name: &str) -> String {
+        let defined =
+            self.env.structs.contains_key(type_name) || self.env.enums.contains_key(type_name);
+        match standard_type_module(type_name) {
+            Some(module) if !defined => format!(
+                " '{}' is in '{}'. Add `import {};`.",
+                type_name, module, module
+            ),
+            _ => String::new(),
+        }
+    }
+
     /// Resolve and instantiate a `Struct::method(...)` static call (an inherent-impl method
     /// named through its type). Parses any explicit type args on the struct or method, finds the
     /// matching `_inherent` impl method, deduces what those left open from the arguments and
@@ -2430,20 +2444,11 @@ impl<'a> TypeChecker<'a> {
                         "'{}' has no impl of '{}' with a method '{}'.",
                         struct_name, t, method_name
                     )),
-                    None => {
-                        let mut message = format!("Undefined static method '{}'.", resolved_name);
-                        let defined = self.env.structs.contains_key(struct_name.as_str())
-                            || self.env.enums.contains_key(struct_name.as_str());
-                        if let (false, Some(module)) =
-                            (defined, standard_type_module(struct_name.as_str()))
-                        {
-                            message.push_str(&format!(
-                                " '{}' is in '{}'; add `import {};`.",
-                                struct_name, module, module
-                            ));
-                        }
-                        self.errors.push(message)
-                    }
+                    None => self.errors.push(format!(
+                        "Undefined static method '{}'.{}",
+                        resolved_name,
+                        self.missing_import_hint(&struct_name)
+                    )),
                 }
             }
             Type::Unknown

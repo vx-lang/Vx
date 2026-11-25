@@ -9,7 +9,7 @@
 // error that names the import.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Undefined static method 'Option<i64>::Some'. 'Option' is in 'core::option'; add `import core::option;`.
+// CHECK: Undefined static method 'Option<i64>::Some'. 'Option' is in 'core::option'. Add `import core::option;`.
 
 fn main() -> i32 {
   let o = Option<i64>::Some(3i64);
