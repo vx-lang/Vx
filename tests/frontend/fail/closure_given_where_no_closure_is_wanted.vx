@@ -1,0 +1,29 @@
+//===- closure_given_where_no_closure_is_wanted.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not="has no type"
+//
+// A closure with an untyped parameter is passed where the callee wants an `i64`, and where it
+// wants a closure with one parameter instead of two. A type on the closure parameter does not
+// fix either call, so no line of the output may say that a parameter has no type.
+// CHECK: Type mismatch in argument 1 for function 'takes_number'. Expected i64, got Closure_
+// CHECK: Type mismatch in argument 1 for function 'takes_one'. Expected Closure1<i64, i64>, got Closure_
+import core::ops;
+
+fn takes_number(n : i64) -> i64 {
+  return n;
+}
+
+fn takes_one(f : Closure1<i64, i64>) -> i64 {
+  return 0i64;
+}
+
+fn main() -> i32 {
+  let _a = takes_number(|x| x);
+  let _b = takes_one(|x, y| x);
+  return 0;
+}
