@@ -1,0 +1,91 @@
+//===- a_match_can_give_a_struct_with_an_option_field.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `?`, a `match` and an `if` can give a value of a struct that has an `Option` field. The
+// value comes from the `Ok` of a `Result`, from a call, or from a struct literal. The flat code
+// generator compiles each function, so no "declined" line is printed.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}question mark 7{{$}}
+// CHECK: {{^}}match of calls 1 2{{$}}
+// CHECK: {{^}}match of literals 5 6{{$}}
+// CHECK: {{^}}if of calls 3 4{{$}}
+
+import std::vec;
+
+struct Output {
+  fd : i32,
+  extra : Option<i32>,
+}
+
+fn make(n : i32) -> Output {
+  return Output {
+    fd : n, extra : Option<i32>::None
+  };
+}
+
+fn open(n : i32) -> Result<Output, i32> {
+  if n < 0 {
+    return Result<Output, i32>::Err(1);
+  }
+  return Result<Output, i32>::Ok(make(n));
+}
+
+fn question_mark(n : i32) -> Result<i32, i32> {
+  let a = open(n)?;
+  let b = open(n + 1)?;
+  return Result<i32, i32>::Ok(a.fd + b.fd);
+}
+
+fn match_of_calls(c : bool) -> i32 {
+  let o = match c {
+    true => {
+      make(1)
+    }
+    false => {
+      make(2)
+    }
+  };
+  return o.fd;
+}
+
+fn match_of_literals(c : bool) -> i32 {
+  let o = match c {
+    true => {
+      Output {
+        fd : 5, extra : Option<i32>::None
+      }
+    }
+    false => {
+      Output {
+        fd : 6, extra : Option<i32>::Some(1)
+      }
+    }
+  };
+  return o.fd;
+}
+
+fn if_of_calls(c : bool) -> i32 {
+  let o = if c {
+    make(3)
+  } else {
+    make(4)
+  };
+  return o.fd;
+}
+
+fn main() -> i32 {
+  match question_mark(3) {
+    Result::Ok(v) => println!("question mark {}", v),
+    Result::Err(e) => println!("question mark failed {}", e),
+  }
+  println!("match of calls {} {}", match_of_calls(true), match_of_calls(false));
+  println!("match of literals {} {}", match_of_literals(true), match_of_literals(false));
+  println!("if of calls {} {}", if_of_calls(true), if_of_calls(false));
+  return 0;
+}
