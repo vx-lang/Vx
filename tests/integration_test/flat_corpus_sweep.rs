@@ -239,6 +239,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/splits_read_from_gpu_memory.vx",           // needs --machine
         "optimizations/pass/a_kernel_tells_ptxas_its_block_size.vx",   // needs --machine
         "optimizations/pass/book_gpu_exact_and_fast_tanh.vx",          // needs --machine
+        "optimizations/pass/fast_tanh_is_one_instruction_on_sm_75_and_newer.vx", // needs --machine
         "optimizations/pass/a_lane_loop_as_wide_as_its_block_runs_once.vx", // needs --machine
         "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
         "optimizations/pass/a_tensor_that_atomics_change_is_not_readonly.vx", // needs --machine

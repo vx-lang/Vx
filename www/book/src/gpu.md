@@ -351,8 +351,8 @@ itself finds `"waits_for_earlier_kernels": true` in the manifest of each kernel 
 ## Math functions in a kernel
 
 `x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel
-where a small difference in the last bits does not matter, `x.fast_exp()` and `x.fast_tanh()` use
-a few `f32` instructions. [Exact and fast math](exact-and-fast-math.md) explains when to use which.
+where a small error does not matter, `x.fast_exp()` and `x.fast_tanh()` use a few `f32`
+instructions. [Exact and fast math](exact-and-fast-math.md) explains when to use which.
 
 ## What runs where
 

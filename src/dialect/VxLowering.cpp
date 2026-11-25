@@ -11267,6 +11267,28 @@ static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
     }
   }
 
+  // `fast_tanh` is `math.tanh`, the target's own tanh, which promises only an
+  // approximate result. The exact `tanh` is Vx code and has no `math.tanh`. On
+  // `sm_75` and newer, an `f32` one becomes the single instruction
+  // `tanh.approx.f32`, which NVPTX selects for `llvm.tanh` with `afn`. An older
+  // chip has no such instruction, so it keeps libdevice's `__nv_tanhf`. NVPTX
+  // cannot select `llvm.tanh` without `afn` or for a type other than `f32`.
+  if (chipNumber(attach.chip) >= 75) {
+    SmallVector<math::TanhOp> tanhs;
+    device->walk([&](math::TanhOp op) {
+      if (op.getOperand().getType().isF32())
+        tanhs.push_back(op);
+    });
+    for (math::TanhOp op : tanhs) {
+      OpBuilder b(op);
+      Value approx = b.create<LLVM::TanhOp>(
+          op.getLoc(), op.getOperand(),
+          LLVM::FastmathFlagsAttr::get(context, LLVM::FastmathFlags::afn));
+      op.getResult().replaceAllUsesWith(approx);
+      op.erase();
+    }
+  }
+
   if (failed(pm.run(*device))) {
     error = "the NVPTX pipeline failed";
     return {};

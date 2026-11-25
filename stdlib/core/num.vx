@@ -1845,7 +1845,9 @@ macro_rules stamp_float {
         };
       }
 
-      /// The hyperbolic tangent, by the target's own `tanh`, as `fast_exp` is to `exp`.
+      /// The hyperbolic tangent, by the target's own `tanh`, as `fast_exp` is to `exp`. On an
+      /// NVIDIA GPU of `sm_75` or newer, for `f32` it is the instruction `tanh.approx.f32`,
+      /// with a relative error of at most 2^-11.
       pub fn fast_tanh(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.tanh %a : $t
