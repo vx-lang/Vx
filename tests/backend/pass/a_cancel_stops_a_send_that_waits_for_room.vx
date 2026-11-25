@@ -42,9 +42,11 @@ fn send_two(tx : Sender<i64>) -> void {
   }
 }
 
-// Wait until the second `send` has its place. It reads the count of sends inside the channel.
+// Wait until the second `send` has its place. It reads the count of sends inside the channel,
+// through the raw pointer to the words of the channel.
 fn wait_for_two_sends(rx : &Receiver<i64>) -> void {
-  while word(rx.words, SENDS).load(AtomicOrdering::SeqCst) < 2 {
+  let sends = unsafe { &rx.words[SENDS] };
+  while sends.load(AtomicOrdering::SeqCst) < 2 {
     sleep(Duration::from_millis(1));
   }
 }
