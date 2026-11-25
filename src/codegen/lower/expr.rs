@@ -391,6 +391,43 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
     ) -> Self::Output {
         let BorrowExpr { expr, .. } = self;
         if let Expr::Identifier(id) = &**expr {
+            // `&add_one`, a function by its name: a slot holds the function's address, so that
+            // `*f` gives the function as for a `fn` variable.
+            if !gen.env.contains_key(&*id.name) && gen.functions.contains_key(&*id.name) {
+                let (fn_ptr, ptr_ty, block) = gen.generate_expr(expr, block)?;
+                let i32_ty = gen.i32_ty;
+                let c1 = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.mlir.constant", gen.loc())
+                            .add_results(&[i32_ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                IntegerAttribute::new(i32_ty, 1).into(),
+                            )])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                let slot = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.alloca", gen.loc())
+                            .add_operands(&[c1])
+                            .add_results(&[ptr_ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "elem_type"),
+                                TypeAttribute::new(ptr_ty).into(),
+                            )])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                block.append_operation(
+                    OperationBuilder::new("llvm.store", gen.loc())
+                        .add_operands(&[fn_ptr, slot])
+                        .build()?,
+                );
+                return Ok((slot, ptr_ty, block));
+            }
             if gen.allocs.contains(&*id.name) {
                 if let Some((val, val_ty)) = gen.env.get(&*id.name) {
                     let ptr_ty = gen.ptr_ty;
@@ -4067,7 +4104,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             name,
             args,
             type_args,
-            span: _,
             ..
         } = self;
         if matches!(name.as_ref(), "Verified" | "Distinct" | "DisjointRanges") {
@@ -4161,7 +4197,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 // A shape with a run-time extent is not in the type, so it stays where it was
                 // written; a static one is rebuilt from the type as the one array argument.
                 Some(syntax::Type::Tensor(el, dims, _))
-                    if dims.iter().any(|d| matches!(d, syntax::Dim::Dyn)) =>
+                    if dims.iter().any(|d| matches!(d, syntax::Dim::Dyn(_))) =>
                 {
                     (syntax::Type::Scalar(el.clone()), args.to_vec())
                 }
@@ -4961,101 +4997,98 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
         } = self;
 
         let (callee_val, callee_ty, block) = gen.generate_expr(callee, block)?;
+        // The checker gives the type of the callee: a closure value, which is a pair of its
+        // environment and its function, or a plain function.
+        let target_func_ty = target_func_ty
+            .as_ref()
+            .expect("IndirectCallExpr MLIR lowering needs explicit target_func_ty from Sema");
+        let (func_args, ret, is_closure) = match target_func_ty {
+            syntax::Type::Closure(func_args, ret) => (func_args, ret, true),
+            syntax::Type::Function(func_args, ret, _) => (func_args, ret, false),
+            other => panic!("Unsupported callee type for indirect call: {other}"),
+        };
+        let pair = callee_ty.to_string() == "!llvm.struct<(ptr, ptr)>";
+        assert_eq!(
+            pair, is_closure,
+            "an indirect call of a closure takes a pair, and of a function a pointer: {callee_ty}"
+        );
 
-        if callee_ty.to_string() == "!llvm.struct<(ptr, ptr)>" {
-            // Extract env_ptr
-            let extract_env_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
+        let extract = |block: melior::ir::BlockRef<'c, 'c>,
+                       position: i64|
+         -> Result<Value<'c, 'c>, LowerError> {
+            let op = OperationBuilder::new("llvm.extractvalue", gen.loc())
                 .add_operands(&[callee_val])
                 .add_attributes(&[(
                     Identifier::new(gen.context, "position"),
-                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[position])
+                        .into(),
                 )])
                 .add_results(&[gen.ptr_ty])
                 .build()?;
-            let extract_env_ref = block.append_operation(extract_env_op);
-            let env_ptr = extract_env_ref.result(0)?.into();
-
-            // Extract func_ptr
-            let extract_func_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
-                .add_operands(&[callee_val])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "position"),
-                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
-                )])
-                .add_results(&[gen.ptr_ty])
-                .build()?;
-            let extract_func_ref = block.append_operation(extract_func_op);
-            let mut actual_ptr_val = extract_func_ref.result(0)?.into();
-
-            let mut arg_vals = Vec::new();
-            let mut current_b = block;
-            for arg in args {
-                let (arg_val, _, new_b) = gen.generate_expr(arg, current_b)?;
-                arg_vals.push(arg_val);
-                current_b = new_b;
-            }
-
-            // In our current implementation we assume all functions taking closure
-            // arguments are dynamically typed correctly via Sema. We don't have
-            // the exact MLIR FunctionType statically available here without
-            // looking it up, but `func.call_indirect` requires the operand to
-            // match the callee type exactly. Since we don't have the explicit
-            // func signature here, we construct it from the generated arg types!
-            // To figure out the return type, we use `target_func_ty` from Sema.
-            let target_func_ty = target_func_ty
-                .as_ref()
-                .expect("IndirectCallExpr MLIR lowering needs explicit target_func_ty from Sema");
-            let syntax::Type::Closure(func_args, ret) = target_func_ty else {
-                panic!("Expected Type::Closure for indirect call fat pointer target");
-            };
-
-            let r = gen.lower_type(ret)?;
-            let mut a: Vec<_> = vec![gen.ptr_ty];
-            for t in func_args.iter() {
-                a.push(gen.lower_type(t)?);
-            }
-            let actual_func_ty = function_type(gen, &a, r);
-            let ret_ty = r;
-
-            // Cast the raw func ptr to the actual function signature
-            let cast_op = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
-                .add_operands(&[actual_ptr_val])
-                .add_results(&[actual_func_ty])
-                .build()?;
-            let cast_ref = current_b.append_operation(cast_op);
-            actual_ptr_val = cast_ref.result(0)?.into();
-
-            let mut builder = OperationBuilder::new("func.call_indirect", gen.loc())
-                .add_operands(&[actual_ptr_val, env_ptr]);
-
-            for a_val in &arg_vals {
-                builder = builder.add_operands(&[*a_val]);
-            }
-
-            if ret_ty.to_string() != "none" {
-                builder = builder.add_results(&[ret_ty]);
-                let call_op = builder.build()?;
-                let call_ref = current_b.append_operation(call_op);
-                Ok((call_ref.result(0)?.into(), ret_ty, current_b))
-            } else {
-                let call_op = builder.build()?;
-                current_b.append_operation(call_op);
-                let none_ty = gen.none_ty;
-                let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
-                    .add_results(&[gen.i32_ty])
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(gen.i32_ty, 0).into(),
-                    )])
-                    .build()?;
-                Ok((
-                    current_b.append_operation(dummy_op).result(0)?.into(),
-                    none_ty,
-                    current_b,
-                ))
-            }
+            Ok(block.append_operation(op).result(0)?.into())
+        };
+        let (env_ptr, mut actual_ptr_val) = if is_closure {
+            (Some(extract(block, 0)?), extract(block, 1)?)
         } else {
-            panic!("Unsupported callee type for indirect call: {}", callee_ty);
+            (None, callee_val)
+        };
+
+        let mut arg_vals = Vec::new();
+        let mut current_b = block;
+        for arg in args {
+            let (arg_val, _, new_b) = gen.generate_expr(arg, current_b)?;
+            arg_vals.push(arg_val);
+            current_b = new_b;
+        }
+
+        // `func.call_indirect` needs the callee's exact function type, so build it from the
+        // checker's type. A closure's function takes its environment first.
+        let r = gen.lower_type(ret)?;
+        let mut a: Vec<_> = env_ptr.iter().map(|_| gen.ptr_ty).collect();
+        for t in func_args.iter() {
+            a.push(gen.lower_type(t)?);
+        }
+        let actual_func_ty = function_type(gen, &a, r);
+        let ret_ty = r;
+
+        // Cast the raw func ptr to the actual function signature
+        let cast_op = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+            .add_operands(&[actual_ptr_val])
+            .add_results(&[actual_func_ty])
+            .build()?;
+        let cast_ref = current_b.append_operation(cast_op);
+        actual_ptr_val = cast_ref.result(0)?.into();
+
+        let mut builder =
+            OperationBuilder::new("func.call_indirect", gen.loc()).add_operands(&[actual_ptr_val]);
+        if let Some(ep) = env_ptr {
+            builder = builder.add_operands(&[ep]);
+        }
+        for a_val in &arg_vals {
+            builder = builder.add_operands(&[*a_val]);
+        }
+
+        if ret_ty.to_string() != "none" {
+            builder = builder.add_results(&[ret_ty]);
+            let call_op = builder.build()?;
+            let call_ref = current_b.append_operation(call_op);
+            Ok((call_ref.result(0)?.into(), ret_ty, current_b))
+        } else {
+            let call_op = builder.build()?;
+            current_b.append_operation(call_op);
+            let none_ty = gen.none_ty;
+            let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
+                .add_results(&[gen.i32_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(gen.i32_ty, 0).into(),
+                )])
+                .build()?;
+            Ok((
+                current_b.append_operation(dummy_op).result(0)?.into(),
+                none_ty,
+                current_b,
+            ))
         }
     }
 }

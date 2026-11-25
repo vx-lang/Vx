@@ -319,6 +319,76 @@ impl Lowerer<'_> {
         self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, v)
     }
 
+    /// The `i32` that a launch takes for the passes of a loop of blocks, from a `size` of the
+    /// loop's type. A launch has at most `i32::MAX` blocks on an axis, so a 64-bit size that is
+    /// more stops the program, with the line of the loop in the message.
+    pub(super) fn launch_count(&mut self, size: Val, line: usize) -> Lowered<Val> {
+        let elem = match &size.ty {
+            LoweredTy::Scalar(ElementType::I32) => return Ok(size),
+            LoweredTy::Scalar(e @ (ElementType::I64 | ElementType::U64 | ElementType::USize)) => {
+                e.clone()
+            }
+            _ => {
+                return Err(Decline::Unsupported {
+                    what: "an `across` loop of blocks whose size is not `i32` or a 64-bit integer",
+                })
+            }
+        };
+        let compare = |me: &mut Self, bound: &str, op: RelationalOp| -> Lowered<Val> {
+            let bound = me.lower_number_literal(bound, &elem)?;
+            Ok(me.emit_value(
+                Opcode::Cmp,
+                size.reg,
+                bound.reg,
+                ElementType::Bool,
+                rel_code(&op),
+            ))
+        };
+        let mut fits = compare(self, &i32::MAX.to_string(), RelationalOp::Le)?;
+        if elem == ElementType::I64 {
+            let above = compare(self, &i32::MIN.to_string(), RelationalOp::Ge)?;
+            fits = self.emit_value(Opcode::BitAnd, fits.reg, above.reg, ElementType::Bool, 0);
+        }
+        let message = self.strings.len() as u64;
+        self.strings.push(format!(
+            "the loop of blocks at line {line} has more passes than a launch can have, which is {}",
+            i32::MAX
+        ));
+        self.emit_effect(Opcode::Abort, fits.reg, Register(0), message);
+        Ok(self.emit_value(Opcode::Cast, size.reg, Register(0), ElementType::I32, 0))
+    }
+
+    /// `a - b` for two bounds or indices of a loop of blocks, as an `i32`. The difference is at
+    /// most the passes of the loop, which `launch_count` checks. A 64-bit one is taken in `i64`:
+    /// a `usize` subtraction would check in each pass that it does not go below 0.
+    fn difference_as_i32(&mut self, a: Val, b: Val) -> Lowered<Val> {
+        let LoweredTy::Scalar(elem) = a.ty.clone() else {
+            return Err(crate::emitter_gap!());
+        };
+        if elem == ElementType::I32 {
+            return Ok(self.emit_value(Opcode::Sub, a.reg, b.reg, elem, 0));
+        }
+        let a = self.emit_value(Opcode::Cast, a.reg, Register(0), ElementType::I64, 0);
+        let b = self.emit_value(Opcode::Cast, b.reg, Register(0), ElementType::I64, 0);
+        let d = self.emit_value(Opcode::Sub, a.reg, b.reg, ElementType::I64, 0);
+        Ok(self.emit_value(Opcode::Cast, d.reg, Register(0), ElementType::I32, 0))
+    }
+
+    /// The `i32` index of a block or a lane, as a value of the integer type `elem` of its loop. A
+    /// `usize` goes through `u32`: the index is never below 0, and a cast from `i32` to `usize`
+    /// would check that in each pass.
+    pub(super) fn widen_index(&mut self, index: Val, elem: &ElementType) -> Val {
+        if *elem == ElementType::I32 {
+            return index;
+        }
+        let index = if elem.is_signed_int() {
+            index
+        } else {
+            self.emit_value(Opcode::Cast, index.reg, Register(0), ElementType::U32, 0)
+        };
+        self.emit_value(Opcode::Cast, index.reg, Register(0), elem.clone(), 0)
+    }
+
     /// Opens a block that runs when `cond` holds, and returns the block after it.
     fn open_guard(&mut self, cond: Val) -> u32 {
         let then_b = self.new_block();
@@ -434,14 +504,14 @@ impl Lowerer<'_> {
                 );
                 let outer = self.lower_expr(&Expr::Identifier(id))?;
                 let start = self.lower_expr(&range.start)?;
-                self.emit_value(Opcode::Sub, outer.reg, start.reg, ElementType::I32, 0)
+                self.difference_as_i32(outer, start)?
             }
             None => self.const_i32(0),
         };
         // The last count of a group: one less than the passes of the counted loop.
         let end = self.lower_expr(&tail.range.end)?;
         let start = self.lower_expr(&tail.range.start)?;
-        let passes = self.emit_value(Opcode::Sub, end.reg, start.reg, ElementType::I32, 0);
+        let passes = self.difference_as_i32(end, start)?;
         let one = self.const_i32(1);
         let last = self.emit_value(Opcode::Sub, passes.reg, one.reg, ElementType::I32, 0);
         let flag = tail.flag.clone().ok_or(crate::emitter_gap!())?;

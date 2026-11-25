@@ -109,6 +109,9 @@ pub struct Parser<'a> {
     /// The first token of an expression that a block follows, such as the condition of an `if`.
     /// Outside brackets there, a name and `{` are the name and the block, not a struct literal.
     block_follows: Option<usize>,
+    /// Set while the parser reads the type of a parameter of a function with a body: only there
+    /// can `?n` give a run-time extent a name.
+    extent_names_allowed: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -138,6 +141,7 @@ impl<'a> Parser<'a> {
             match_is_statement: false,
             impl_self: None,
             block_follows: None,
+            extent_names_allowed: false,
         }
     }
 
@@ -865,7 +869,7 @@ mod tests {
         );
         assert_eq!(
             parse_type("Tensor<i64, [?, ?]>"),
-            Type::Tensor(ElementType::I64, vec![Dim::Dyn, Dim::Dyn], None),
+            Type::Tensor(ElementType::I64, vec![Dim::Dyn(None), Dim::Dyn(None)], None),
             "the old spelling reads as a rank-2 tensor with run-time extents"
         );
         let shaped = parse_type("Tensor<f32, [2, 3]>");

@@ -1,0 +1,139 @@
+//===- calls_and_bodies_that_break_the_rules_of_extent_names.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `?n` in the tensor type of a parameter names that run-time extent. A call must show the
+// `requires` about `n`, and it cannot give one name two different extents. The callee's `n` is
+// the extent of the argument, never a name of the caller. The body cannot have a variable with
+// the name `n` or change `n`, and it cannot read `n` after a move of the tensor. The compiler
+// gives its warnings before its errors, so the functions that warn come first.
+//
+// RUN: not vxc --package tests=tests %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+import tests::modules::a_function_that_names_an_extent;
+
+const k : usize = 3;
+
+// CHECK: Warning[W1039] at {{.*}}:[[#@LINE+1]]:4: `?k` names an extent of `t`, so in this function `k` is that extent and not a constant with the name `k`
+fn hides(t : &Tensor<f32, [?k]>) -> usize {
+  return k;
+}
+
+// The instance that `main` makes gives no second W1039.
+// CHECK: Warning[W1039] at {{.*}}:[[#@LINE+1]]:4: `?k` names an extent of `t`, so in this function `k` is that extent and not a constant with the name `k`
+fn hides_in_a_generic<T>(t : &Tensor<T, [?k]>) -> usize {
+  return k;
+}
+
+// CHECK: Warning[W1039] at {{.*}}:[[#@LINE+1]]:4: `?m` names an extent of `t`, so in this function `m` is that extent and not a const parameter with the name `m`
+fn hides_a_parameter<const m : usize>(t : &Tensor<f32, [?m]>) -> usize {
+  return m;
+}
+
+fn quarter(t : &Tensor<f32, [?n]>) -> usize
+requires n % 4 == 0
+{
+  return n / 4;
+}
+
+fn length(t : &Tensor<f32, [?n]>) -> usize
+ensures return == n
+{
+  return n;
+}
+
+// After the `let`, `t` is `u`, whose extent the caller does not know.
+fn shadows(t : &Tensor<f32, [?j]>, u : &Tensor<f32, [?]>) -> usize
+requires j % 4 == 0
+{
+  // CHECK: Warning[W1005] at {{.*}}:[[#@LINE+1]]:3: `t` is already a parameter of this function; this `let` hides it
+  let t = u;
+  // CHECK: Error[E8006] at {{.*}}:[[#@LINE+1]]:10: this call to 'quarter' may not meet its precondition `n % 4 == 0`
+  return quarter(t);
+}
+
+// The `n` of `quarter` is the extent of `u`, not the `n` of this function.
+fn another_n(t : &Tensor<f32, [?n]>, u : &Tensor<f32, [?]>) -> usize
+requires n % 4 == 0
+{
+  // CHECK: Error[E8006] at {{.*}}:[[#@LINE+1]]:10: this call to 'quarter' may not meet its precondition `n % 4 == 0`
+  return quarter(u);
+}
+
+// `length(u)` is the extent of `u`, not the `n` of this function.
+fn through_a_let(t : &Tensor<f32, [?n]>, u : &Tensor<f32, [?]>) -> usize
+requires n == 8
+ensures return == 8
+{
+  let r = length(u);
+  // CHECK: Error[E8001] at {{.*}}:[[#@LINE+1]]:3: Function 'through_a_let' cannot prove postcondition (ensures) at compile time
+  return r;
+}
+
+fn through_a_return(t : &Tensor<f32, [?n]>, u : &Tensor<f32, [?]>) -> usize
+requires n == 8
+ensures return == 8
+{
+  // CHECK: Error[E8001] at {{.*}}:[[#@LINE+1]]:3: Function 'through_a_return' cannot prove postcondition (ensures) at compile time
+  return length(u);
+}
+
+fn dot(a : &Tensor<f32, [?n]>, b : &Tensor<f32, [?n]>) -> f32 {
+  return a[0] * b[0];
+}
+
+// `m % 2 == 0` does not show `n % 4 == 0`.
+fn only_even(t : &Tensor<f32, [?m]>) -> usize
+requires m % 2 == 0
+{
+  // CHECK: Error[E8006] at {{.*}}:[[#@LINE+1]]:10: this call to 'quarter' may not meet its precondition `n % 4 == 0`
+  return quarter(t);
+}
+
+fn binds(t : &Tensor<f32, [?n]>) -> usize {
+  // CHECK: Error[E3069] at {{.*}}:[[#@LINE+1]]:3: `n` is the name of an extent of `t` (`?n`), so no variable of the body can have this name
+  let n = 3;
+  return n;
+}
+
+fn in_a_closure(t : &Tensor<f32, [?n]>) -> usize {
+  // CHECK: Error[E3069] at {{.*}}:[[#@LINE+1]]:3: `n` is the name of an extent of `t` (`?n`), so no variable of the body can have this name
+  let f = |n : usize| n + 1;
+  return f(1);
+}
+
+fn assigns(t : &Tensor<f32, [?n]>) -> usize {
+  // CHECK: Error[E3069] at {{.*}}:[[#@LINE+1]]:3: `n` is an extent of `t` (`?n`), and nothing can change it
+  n = 3;
+  return n;
+}
+
+fn take(t : Tensor<f32, [?]>) -> usize {
+  return t.len() as usize;
+}
+
+fn moved(t : Tensor<f32, [?n]>) -> usize {
+  take(t);
+  // CHECK: Error[E4001] at {{.*}}:[[#@LINE+1]]:10: `n` is an extent of `t`, and `t` was moved before this read. Read `n` into a variable before the move
+  return n;
+}
+
+fn main() -> i32 {
+  let six = Tensor<f32, [6]>::fill(1.0);
+  let eight = Tensor<f32, [8]>::fill(1.0);
+  let unknown = Tensor<f32, [?]>::new([8]);
+  // CHECK: Error[E8006] at {{.*}}:[[#@LINE+1]]:11: this call to 'quarter' may not meet its precondition `n % 4 == 0`
+  let a = quarter(&six);
+  // CHECK: Error[E8006] at {{.*}}:[[#@LINE+1]]:11: this call to 'quarter' may not meet its precondition `n % 4 == 0`
+  let b = quarter(&unknown);
+  // CHECK: Error[E8006] at {{.*}}:[[#@LINE+1]]:11: this call to 'quarter_of' may not meet its precondition `n % 4 == 0`
+  let c = quarter_of(&six);
+  // CHECK: Error[E3068] at {{.*}}:[[#@LINE+1]]:11: this call to 'dot' gives `?n` the extents 6 and 8, but each `?n` of 'dot' is the same extent
+  let d = dot(&six, &eight);
+  let e = quarter(&eight) + quarter_of(&eight);
+  let g = dot(&eight, &eight) + (hides_in_a_generic(&eight) as f32);
+  println!("{} {} {} {} {} {}", a, b, c, d, e, g);
+  return 0;
+}

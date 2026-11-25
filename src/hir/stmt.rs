@@ -1103,15 +1103,21 @@ impl<'a> TypeChecker<'a> {
             .filter(|arg| self.call_may_change_argument(arg))
             .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
             .collect();
-        let mut names: HashMap<_, _> = params
-            .iter()
-            .map(|(p, _)| p.clone())
-            .zip(
+        let mut names = self
+            .callee_extent_values(params, &call.args, &mut |extent| {
+                Expr::Identifier(IdentifierExpr {
+                    name: format!("$extent_{name}_{extent}").into(),
+                    span: Span::default(),
+                })
+            })
+            .values;
+        names.extend(
+            params.iter().map(|(p, _)| p.clone()).zip(
                 call.args
                     .iter()
                     .map(|a| crate::hir::prover::without_borrow(a).clone()),
-            )
-            .collect();
+            ),
+        );
         names.insert(
             "return".into(),
             Expr::Identifier(IdentifierExpr {
@@ -3142,8 +3148,16 @@ impl<'a> TypeChecker<'a> {
                         })
                         .collect();
                 if let Some((params, return_type, ensures)) = callee {
-                    let mut names: HashMap<crate::symbol::Symbol, Expr> =
-                        params.iter().map(|(p, _)| p.clone()).zip(args).collect();
+                    let call_index = *calls;
+                    let mut names = self
+                        .callee_extent_values(params, &c.args, &mut |extent| {
+                            Expr::Identifier(IdentifierExpr {
+                                name: format!("$extent_{call_index}_{extent}").into(),
+                                span: c.span,
+                            })
+                        })
+                        .values;
+                    names.extend(params.iter().map(|(p, _)| p.clone()).zip(args));
                     names.insert("return".into(), result.clone());
                     for ens in ensures
                         .iter()
@@ -3230,7 +3244,14 @@ impl<'a> TypeChecker<'a> {
                 Expr::Identifier(id) => params
                     .iter()
                     .find(|(name, _)| *name == id.name)
-                    .map(|(_, ty)| ty.clone()),
+                    .map(|(_, ty)| ty.clone())
+                    .or_else(|| {
+                        // An extent name, `n` of `?n`, is a `usize`.
+                        crate::syntax::types::extent_names(params)
+                            .iter()
+                            .any(|(n, _, _)| *n == id.name)
+                            .then_some(Type::Scalar(ElementType::USize))
+                    }),
                 Expr::MemberAccess(m) => {
                     let mut base = declared_type(checker, &m.base, params, return_type)?;
                     while let Type::Borrow { inner, .. }
@@ -3317,7 +3338,9 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .find(|(p, _)| p.as_ref() == n);
             let hidden = self.declared_vars.iter().any(|(v, _)| v.as_ref() == n);
-            let ranged = param.is_some_and(|(_, p)| *p == ty) && !hidden;
+            // An extent name is never hidden: no variable can have its name.
+            let ranged = (param.is_some_and(|(_, p)| *p == ty) && !hidden)
+                || self.extent_homes.contains_key(n);
             (ty, ranged)
         };
         match ty {
@@ -3758,7 +3781,6 @@ impl<'a> TypeChecker<'a> {
                 name,
                 type_args,
                 args,
-                span: _,
                 ..
             }) => {
                 // Ignored on purpose: the checker has already instantiated the call and
@@ -3914,7 +3936,6 @@ impl<'a> TypeChecker<'a> {
             name,
             type_args: None,
             args,
-            span: _,
             ..
         } = call
         else {
