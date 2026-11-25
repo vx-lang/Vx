@@ -10,10 +10,12 @@
 // of each frame.
 //
 // The code that faulted can hold any lock, also the lock of the allocator. So the handler must
-// not allocate, and it cannot read symbol tables or DWARF itself. `prepare` runs when the program
-// starts. It finds `llvm-symbolizer` and the loaded images. The handler then starts the
-// symbolizer with `fork` and `execve`, which are safe in a signal handler, and numbers its lines.
-// A frame that the symbolizer cannot name gets the line of `backtrace_symbols_fd`.
+// not allocate, and it cannot read DWARF itself. `prepare` runs when the program starts. It
+// finds `llvm-symbolizer` and the loaded images. The handler then starts the symbolizer with
+// `fork` and `execve`, which are safe in a signal handler, and numbers its lines. A frame that
+// the symbolizer does not name gets the line of `backtrace_symbols_fd`. Before that line, the
+// handler writes the function name from the symbol table of the file. It reads the table with
+// `open`, `lseek` and `read` into buffers on the stack.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +35,8 @@ const CRASH_REPORT_SECONDS: libc::c_uint = 10;
 struct Image {
     /// The path in double quotes, as the symbolizer reads it. Empty when the file cannot be read.
     quoted_path: Vec<u8>,
+    /// The path that the handler opens to read the symbol table. None when the file cannot be read.
+    path: Option<CString>,
     /// The loader put each address of the file this many bytes higher.
     bias: usize,
     /// The image is in memory from `start` to before `end`.
@@ -92,16 +96,17 @@ fn push_image(images: &mut Vec<Image>, path: &[u8], bias: usize, start: usize, e
         return;
     }
     let readable = CString::new(path)
-        .map(|c| unsafe { libc::access(c.as_ptr(), libc::R_OK) } == 0)
-        .unwrap_or(false);
+        .ok()
+        .filter(|c| unsafe { libc::access(c.as_ptr(), libc::R_OK) } == 0);
     let mut quoted_path = Vec::new();
-    if readable && !path.contains(&b'"') {
+    if readable.is_some() && !path.contains(&b'"') {
         quoted_path.push(b'"');
         quoted_path.extend_from_slice(path);
         quoted_path.push(b'"');
     }
     images.push(Image {
         quoted_path,
+        path: readable,
         bias,
         start: bias + start,
         end: bias + end,
@@ -134,6 +139,13 @@ fn loaded_images() -> Vec<Image> {
             CStr::from_ptr(info.dlpi_name).to_bytes().to_vec()
         };
         push_image(images, &name, info.dlpi_addr as usize, start, end);
+        // The handler reads the symbol table of the program through `/proc/self/exe`. This file
+        // is the running program, also when a new build replaced the file at its path.
+        if let Some(image) = images.last_mut().filter(|image| image.path.is_some()) {
+            if info.dlpi_name.is_null() || *info.dlpi_name == 0 {
+                image.path = Some(c"/proc/self/exe".to_owned());
+            }
+        }
         0
     }
     let mut images = Vec::new();
@@ -423,6 +435,156 @@ unsafe fn in_an_image(address: usize) -> bool {
     known
 }
 
+/// Reads `buffer.len()` bytes at `offset` in `fd`. Gives false when the file is shorter.
+#[cfg(target_os = "linux")]
+unsafe fn read_at(fd: c_int, offset: u64, buffer: &mut [u8]) -> bool {
+    let Ok(offset) = libc::off_t::try_from(offset) else {
+        return false;
+    };
+    if libc::lseek(fd, offset, libc::SEEK_SET) != offset {
+        return false;
+    }
+    let mut done = 0;
+    while done < buffer.len() {
+        let n = libc::read(
+            fd,
+            buffer[done..].as_mut_ptr() as *mut c_void,
+            buffer.len() - done,
+        );
+        if n <= 0 {
+            return false;
+        }
+        done += n as usize;
+    }
+    true
+}
+
+/// Finds the function of each frame in the symbol table (`.symtab`) of the ELF file at `path`. Vx
+/// functions are hidden, so only this table names them, and `backtrace_symbols_fd` does not read
+/// it. `targets` are the addresses in the file. `names` gets the offset of each name in the file.
+#[cfg(target_os = "linux")]
+unsafe fn find_functions(path: &CStr, targets: &[Option<usize>], names: &mut [Option<u64>]) {
+    let fd = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+    if fd >= 0 {
+        read_symbol_table(fd, targets, names);
+        libc::close(fd);
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn read_symbol_table(fd: c_int, targets: &[Option<usize>], names: &mut [Option<u64>]) {
+    use libc::{Elf64_Ehdr, Elf64_Shdr, Elf64_Sym};
+    unsafe fn read_header<T: Copy>(fd: c_int, offset: u64) -> Option<T> {
+        let mut value: T = std::mem::zeroed();
+        let size = std::mem::size_of::<T>();
+        let bytes = std::slice::from_raw_parts_mut(&mut value as *mut T as *mut u8, size);
+        read_at(fd, offset, bytes).then_some(value)
+    }
+    const SHT_SYMTAB: u32 = 2;
+    const STT_FUNC: u8 = 2;
+    const SHN_UNDEF: u16 = 0;
+    const SECTION_SIZE: u64 = std::mem::size_of::<Elf64_Shdr>() as u64;
+    const SYMBOL_SIZE: usize = std::mem::size_of::<Elf64_Sym>();
+    const SYMBOLS_PER_READ: usize = 170;
+
+    let Some(header) = read_header::<Elf64_Ehdr>(fd, 0) else {
+        return;
+    };
+    // A 64-bit ELF file with the byte order of this machine.
+    let byte_order = if cfg!(target_endian = "little") { 1 } else { 2 };
+    if header.e_ident[..6] != [0x7f, b'E', b'L', b'F', 2, byte_order]
+        || u64::from(header.e_shentsize) != SECTION_SIZE
+    {
+        return;
+    }
+    let section = |index: u64| {
+        let offset = index
+            .checked_mul(SECTION_SIZE)
+            .and_then(|o| o.checked_add(header.e_shoff))?;
+        read_header::<Elf64_Shdr>(fd, offset)
+    };
+    let symbols = (0..u64::from(header.e_shnum))
+        .filter_map(section)
+        .find(|s| s.sh_type == SHT_SYMTAB && s.sh_entsize == SYMBOL_SIZE as u64);
+    let Some(symbols) = symbols else {
+        return;
+    };
+    const SHT_STRTAB: u32 = 3;
+    let Some(strings) = section(u64::from(symbols.sh_link)).filter(|s| s.sh_type == SHT_STRTAB)
+    else {
+        return;
+    };
+    let count = symbols.sh_size / SYMBOL_SIZE as u64;
+    let mut buffer = [0u8; SYMBOLS_PER_READ * SYMBOL_SIZE];
+    let mut done = 0;
+    while done < count {
+        let n = (count - done).min(SYMBOLS_PER_READ as u64) as usize;
+        let bytes = &mut buffer[..n * SYMBOL_SIZE];
+        let Some(offset) = symbols.sh_offset.checked_add(done * SYMBOL_SIZE as u64) else {
+            return;
+        };
+        if !read_at(fd, offset, bytes) {
+            return;
+        }
+        for entry in bytes.as_chunks::<SYMBOL_SIZE>().0 {
+            let symbol = ptr::read_unaligned(entry.as_ptr() as *const Elf64_Sym);
+            if symbol.st_info & 0xf != STT_FUNC
+                || symbol.st_shndx == SHN_UNDEF
+                || symbol.st_name == 0
+                || u64::from(symbol.st_name) >= strings.sh_size
+            {
+                continue;
+            }
+            let start = symbol.st_value;
+            let end = start.saturating_add(symbol.st_size);
+            for (target, name) in targets.iter().zip(names.iter_mut()) {
+                if let Some(target) = *target {
+                    if start <= target as u64 && (target as u64) < end {
+                        *name = Some(strings.sh_offset.saturating_add(symbol.st_name.into()));
+                    }
+                }
+            }
+        }
+        done += n as u64;
+    }
+}
+
+/// The handler reads ELF files only on Linux.
+#[cfg(not(target_os = "linux"))]
+unsafe fn find_functions(_path: &CStr, _targets: &[Option<usize>], _names: &mut [Option<u64>]) {}
+
+/// Writes the name at `offset` in the file at `path`, and a space after it. Writes nothing when it
+/// cannot read the name.
+unsafe fn write_function_name(out: &mut Output, path: &CStr, offset: u64) {
+    let fd = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+    if fd < 0 {
+        return;
+    }
+    // A name ends with a 0 byte. The buffer cuts a longer name.
+    let mut buffer = [0u8; 256];
+    let mut len = 0;
+    let found = libc::off_t::try_from(offset)
+        .is_ok_and(|offset| libc::lseek(fd, offset, libc::SEEK_SET) == offset);
+    while found && len < buffer.len() {
+        let n = libc::read(
+            fd,
+            buffer[len..].as_mut_ptr() as *mut c_void,
+            buffer.len() - len,
+        );
+        if n <= 0 {
+            break;
+        }
+        len += n as usize;
+    }
+    libc::close(fd);
+    let name = &buffer[..len];
+    let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(len)];
+    if !name.is_empty() {
+        out.bytes(name);
+        out.bytes(b" ");
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn vx_sigsegv_handler(
     sig: c_int,
@@ -472,33 +634,59 @@ pub extern "C" fn vx_sigsegv_handler(
         }
         let frames = &frames[..raw.len()];
 
-        // The image of each frame that the symbolizer can name. A return address points after
-        // the call, so the request for it is the address before it.
+        // The image of each frame. A return address points after the call, so the frame is at
+        // the address before it.
+        let images = PREPARED
+            .get()
+            .map_or(&[][..], |prepared| &prepared.images[..]);
         let mut targets = [0usize; CRASH_FRAMES];
+        let mut image_of = [None; CRASH_FRAMES];
+        for (i, &address) in frames.iter().enumerate() {
+            targets[i] = if i == 0 && first.is_some() {
+                address
+            } else {
+                address.wrapping_sub(1)
+            };
+            image_of[i] = images
+                .iter()
+                .position(|image| image.start <= targets[i] && targets[i] < image.end);
+        }
+
+        // The frames that the symbolizer can name.
         let mut requests = [None; CRASH_FRAMES];
         let mut symbolizer = None;
-        if let Some(prepared) = PREPARED.get() {
-            if let Some(path) = &prepared.symbolizer {
-                for (i, &address) in frames.iter().enumerate() {
-                    targets[i] = if i == 0 && first.is_some() {
-                        address
-                    } else {
-                        address.wrapping_sub(1)
-                    };
-                    requests[i] = prepared.images.iter().position(|image| {
-                        !image.quoted_path.is_empty()
-                            && image.start <= targets[i]
-                            && targets[i] < image.end
-                    });
+        if let Some(path) = PREPARED
+            .get()
+            .and_then(|prepared| prepared.symbolizer.as_ref())
+        {
+            for (request, image) in requests.iter_mut().zip(image_of) {
+                *request = image.filter(|&image| !images[image].quoted_path.is_empty());
+            }
+            if requests.iter().any(Option::is_some) {
+                symbolizer = start_symbolizer(
+                    path,
+                    images,
+                    &targets[..frames.len()],
+                    &requests[..frames.len()],
+                );
+            }
+        }
+
+        // The name of each frame in the symbol table of its image. Only a frame that the
+        // symbolizer does not name prints it.
+        let mut names = [None; CRASH_FRAMES];
+        for (index, image) in images.iter().enumerate() {
+            let Some(path) = &image.path else {
+                continue;
+            };
+            let mut in_file = [None; CRASH_FRAMES];
+            for i in 0..frames.len() {
+                if image_of[i] == Some(index) {
+                    in_file[i] = Some(targets[i].wrapping_sub(image.bias));
                 }
-                if requests.iter().any(Option::is_some) {
-                    symbolizer = start_symbolizer(
-                        path,
-                        &prepared.images,
-                        &targets[..frames.len()],
-                        &requests[..frames.len()],
-                    );
-                }
+            }
+            if in_file.iter().any(Option::is_some) {
+                find_functions(path, &in_file[..frames.len()], &mut names[..frames.len()]);
             }
         }
 
@@ -519,6 +707,14 @@ pub extern "C" fn vx_sigsegv_handler(
                 && input
                     .as_mut()
                     .is_some_and(|input| input.copy_frame(&mut out));
+            if !named {
+                // `backtrace_symbols_fd` gives the file and the offset in it, which a symbolizer
+                // can read later.
+                let path = image_of[i].and_then(|image| images[image].path.as_ref());
+                if let (Some(path), Some(offset)) = (path, names[i]) {
+                    write_function_name(&mut out, path, offset);
+                }
+            }
             out.flush();
             if !named {
                 libc::backtrace_symbols_fd(&raw[i], 1, 2);

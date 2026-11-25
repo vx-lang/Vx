@@ -2,9 +2,16 @@
 // On macOS the runtime has no crash handler for now, so it prints no report there.
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: LLVM_SYMBOLIZER_PATH= not vxc %s 2>&1 | FileCheck %s --check-prefix=NO-SYMBOLIZER
+// RUN: LLVM_SYMBOLIZER_PATH=/bin/false not vxc %s 2>&1 | FileCheck %s --check-prefix=NO-SYMBOLIZER
+// RUN: printf '#!/bin/sh\nwhile read l; do printf "from_symbolizer at x.vx:1:1\\n\\n"; done\n' > %t.sh
+// RUN: chmod +x %t.sh
+// RUN: LLVM_SYMBOLIZER_PATH=%t.sh not vxc %s 2>&1 | FileCheck %s --check-prefix=FAKE
 
 // The crash report names each function of the program, from the one that crashed to `main`. An
-// empty `LLVM_SYMBOLIZER_PATH` turns the symbolizer off. The report then still numbers the frames.
+// empty `LLVM_SYMBOLIZER_PATH` turns the symbolizer off, and `/bin/false` is a symbolizer that
+// writes nothing. In both cases the report reads the names from the symbol table of the program.
+// After each name, the report still gives the file and the offset in it. The last run uses a
+// symbolizer that names every frame `from_symbolizer`. Its names must win over the symbol table.
 
 // CHECK: Caught SIGSEGV: Segmentation Fault!
 // CHECK-NEXT: Backtrace:
@@ -15,7 +22,19 @@
 // CHECK-NEXT: #4 0x{{[0-9a-f]+}} in f1{{$| at}}
 // CHECK-NEXT: #5 0x{{[0-9a-f]+}} in main{{$| at}}
 // NO-SYMBOLIZER: Backtrace:
-// NO-SYMBOLIZER-NEXT: #0 0x{{[0-9a-f]+}} in {{.*}}temp.out
+// NO-SYMBOLIZER-NEXT: #0 0x{{[0-9a-f]+}} in f5 {{.*}}temp.out(+0x{{[0-9a-f]+}}) [0x{{[0-9a-f]+}}]{{$}}
+// NO-SYMBOLIZER-NEXT: #1 0x{{[0-9a-f]+}} in f4 {{.*}}temp.out(+0x{{[0-9a-f]+}}) [0x{{[0-9a-f]+}}]{{$}}
+// NO-SYMBOLIZER-NEXT: #2 0x{{[0-9a-f]+}} in f3 {{.*}}temp.out(+0x{{[0-9a-f]+}}) [0x{{[0-9a-f]+}}]{{$}}
+// NO-SYMBOLIZER-NEXT: #3 0x{{[0-9a-f]+}} in f2 {{.*}}temp.out(+0x{{[0-9a-f]+}}) [0x{{[0-9a-f]+}}]{{$}}
+// NO-SYMBOLIZER-NEXT: #4 0x{{[0-9a-f]+}} in f1 {{.*}}temp.out(+0x{{[0-9a-f]+}}) [0x{{[0-9a-f]+}}]{{$}}
+// NO-SYMBOLIZER-NEXT: #5 0x{{[0-9a-f]+}} in main {{.*}}temp.out(+0x{{[0-9a-f]+}}) [0x{{[0-9a-f]+}}]{{$}}
+// FAKE: Backtrace:
+// FAKE-NEXT: #0 0x{{[0-9a-f]+}} in from_symbolizer at x.vx:1:1{{$}}
+// FAKE-NEXT: #1 0x{{[0-9a-f]+}} in from_symbolizer at x.vx:1:1{{$}}
+// FAKE-NEXT: #2 0x{{[0-9a-f]+}} in from_symbolizer at x.vx:1:1{{$}}
+// FAKE-NEXT: #3 0x{{[0-9a-f]+}} in from_symbolizer at x.vx:1:1{{$}}
+// FAKE-NEXT: #4 0x{{[0-9a-f]+}} in from_symbolizer at x.vx:1:1{{$}}
+// FAKE-NEXT: #5 0x{{[0-9a-f]+}} in from_symbolizer at x.vx:1:1{{$}}
 // The runtime's own handler prints the SIGSEGV above, then aborts -- so what the
 // JIT sees is the abort, named. This line used to read "exited with non-zero
 // code: -1", which is what an exit status reports when the process was killed
