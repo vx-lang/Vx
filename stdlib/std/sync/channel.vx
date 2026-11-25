@@ -282,10 +282,7 @@ fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
   }
   let w : *mut i8 = words;
   let d : *mut i8 = data;
-  unsafe {
-    dealloc(w, 8);
-    dealloc(d, 16);
-  }
+  unsafe { dealloc(w, 8); dealloc(d, 16); }
 }
 
 impl<T>
