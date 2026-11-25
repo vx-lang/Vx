@@ -1462,14 +1462,11 @@ fn flat_matches_ast_for_the_first_variant_of_an_enum_with_a_nested_payload() {
 
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_nested_payload() {
-    // A function pointer payload has no layout on the flat path. Lower the code but don't run it: a
+    // A closure payload has no layout on the flat path. Lower the code but don't run it: a
     // layout that let the store through would write past the end of `Outer`.
     assert_enum_layout_declines(
-        "fn add_one(x : i32) -> i32 { return x + 1; }\n\
-         enum Outer { Number(i32), Nested(fn(i32) -> i32) }\n\
-         fn main() -> i32 { \
-           let _value = Outer::Nested(add_one); \
-           return 0; }",
+        "enum Outer { Number(i32), Nested(|i32| -> i32) }\n\
+         fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
     );
 }
 
@@ -1492,7 +1489,7 @@ fn flat_matches_ast_for_a_nested_payload_after_another_payload() {
 fn flat_declines_an_enum_with_an_unsupported_first_variant() {
     // Even constructing the supported variant must reject the incomplete enum layout.
     assert_enum_layout_declines(
-        "enum Outer { Nested(fn(i32) -> i32), Number(i32) }\n\
+        "enum Outer { Nested(|i32| -> i32), Number(i32) }\n\
          fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
     );
 }
@@ -1514,7 +1511,7 @@ fn flat_matches_ast_for_a_nested_payload_in_the_first_variant() {
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_second_payload() {
     assert_enum_layout_declines(
-        "enum Outer { Numbers(i32, i32), Nested(i32, fn(i32) -> i32) }\n\
+        "enum Outer { Numbers(i32, i32), Nested(i32, |i32| -> i32) }\n\
          fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
     );
 }
@@ -1537,7 +1534,7 @@ fn flat_matches_ast_for_a_generic_enum_with_a_nested_payload() {
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant() {
     assert_enum_layout_declines(
-        "enum Outer { Nested(i32, fn(i32) -> i32), Numbers(i32, i32) }\n\
+        "enum Outer { Nested(i32, |i32| -> i32), Numbers(i32, i32) }\n\
          fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
     );
 }
@@ -1546,7 +1543,7 @@ fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant
 fn flat_declines_an_enum_with_an_unsupported_generic_payload() {
     assert_enum_layout_declines(
         "enum Outer<T> { Number(i32), Nested(T) }\n\
-         fn main() -> i32 { let _value = Outer<fn(i32) -> i32>::Number(7); return 0; }",
+         fn main() -> i32 { let _value = Outer<|i32| -> i32>::Number(7); return 0; }",
     );
 }
 
@@ -1708,14 +1705,11 @@ fn assert_enum_layout_falls_back(jobs: Option<usize>) {
     use melior::ir::operation::OperationLike;
 
     let dir = tempfile::tempdir().expect("create fixture directory");
-    let path = dir.path().join("enum_with_a_function_payload.vx");
+    let path = dir.path().join("enum_with_a_closure_payload.vx");
     std::fs::write(
         &path,
-        "fn add_one(x : i32) -> i32 { return x + 1; }\n\
-         enum Outer { Number(i32), Nested(fn(i32) -> i32) }\n\
-         fn main() -> i32 { \
-           let _value = Outer::Nested(add_one); \
-           return 0; }",
+        "enum Outer { Number(i32), Nested(|i32| -> i32) }\n\
+         fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
     )
     .expect("write fixture");
     let mut command = super::time_limit::vxc();

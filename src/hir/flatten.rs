@@ -5397,12 +5397,7 @@ impl<'r> Lowerer<'r> {
                 (field.clone(), mlir)
             } else {
                 let (sz, al, mlir, kind) = match &fty {
-                    Type::Struct(..) | Type::Enum(..)
-                        if matches!(
-                            lowered_ty(&fty, self.registry),
-                            Some(LoweredTy::Scalar(ElementType::I32))
-                        ) =>
-                    {
+                    _ if self.is_tag_only_enum(&fty) => {
                         (4, 4, "i32".to_string(), FieldTy::Scalar(ElementType::I32))
                     }
                     // A struct or an enum instance held by value, `Peek<T> { peeked : Option<T> }`.
@@ -5412,16 +5407,7 @@ impl<'r> Lowerer<'r> {
                         let (sz, al, mlir) = self.aggregate_storage(inner)?;
                         (sz, al, mlir, FieldTy::Nominal(inner))
                     }
-                    _ => {
-                        let (sz, al, kind) = crate::layout::structural_field_info(&fty)?;
-                        let mlir = crate::codegen::flat::registry_field_storage_type(
-                            &kind,
-                            self.registry,
-                            &mut Vec::new(),
-                        )
-                        .ok()?;
-                        (sz as u64, al as u64, mlir, kind)
-                    }
+                    _ => self.undeclared_storage(&fty)?,
                 };
                 off = crate::layout::checked_align_up(off, al)?;
                 let field = crate::layout::FieldLayout {
@@ -5506,17 +5492,7 @@ impl<'r> Lowerer<'r> {
     /// The size and alignment of a value held in an enum payload: a number, a pointer, a
     /// tensor, a struct, an instance of a generic struct, or another enum.
     fn payload_size_align(&mut self, ty: &Type) -> Option<(u64, u64)> {
-        if let Some(size_align) = enum_payload_size_align(ty) {
-            return Some(size_align);
-        }
-        // An enum whose variants carry nothing, `Ordering`, is its `i32` tag.
-        if self
-            .registry
-            .aggregate_identities()
-            .resolve_base(ty.into())
-            .and_then(|(name, _)| self.registry.enum_data.get(&name))
-            .is_some_and(|data| data.variants.iter().all(|(_, fields)| fields.is_empty()))
-        {
+        if self.is_tag_only_enum(ty) {
             return Some((4, 4));
         }
         match ty {
@@ -5526,8 +5502,37 @@ impl<'r> Lowerer<'r> {
                 let gid = self.resolve_concrete_layout(ty)?;
                 self.aggregate_size_align(gid)
             }
-            _ => None,
+            // A closure value is a pair of pointers, `{ env, func }`, but a struct field of a
+            // closure type has room for one pointer only. Decline until the two agree.
+            Type::Closure(..) => None,
+            _ => self
+                .undeclared_storage(ty)
+                .map(|(size, align, ..)| (size, align)),
         }
+    }
+
+    /// Whether a type is an enum whose variants carry nothing, such as `Ordering`. Such an enum is
+    /// stored as its `i32` tag, both in a struct field and in an enum payload.
+    fn is_tag_only_enum(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Struct(..) | Type::Enum(..))
+            && matches!(
+                lowered_ty(ty, self.registry),
+                Some(LoweredTy::Scalar(ElementType::I32))
+            )
+    }
+
+    /// The size, alignment, MLIR storage type and field type of a value whose type has no
+    /// declaration: a number, a pointer, a function, a tensor or a vector. A struct field and an
+    /// enum payload store such a value in the same way.
+    fn undeclared_storage(&self, ty: &Type) -> Option<(u64, u64, String, FieldTy)> {
+        let (size, align, kind) = crate::layout::structural_field_info(ty)?;
+        let mlir = crate::codegen::flat::registry_field_storage_type(
+            &kind,
+            self.registry,
+            &mut Vec::new(),
+        )
+        .ok()?;
+        Some((size as u64, align as u64, mlir, kind))
     }
 
     fn enum_instance_layout_of<'a>(
@@ -8923,25 +8928,6 @@ fn parse_scalar_type_arg(s: &str) -> Type {
         other => return Type::Struct(other.to_string().into(), None),
     };
     Type::Scalar(e)
-}
-
-/// The byte size and alignment of an enum payload that has no declaration: a scalar, a pointer
-/// or a tensor. `None` for a struct or an enum, and for a type the flat path does not model.
-fn enum_payload_size_align(ty: &Type) -> Option<(u64, u64)> {
-    match ty {
-        Type::Scalar(ElementType::Generic(_)) => None,
-        Type::Scalar(e) => {
-            // A scalar with no MLIR type cannot be stored.
-            crate::mlir_ty::mlir_scalar(e)?;
-            let (s, a) = crate::layout::scalar_size_align(e)?;
-            Some((s as u64, a as u64))
-        }
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some((8, 8)),
-        // A tensor is its descriptor: two pointers, an offset, and a size and a stride per rank.
-        Type::Tensor(_, shape, ..) => Some((8 * (3 + 2 * shape.len() as u64), 8)),
-        Type::Distinct(inner) | Type::DisjointRanges(inner) => enum_payload_size_align(inner),
-        _ => None,
-    }
 }
 
 /// The MLIR scalar type string for an element type (`i32`, `f32`, `i1` for bool, …) — the flat-lowerer
