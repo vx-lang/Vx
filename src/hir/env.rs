@@ -94,6 +94,9 @@ pub struct GlobalAstEnv<'a> {
     pub functions:
         HashMap<crate::symbol::Symbol, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
     pub syntax_functions: HashMap<crate::symbol::Symbol, &'a Function>,
+    /// The package of each file, from the items written in it. A `pkg fn` is visible to
+    /// the files of its package.
+    pub file_packages: HashMap<crate::symbol::Symbol, crate::symbol::Symbol>,
     /// Bodies the compile-time evaluator can run, owned rather than borrowed.
     ///
     /// The resolution env is built from signature-stripped modules, so a non-generic function
@@ -178,6 +181,7 @@ impl<'a> GlobalAstEnv<'a> {
             impls: HashMap::new(),
             functions: HashMap::new(),
             syntax_functions: HashMap::new(),
+            file_packages: HashMap::new(),
             comptime_bodies: HashMap::new(),
             generic_functions: HashMap::new(),
             memories: HashMap::new(),
@@ -208,6 +212,17 @@ impl<'a> GlobalAstEnv<'a> {
                 }
                 if module.macro_call_sites.iter().any(Option::is_some) {
                     macro_call_sites.insert(file.clone(), module.macro_call_sites.clone());
+                }
+            }
+        }
+        for module in modules {
+            let methods = module.impls.iter().flat_map(|i| i.methods.iter());
+            let functions = module.functions.iter().chain(methods);
+            let places = functions.map(|f| (&f.file, &f.package));
+            let places = places.chain(module.externs.iter().map(|e| (&e.file, &e.package)));
+            for (file, package) in places {
+                if let (Some(file), Some(package)) = (file, package) {
+                    env.file_packages.insert(file.clone(), package.clone());
                 }
             }
         }
@@ -2013,7 +2028,7 @@ impl<'a> TypeChecker<'a> {
 
         Some(Function {
             is_unsafe: generic_func.is_unsafe,
-            is_pub: generic_func.is_pub,
+            visibility: generic_func.visibility,
             exported: generic_func.exported,
             name: mangled_name.into(),
             generics: Vec::new(),
@@ -2037,6 +2052,7 @@ impl<'a> TypeChecker<'a> {
             doc_comment: generic_func.doc_comment.clone(),
             span: generic_func.span,
             file: generic_func.file.clone(),
+            package: generic_func.package.clone(),
         })
     }
 

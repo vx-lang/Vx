@@ -4068,6 +4068,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             args,
             type_args,
             span: _,
+            ..
         } = self;
         if matches!(name.as_ref(), "Verified" | "Distinct" | "DisjointRanges") {
             return gen.generate_expr(&args[0], block);
@@ -5082,6 +5083,7 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
                 type_args: None,
                 args: new_args,
                 span: *span,
+                by_the_compiler: false,
             }),
             block,
         )
@@ -6019,6 +6021,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             args: vec![],
             type_args: None,
             span: self.span,
+            by_the_compiler: false,
         });
 
         let (vec_val, vec_ty, block) = gen.generate_expr(&new_call, block)?;
@@ -6077,6 +6080,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
                 ],
                 type_args: None,
                 span: self.span,
+                by_the_compiler: false,
             });
             gen.generate_expr(&push_call, block)?;
         }

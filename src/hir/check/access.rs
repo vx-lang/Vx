@@ -554,6 +554,10 @@ impl<'a> TypeChecker<'a> {
                         self.refuse_a_use_of_main(&span);
                         return Type::Unknown;
                     }
+                    if let Some(place) = self.place_of_function(name.as_ref()) {
+                        let shown = name.to_string();
+                        self.refuse_a_private_function(&shown, &shown, &place, &span);
+                    }
                     self.check_function_value(name.as_ref(), span);
                     if let Some((ret_ty, is_unsafe, params, _, _, _)) =
                         self.env.functions.get(name.as_ref())

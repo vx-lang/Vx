@@ -1,0 +1,12 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `pkg` comes before `unsafe`, as `pub` does: `pkg unsafe fn`.
+
+unsafe pkg fn read_one(p : *const i32) -> i32 {
+  return unsafe { *p };
+}
+// CHECK: Error at {{.*}}unsafe_before_pkg.vx:[[@LINE-3]]:1: write `pkg unsafe fn`: `pkg` comes before `unsafe`
+
+fn main() -> i32 {
+  return 0;
+}
