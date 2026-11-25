@@ -568,6 +568,46 @@ macro_rules stamp_signed_int {
         return (0 as $t) - self;
       }
 
+      /// Shifted left by `rhs & (bits - 1)`, which is the amount modulo the width. The amount
+      /// is masked first, because LLVM gives poison for a shift by the width or more.
+      pub fn wrapping_shl(self : $t, rhs : $t) -> $t {
+        return self << (rhs & (self.bits() - (1 as $t)));
+      }
+
+      /// Shifted right by `rhs & (bits - 1)`. The sign bit is copied in, as `>>` does.
+      pub fn wrapping_shr(self : $t, rhs : $t) -> $t {
+        return self >> (rhs & (self.bits() - (1 as $t)));
+      }
+
+      /// Nothing when `rhs` is negative or at least the width. Only the amount is checked:
+      /// bits shifted out at the top are lost, as in Rust.
+      pub fn checked_shl(self : $t, rhs : $t) -> Option<$t> {
+        if rhs < (0 as $t) || rhs >= self.bits() {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self << rhs);
+      }
+
+      /// Nothing when `rhs` is negative or at least the width.
+      pub fn checked_shr(self : $t, rhs : $t) -> Option<$t> {
+        if rhs < (0 as $t) || rhs >= self.bits() {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self >> rhs);
+      }
+
+      /// The wrapping shift, and whether `rhs` was negative or at least the width.
+      pub fn overflowing_shl(self : $t, rhs : $t) -> ($t, bool) {
+        let too_far = rhs < (0 as $t) || rhs >= self.bits();
+        return (self.wrapping_shl(rhs), too_far);
+      }
+
+      /// The wrapping shift, and whether `rhs` was negative or at least the width.
+      pub fn overflowing_shr(self : $t, rhs : $t) -> ($t, bool) {
+        let too_far = rhs < (0 as $t) || rhs >= self.bits();
+        return (self.wrapping_shr(rhs), too_far);
+      }
+
       /// Clamped to the width rather than wrapping. Which end it clamps to is the sign the
       /// product would have had, which is whether the two operands agree in sign.
       pub fn saturating_mul(self : $t, rhs : $t) -> $t {
@@ -1064,6 +1104,44 @@ macro_rules stamp_unsigned_int {
         return 0 - self;
       }
 
+      /// Shifted left by `rhs & (bits - 1)`, which is the amount modulo the width. The amount
+      /// is masked first, because LLVM gives poison for a shift by the width or more.
+      pub fn wrapping_shl(self : $t, rhs : $t) -> $t {
+        return self << (rhs & (self.bits() - (1 as $t)));
+      }
+
+      /// Shifted right by `rhs & (bits - 1)`. Zeros are shifted in.
+      pub fn wrapping_shr(self : $t, rhs : $t) -> $t {
+        return self >> (rhs & (self.bits() - (1 as $t)));
+      }
+
+      /// Nothing when `rhs` is at least the width. Only the amount is checked: bits shifted
+      /// out at the top are lost, as in Rust.
+      pub fn checked_shl(self : $t, rhs : $t) -> Option<$t> {
+        if rhs >= self.bits() {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self << rhs);
+      }
+
+      /// Nothing when `rhs` is at least the width.
+      pub fn checked_shr(self : $t, rhs : $t) -> Option<$t> {
+        if rhs >= self.bits() {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self >> rhs);
+      }
+
+      /// The wrapping shift, and whether `rhs` was at least the width.
+      pub fn overflowing_shl(self : $t, rhs : $t) -> ($t, bool) {
+        return (self.wrapping_shl(rhs), rhs >= self.bits());
+      }
+
+      /// The wrapping shift, and whether `rhs` was at least the width.
+      pub fn overflowing_shr(self : $t, rhs : $t) -> ($t, bool) {
+        return (self.wrapping_shr(rhs), rhs >= self.bits());
+      }
+
       /// Clamped to the top of the width rather than wrapping. There is no other end to
       /// clamp to without a sign.
       pub fn saturating_mul(self : $t, rhs : $t) -> $t {
@@ -1505,6 +1583,49 @@ impl usize {
   /// Zero minus this, modulo 2^63.
   pub fn wrapping_neg(self : usize) -> usize {
     return self.min_value().wrapping_sub(self);
+  }
+
+  /// Shifted left by `rhs & 63`, then taken modulo 2^63 as the other `wrapping_*`
+  /// methods are: a bit shifted into the top place is dropped. `<<` traps when it would set
+  /// the top bit, so the bits that would reach it are cleared first.
+  pub fn wrapping_shl(self : usize, rhs : usize) -> usize {
+    let k = rhs & 63;
+    if k == 63 {
+      return 0;
+    }
+    return (self & (self.max_value() >> k)) << k;
+  }
+
+  /// Shifted right by `rhs & 63`. Zeros are shifted in.
+  pub fn wrapping_shr(self : usize, rhs : usize) -> usize {
+    return self >> (rhs & 63);
+  }
+
+  /// Nothing when `rhs` is 64 or more. Only the amount is checked: bits shifted out at the
+  /// top, including into the top place, are lost.
+  pub fn checked_shl(self : usize, rhs : usize) -> Option<usize> {
+    if rhs >= self.bits() {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self.wrapping_shl(rhs));
+  }
+
+  /// Nothing when `rhs` is 64 or more.
+  pub fn checked_shr(self : usize, rhs : usize) -> Option<usize> {
+    if rhs >= self.bits() {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self >> rhs);
+  }
+
+  /// The wrapping shift, and whether `rhs` was 64 or more.
+  pub fn overflowing_shl(self : usize, rhs : usize) -> (usize, bool) {
+    return (self.wrapping_shl(rhs), rhs >= self.bits());
+  }
+
+  /// The wrapping shift, and whether `rhs` was 64 or more.
+  pub fn overflowing_shr(self : usize, rhs : usize) -> (usize, bool) {
+    return (self.wrapping_shr(rhs), rhs >= self.bits());
   }
 
   /// The sum modulo 2^63, and whether it passed the largest `usize`.
