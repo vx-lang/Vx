@@ -187,6 +187,13 @@ impl<'a> Parser<'a> {
             || (self.check(&TokenType::Unsafe) && matches!(self.peek_n(1).kind, TokenType::Fn))
     }
 
+    /// One side of a `where Reachable<A, B>` clause: a bare name or a `Topology::X` reference.
+    fn parse_reachable_side(&mut self) -> ParseResult<'a, crate::syntax::ReachableSide> {
+        let bare = !self.check(&TokenType::Topology);
+        let topology = self.parse_topology_operand()?;
+        Ok(crate::syntax::ReachableSide { topology, bare })
+    }
+
     pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
         // A top-level `pub fn` has its `pub` read before this, so one here is on a method.
         if self.check(&TokenType::Pub) {
@@ -252,7 +259,8 @@ impl<'a> Parser<'a> {
         // topologies, not memory spaces. It was called `Transfer<A, B>` until Vx#353, which is
         // the name the edge lowering now uses (`impl Transfer<Memory::A, Memory::B> for
         // Topology::X`) with a different kind of argument -- so the two had to part.
-        let mut where_transfers: Vec<(Topology, Topology)> = Vec::new();
+        let mut where_transfers: Vec<(crate::syntax::ReachableSide, crate::syntax::ReachableSide)> =
+            Vec::new();
         if self.match_token(&TokenType::Where) {
             loop {
                 let cname = self
@@ -273,9 +281,9 @@ impl<'a> Parser<'a> {
                     )));
                 }
                 self.consume(&TokenType::LeftAngle, "Expected '<' after Reachable")?;
-                let a = self.parse_topology_operand()?;
+                let a = self.parse_reachable_side()?;
                 self.consume(&TokenType::Comma, "Expected ',' in Reachable<A, B>")?;
-                let b = self.parse_topology_operand()?;
+                let b = self.parse_reachable_side()?;
                 self.consume(&TokenType::RightAngle, "Expected '>' after Reachable<A, B>")?;
                 where_transfers.push((a, b));
                 if !self.match_token(&TokenType::Comma) {

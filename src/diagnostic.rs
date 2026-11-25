@@ -817,9 +817,11 @@ pub enum DiagnosticCode {
     /// CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on
     /// GPU 0, so the code has no GPU to run on yet. Run it on device 0.
     E6042,
-    /// A `where Reachable<A, B>` clause names something that is not a topology parameter of
-    /// the function and not a declared or built-in topology. Write a parameter
-    /// (`<D : Topology>`) or a topology such as `Topology::CPU`.
+    /// A `where Reachable<A, B>` clause that the compiler cannot check. A side is a bare name that
+    /// is not a topology parameter of the function, a `Topology::X` that is not a parameter and
+    /// not a declared or built-in topology, or `Topology::Current`. Or the clause is on a method,
+    /// and a call of a method does not check it. Write a parameter (`<D : Topology>`) or a
+    /// topology such as `Topology::CPU`, on a function that is not a method.
     E6045,
 
     // --- Tensor/Math Errors (E7xxx) ---

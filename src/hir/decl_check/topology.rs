@@ -541,9 +541,11 @@ impl TypeChecker<'_> {
 
     /// Check every `where Reachable<A, B>` clause at its declaration (E6045).
     ///
-    /// Each side must be a topology parameter of the function or a topology that the program
-    /// declares or that is built in. A call checks only the clauses with a parameter, so a
-    /// clause with two fixed topologies is checked here.
+    /// A bare name must be a topology parameter of the function. A `Topology::X` side must be
+    /// a topology parameter, or a topology that the program declares or that is built in. A
+    /// call checks only the clauses with a parameter, so a clause with two fixed topologies is
+    /// checked here. A call of a method checks no clause, so a method of an impl block cannot
+    /// have one.
     pub fn check_where_reachable_clauses(&mut self) {
         let mut functions: Vec<&decl::Function> = self
             .env
@@ -554,29 +556,38 @@ impl TypeChecker<'_> {
             .filter(|f| !f.where_transfers.is_empty())
             .collect();
         // Source order, so that the errors come out in the same order on every run.
-        functions.sort_by(|a, b| {
+        let source_order = |a: &&decl::Function, b: &&decl::Function| {
             (&a.file, a.span.line, a.span.column, &a.name).cmp(&(
                 &b.file,
                 b.span.line,
                 b.span.column,
                 &b.name,
             ))
-        });
-        functions.dedup_by(|a, b| a.name == b.name);
+        };
+        functions.sort_by(source_order);
+
+        // A method of an impl block. A trait method cannot have a `where` clause: the parser
+        // refuses it.
+        let mut methods: Vec<(&decl::Function, String)> = self
+            .env
+            .impls
+            .values()
+            .flatten()
+            .flat_map(|block| {
+                block
+                    .methods
+                    .iter()
+                    .filter(|m| !m.where_transfers.is_empty())
+                    .map(|m| (m, format!("impl {}", block.target_type)))
+            })
+            .collect();
+        methods.sort_by(|a, b| source_order(&a.0, &b.0));
 
         let outside = self.errors.here();
         for f in functions {
-            let place = decl::DeclPlace {
-                file: f.file.clone(),
-                span: f.span,
-            };
-            self.errors.point_at(&place, &outside);
+            self.errors.point_at(&function_place(f), &outside);
             for (a, b) in &f.where_transfers {
-                let clause = format!(
-                    "where Reachable<{}, {}>",
-                    a.display_name(),
-                    b.display_name()
-                );
+                let clause = format!("where Reachable<{a}, {b}>");
                 let mut known = true;
                 for side in [a, b] {
                     if let Some(problem) = self.where_reachable_problem(f, side) {
@@ -588,22 +599,35 @@ impl TypeChecker<'_> {
                         );
                     }
                 }
-                let has_param = [a, b]
-                    .iter()
-                    .any(|t| matches!(t, Topology::Custom(n, None) if f.is_topology_param(n)));
+                let has_param = [a, b].iter().any(
+                    |t| matches!(&t.topology, Topology::Custom(n, None) if f.is_topology_param(n)),
+                );
                 if known && !has_param {
-                    let ma = self.transfer_cost_graph.default_memory_for(a);
-                    let mb = self.transfer_cost_graph.default_memory_for(b);
+                    let ma = self.transfer_cost_graph.default_memory_for(&a.topology);
+                    let mb = self.transfer_cost_graph.default_memory_for(&b.topology);
                     if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
                         self.errors.push(format!(
                             "unsatisfied `{clause}` on '{}': no transfer path from {} to {}",
                             f.name,
-                            a.display_name(),
-                            b.display_name()
+                            a.topology.display_name(),
+                            b.topology.display_name()
                         ));
                     }
                 }
             }
+        }
+        for (m, owner) in methods {
+            self.errors.point_at(&function_place(m), &outside);
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6045,
+                format!(
+                    "the method '{}' in `{owner}` has a `where Reachable<A, B>` clause. A call of \
+                     a method does not check the clause yet. Put the clause on a function that \
+                     is not a method",
+                    m.name
+                ),
+                None,
+            );
         }
         self.errors.point_back(outside);
     }
@@ -613,28 +637,43 @@ impl TypeChecker<'_> {
     pub(crate) fn where_reachable_problem(
         &self,
         f: &decl::Function,
-        side: &Topology,
+        side: &decl::ReachableSide,
     ) -> Option<String> {
-        match side {
+        match &side.topology {
             Topology::Current => Some(format!(
-                "`Current` is not a fixed topology; add a topology parameter `<D : Topology>` \
+                "`Current` is not a fixed topology. Add a topology parameter `<D : Topology>` \
                  to '{}' and write `D`",
                 f.name
             )),
+            Topology::Custom(n, None) if f.is_topology_param(n) => None,
+            Topology::Custom(n, _) if side.bare => Some(format!(
+                "'{n}' is not a topology parameter of '{}'. A bare name must be a topology \
+                 parameter. Write a parameter `<{n} : Topology>` or a topology such as \
+                 `Topology::CPU`",
+                f.name
+            )),
             Topology::Custom(n, _)
-                if !f.is_topology_param(n)
-                    && self
-                        .transfer_cost_graph
-                        .descriptor(&TopologyKind::Custom(n.clone()))
-                        .is_none() =>
+                if self
+                    .transfer_cost_graph
+                    .descriptor(&TopologyKind::Custom(n.clone()))
+                    .is_none() =>
             {
                 Some(format!(
-                    "'{n}' is not a topology parameter of '{}' and not a declared topology; \
-                     write a parameter `<{n} : Topology>` or a topology such as `Topology::CPU`",
+                    "'{n}' is not a topology parameter of '{}' and not a declared topology. \
+                     Write a parameter `<{n} : Topology>` or a declared topology such as \
+                     `Topology::CPU`",
                     f.name
                 ))
             }
             _ => None,
         }
+    }
+}
+
+/// Where a function is written, as a declaration's place.
+fn function_place(f: &decl::Function) -> decl::DeclPlace {
+    decl::DeclPlace {
+        file: f.file.clone(),
+        span: f.span,
     }
 }

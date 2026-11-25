@@ -5,41 +5,65 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Each side of a `where Reachable<A, B>` clause must be a topology parameter of the function
-// or a topology such as `Topology::CPU`. Every function here names something else, and each
-// call compiles with no second error about the same clause.
+// A bare name in a `where Reachable<A, B>` clause must be a topology parameter of the function.
+// A `Topology::X` side must be a parameter or a declared or built-in topology. Every function
+// here names something else, and each call has no second error about the same clause. A method
+// cannot have the clause, because a call of a method does not check it.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 //===----------------------------------------------------------------------===//
 
+Topology Acme {
+  memory: Memory::AcmeSRAM,
+  visible: [Memory::AcmeSRAM, Memory::CPU_DRAM],
+  transfer Memory::CPU_DRAM -> Memory::AcmeSRAM : 40 sync,
+}
+
 // A bare name that is not a parameter. `G` names no topology.
-// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, G>` on 'to_g': 'G' is not a topology parameter of 'to_g' and not a declared topology
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, G>` on 'to_g': 'G' is not a topology parameter of 'to_g'. A bare name must be a topology parameter.
 fn to_g<D : Topology>() on Topology::D -> i32 where Reachable<D, G> {
   return 1;
 }
 
 // A bare `CPU` is a name, not the topology `Topology::CPU`.
-// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, CPU>` on 'to_bare_cpu': 'CPU' is not a topology parameter of 'to_bare_cpu'
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, CPU>` on 'to_bare_cpu': 'CPU' is not a topology parameter of 'to_bare_cpu'. A bare name must be a topology parameter.
 fn to_bare_cpu<D : Topology>() on Topology::D -> i32 where Reachable<D, CPU> {
   return 1;
 }
 
+// A bare name of a declared topology is not a parameter either. Write `Topology::Acme`.
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, Acme>` on 'to_bare_acme': 'Acme' is not a topology parameter of 'to_bare_acme'. A bare name must be a topology parameter.
+fn to_bare_acme<D : Topology>() on Topology::D -> i32 where Reachable<D, Acme> {
+  return 1;
+}
+
 // A topology that the program does not declare.
-// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, Nowhere>` on 'to_nowhere': 'Nowhere' is not a topology parameter of 'to_nowhere' and not a declared topology
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, Topology::Nowhere>` on 'to_nowhere': 'Nowhere' is not a topology parameter of 'to_nowhere' and not a declared topology.
 fn to_nowhere<D : Topology>() on Topology::D -> i32 where Reachable<D, Topology::Nowhere> {
   return 1;
 }
 
 // A type parameter is not a topology parameter.
-// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<T, CPU>` on 'from_type': 'T' is not a topology parameter of 'from_type'
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<T, Topology::CPU>` on 'from_type': 'T' is not a topology parameter of 'from_type'. A bare name must be a topology parameter.
 fn from_type<T>(x : T) -> i32 where Reachable<T, Topology::CPU> {
   return 1;
 }
 
 // `Current` changes with the caller, so it is not a fixed topology.
-// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<Current, D>` on 'from_current': `Current` is not a fixed topology
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<Topology::Current, D>` on 'from_current': `Current` is not a fixed topology.
 fn from_current<D : Topology>() on Topology::D -> i32 where Reachable<Topology::Current, D> {
   return 1;
+}
+
+struct Box1 {
+  v : i32,
+}
+
+impl Box1 {
+  // CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:6: the method 'get' in `impl Box1` has a `where Reachable<A, B>` clause. A call of a method does not check the clause yet.
+  fn get<D : Topology>(self : &Self) on Topology::D -> i32 where Reachable<D, G> {
+    return self.v;
+  }
 }
 
 fn main() -> i32 {
@@ -52,10 +76,14 @@ fn main() -> i32 {
   let c = spawn on(Topology::GPU) {
     to_nowhere()
   };
+  let f = spawn on(Topology::GPU) {
+    to_bare_acme()
+  };
+  let g = Box1 { v: 4 };
   let d = from_type(1);
   let e = spawn on(Topology::GPU) {
     from_current()
   };
-  println!("{} {} {} {} {}", a, b, c, d, e);
+  println!("{} {} {} {} {} {} {}", a, b, c, d, e, f, g.get());
   return 0;
 }

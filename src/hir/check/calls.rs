@@ -2701,15 +2701,15 @@ impl<'a> TypeChecker<'a> {
             for (a, b) in &generic_func.where_transfers {
                 // A clause with no parameter was checked at the declaration, and so was a
                 // clause that names no topology.
-                if !is_param(a) && !is_param(b)
+                if !is_param(&a.topology) && !is_param(&b.topology)
                     || [a, b]
                         .iter()
                         .any(|t| self.where_reachable_problem(generic_func, t).is_some())
                 {
                     continue;
                 }
-                let ta = Self::substitute_topology(a.clone(), &topo_mapping);
-                let tb = Self::substitute_topology(b.clone(), &topo_mapping);
+                let ta = Self::substitute_topology(a.topology.clone(), &topo_mapping);
+                let tb = Self::substitute_topology(b.topology.clone(), &topo_mapping);
                 // A parameter that the call does not bind cannot be checked.
                 if is_param(&ta) || is_param(&tb) {
                     continue;
@@ -2721,8 +2721,8 @@ impl<'a> TypeChecker<'a> {
                         self.errors.push(format!(
                             "unsatisfied `where Reachable<{}, {}>` in call to '{}': no transfer \
                              path from {} to {}",
-                            a.display_name(),
-                            b.display_name(),
+                            a,
+                            b,
                             name,
                             ta.display_name(),
                             tb.display_name()

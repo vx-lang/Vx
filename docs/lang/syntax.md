@@ -215,7 +215,8 @@ topology variables it must state that a transfer between them is possible. The
 `where Reachable<S, D>` clause is discharged at each call site against the transfer cost graph
 — instantiating `S`/`D` with a pair that has no path is a compile error. Multiple constraints
 are comma-separated. A side can also be a fixed topology, such as `Reachable<D, Topology::CPU>`.
-A bare name that is not a topology parameter of the function is error E6045.
+A bare name that is not a topology parameter of the function is error E6045. A method of an
+`impl` block cannot have the clause yet, because a call of a method does not check it (E6045).
 
 ```rust
 fn move_between<S: Topology, D: Topology>(
