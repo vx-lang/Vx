@@ -1513,6 +1513,20 @@ impl<'a> TypeChecker<'a> {
                         literal_ty.get_or_insert(arm_ty);
                     } else if yields_value && match_ty.is_none() {
                         match_ty = Some(arm_ty);
+                    } else if yields_value && !unused && !crate::syntax::is_never_ty(&arm_ty) {
+                        // The value of the `match` has one type, so every arm must give it.
+                        let first = match_ty.as_ref().expect("an earlier arm gave a value");
+                        if !crate::syntax::is_never_ty(first) && *first != arm_ty {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3068,
+                                format!(
+                                    "this `match` arm gives a value of type {arm_ty}, but an \
+                                     earlier arm gives a value of type {first}. Make every arm \
+                                     give the same type."
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&arm.span)),
+                            );
+                        }
                     }
                 }
                 match &match_ty {

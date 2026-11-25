@@ -492,6 +492,9 @@ pub enum DiagnosticCode {
     /// address, for example one that `p as *const void` made to give to a C function. It has no
     /// element type, so the compiler does not know what to read.
     E3067,
+    /// Two arms of a `match` whose value the program uses give values of different types, such
+    /// as an `i64` and an `i32`.
+    E3068,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
