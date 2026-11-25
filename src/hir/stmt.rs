@@ -872,7 +872,23 @@ impl<'a> TypeChecker<'a> {
                 self.place_for_let(name, &ty, &context, span);
             }
             self.shadow_borrows(name);
-            self.insert(name.to_string(), ty.clone());
+            // A reference is valid no longer than the variable that holds it. So `alias` in
+            // `let mut alias = &mut outside` in an inner block can later take a borrow there.
+            let held = match ty.clone() {
+                Type::Borrow {
+                    inner,
+                    mem_space,
+                    is_mut,
+                    region_id,
+                } => Type::Borrow {
+                    inner,
+                    mem_space,
+                    is_mut,
+                    region_id: region_id.max(self.scopes.len()),
+                },
+                other => other,
+            };
+            self.insert(name.to_string(), held);
             let depth = self.current_scope_depth();
             if from_literal {
                 self.literal_typed_lets.insert(name.to_string(), depth);
