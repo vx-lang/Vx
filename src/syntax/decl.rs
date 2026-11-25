@@ -85,10 +85,11 @@ pub struct Function {
     pub return_type: Type,
     pub requires: Vec<Expr>,
     pub ensures: Vec<Expr>,
-    /// `where Reachable<S, D>` constraints: pairs of topology names (generic topology
-    /// variables or concrete topologies) that must have a transfer path in the cost
-    /// graph. Discharged at each generic call once the variables are bound.
-    pub where_transfers: Vec<(Symbol, Symbol)>,
+    /// `where Reachable<S, D>` constraints: pairs of topologies that must have a transfer path
+    /// in the cost graph. A side is a topology parameter (`D`) or a fixed topology
+    /// (`Topology::CPU`). A clause with a parameter is checked at each call, and a clause with
+    /// two fixed topologies is checked once, at the declaration.
+    pub where_transfers: Vec<(Topology, Topology)>,
     /// `unsafe fn`: the function states a contract its caller must discharge, so a call needs an
     /// unsafe context. The body is not itself one (Rust 2024): an unsafe operation inside still
     /// needs its own `unsafe` block.
@@ -112,6 +113,16 @@ pub struct Function {
 }
 
 impl Function {
+    /// Whether `name` is a topology parameter of the function (`<D : Topology>`).
+    pub fn is_topology_param(&self, name: &str) -> bool {
+        self.generics.iter().any(|g| match g {
+            GenericParam::Type { name: n, bounds } => {
+                n.as_ref() == name && bounds.iter().any(|b| b.trait_name.as_ref() == "Topology")
+            }
+            _ => false,
+        })
+    }
+
     pub fn clone_signature(&self, preserve_body: bool) -> Self {
         Self {
             name: self.name.clone(),

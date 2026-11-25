@@ -2697,20 +2697,38 @@ impl<'a> TypeChecker<'a> {
 
             // Discharge `where Reachable<A, B>` now that the topology variables are bound:
             // a transfer path from A's memory to B's must exist in the cost graph.
+            let is_param = |t: &Topology| matches!(t, Topology::Custom(n, None) if generic_func.is_topology_param(n));
             for (a, b) in &generic_func.where_transfers {
-                if let (Some(ta), Some(tb)) = (topo_mapping.get(a), topo_mapping.get(b)) {
-                    let ma = self.transfer_cost_graph.default_memory_for(ta);
-                    let mb = self.transfer_cost_graph.default_memory_for(tb);
-                    if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
-                        if !self.speculating {
-                            self.errors.push(format!(
-                                "unsatisfied `where Reachable<{}, {}>` in call to '{}': no transfer \
-                                 path from {:?} to {:?}",
-                                a, b, name, ta, tb
-                            ));
-                        }
-                        return None;
+                // A clause with no parameter was checked at the declaration, and so was a
+                // clause that names no topology.
+                if !is_param(a) && !is_param(b)
+                    || [a, b]
+                        .iter()
+                        .any(|t| self.where_reachable_problem(generic_func, t).is_some())
+                {
+                    continue;
+                }
+                let ta = Self::substitute_topology(a.clone(), &topo_mapping);
+                let tb = Self::substitute_topology(b.clone(), &topo_mapping);
+                // A parameter that the call does not bind cannot be checked.
+                if is_param(&ta) || is_param(&tb) {
+                    continue;
+                }
+                let ma = self.transfer_cost_graph.default_memory_for(&ta);
+                let mb = self.transfer_cost_graph.default_memory_for(&tb);
+                if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
+                    if !self.speculating {
+                        self.errors.push(format!(
+                            "unsatisfied `where Reachable<{}, {}>` in call to '{}': no transfer \
+                             path from {} to {}",
+                            a.display_name(),
+                            b.display_name(),
+                            name,
+                            ta.display_name(),
+                            tb.display_name()
+                        ));
                     }
+                    return None;
                 }
             }
 

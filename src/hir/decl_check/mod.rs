@@ -71,6 +71,8 @@ impl TypeChecker<'_> {
             self.env.topologies.values().map(|t| (*t).clone()).collect();
         declared.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
         self.check_topology_coherence(&declared);
+        // A `where Reachable<A, B>` clause names a topology parameter or a known topology.
+        self.check_where_reachable_clauses();
         // Declared memory spaces: `within:` cycles, oversized sub-spaces, colliding ids.
         self.check_memory_coherence();
         // Placements written in signatures and struct fields name a space some topology holds.

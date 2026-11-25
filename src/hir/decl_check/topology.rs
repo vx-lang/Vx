@@ -538,4 +538,103 @@ impl TypeChecker<'_> {
         }
         self.errors.point_back(outside);
     }
+
+    /// Check every `where Reachable<A, B>` clause at its declaration (E6043).
+    ///
+    /// Each side must be a topology parameter of the function or a topology that the program
+    /// declares or that is built in. A call checks only the clauses with a parameter, so a
+    /// clause with two fixed topologies is checked here.
+    pub fn check_where_reachable_clauses(&mut self) {
+        let mut functions: Vec<&decl::Function> = self
+            .env
+            .syntax_functions
+            .values()
+            .copied()
+            .chain(self.env.generic_functions.values().map(|(f, _)| *f))
+            .filter(|f| !f.where_transfers.is_empty())
+            .collect();
+        // Source order, so that the errors come out in the same order on every run.
+        functions.sort_by(|a, b| {
+            (&a.file, a.span.line, a.span.column, &a.name).cmp(&(
+                &b.file,
+                b.span.line,
+                b.span.column,
+                &b.name,
+            ))
+        });
+        functions.dedup_by(|a, b| a.name == b.name);
+
+        let outside = self.errors.here();
+        for f in functions {
+            let place = decl::DeclPlace {
+                file: f.file.clone(),
+                span: f.span,
+            };
+            self.errors.point_at(&place, &outside);
+            for (a, b) in &f.where_transfers {
+                let clause = format!(
+                    "where Reachable<{}, {}>",
+                    a.display_name(),
+                    b.display_name()
+                );
+                let mut known = true;
+                for side in [a, b] {
+                    if let Some(problem) = self.where_reachable_problem(f, side) {
+                        known = false;
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6043,
+                            format!("`{clause}` on '{}': {problem}", f.name),
+                            None,
+                        );
+                    }
+                }
+                let has_param = [a, b]
+                    .iter()
+                    .any(|t| matches!(t, Topology::Custom(n, None) if f.is_topology_param(n)));
+                if known && !has_param {
+                    let ma = self.transfer_cost_graph.default_memory_for(a);
+                    let mb = self.transfer_cost_graph.default_memory_for(b);
+                    if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
+                        self.errors.push(format!(
+                            "unsatisfied `{clause}` on '{}': no transfer path from {} to {}",
+                            f.name,
+                            a.display_name(),
+                            b.display_name()
+                        ));
+                    }
+                }
+            }
+        }
+        self.errors.point_back(outside);
+    }
+
+    /// Why one side of a `where Reachable<A, B>` clause on `f` names no topology, or `None`
+    /// when it is a topology parameter of `f` or a known topology.
+    pub(crate) fn where_reachable_problem(
+        &self,
+        f: &decl::Function,
+        side: &Topology,
+    ) -> Option<String> {
+        match side {
+            Topology::Current => Some(format!(
+                "`Current` is not a fixed topology; add a topology parameter `<D : Topology>` \
+                 to '{}' and write `D`",
+                f.name
+            )),
+            Topology::Custom(n, _)
+                if !f.is_topology_param(n)
+                    && self
+                        .transfer_cost_graph
+                        .descriptor(&TopologyKind::Custom(n.clone()))
+                        .is_none() =>
+            {
+                Some(format!(
+                    "'{n}' is not a topology parameter of '{}' and not a declared topology; \
+                     write a parameter `<{n} : Topology>` or a topology such as `Topology::CPU`",
+                    f.name
+                ))
+            }
+            _ => None,
+        }
+    }
 }

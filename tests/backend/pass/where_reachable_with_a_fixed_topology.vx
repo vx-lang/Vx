@@ -1,0 +1,43 @@
+//===- where_reachable_with_a_fixed_topology.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `where Reachable<A, B>` clause can name a fixed topology on either side. Every call here
+// has a transfer path, so the program compiles and runs.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//===----------------------------------------------------------------------===//
+
+Topology Acme {
+  memory: Memory::AcmeSRAM,
+  visible: [Memory::AcmeSRAM, Memory::CPU_DRAM],
+  transfer Memory::CPU_DRAM -> Memory::AcmeSRAM : 40 sync,
+}
+
+fn to_host<D : Topology>() on Topology::D -> i32 where Reachable<D, Topology::CPU> {
+  return 1;
+}
+
+fn from_host<D : Topology>() on Topology::D -> i32 where Reachable<Topology::CPU, D> {
+  return 2;
+}
+
+fn host_to_acme() -> i32 where Reachable<Topology::CPU, Topology::Acme> {
+  return 3;
+}
+
+fn main() -> i32 {
+  let a = to_host();
+  let b = spawn on(Topology::GPU) {
+    to_host()
+  };
+  let c = spawn on(Topology::Acme) {
+    from_host()
+  };
+  // CHECK: {{^}}results 1 1 2 3{{$}}
+  println!("results {} {} {} {}", a, b, c, host_to_acme());
+  return 0;
+}
