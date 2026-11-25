@@ -65,7 +65,11 @@ fn a_program_that_imports_the_standard_library() {
 #[test]
 fn a_program_that_imports_a_file_beside_it() {
     let dir = empty_dir("beside");
-    std::fs::write(dir.join("helper.vx"), "fn seven() -> i32 { return 7; }\n").unwrap();
+    std::fs::write(
+        dir.join("helper.vx"),
+        "pub fn seven() -> i32 { return 7; }\n",
+    )
+    .unwrap();
     let main = dir.join("main.vx");
     std::fs::write(
         &main,

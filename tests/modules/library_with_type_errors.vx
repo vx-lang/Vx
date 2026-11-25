@@ -26,10 +26,10 @@ fn calls_wrong_field() -> i64 {
 }
 
 // Calls a function that does not exist.
-fn calls_a_missing_function(x : i64) -> i64 {
+pub fn calls_a_missing_function(x : i64) -> i64 {
   return missing_function(x);
 }
 
-fn add_one(x : i32) -> i32 {
+pub fn add_one(x : i32) -> i32 {
   return x + 1;
 }

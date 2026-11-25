@@ -114,9 +114,9 @@ pub struct Function {
     /// unsafe context. The body is not itself one (Rust 2024): an unsafe operation inside still
     /// needs its own `unsafe` block.
     pub is_unsafe: bool,
-    /// `pub fn`: code in other files can call the function. A function with no `pub` is private
-    /// to its file (docs/discussions/private_functions.md).
-    pub is_pub: bool,
+    /// `pub fn` (any file can call the function), `pkg fn` (any file of its package) or
+    /// neither (only its own file). docs/discussions/private_functions.md has the rules.
+    pub visibility: crate::gid::Visibility,
     /// `extern fn`: the object file exports the function under its own name. Any other function
     /// the program defines is hidden (docs/lang/abi.md, section 4).
     pub exported: bool,
@@ -130,6 +130,8 @@ pub struct Function {
     /// instance checked from its caller still names the file it was written in. `None` for a
     /// function built in memory.
     pub file: Option<Symbol>,
+    /// The package of `file`, as [`Program::package`] says.
+    pub package: Option<Symbol>,
 }
 
 impl Function {
@@ -155,7 +157,7 @@ impl Function {
             ensures: self.ensures.clone(),
             where_transfers: self.where_transfers.clone(),
             is_unsafe: self.is_unsafe,
-            is_pub: self.is_pub,
+            visibility: self.visibility,
             exported: self.exported,
             body: if preserve_body || !self.generics.is_empty() {
                 self.body.clone()
@@ -165,6 +167,7 @@ impl Function {
             doc_comment: self.doc_comment.clone(),
             span: self.span,
             file: self.file.clone(),
+            package: self.package.clone(),
         }
     }
 }
@@ -210,8 +213,8 @@ pub struct EnumDecl {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ExternDecl {
     pub name: Symbol,
-    /// `pub fn` in the `extern` block: code in other files can call the function.
-    pub is_pub: bool,
+    /// `pub fn` or `pkg fn` in the `extern` block, as for [`Function::visibility`].
+    pub visibility: crate::gid::Visibility,
     pub is_safe: bool,
     /// The memory parameters, the `M` of `fn f<M : Memory>(p : *mut f32 in Memory::M)`. Each
     /// call binds them to the memories of its pointer arguments.
@@ -225,6 +228,8 @@ pub struct ExternDecl {
     pub span: Span,
     /// The file of the declaration, set as for the other items.
     pub file: Option<Symbol>,
+    /// The package of `file`, as [`Program::package`] says.
+    pub package: Option<Symbol>,
     /// The `///` lines above the declaration. Six library modules are nothing but an extern
     /// block, so without this they had no way to say what their functions do.
     pub doc_comment: Option<String>,
@@ -521,6 +526,10 @@ pub struct Program {
     /// The path this module was read from, as the compiler was given it or as the import
     /// search found it. Diagnostics name it. `None` for a program built in memory.
     pub file: Option<Symbol>,
+    /// The package the module belongs to: `core`, `std`, a package given with `--package`, or
+    /// the empty name for the files of the program itself. A `pkg fn` is visible to each
+    /// file of its package. `None` for a program built in memory.
+    pub package: Option<Symbol>,
     pub imports: Vec<ImportDecl>,
     pub macros: Vec<MacroDefDecl>,
     pub externs: Vec<ExternDecl>,
@@ -573,6 +582,7 @@ impl Program {
             .flat_map(|t| t.methods.iter_mut());
         for f in functions.chain(methods).chain(lowerings) {
             f.file = file.clone();
+            f.package = self.package.clone();
         }
         let places = self.structs.iter_mut().map(|s| &mut s.place);
         let places = places.chain(self.enums.iter_mut().map(|e| &mut e.place));
@@ -586,6 +596,7 @@ impl Program {
         }
         for ext in &mut self.externs {
             ext.file = file.clone();
+            ext.package = self.package.clone();
         }
     }
 
@@ -593,6 +604,7 @@ impl Program {
         Self {
             module_path: self.module_path.clone(),
             file: self.file.clone(),
+            package: self.package.clone(),
             // Not carried: a signature-only copy is taken after expansion, when the list is
             // already empty, and carrying it would expand the same call a second time.
             item_macros: Vec::new(),

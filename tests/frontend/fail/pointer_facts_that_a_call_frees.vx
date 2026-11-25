@@ -51,7 +51,7 @@ struct Holder {
 }
 
 fn frees_it(p : *mut i8) -> void {
-  dealloc(p, 8i64);
+  unsafe { dealloc(p, 8i64) };
 }
 
 fn stores_it(h : &mut Holder, p : *const i64) -> void {

@@ -27,6 +27,6 @@ fn main() -> i32 {
   unsafe { print(back[1i64] as i64); }
   print!(";");
   // CHECK: {{^}}from_mut=hi; second_byte=121;{{$}}
-  dealloc(buf, 16);
+  unsafe { dealloc(buf, 16) };
   return 0;
 }
