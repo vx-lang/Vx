@@ -384,7 +384,9 @@ pub enum DiagnosticCode {
     /// A top-level `const` whose value is not known while compiling, or does not fit its
     /// declared type. A `const` holds a number or a `bool`: a literal, or arithmetic on
     /// literals and other `const`s. A `const` table holds a list of number literals, and is
-    /// read one number at a time, as `TABLE[i]`.
+    /// read one number at a time, as `TABLE[i]`. A top-level `static` gets this error too. A
+    /// `static` holds one number literal, `true` or `false`, or a table. It cannot be
+    /// borrowed, and a `requires` or an `ensures` cannot name it.
     E3044,
     /// An integer literal that does not fit its type, such as `300` for a `u8`. A `usize`
     /// holds 0 up to the largest `i64`.

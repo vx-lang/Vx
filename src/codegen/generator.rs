@@ -1215,7 +1215,7 @@ impl<'c> MeliorGenerator<'c> {
         Ok(s)
     }
 
-    /// A read-only global for each `const` table in `programs`, in name order.
+    /// A read-only global for each `const` table and each `static` in `programs`, in name order.
     fn add_const_tables<'p>(
         &mut self,
         programs: impl Iterator<Item = &'p Program>,
@@ -1233,14 +1233,7 @@ impl<'c> MeliorGenerator<'c> {
         for table in tables {
             let memty = Type::parse(self.context, &table.memref_type())
                 .expect("a table's memref type parses");
-            let elem = crate::mlir_ty::mlir_scalar(&table.elem)
-                .expect("a table's element has an MLIR type");
-            let init = format!(
-                "dense<[{}]> : tensor<{}x{}>",
-                table.values.join(", "),
-                table.len,
-                elem
-            );
+            let init = format!("{} : {}", table.initial_value(), table.tensor_type());
             let attr =
                 |name: &str, value: Attribute<'c>| (Identifier::new(self.context, name), value);
             let global = OperationBuilder::new("memref.global", self.loc())

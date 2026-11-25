@@ -194,62 +194,109 @@ impl LayoutNameIndex {
 /// A top-level `const` tensor: a table of numbers known while compiling, such as
 /// `const POWERS : Tensor<i64, [4]> = [1, 10, 100, 1000];`. It becomes one read-only global in
 /// the module, which every use reads from.
+///
+/// A top-level `static` is held here too. `static LIMIT : i32 = 40;` becomes one read-only
+/// global that holds one value, and `len` is `None` for it.
 #[derive(Debug, Clone)]
 pub struct ConstTable {
     pub name: crate::symbol::Symbol,
     pub elem: crate::syntax::ElementType,
-    pub len: usize,
+    /// The number of elements of a table. `None` for a `static` that holds one value.
+    pub len: Option<usize>,
     /// Each element as MLIR writes it inside `dense<[..]>`: a float as its bits in hex, so no
-    /// digit is rounded twice, and an integer as a signed decimal of its width.
+    /// digit is rounded twice, an integer as a signed decimal of its width, and a `bool` as
+    /// `true` or `false`.
     pub values: Vec<String>,
+    /// The item was written with `static`, not `const`.
+    pub is_static: bool,
 }
 
 impl ConstTable {
-    /// The table `decl` declares, `Ok(None)` when it declares a number or `bool` instead, and
-    /// `Err` with the reason when it is a tensor `const` this compiler cannot build yet.
+    /// The global `decl` declares: a table, or the one value of a `static`. `Ok(None)` when
+    /// `decl` is a `const` number or `bool`, which has no global. `Err` with the reason when
+    /// this compiler cannot build the global yet.
     pub fn from_decl(decl: &crate::syntax::ConstDecl) -> Result<Option<ConstTable>, String> {
         use crate::syntax::{Dim, ElementType::*, Expr, Type, UnaryOp};
-        let Type::Tensor(elem, dims, placement) = &decl.ty else {
-            return Ok(None);
+        let (elem, len, elements): (_, _, Vec<&Expr>) = match &decl.ty {
+            Type::Tensor(elem, dims, placement) => {
+                if placement.is_some() {
+                    return Err("cannot be placed: a table lives with the program".into());
+                }
+                let len = match dims.as_slice() {
+                    [Dim::Static(Expr::Number(n))] => n
+                        .value
+                        .parse::<usize>()
+                        .map_err(|_| "must have a whole number as its length".to_string())?,
+                    _ => return Err("must have one dimension whose length is a number".into()),
+                };
+                if !matches!(
+                    elem,
+                    F32 | F64 | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64
+                ) {
+                    return Err("must hold whole numbers or `f32`/`f64` numbers for now".into());
+                }
+                let Expr::Array(array) = &decl.expr else {
+                    return Err("must be written as a list of numbers, `[1, 2, 3]`".into());
+                };
+                if array.elements.len() != len {
+                    return Err(format!(
+                        "has {} numbers, but its type says {}",
+                        array.elements.len(),
+                        len
+                    ));
+                }
+                (elem, Some(len), array.elements.iter().collect())
+            }
+            Type::Scalar(elem) if decl.is_static => {
+                if !matches!(
+                    elem,
+                    Bool | F32 | F64 | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64
+                ) {
+                    return Err(
+                        "must have the type `bool`, `f32`, `f64`, or a whole number type from \
+                         `i8` to `i64` or from `u8` to `u64` for now"
+                            .into(),
+                    );
+                }
+                (elem, None, vec![&decl.expr])
+            }
+            _ if decl.is_static => {
+                return Err("must be a number, a `bool` or a table of numbers for now".into());
+            }
+            _ => return Ok(None),
         };
-        if placement.is_some() {
-            return Err("cannot be placed: a table lives with the program".into());
-        }
-        let len = match dims.as_slice() {
-            [Dim::Static(Expr::Number(n))] => n
-                .value
-                .parse::<usize>()
-                .map_err(|_| "must have a whole number as its length".to_string())?,
-            _ => return Err("must have one dimension whose length is a number".into()),
+        let not_a_literal = if len.is_some() {
+            "must hold only number literals"
+        } else if *elem == Bool {
+            "must have `true` or `false` as its value for now"
+        } else {
+            "must have one number literal as its value for now"
         };
-        if !matches!(
-            elem,
-            F32 | F64 | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64
-        ) {
-            return Err("must hold whole numbers or `f32`/`f64` numbers for now".into());
-        }
-        let Expr::Array(array) = &decl.expr else {
-            return Err("must be written as a list of numbers, `[1, 2, 3]`".into());
-        };
-        if array.elements.len() != len {
-            return Err(format!(
-                "has {} numbers, but its type says {}",
-                array.elements.len(),
-                len
-            ));
-        }
-        let mut values = Vec::with_capacity(len);
-        for element in &array.elements {
+        let mut values = Vec::with_capacity(elements.len());
+        for element in elements {
+            if *elem == Bool {
+                match element {
+                    Expr::Identifier(id) if matches!(id.name.as_ref(), "true" | "false") => {
+                        values.push(id.name.to_string());
+                        continue;
+                    }
+                    _ => return Err(not_a_literal.into()),
+                }
+            }
             let (negative, n) = match element {
                 Expr::Number(n) => (false, n),
                 Expr::UnaryOp(u) if u.op == UnaryOp::Neg => match &*u.expr {
                     Expr::Number(n) => (true, n),
-                    _ => return Err("must hold only number literals".into()),
+                    _ => return Err(not_a_literal.into()),
                 },
-                _ => return Err("must hold only number literals".into()),
+                _ => return Err(not_a_literal.into()),
             };
             if n.ty.as_ref().is_some_and(|t| t != elem) {
-                return Err("has a number whose type differs from the table's".into());
+                return Err(if len.is_some() {
+                    "has a number whose type differs from the table's".into()
+                } else {
+                    "has a number whose type differs from the declared one".into()
+                });
             }
             let text = n.value.replace('_', "");
             let value = match elem {
@@ -315,28 +362,54 @@ impl ConstTable {
             elem: elem.clone(),
             len,
             values,
+            is_static: decl.is_static,
         }))
     }
 
     /// The global's name in the module. The prefix keeps it apart from functions.
     pub fn symbol(&self) -> String {
-        format!("__vx_const_{}", self.name)
+        let kind = if self.is_static { "static" } else { "const" };
+        format!("__vx_{}_{}", kind, self.name)
     }
 
-    /// The MLIR type of the table, `memref<64xf64>`.
-    pub fn memref_type(&self) -> String {
+    /// The shape and element type of the global as MLIR writes them: `64xf64` for a table,
+    /// and `i32` for a `static` that holds one value.
+    fn shape_and_element(&self) -> String {
         let elem =
             crate::mlir_ty::mlir_scalar(&self.elem).expect("a table's element has an MLIR type");
-        format!("memref<{}x{}>", self.len, elem)
+        match self.len {
+            Some(len) => format!("{len}x{elem}"),
+            None => elem.to_string(),
+        }
     }
 
-    /// The table's read-only global, one line of MLIR.
+    /// The MLIR type of the global: `memref<64xf64>` for a table, and `memref<i32>` for a
+    /// `static` that holds one value.
+    pub fn memref_type(&self) -> String {
+        format!("memref<{}>", self.shape_and_element())
+    }
+
+    /// The type of the value that `initial_value` writes, `tensor<64xf64>` or `tensor<i32>`.
+    pub fn tensor_type(&self) -> String {
+        format!("tensor<{}>", self.shape_and_element())
+    }
+
+    /// The values of the global as MLIR writes them: `dense<[1, 2]>` for a table, and
+    /// `dense<40>` for a `static` that holds one value.
+    pub fn initial_value(&self) -> String {
+        match self.len {
+            Some(_) => format!("dense<[{}]>", self.values.join(", ")),
+            None => format!("dense<{}>", self.values[0]),
+        }
+    }
+
+    /// The read-only global, one line of MLIR.
     pub fn global_op(&self) -> String {
         format!(
-            "memref.global \"private\" constant @{} : {} = dense<[{}]>\n",
+            "memref.global \"private\" constant @{} : {} = {}\n",
             self.symbol(),
             self.memref_type(),
-            self.values.join(", ")
+            self.initial_value()
         )
     }
 }

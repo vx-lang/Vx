@@ -45,6 +45,18 @@ fn power_of_ten(i : i64) -> i64 {
 }
 ```
 
+A `static` at the top level is a value that the program stores once, read-only. Each use reads
+it from that one place:
+
+```rust
+static LIMIT : i32 = 40;
+static STEPS : Tensor<i32, [3]> = [1, 2, 3];
+```
+
+The value is one number literal, `true` or `false`, or a table of number literals. A type or a
+`const` can use the value of a `static`. A `static` cannot be changed or borrowed, and a `requires`
+or an `ensures` cannot name it. Vx has no `static mut` yet.
+
 ## Functions
 
 ```rust

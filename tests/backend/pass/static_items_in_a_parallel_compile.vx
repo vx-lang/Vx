@@ -1,0 +1,52 @@
+//===- static_items_in_a_parallel_compile.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A parallel compile (`-j`) of a program with `static` items. The first two RUN lines check
+// that the parallel compile wrote the MLIR, and that the MLIR has the globals. A program that
+// the parallel compile cannot write goes to the normal compile, which prints no `emitted
+// module` line. The next three check that one thread and two threads write the same MLIR.
+// The last one runs the program.
+//
+// RUN: vxc --package tests=tests %s --action emit-mlir -j 1 2>&1 | FileCheck %s --check-prefixes=ONE,CHECK
+// RUN: vxc --package tests=tests %s --action emit-mlir -j 2 2>&1 | FileCheck %s --check-prefixes=TWO,CHECK
+// RUN: vxc --package tests=tests %s --action emit-mlir -j 1 2>&1 | grep -v parallel-frontend > %t.one
+// RUN: vxc --package tests=tests %s --action emit-mlir -j 2 2>&1 | grep -v parallel-frontend > %t.two
+// RUN: cmp %t.one %t.two
+// RUN: vxc --package tests=tests %s -j 2 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+//
+// ONE: [parallel-frontend] emitted module with -j 1
+// TWO: [parallel-frontend] emitted module with -j 2
+// CHECK-DAG: memref.global "private" constant @__vx_static_ZONES : memref<i32> = dense<9>
+// CHECK-DAG: memref.global "private" constant @__vx_static_AREAS : memref<3xi64> = dense<[10, 20, 30]>
+// CHECK-DAG: memref.global "private" constant @__vx_static_MIDDLE : memref<f64> = dense<5.000000e-01>
+// CHECK-DAG: memref.global "private" constant @__vx_static_WHEELS : memref<i32> = dense<4>
+// CHECK: [[ZONES:%[0-9a-z_]+]] = memref.get_global @__vx_static_ZONES : memref<i32>
+// CHECK-NEXT: memref.load [[ZONES]][] : memref<i32>
+//
+// OUT: 69 0.5 12
+import tests::modules::a_module_with_statics;
+
+static ZONES : i32 = 9;
+static AREAS : Tensor<i64, [3]> = [10, 20, 30];
+static MIDDLE : f64 = 0.5;
+
+fn sum_of_areas() -> i64 {
+  let mut sum : i64 = 0;
+  for i in 0..3 {
+    sum = sum + AREAS[i];
+  }
+  return sum;
+}
+
+fn main() -> i32 {
+  print(sum_of_areas() + (ZONES as i64));
+  print!(" ");
+  print(MIDDLE);
+  print!(" ");
+  print(WHEELS + wheels_times(2));
+  return 0;
+}

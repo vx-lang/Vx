@@ -1579,15 +1579,17 @@ impl<'r> Lowerer<'r> {
                         if let Some((at, table)) = self.registry.const_table(&id.name) {
                             let ty = LoweredTy::Tensor {
                                 elem: table.elem.clone(),
-                                shape: vec![table.len.to_string()],
+                                shape: table.len.iter().map(|len| len.to_string()).collect(),
                             };
-                            return Ok(self.emit_typed(
+                            let global = self.emit_typed(
                                 Opcode::ConstTable,
                                 Register(0),
                                 Register(0),
                                 ty,
                                 at as u64,
-                            ));
+                            );
+                            // A `static` that holds one value has no shape: read the value.
+                            return Ok(self.read_rank0(global));
                         }
                         self.lower_func_const(&id.name)
                             .ok_or(Decline::TypeNotModelled {

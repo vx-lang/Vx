@@ -1,0 +1,98 @@
+//===- static_items_misused.vx - Vx -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each `static` that the compiler cannot store gets one error at its declaration, used or
+// not. A `static` cannot be changed or borrowed. `KEPT` and `STEPS` are correct: the errors
+// in `main` are about their uses.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+const SIDES : i32 = 6;
+
+struct Pair {
+  a : i32,
+  b : i32
+}
+
+trait Doubled {
+  fn doubled(self : &i32) -> i32;
+}
+
+extern impl Doubled for i32 {
+  fn doubled(self : &i32) -> i32 {
+    return *self * 2;
+  }
+}
+
+// A `static` and a `const` cannot have the same name.
+const TWICE : i32 = 1;
+// CHECK: Error[E6012] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'TWICE' is declared in more than one input
+static TWICE : i32 = 2;
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'EDGES' must have one number literal as its value for now
+static EDGES : i32 = SIDES * 2;
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'HALF' must have the type `bool`, `f32`, `f64`, or a whole number type from `i8` to `i64` or from `u8` to `u64` for now
+static HALF : f16 = 0.5;
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'COUNT' must have the type `bool`, `f32`, `f64`, or a whole number type from `i8` to `i64` or from `u8` to `u64` for now
+static COUNT : usize = 3;
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'TOO_BIG' has `300`, which does not fit in its type
+static TOO_BIG : i8 = 300;
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'FLAG' must have `true` or `false` as its value for now
+static FLAG : bool = 1;
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'WRONG_TYPE' has a number whose type differs from the declared one
+static WRONG_TYPE : i32 = 4i64;
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'PART' has `4.5`, which is not a whole number
+static PART : i32 = 4.5;
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'CORNER' must be a number, a `bool` or a table of numbers for now
+static CORNER : Pair = Pair {
+  a: 1, b: 2
+};
+
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: static 'SHORT' has 2 numbers, but its type says 3
+static SHORT : Tensor<i8, [3]> = [1, 2];
+
+static KEPT : i32 = 4;
+static STEPS : Tensor<i32, [2]> = [1, 2];
+
+// A `static` has the value that it is written with. A `const` made from it must fit too.
+// CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:1: const 'KEPT_TIMES_100' has a value that does not fit its declared type
+const KEPT_TIMES_100 : i8 = KEPT * 100;
+
+fn read(p : &i32) -> i32 {
+  return *p;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E4010] at {{.*}}static_items_misused.vx:[[@LINE+1]]:3: `KEPT` is a `static`, so it cannot be assigned
+  KEPT = 5;
+  // CHECK: Error[E4010] at {{.*}}static_items_misused.vx:[[@LINE+1]]:3: `KEPT` is a `static`, so it cannot be assigned
+  KEPT += 1;
+  // CHECK: Error[E4010] at {{.*}}static_items_misused.vx:[[@LINE+1]]:8: `STEPS` is a `static`, so it cannot be assigned
+  STEPS[0] = 4;
+  // CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:15: static 'STEPS' is a table: read it one number at a time, as `STEPS[i]`
+  let whole = STEPS;
+  // CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:16: static 'KEPT' cannot be borrowed yet. Copy its value into a variable, and borrow that variable
+  let a = read(&KEPT);
+  // CHECK: Error[E4010] at {{.*}}static_items_misused.vx:[[@LINE+1]]:16: `KEPT` is a `static`, so it cannot be borrowed `&mut`
+  let b = read(&mut KEPT);
+  // A method that takes `&self` borrows the value that it is called on.
+  // CHECK: Error[E3044] at {{.*}}static_items_misused.vx:[[@LINE+1]]:16: static 'KEPT' cannot be borrowed yet. Copy its value into a variable, and borrow that variable
+  let c = KEPT.doubled();
+  // A copy of the value can be borrowed.
+  let copy = KEPT;
+  let d = read(&copy) + copy.doubled();
+  // A use of a `static` that has an error adds no second error.
+  let e = EDGES + (TOO_BIG as i32);
+  return a + b + c + d + e + whole[0];
+}

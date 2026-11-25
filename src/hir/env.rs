@@ -271,7 +271,7 @@ impl<'a> GlobalAstEnv<'a> {
                 if let Some(prev) = env.consts.insert(c.name.clone(), c) {
                     if prev != c {
                         env.duplicate_decls.push(DuplicateDecl {
-                            kind: "const",
+                            kind: c.keyword(),
                             name: c.name.clone(),
                             module: module.module_path.clone(),
                             place: crate::syntax::DeclPlace {

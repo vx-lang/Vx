@@ -84,6 +84,109 @@ impl TypeChecker<'_> {
         // A `const` whose value does not fit its type, or has no value while compiling, is
         // reported once here. Uses only substitute the value.
         self.check_const_declarations();
+        // A `requires` or an `ensures` that names a `static`.
+        self.check_contracts_name_no_static();
+    }
+
+    /// E3044 for a `requires` or an `ensures` that names a `static`.
+    ///
+    /// A caller proves a clause of the function it calls with its own names. A local of the
+    /// caller with the name of the `static` would take the place of the `static`, and a false
+    /// clause would pass.
+    fn check_contracts_name_no_static(&mut self) {
+        use crate::symbol::Symbol;
+        use crate::syntax::{DeclPlace, Expr, GenericParam};
+        let statics: std::collections::HashSet<&Symbol> = self
+            .env
+            .consts
+            .values()
+            .filter(|c| c.is_static)
+            .map(|c| &c.name)
+            .collect();
+        if statics.is_empty() {
+            return;
+        }
+        // Sorted by file, line, column and name. A map, because a function can be listed twice.
+        let mut found = std::collections::BTreeMap::new();
+        let mut scan = |file: &Option<Symbol>, hidden: &[&Symbol], clauses: &[Expr]| {
+            for clause in clauses {
+                crate::syntax::visit_expr(clause, &mut |e| {
+                    if let Expr::Identifier(id) = e {
+                        if statics.contains(&id.name) && !hidden.contains(&&id.name) {
+                            found.insert(
+                                (
+                                    file.as_ref().map(|f| f.to_string()),
+                                    id.span.line,
+                                    id.span.column,
+                                    id.name.to_string(),
+                                ),
+                                DeclPlace {
+                                    file: file.clone(),
+                                    span: id.span,
+                                },
+                            );
+                        }
+                    }
+                });
+            }
+        };
+        // A parameter or a generic parameter with the name of a `static` hides the `static`.
+        fn names<'n>(
+            generics: &[&'n [GenericParam]],
+            params: &'n [(Symbol, crate::syntax::Type)],
+        ) -> Vec<&'n Symbol> {
+            let generics = generics.iter().flat_map(|g| g.iter()).map(|g| match g {
+                GenericParam::Type { name, .. } | GenericParam::Const { name, .. } => name,
+            });
+            generics.chain(params.iter().map(|(n, _)| n)).collect()
+        }
+        let functions = self
+            .env
+            .syntax_functions
+            .values()
+            .copied()
+            .chain(self.env.generic_functions.values().map(|(f, _)| *f));
+        for f in functions {
+            let hidden = names(&[&f.generics], &f.params);
+            scan(&f.file, &hidden, &f.requires);
+            scan(&f.file, &hidden, &f.ensures);
+        }
+        for block in self.env.impls.values().flatten() {
+            for m in &block.methods {
+                let hidden = names(&[&block.generics, &m.generics], &m.params);
+                scan(&m.file, &hidden, &m.requires);
+                scan(&m.file, &hidden, &m.ensures);
+            }
+        }
+        for t in &self.env.transfer_impls {
+            for m in &t.methods {
+                let hidden = names(&[&m.generics], &m.params);
+                scan(&m.file, &hidden, &m.requires);
+                scan(&m.file, &hidden, &m.ensures);
+            }
+        }
+        for t in self.env.traits.values() {
+            for m in &t.methods {
+                let hidden = names(&[&t.generics, &m.generics], &m.params);
+                scan(&t.place.file, &hidden, &m.ensures);
+            }
+        }
+        for ext in &self.env.externs {
+            scan(&ext.file, &names(&[], &ext.params), &ext.ensures);
+        }
+        let outside = self.errors.here();
+        for ((_, _, _, name), place) in found {
+            self.errors.point_at(&place, &outside);
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3044,
+                format!(
+                    "a `requires` or an `ensures` cannot name static '{name}' yet. Write the \
+                     value of '{name}' in its place"
+                ),
+                None,
+            );
+        }
+        self.errors.point_back(outside);
     }
 
     /// Report E3044 once per scalar `const` that has no usable value, at the declaration.
@@ -108,6 +211,14 @@ impl TypeChecker<'_> {
                     let _ = self.const_literal(decl, &decl.span, true);
                 }
                 Ok(Some(_)) => {}
+                // A `static` that this compiler cannot store is reported here, used or not.
+                Err(why) if decl.is_static => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3044,
+                        format!("static '{}' {}", decl.name, why),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&decl.span)),
+                    );
+                }
                 // Bad tables are reported when named; an unused bad table is rare and the use
                 // site message says how to read a table.
                 Err(_) => {}

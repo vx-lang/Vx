@@ -476,6 +476,9 @@ pub struct TransferImplDecl {
 
 /// A top-level `const NAME : T = value;`. Its value is known while compiling, and each use
 /// of `NAME` is replaced by it, as a literal of type `T`.
+///
+/// A top-level `static NAME : T = value;` is held here too, with `is_static` set. The program
+/// stores its value once, read-only, and each use of `NAME` reads that one place.
 #[derive(Debug, PartialEq, Clone)]
 pub struct ConstDecl {
     pub name: Symbol,
@@ -483,6 +486,19 @@ pub struct ConstDecl {
     pub expr: Expr,
     pub span: Span,
     pub doc_comment: Option<String>,
+    /// The item was written with `static`, not `const`.
+    pub is_static: bool,
+}
+
+impl ConstDecl {
+    /// The word that starts the item, `const` or `static`, for a message about it.
+    pub fn keyword(&self) -> &'static str {
+        if self.is_static {
+            "static"
+        } else {
+            "const"
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -507,7 +523,7 @@ pub struct Program {
     pub traits: Vec<TraitDecl>,
     pub impls: Vec<ImplBlock>,
     pub functions: Vec<Function>,
-    /// Top-level `const` items.
+    /// Top-level `const` and `static` items.
     pub consts: Vec<ConstDecl>,
     /// User-defined topologies declared in this program (`Topology <Name> { ... }`). Like
     /// `memories`, the full descriptors live here on the AST — *not* a process-global registry —

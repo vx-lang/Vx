@@ -3743,6 +3743,11 @@ impl<'a> TypeChecker<'a> {
             }
 
             if param_is_ref && !obj_is_ref {
+                // A method that takes `&self` borrows what it is called on. `&mut self` on a
+                // `static` got E4010 above.
+                if !is_mut {
+                    self.refuse_a_borrow_of_a_static(obj, &span);
+                }
                 call_args.push(Expr::Borrow(BorrowExpr {
                     expr: Box::new((*obj).clone()),
                     is_mut,
