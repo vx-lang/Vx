@@ -16,7 +16,7 @@
 // CHECK-DAG: func.func @subtract(%arg0: f32, %arg1: f32) -> f32
 import tests::frontend::pass::modules_nested::math_core;
 
-fn do_ops(a : f32, b : f32) -> f32 {
+pub fn do_ops(a : f32, b : f32) -> f32 {
   let prod = multiply(a, b);
   let diff = subtract(a, b);
   return prod + diff;
