@@ -348,7 +348,12 @@ let y = unsafe { Tensor<f32, [8, 8], Memory::NPU_HBM>::uninit() };
 
 // Runtime extents, so they stay an argument
 let z = Tensor<f32, [?, ?], Memory::NPU_HBM>::new([rows, cols]);
+
+// A shape with a runtime extent gives one extent for each dimension, and a fixed one as the type has it
+let w = Tensor<f32, [?, 4], Memory::NPU_HBM>::new([rows, 4]);
 ```
+
+Any other shape list is E3070.
 
 Both allocation kinds are explicit, and neither is the unmarked default. `::uninit()` exists
 because zeroing a buffer that is about to be written in full is wasted bandwidth, and in this

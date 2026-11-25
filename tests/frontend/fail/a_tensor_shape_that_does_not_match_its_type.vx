@@ -1,0 +1,41 @@
+//===- a_tensor_shape_that_does_not_match_its_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Tensor<T, [?, 4]>::new([n, 4])` and `::uninit([n, 4])` make the tensor from the list of
+// extents. So the list has one extent for each dimension, and a fixed dimension gets the extent
+// of the type. A shape in a variable is not a list.
+//
+// RUN: not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn with_a_parameter<const C : i32>(n : i32, k : i32) -> i32 {
+  let t = Tensor<i32, [?, C]>::new([n, k]);
+  return t.extent(0);
+}
+
+// The checker cannot compute `k`, so it cannot know that `k` is 4.
+fn from_a_parameter(n : i32, k : i32) -> i32 {
+  // CHECK: Error[E3070] at {{.*}}:[[#@LINE+1]]:40: dimension 1 of `Tensor<i32, [?, 4]>` has the extent 4, so write 4 for it in the shape
+  let t = Tensor<i32, [?, 4]>::new([n, k]);
+  return t.extent(0);
+}
+
+fn main() -> i32 {
+  let n = 3;
+  // CHECK: Error[E3070] at {{.*}}:[[#@LINE+1]]:38: `Tensor<i32, [?, 4]>` has 2 dimensions, so its shape needs 2 extents, one for each dimension. This shape has 1 extent
+  let few = Tensor<i32, [?, 4]>::new([n]);
+  // CHECK: Error[E3070] at {{.*}}:[[#@LINE+1]]:48: `Tensor<i32, [?]>` has 1 dimension, so its shape needs 1 extent, one for each dimension. This shape has 2 extents
+  let many = unsafe { Tensor<i32, [?]>::uninit([n, 4]) };
+  // CHECK: Error[E3070] at {{.*}}:[[#@LINE+1]]:44: dimension 1 of `Tensor<i32, [?, 4]>` has the extent 4, so write 4 for it in the shape
+  let other = Tensor<i32, [?, 4]>::new([n, 5]);
+  let shape = [n, 4];
+  // CHECK: Error[E3070] at {{.*}}:[[#@LINE+1]]:40: write the shape of `Tensor<i32, [?, ?]>` as a list of extents in brackets, such as `[n, m]`
+  let named = Tensor<i32, [?, ?]>::new(shape);
+  // CHECK: Error[E3070] at {{.*}}:15:40: dimension 1 of `Tensor<i32, [?, 5]>` has the extent 5, so write 5 for it in the shape
+  let r = with_a_parameter<5>(n, 5) + from_a_parameter(n, 4);
+  println!("{} {} {} {} {}", few.extent(0), many.extent(0), other.extent(0), named.extent(0), r);
+  return 0;
+}

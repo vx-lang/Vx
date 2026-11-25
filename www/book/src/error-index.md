@@ -19,7 +19,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1039` (30 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3069` (68 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3070` (69 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5005` (5 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
@@ -171,6 +171,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3067`](/errors/E3067/) | A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an address, for example one that `p as *const void` made to give to a C function. It has no element type, so the compiler does not know what to read. |
 | [`E3068`](/errors/E3068/) | A call that gives one extent name two different extents. In `fn add(a : Tensor<f32, [?n]>, b : Tensor<f32, [?n]>)`, both `?n` are one extent, so `add(x, y)` with the extents 5 and 7 is an error. When the compiler does not know an extent, it does not check it. |
 | [`E3069`](/errors/E3069/) | A variable of the body with the name of an extent, or an assignment to an extent name. `?n` in the type of a parameter makes `n` a variable of the body that nothing changes. |
+| [`E3070`](/errors/E3070/) | A shape in `Tensor<T, [..]>::new([..])` or `::uninit([..])` that does not match the type. The shape is a list in brackets with one extent for each dimension, and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`. |
 
 ## Borrow/Ownership Errors
 
@@ -293,4 +294,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-202 diagnostics.
+203 diagnostics.
