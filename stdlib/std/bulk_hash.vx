@@ -25,7 +25,7 @@ import core::sync::atomic;
 const BULK_HASH_EMPTY : u32 = 4294967295u32;
 
 /// The 32-bit finalizer of MurmurHash3. It gives each `u32` a different `u32`.
-fn bulk_hash_fmix32(key : u32) on Topology::Any -> u32
+pub fn bulk_hash_fmix32(key : u32) on Topology::Any -> u32
 ensures writes_only()
 {
   let mut h = key;
@@ -38,7 +38,7 @@ ensures writes_only()
 }
 
 /// The number of blocks of 256 lanes for `n` keys, and an assert that the table is a power of 2.
-fn bulk_hash_blocks<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, n : i32) -> i32 {
+pub fn bulk_hash_blocks<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, n : i32) -> i32 {
   let size = slots.len();
   assert(size > 0 && (size & (size - 1)) == 0, "bulk_hash: the number of slots must be a power of 2");
   assert(values.len() == size, "bulk_hash: `values` must have as many elements as `slots`");
@@ -53,7 +53,7 @@ fn bulk_hash_blocks<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &
 /// returns `held` plus `keys.len()`, which is the `held` of the next call. The call stops the
 /// program when the table then has no empty slot, because a search for a missing key ends only at
 /// an empty slot.
-fn bulk_hash_insert_all<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, keys : &Tensor<u32, [?], Memory::M>, vals : &Tensor<u32, [?], Memory::M>, held : i32) -> i32 {
+pub fn bulk_hash_insert_all<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, keys : &Tensor<u32, [?], Memory::M>, vals : &Tensor<u32, [?], Memory::M>, held : i32) -> i32 {
   let n = keys.len();
   assert(vals.len() == n, "bulk_hash_insert_all: `vals` must have as many elements as `keys`");
   assert(held >= 0 && n < slots.len() - held, "bulk_hash_insert_all: the keys do not fit. The table must keep one empty slot");
@@ -87,7 +87,7 @@ fn bulk_hash_insert_all<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values
 
 /// Writes the value of each `keys[i]` to `out[i]`, or `BULK_HASH_EMPTY` when the table does not
 /// hold the key. So a value of `BULK_HASH_EMPTY` looks like a missing key.
-fn bulk_hash_find_all<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, keys : &Tensor<u32, [?], Memory::M>, out : &mut Tensor<u32, [?], Memory::M>) -> void {
+pub fn bulk_hash_find_all<M : Memory>(slots : &Tensor<u32, [?], Memory::M>, values : &Tensor<u32, [?], Memory::M>, keys : &Tensor<u32, [?], Memory::M>, out : &mut Tensor<u32, [?], Memory::M>) -> void {
   let n = keys.len();
   assert(out.len() == n, "bulk_hash_find_all: `out` must have as many elements as `keys`");
   if n == 0 {

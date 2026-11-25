@@ -1,0 +1,40 @@
+//===- an_across_loop_that_reads_the_extent_of_a_tensor_still_checks_what_picks_it.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A read of `t.len()` in an `across` loop reads no element of `t`. But what picks the tensor
+// still runs in each pass: here a read of an element that another block writes, and a call.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// Block 0 writes `m[0][1]`, and each block reads it to pick a row.
+pub fn picks_a_row_by_a_written_element(m : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = 4 * b + r;
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:27: a pass of this block loop may read an element of `m` that another pass writes
+        m[row][1] = m[m[0][1]].len();
+      }
+    }
+  }
+}
+
+fn ones(k : i32) on Topology::Device -> Tensor<i32, [?], Memory::HBM> {
+  return Tensor<i32, [?], Memory::HBM>::new([k]);
+}
+
+pub fn reads_the_len_of_a_call(m : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = 4 * b + r;
+        // CHECK: Error[E6032] at {{.*}}:[[#@LINE+1]]:21: the call to `ones` may write through an argument
+        m[row][1] = ones(row + 1).len();
+      }
+    }
+  }
+}

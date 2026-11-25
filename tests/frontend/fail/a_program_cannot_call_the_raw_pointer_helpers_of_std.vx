@@ -1,0 +1,29 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Some helpers of `std` read, write or free memory through a raw pointer that their caller
+// gives. Only `std` can call them, so a program cannot free the words of a channel twice, or
+// grow a buffer that it does not own. Other files of `std::sync` call `word` and `release`, so
+// they are `pkg`. `vec_grow` and `c_str_equals` are private to their files.
+import core::c_str;
+import core::sync::atomic;
+import std::sync::channel;
+import std::vec;
+
+fn main() -> i32 {
+  let (_tx, rx) = channel<i64>(1);
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:11: `word` is `pkg` in `channel.vx`, so only the package `std` can call it. Write `pub fn word` there, so that other packages can call it
+  let n = word(rx.words, 0).load(AtomicOrdering::SeqCst);
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:3: `release` is `pkg` in `channel.vx`, so only the package `std` can call it. Write `pub fn release` there, so that other packages can call it
+  release<i64>(rx.words, rx.data, rx.cap);
+  let v : Vec<i64> = Vec::new();
+  let data : *mut i8 = v.data;
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:11: `vec_grow` is private to `vec.vx`. Write `pub fn vec_grow` there, so that other files can call it
+  let p = vec_grow(data, 0, 4, 8);
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:12: `c_str_equals` is private to `c_str.vx`. Write `pub fn c_str_equals` there, so that other files can call it
+  let eq = c_str_equals("a", "b", 2);
+  if eq && is_null_mut(p) {
+    return 1;
+  }
+  return n as i32;
+}
+// CHECK: 4 error(s) emitted
