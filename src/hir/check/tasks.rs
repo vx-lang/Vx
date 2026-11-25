@@ -569,7 +569,10 @@ impl TypeChecker<'_> {
         }
         let block_err = result_parts(block_ty).map(|(_, e)| e);
         for f in failures {
-            if block_err.as_ref() != Some(&f.err) {
+            if !block_err
+                .as_ref()
+                .is_some_and(|e| self.is_assignable(e, &f.err))
+            {
                 self.task_error(
                     DiagnosticCode::E3060,
                     format!(

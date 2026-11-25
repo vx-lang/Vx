@@ -73,10 +73,29 @@ fn in_a_closure_with_no_written_type(n : i32) -> Result<i32, i32> {
   return Result<i32, i32>::Ok(f(n));
 }
 
+enum ParseError {
+  Empty,
+}
+
+enum ReadError {
+  Closed,
+}
+
+fn read(n : i32) -> Result<i32, ReadError> {
+  return Result<i32, ReadError>::Ok(n);
+}
+
+// `?` does not convert one enum error to another enum.
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+2]]:18: this `?` passes up an error of type 'ReadError', so the function must return a `Result<_, ReadError>`. It returns 'Result<i32, ParseError>'
+fn other_enum_error(n : i32) -> Result<i32, ParseError> {
+  let x = read(n)?;
+  return Result<i32, ParseError>::Ok(x);
+}
+
 fn main() -> i32 {
   return 0;
 }
 
-// The 7 errors above are the only ones. `--implicit-check-not` does not look past the first
+// The 8 errors above are the only ones. `--implicit-check-not` does not look past the first
 // `CHECK-DAG` match, so this line counts them.
-// CHECK: {{^}}Semantic check failed on {{.*}}: 7 error(s) emitted
+// CHECK: {{^}}Semantic check failed on {{.*}}: 8 error(s) emitted
