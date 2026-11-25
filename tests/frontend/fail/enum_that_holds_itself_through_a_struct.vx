@@ -1,0 +1,24 @@
+//===- enum_that_holds_itself_through_a_struct.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A variant of `Tree` holds a `Pair`, and a `Pair` holds a `Tree`, both by value. So `Tree` has
+// an infinite size. A normal compile used to accept the program.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E3068] at {{.*}}enum_that_holds_itself_through_a_struct.vx:14:6: `Tree` holds itself by value, so its size is infinite: variant `Node` of `Tree` holds `Pair`, field `left` of `Pair` holds `Tree`. Hold the value through a pointer, for example `Box<Tree>`
+
+enum Tree {
+  Leaf, Node(Pair)
+}
+struct Pair {
+  left: Tree, right: i32
+}
+
+fn main() -> i32 {
+  print(1);
+  return 0;
+}

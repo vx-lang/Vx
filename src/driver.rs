@@ -1225,6 +1225,22 @@ impl CompilerDriver {
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
         checker.errors.file = whole_program_file;
         checker.check_whole_program_declarations();
+        // A body cannot be checked against a type with an infinite size: dropping a value of it
+        // never ends. The parallel pipeline stops after any declaration error.
+        if checker
+            .errors
+            .iter()
+            .any(|d| d.code == Some(crate::diagnostic::DiagnosticCode::E3068))
+        {
+            for diag in checker.errors.iter() {
+                eprintln!("{}", diag);
+            }
+            return Err(format!(
+                "Semantic check failed on '{}': {} error(s) emitted",
+                filename,
+                checker.errors.error_count()
+            ));
+        }
         // Found before the checks rename calls to generic instances, reported after them.
         let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
         crate::hir::check::unused_functions::warn_functions_nothing_calls(
