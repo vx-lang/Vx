@@ -113,6 +113,10 @@ jobs:
       - name: Test the admission matrix harness
         run: python3 -m unittest discover -s utils/campaign -p 'test_*.py'
 
+      # What the error index generator does when mdformat is missing. Only needs python3.
+      - name: Test the error index generator
+        run: python3 -m unittest discover -s scripts/tools -p 'test_*.py'
+
       # Process-global atomics are banned for the same reason as locks: a compilation must be
       # isolated, and a static a worker thread can write is shared mutable state whether or not
       # it takes a lock to do it. A cached answer also survives across compilations in a long-lived
