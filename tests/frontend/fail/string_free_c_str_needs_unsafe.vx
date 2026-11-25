@@ -1,0 +1,21 @@
+//===- string_free_c_str_needs_unsafe.vx -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `String::free_c_str` is unsafe, because nothing checks that a copy is not released twice.
+// `as_c_str` stays safe.
+import std::string;
+
+fn main() -> i32 {
+  let s = String::new();
+  let p = s.as_c_str();
+  unsafe { String::free_c_str(p) };
+  // CHECK: Error[E5001] at {{.*}}.vx:[[@LINE+1]]:3: Call to unsafe function 'String::free_c_str' is unsafe and requires unsafe function or block{{$}}
+  String::free_c_str(p);
+  return 0;
+}

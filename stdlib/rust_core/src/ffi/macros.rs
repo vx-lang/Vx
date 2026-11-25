@@ -252,12 +252,8 @@ macro_rules! instantiate_string_ffi {
             if ptr.is_null() {
                 return std::ptr::null();
             }
-            // Note: This forces an allocation of a CString, which we must leak or store.
-            // For simplicity and safety in a quick binding, we could return a leaked ptr,
-            // but that's a memory leak.
-            // A better approach is to modify the string in place to append a null byte if it doesn't have one,
-            // or just use `as_ptr()` if we know it won't be used past its lifetime, but it needs a null terminator.
-            // For now, let's leak a CString.
+            // The copy belongs to the caller, who releases it with `vx_string_free_c_str`. A
+            // pointer into the string itself would dangle once the string drops or grows.
             let s = unsafe { &*(ptr as *mut String) };
             let c_string = std::ffi::CString::new(s.clone()).unwrap();
             c_string.into_raw()
