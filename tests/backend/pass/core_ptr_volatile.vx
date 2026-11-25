@@ -1,0 +1,47 @@
+//===- core_ptr_volatile.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The volatile loads and stores of `core::ptr`, for `u32` and `u64`, with LLVM's optimizer on.
+//
+// `main` writes 1 and then 2 to one address with `write_volatile_u32`. Both stores must stay,
+// as two stores to a device register must. As a control, a plain `write` of 3 and then 7 to the
+// next address keeps only the store of 7, so the optimizer did run. `main` also reads one `u64`
+// twice with `read_volatile_u64`. Both loads must stay.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --emit-llvm 2>/dev/null | mlir-translate --mlir-to-llvmir | opt -O3 -S | FileCheck %s --check-prefix=LLVM --implicit-check-not="store i32 3,"
+// RUN: vxc %s --emit-llvm --legacy-codegen 2>/dev/null | mlir-translate --mlir-to-llvmir | opt -O3 -S | FileCheck %s --check-prefix=LLVM --implicit-check-not="store i32 3,"
+// CHECK: {{^}}u32: 2 7{{$}}
+// CHECK-NEXT: {{^}}u64: 4294967301 4294967301{{$}}
+// LLVM-LABEL: define {{.*}}@main(
+// LLVM: store volatile i32 1, ptr [[P:%[0-9]+]], align 4
+// LLVM: store volatile i32 2, ptr [[P]], align 4
+// LLVM: load volatile i32, ptr [[P]], align 4
+// LLVM: store volatile i64 4294967301, ptr [[Q:%[0-9]+]], align 8
+// LLVM: load volatile i64, ptr [[Q]], align 8
+// LLVM: load volatile i64, ptr [[Q]], align 8
+
+import core::ptr;
+import std::alloc;
+
+fn main() -> i32 {
+  let p : *mut u32 = alloc(8, 8);
+  let q : *mut u64 = alloc(16, 8);
+  unsafe {
+    write_volatile_u32(p, 1u32);
+    write_volatile_u32(p, 2u32);
+    write(add_mut(p, 1usize), 3u32);
+    write(add_mut(p, 1usize), 7u32);
+    println!("u32: {} {}", read_volatile_u32(p as *const u32), read(add(p as *const u32, 1usize)));
+
+    write_volatile_u64(q, 4294967301u64);
+    write(add_mut(q, 1usize), read_volatile_u64(q as *const u64));
+    println!("u64: {} {}", read_volatile_u64(q as *const u64), read(add(q as *const u64, 1usize)));
+  }
+  return 0;
+}
