@@ -20,7 +20,7 @@ import core::option;
 
 /// Moves the value at `root` down the heap in `v[0..end]`, until it is not smaller than its
 /// children.
-fn distinct_sift_down(v : &mut Tensor<i64, [?]>, start : i64, end : i64) -> void {
+pub fn distinct_sift_down(v : &mut Tensor<i64, [?]>, start : i64, end : i64) -> void {
   let mut root = start;
   while 2 * root + 1 < end {
     let mut child = 2 * root + 1;
@@ -39,7 +39,7 @@ fn distinct_sift_down(v : &mut Tensor<i64, [?]>, start : i64, end : i64) -> void
 }
 
 /// Whether no two of the `n` values in `v` are equal. It sorts `v` with a heap sort.
-fn distinct_values_differ(v : &mut Tensor<i64, [?]>, n : i64) -> bool {
+pub fn distinct_values_differ(v : &mut Tensor<i64, [?]>, n : i64) -> bool {
   let mut start = n / 2;
   while start > 0 {
     start = start - 1;
@@ -116,7 +116,7 @@ pub fn distinct_check_u64(t : Tensor<u64, [?]>) -> Option<Distinct<Tensor<u64, [
 }
 
 /// Whether row `a` of `r` sorts after row `b`: by the start, then by the end.
-fn ranges_after(r : &Tensor<i64, [?, 2]>, a : i64, b : i64) -> bool {
+pub fn ranges_after(r : &Tensor<i64, [?, 2]>, a : i64, b : i64) -> bool {
   if r[a][0] != r[b][0] {
     return r[a][0] > r[b][0];
   }
@@ -124,7 +124,7 @@ fn ranges_after(r : &Tensor<i64, [?, 2]>, a : i64, b : i64) -> bool {
 }
 
 /// Swaps rows `a` and `b` of `r`.
-fn ranges_swap(r : &mut Tensor<i64, [?, 2]>, a : i64, b : i64) -> void {
+pub fn ranges_swap(r : &mut Tensor<i64, [?, 2]>, a : i64, b : i64) -> void {
   let start = r[a][0];
   let end = r[a][1];
   r[a][0] = r[b][0];
@@ -136,7 +136,7 @@ fn ranges_swap(r : &mut Tensor<i64, [?, 2]>, a : i64, b : i64) -> void {
 
 /// Moves the row at `root` down the heap in `r[0..end]`, until it does not sort before its
 /// children.
-fn ranges_sift_down(r : &mut Tensor<i64, [?, 2]>, start : i64, end : i64) -> void {
+pub fn ranges_sift_down(r : &mut Tensor<i64, [?, 2]>, start : i64, end : i64) -> void {
   let mut root = start;
   while 2 * root + 1 < end {
     let mut child = 2 * root + 1;
@@ -153,7 +153,7 @@ fn ranges_sift_down(r : &mut Tensor<i64, [?, 2]>, start : i64, end : i64) -> voi
 }
 
 /// Whether no two of the `n` ranges `[r[i][0], r[i][1])` overlap. It sorts `r` with a heap sort.
-fn ranges_do_not_overlap(r : &mut Tensor<i64, [?, 2]>, n : i64) -> bool {
+pub fn ranges_do_not_overlap(r : &mut Tensor<i64, [?, 2]>, n : i64) -> bool {
   let mut i = 0i64;
   while i < n {
     if r[i][0] > r[i][1] {

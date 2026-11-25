@@ -15,7 +15,7 @@ struct Left {
 macro_rules label {
   ($t : ident) => {
     impl $t {
-      fn label(self : &Self) -> i64 {
+      pub fn label(self : &Self) -> i64 {
         return 1i64;
       }
     }

@@ -19,6 +19,6 @@ fn wrong_field() -> i64 {
   return p.y;
 }
 
-fn total() -> i64 {
+pub fn total() -> i64 {
   return wrong_field() + 1i64;
 }

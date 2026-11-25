@@ -112,7 +112,7 @@ fn main() -> i32 {
   // The buffer fills: uniform f32, then normals into f16 storage.
   let bytes : *mut f32 = unsafe { malloc(16) };
   let mut fill = Rng::seeded(1);
-  fill.fill_f32(bytes, 4);
+  unsafe { fill.fill_f32(bytes, 4) };
   for i in 0..4 {
     print(unsafe { bytes[i] });
     print!(" ");
@@ -122,14 +122,14 @@ fn main() -> i32 {
 
   let halves : *mut f16 = unsafe { malloc(8) };
   let mut half_fill = Rng::seeded(1);
-  half_fill.fill_f16(halves, 4);
+  unsafe { half_fill.fill_f16(halves, 4) };
   for i in 0..4 {
     print(unsafe { halves[i] });
     print!(" ");
   }
   print!("| ");
   let mut normal_fill = Rng::seeded(3);
-  normal_fill.fill_normal_f16(halves, 4, 5.0, 1.0);
+  unsafe { normal_fill.fill_normal_f16(halves, 4, 5.0, 1.0) };
   for i in 0..4 {
     print(unsafe { halves[i] });
     if i < 3 {

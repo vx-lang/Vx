@@ -99,7 +99,7 @@ fn main() -> i32 {
   print!("/");
   print(n);
   print!(";");
-  dealloc(buf, 16);
+  unsafe { dealloc(buf, 16) };
   return 0;
 }
 
