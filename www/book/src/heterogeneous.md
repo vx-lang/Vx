@@ -198,8 +198,9 @@ It prints `sum 14`. The argument binds `S` to the GPU, and the caller `main` bin
 host. If `x` is in `Acme` memory, the call fails with
 `` unsatisfied `where Reachable<S, D>` in call to 'fetch_sum' ``.
 
-Name only topology parameters in a `where` clause. The compiler does not check a clause that names
-anything else yet ([Vx#3230](https://github.com/vx-lang/Vx/issues/3230)).
+Each side of a clause is a topology parameter, such as `D`, or a fixed topology, such as
+`Topology::CPU`. `where Reachable<D, Topology::CPU>` asks for a route from the caller back to the
+host. Any other name is error E6043.
 
 ## What gets rejected
 

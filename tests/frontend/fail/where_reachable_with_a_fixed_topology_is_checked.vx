@@ -1,0 +1,40 @@
+//===- where_reachable_with_a_fixed_topology_is_checked.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `where Reachable<A, B>` clause can name a fixed topology such as `Topology::CPU`, and the
+// compiler checks it. `Acme` can receive data from the host, but it has no path back to it.
+//
+// - `to_host`: the call from `Acme` binds `D` to `Acme`, so the call is an error. The call
+//   from the host is correct.
+// - `acme_to_host`: both sides are fixed, so the declaration itself is an error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//===----------------------------------------------------------------------===//
+
+Topology Acme {
+  memory: Memory::AcmeSRAM,
+  visible: [Memory::AcmeSRAM, Memory::CPU_DRAM],
+  transfer Memory::CPU_DRAM -> Memory::AcmeSRAM : 40 sync,
+}
+
+fn to_host<D : Topology>() on Topology::D -> i32 where Reachable<D, Topology::CPU> {
+  return 1;
+}
+
+// CHECK: Error at {{.*}}.vx:[[@LINE+1]]:4: unsatisfied `where Reachable<Acme, CPU>` on 'acme_to_host': no transfer path from Acme to CPU
+fn acme_to_host() -> i32 where Reachable<Topology::Acme, Topology::CPU> {
+  return 1;
+}
+
+fn main() -> i32 {
+  // CHECK: Error at {{.*}}.vx:[[@LINE+1]]:3: unsatisfied `where Reachable<D, CPU>` in call to 'to_host': no transfer path from Acme to CPU
+  let a = spawn on(Topology::Acme) {
+    to_host()
+  };
+  println!("{} {} {}", a, to_host(), acme_to_host());
+  return 0;
+}

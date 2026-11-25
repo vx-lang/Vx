@@ -1770,7 +1770,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Replace a topology variable (`Custom(name)` with `name` in `topo_mapping`) by its
     /// bound concrete topology; leave everything else unchanged.
-    fn substitute_topology(
+    pub(crate) fn substitute_topology(
         top: Topology,
         topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
     ) -> Topology {

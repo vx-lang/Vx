@@ -54,7 +54,9 @@ function_decl ::= "fn" identifier generic_params? "(" param_list? ")" ( "on" top
 // spelled `Transfer<A, B>` until Vx#353; the old name now names an edge lowering instead
 // (see `transfer_impl_decl`), so the two questions no longer share a word.
 where_clause ::= "where" reachable_constraint ( "," reachable_constraint )*
-reachable_constraint ::= "Reachable" "<" identifier "," identifier ">"
+reachable_constraint ::= "Reachable" "<" reachable_operand "," reachable_operand ">"
+// An identifier must name a topology parameter of the function (`<D : Topology>`).
+reachable_operand ::= identifier | topology
 
 generic_params ::= "<" ( generic_param ","? )* ">"
 generic_param ::= "const" identifier ":" type | identifier ( ":" bound ( "+" bound )* )?

@@ -252,7 +252,7 @@ impl<'a> Parser<'a> {
         // topologies, not memory spaces. It was called `Transfer<A, B>` until Vx#353, which is
         // the name the edge lowering now uses (`impl Transfer<Memory::A, Memory::B> for
         // Topology::X`) with a different kind of argument -- so the two had to part.
-        let mut where_transfers: Vec<(crate::symbol::Symbol, crate::symbol::Symbol)> = Vec::new();
+        let mut where_transfers: Vec<(Topology, Topology)> = Vec::new();
         if self.match_token(&TokenType::Where) {
             loop {
                 let cname = self
@@ -273,11 +273,11 @@ impl<'a> Parser<'a> {
                     )));
                 }
                 self.consume(&TokenType::LeftAngle, "Expected '<' after Reachable")?;
-                let a = self.expect_identifier("Expected a topology name in Reachable<A, B>")?;
+                let a = self.parse_topology_operand()?;
                 self.consume(&TokenType::Comma, "Expected ',' in Reachable<A, B>")?;
-                let b = self.expect_identifier("Expected a topology name in Reachable<A, B>")?;
+                let b = self.parse_topology_operand()?;
                 self.consume(&TokenType::RightAngle, "Expected '>' after Reachable<A, B>")?;
-                where_transfers.push((a.into(), b.into()));
+                where_transfers.push((a, b));
                 if !self.match_token(&TokenType::Comma) {
                     break;
                 }

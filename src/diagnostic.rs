@@ -817,6 +817,10 @@ pub enum DiagnosticCode {
     /// CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on
     /// GPU 0, so the code has no GPU to run on yet. Run it on device 0.
     E6042,
+    /// A `where Reachable<A, B>` clause names something that is not a topology parameter of
+    /// the function and not a declared or built-in topology. Write a parameter
+    /// (`<D : Topology>`) or a topology such as `Topology::CPU`.
+    E6043,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
