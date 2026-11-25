@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // `vxc --audit` prints each fact that the compiler trusts without a proof, one line each, in the
 // order of the file and the line. Here: the `ensures` of an `extern` function, the pointer
-// `requires` of a `pub fn`, each `assume`, the `assume`s of `Vec::as_mut_ptr`, and the clauses
+// `requires` of an `extern fn`, each `assume`, the `assume`s of `Vec::as_mut_ptr`, and the clauses
 // that a call in `unsafe` code trusts. A call in `unsafe` code whose clauses the compiler proves
 // is not in the list, and its `unsafe` block gets W1010. The block of the other call does not.
 // The audit also lists the trusted code of the file: each `extern` function and each `unsafe`
@@ -15,25 +15,26 @@
 //
 // RUN: vxc %s --audit 2>&1 | FileCheck %s
 //
-// CHECK: W1010] at {{.*}}audit_lists_the_trusted_pointer_facts.vx:75:16: this `unsafe` block holds nothing
+// CHECK: W1010] at {{.*}}audit_lists_the_trusted_pointer_facts.vx:76:16: this `unsafe` block holds nothing
 // CHECK-NOT: W1010
 // CHECK: std/vec.vx:{{[0-9]+}}:{{[0-9]+}}: an `assume` trusts `valid(p, self.len)`
 // CHECK-NEXT: std/vec.vx:{{[0-9]+}}:{{[0-9]+}}: an `assume` trusts `initialized(p, self.len)`
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:45:3: trusted code: the `extern` function `c_length`, which runs C code
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:46:11: the `extern` function `c_length` ensures `!frees(s)`, and the compiler trusts it
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:47:3: trusted code: the `extern` function `c_buffer`, which runs C code
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:48:11: the `extern` function `c_buffer` ensures `valid(return, n)`, and the compiler trusts it
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:57:21: trusted code: an `unsafe` block
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:63:10: the exported function `fill` requires `valid(p, n)`, and a call from C proves nothing
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:66:5: trusted code: an `unsafe` block
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:72:3: trusted code: an `unsafe` block
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:72:12: an `assume` trusts `valid(p, 4)`
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:74:3: trusted code: an `unsafe` block
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:74:12: an `assume` trusts `initialized(p, 4)`
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:75:16: trusted code: an `unsafe` block
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:76:17: trusted code: an `unsafe` block
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:76:26: a call in `unsafe` code trusts `initialized(p, n)` of `sum`, which the compiler cannot prove
-// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:76:26: a call in `unsafe` code trusts `valid(p, n)` of `sum`, which the compiler cannot prove
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:46:3: trusted code: the `extern` function `c_length`, which runs C code
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:47:11: the `extern` function `c_length` ensures `!frees(s)`, and the compiler trusts it
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:48:3: trusted code: the `extern` function `c_buffer`, which runs C code
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:49:11: the `extern` function `c_buffer` ensures `valid(return, n)`, and the compiler trusts it
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:58:21: trusted code: an `unsafe` block
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:64:10: the exported function `fill` requires `valid(p, n)`, and a call from C proves nothing
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:67:5: trusted code: an `unsafe` block
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:73:3: trusted code: an `unsafe` block
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:73:12: an `assume` trusts `valid(p, 4)`
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:75:3: trusted code: an `unsafe` block
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:75:12: an `assume` trusts `initialized(p, 4)`
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:76:16: trusted code: an `unsafe` block
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:77:17: trusted code: an `unsafe` block
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:77:26: a call in `unsafe` code trusts `initialized(p, n)` of `sum`, which the compiler cannot prove
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:77:26: a call in `unsafe` code trusts `valid(p, n)` of `sum`, which the compiler cannot prove
+// CHECK-NEXT: audit_lists_the_trusted_pointer_facts.vx:82:3: trusted code: an `unsafe` block
 // CHECK-NEXT: core and std: {{.*}} in the modules that this program uses, not listed. `--audit-library` lists them
 // CHECK-NOT: {{.}}
 
@@ -59,7 +60,7 @@ requires initialized(p, n)
   return total;
 }
 
-pub fn fill(p : *mut i64, n : i64) -> void
+extern fn fill(p : *mut i64, n : i64) -> void
 requires valid(p, n)
 {
   for i in 0i64..n {
@@ -78,7 +79,7 @@ fn main() -> i32 {
   let first = v.as_mut_ptr();
   let buffer = c_buffer(1i64);
   let bytes : *mut i8 = p;
-  dealloc(bytes, 16i64);
+  unsafe { dealloc(bytes, 16i64) };
   if is_null_mut(first) || is_null_mut(buffer) {
     return 1;
   }

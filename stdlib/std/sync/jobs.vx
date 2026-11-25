@@ -45,7 +45,7 @@ struct JobResult<R> {
 }
 
 /// The number of workers for `jobs` jobs and at most `n` tasks.
-fn worker_count(jobs : i32, n : i64) -> i32 {
+pub fn worker_count(jobs : i32, n : i64) -> i32 {
   assert(n >= 1, "run_jobs: the number of tasks must be at least 1");
   if i64::from(jobs) < n {
     return jobs;
@@ -55,7 +55,7 @@ fn worker_count(jobs : i32, n : i64) -> i32 {
 
 /// The room of the channel that carries the results. At most `workers` tasks send, so it needs
 /// no more room than that, and not the `n` of the call: `n` can be much larger than the jobs.
-fn jobs_channel_room(workers : i32) -> i64 {
+pub fn jobs_channel_room(workers : i32) -> i64 {
   if workers < 1 {
     return 1;
   }
@@ -63,7 +63,7 @@ fn jobs_channel_room(workers : i32) -> i64 {
 }
 
 /// The results in the order of the jobs. Each slot holds a result.
-fn results_in_order<R>(slots : Vec<Option<R>>) -> Vec<R> {
+pub fn results_in_order<R>(slots : Vec<Option<R>>) -> Vec<R> {
   let mut out = Vec<R>::with_capacity(slots.len());
   for slot in slots.into_iter() {
     out.push(slot.expect("run_jobs: each job has a result"));
@@ -72,7 +72,7 @@ fn results_in_order<R>(slots : Vec<Option<R>>) -> Vec<R> {
 }
 
 /// An empty slot for each of `n` jobs.
-fn empty_slots<R>(n : i32) -> Vec<Option<R>> {
+pub fn empty_slots<R>(n : i32) -> Vec<Option<R>> {
   let mut slots = Vec<Option<R>>::with_capacity(n);
   for _i in 0..n {
     slots.push(Option<R>::None);
@@ -89,7 +89,7 @@ fn empty_slots<R>(n : i32) -> Vec<Option<R>> {
 ///
 /// A panic in `work` stops the program, as a panic in any task does. The message names the line
 /// of the panic, and the call does not return.
-fn run_jobs<J : Sync, R : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F) -> Result<Vec<R>, RunJobsError> {
+pub fn run_jobs<J : Sync, R : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F) -> Result<Vec<R>, RunJobsError> {
   let workers = worker_count(jobs.len(), n);
   let next = AtomicI64::new(0);
   let (tx, rx) = channel<JobResult<R>>(jobs_channel_room(workers));
@@ -137,7 +137,7 @@ fn run_jobs<J : Sync, R : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work 
 /// The `tasks` block of `try_run_jobs`. It puts each result in `slots`, and gives true when each
 /// job gave one. It gives false on the first error, which it puts in `failure`, and on a cancel.
 /// Its `return` leaves the block, so the block cancels the workers.
-fn run_until_a_failure<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F, slots : &mut Vec<Option<R>>, failure : &mut Option<E>) -> bool {
+pub fn run_until_a_failure<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F, slots : &mut Vec<Option<R>>, failure : &mut Option<E>) -> bool {
   let workers = worker_count(jobs.len(), n);
   let next = AtomicI64::new(0);
   let (tx, rx) = channel<JobResult<Result<R, E>>>(jobs_channel_room(workers));
@@ -190,7 +190,7 @@ fn run_until_a_failure<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(j
 /// drops the results that arrived before that error.
 ///
 /// A panic in `work` stops the program, as in `run_jobs`.
-fn try_run_jobs<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F) -> Result<Vec<R>, TryRunJobsError<E>> {
+pub fn try_run_jobs<J : Sync, R : Send + Owned, E : Send + Owned, F : Sync>(jobs : &Vec<J>, n : i64, work : F) -> Result<Vec<R>, TryRunJobsError<E>> {
   let mut slots = empty_slots<R>(jobs.len());
   let mut failure = Option<E>::None;
   if run_until_a_failure<J, R, E, F>(jobs, n, work, &mut slots, &mut failure) {

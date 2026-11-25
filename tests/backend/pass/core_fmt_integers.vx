@@ -549,6 +549,6 @@ fn main() -> i32 {
   print(small.byte(2i64));
   print!(" ");
   show(&mut small, "full buffer");
-  dealloc(small_mem, 16); dealloc(mem, 16);
+  unsafe { dealloc(small_mem, 16); dealloc(mem, 16); }
   return 0;
 }
