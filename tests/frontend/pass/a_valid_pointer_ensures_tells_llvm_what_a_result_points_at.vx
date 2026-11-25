@@ -83,11 +83,11 @@ fn main() -> i32 {
   let y = unsafe { q[0] };
   let z = unsafe { w[1] };
   let a : *mut i8 = p;
-  dealloc(a, 16i64);
+  unsafe { dealloc(a, 16i64) };
   let b : *mut i8 = q;
-  dealloc(b, 16i64);
+  unsafe { dealloc(b, 16i64) };
   let c : *mut i8 = w;
-  dealloc(c, 16i64);
+  unsafe { dealloc(c, 16i64) };
   println!("first={}; one={}; small={};", x, y, z);
   return 0;
 }

@@ -56,7 +56,7 @@ fn kind_value(k : Kind) -> i64 {
   return v;
 }
 
-fn library_total() -> i64 {
+pub fn library_total() -> i64 {
   let c = count(5i64);
   return c.count() + c.count + iter() + kind_value(Kind::Count()) + core();
 }

@@ -26,28 +26,28 @@
 // it: the few operations it needs on floats are the helpers below, each one MLIR operation.
 import core::marker;
 
-fn libm_f64_to_bits(x : f64) -> u64 {
+pub fn libm_f64_to_bits(x : f64) -> u64 {
   return mlir!( inputs : (%a = x : f64), returns : u64, dialects : ["arith"]) {
     %r = "arith.bitcast"(%a) : (f64) -> i64
     macro.yield %r : i64
   };
 }
 
-fn libm_f64_from_bits(v : u64) -> f64 {
+pub fn libm_f64_from_bits(v : u64) -> f64 {
   return mlir!( inputs : (%v = v : i64), returns : f64, dialects : ["arith"]) {
     %r = "arith.bitcast"(%v) : (i64) -> f64
     macro.yield %r : f64
   };
 }
 
-fn libm_f32_to_bits(x : f32) -> u32 {
+pub fn libm_f32_to_bits(x : f32) -> u32 {
   return mlir!( inputs : (%a = x : f32), returns : u32, dialects : ["arith"]) {
     %r = "arith.bitcast"(%a) : (f32) -> i32
     macro.yield %r : i32
   };
 }
 
-fn libm_f32_from_bits(v : u32) -> f32 {
+pub fn libm_f32_from_bits(v : u32) -> f32 {
   return mlir!( inputs : (%v = v : i32), returns : f32, dialects : ["arith"]) {
     %r = "arith.bitcast"(%v) : (i32) -> f32
     macro.yield %r : f32
@@ -55,7 +55,7 @@ fn libm_f32_from_bits(v : u32) -> f32 {
 }
 
 /// `x * y + z` with one rounding: `fputil::multiply_add` with FMA.
-fn libm_multiply_add(x : f64, y : f64, z : f64) -> f64 {
+pub fn libm_multiply_add(x : f64, y : f64, z : f64) -> f64 {
   return mlir!( inputs : (%x = x : f64, %y = y : f64, %z = z : f64), returns : f64, dialects : ["math"]) {
     %r = math.fma %x, %y, %z : f64
     macro.yield %r : f64
@@ -63,7 +63,7 @@ fn libm_multiply_add(x : f64, y : f64, z : f64) -> f64 {
 }
 
 /// The correctly rounded square root: `fputil::sqrt<double>`.
-fn libm_sqrt_f64(x : f64) -> f64 {
+pub fn libm_sqrt_f64(x : f64) -> f64 {
   return mlir!( inputs : (%x = x : f64), returns : f64, dialects : ["math"]) {
     %r = math.sqrt %x : f64
     macro.yield %r : f64
@@ -108,7 +108,7 @@ const LIBM_LOG_R : Tensor<f64, [64]> = [
 /// `e * log(2) + log(1 / r) + log(1 + dx)`, where `r` from the table makes `dx = r * m - 1`
 /// small enough for a degree-6 polynomial (Sollya:
 /// `fpminimax(log(1 + x)/x, 6, [|1, D...|], [-2^-7, 2^-6])`).
-fn libm_log_eval(x : f64) -> f64 {
+pub fn libm_log_eval(x : f64) -> f64 {
   // The top 6 bits of the mantissa pick the table entry.
   let i = ((libm_f64_to_bits(x) >> 46u64) & 63u64) as i64;
   let r = LIBM_R_LOG[i];
@@ -154,7 +154,7 @@ fn libm_log_eval(x : f64) -> f64 {
 }
 
 /// The inverse hyperbolic sine, correctly rounded: `asinhf` from `asinhf.h`.
-fn libm_asinhf(x : f32) -> f32 {
+pub fn libm_asinhf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32;
   let x_sign : f64 = if (x_u >> 31u32) == 0u32 {
@@ -239,7 +239,7 @@ fn libm_asinhf(x : f32) -> f32 {
 }
 
 /// The inverse hyperbolic cosine, correctly rounded; NaN below 1: `acoshf` from `acoshf.h`.
-fn libm_acoshf(x : f32) -> f32 {
+pub fn libm_acoshf(x : f32) -> f32 {
   if x <= 1.0 {
     if x == 1.0 {
       return 0.0;
@@ -294,7 +294,7 @@ fn libm_acoshf(x : f32) -> f32 {
 
 /// The inverse hyperbolic tangent, correctly rounded; infinite at +-1 and NaN beyond:
 /// `atanhf` from `atanhf.h`.
-fn libm_atanhf(x : f32) -> f32 {
+pub fn libm_atanhf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32;
   // |x| >= 1
@@ -330,7 +330,7 @@ fn libm_atanhf(x : f32) -> f32 {
 }
 
 /// `fmaf(x, y, z)`: `x * y + z` in single precision, rounded once.
-fn libm_multiply_add_f32(x : f32, y : f32, z : f32) -> f32 {
+pub fn libm_multiply_add_f32(x : f32, y : f32, z : f32) -> f32 {
   return mlir!( inputs : (%x = x : f32, %y = y : f32, %z = z : f32), returns : f32, dialects : ["math"]) {
     %r = math.fma %x, %y, %z : f32
     macro.yield %r : f32
@@ -339,7 +339,7 @@ fn libm_multiply_add_f32(x : f32, y : f32, z : f32) -> f32 {
 
 /// Whether the bits of an f32 are a signaling NaN: all exponent bits set, a nonzero mantissa,
 /// and its top bit (the quiet bit) clear.
-fn libm_f32_is_signaling_nan(x_u : u32) -> bool {
+pub fn libm_f32_is_signaling_nan(x_u : u32) -> bool {
   let x_abs = x_u & 2147483647u32;
   return x_abs > 2139095040u32 && (x_abs & 4194304u32) == 0u32;
 }
@@ -476,7 +476,7 @@ const LIBM_LOG10F_LOG10_R : Tensor<f64, [128]> = [
 /// The natural logarithm, correctly rounded: `logf` from `logf.h`. With `x = 2^m * 1.mant` and
 /// `f` the top 8 bits of `1.mant`, it is `m * log(2) + log(f) + log(1 + d / f)`, the last a
 /// degree-5 polynomial (Sollya: `fpminimax(log(1 + x)/x, 4, [|1, D...|], [-2^-8, 2^-7])`).
-fn libm_logf(x : f32) -> f32 {
+pub fn libm_logf(x : f32) -> f32 {
   let mut x_u = libm_f32_to_bits(x);
   let mut m : i32 = -127;
   // x < 0x1.bacb4ap+25
@@ -544,7 +544,7 @@ fn libm_logf(x : f32) -> f32 {
 /// The logarithm to base two, correctly rounded: `log2f` from `log2f.h`, the same reduction as
 /// `libm_logf` with a degree-5 polynomial for `log2(1 + x)` (Sollya:
 /// `fpminimax(log2(1 + x)/x, 4, [|1, D...|], [-2^-8, 2^-7])`).
-fn libm_log2f(x : f32) -> f32 {
+pub fn libm_log2f(x : f32) -> f32 {
   let mut x_u = libm_f32_to_bits(x);
   let mut m : i32 = -127;
   if x_u == 1065353216u32 { // 0x3f800000
@@ -580,7 +580,7 @@ fn libm_log2f(x : f32) -> f32 {
 
 /// The logarithm to base ten, correctly rounded: `log10f` from `log10f.h`. Powers of ten up
 /// to `10^10` are exact.
-fn libm_log10f(x : f32) -> f32 {
+pub fn libm_log10f(x : f32) -> f32 {
   let mut x_u = libm_f32_to_bits(x);
   if (x_u & 1023u32) == 0u32 {
     if x_u == 1065353216u32 { // 0x3f800000
@@ -661,7 +661,7 @@ fn libm_log10f(x : f32) -> f32 {
 /// `log(1 + x)`, correctly rounded: `log1pf` from `log1pf.h`. For `|x| <= 2^-6` a degree-8
 /// polynomial (Sollya: `fpminimax(log(1 + x)/x, 7, [|D...|], [-2^-6; 2^-6])`); otherwise
 /// `1 + x` is exact in double precision and `libm_log_eval` takes its logarithm.
-fn libm_log1pf(x : f32) -> f32 {
+pub fn libm_log1pf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_a = x_u & 2147483647u32; // 0x7fffffff
   let xd = x as f64;
@@ -732,7 +732,7 @@ fn libm_log1pf(x : f32) -> f32 {
 }
 
 /// The bits of an f16.
-fn libm_f16_to_bits(x : f16) -> u16 {
+pub fn libm_f16_to_bits(x : f16) -> u16 {
   return mlir!( inputs : (%a = x : f16), returns : u16, dialects : ["arith"]) {
     %r = arith.bitcast %a : f16 to i16
     macro.yield %r : i16
@@ -740,7 +740,7 @@ fn libm_f16_to_bits(x : f16) -> u16 {
 }
 
 /// The f16 with these bits.
-fn libm_f16_from_bits(v : u16) -> f16 {
+pub fn libm_f16_from_bits(v : u16) -> f16 {
   return mlir!( inputs : (%v = v : i16), returns : f16, dialects : ["arith"]) {
     %r = arith.bitcast %v : i16 to f16
     macro.yield %r : f16
@@ -750,7 +750,7 @@ fn libm_f16_from_bits(v : u16) -> f16 {
 /// What `ln`, `log2` and `log10` of an f16 answer for zero, one, a negative number, infinity
 /// and NaN, as bits; `65536`, which no f16 has, for any other input. The shared start of
 /// `logf16`, `log2f16` and `log10f16`.
-fn libm_f16_log_special(x_u : u16) -> u32 {
+pub fn libm_f16_log_special(x_u : u16) -> u32 {
   if x_u != 0u16 && x_u != 15360u16 && x_u < 31744u16 {
     return 65536u32;
   }
@@ -814,7 +814,7 @@ const LIBM_F16_LOG10_F : Tensor<f32, [32]> = [
 /// `x = 2^m * 1.mant` and `f` the top 6 bits of `1.mant`, it is `m * log(2) + log(f) +
 /// log(1 + d / f)`, the last a degree-3 polynomial in single precision (Sollya:
 /// `fpminimax(log(1 + x)/x, 2, [|SG...|], [-2^-5, 2^-5])`).
-fn libm_logf16(x : f16) -> f16 {
+pub fn libm_logf16(x : f16) -> f16 {
   let mut x_u = libm_f16_to_bits(x);
   let special = libm_f16_log_special(x_u);
   if special != 65536u32 {
@@ -853,7 +853,7 @@ fn libm_logf16(x : f16) -> f16 {
 
 /// The logarithm to base two of an f16, correctly rounded: `log2f16` from `log2f16.h`, the
 /// same reduction as `libm_logf16` (Sollya: `fpminimax(log2(1 + x)/x, 2, [|SG...|], [-2^-5, 2^-5])`).
-fn libm_log2f16(x : f16) -> f16 {
+pub fn libm_log2f16(x : f16) -> f16 {
   let mut x_u = libm_f16_to_bits(x);
   let special = libm_f16_log_special(x_u);
   if special != 65536u32 {
@@ -883,7 +883,7 @@ fn libm_log2f16(x : f16) -> f16 {
 
 /// The logarithm to base ten of an f16, correctly rounded: `log10f16` from `log10f16.h`, the
 /// same reduction as `libm_logf16`.
-fn libm_log10f16(x : f16) -> f16 {
+pub fn libm_log10f16(x : f16) -> f16 {
   let mut x_u = libm_f16_to_bits(x);
   let special = libm_f16_log_special(x_u);
   if special != 65536u32 {
@@ -942,7 +942,7 @@ fn libm_log10f16(x : f16) -> f16 {
 /// `log1pf` on the input widened to f32, rounded to f16. Rounding twice lands one step off
 /// for two inputs, found by checking all 65,536 inputs against `ln(1 + x)` computed to 60
 /// digits; they are listed here.
-fn libm_log1pf16(x : f16) -> f16 {
+pub fn libm_log1pf16(x : f16) -> f16 {
   let x_u = libm_f16_to_bits(x);
   // x = 0x1.80cp-8
   if x_u == 7683u16 {
@@ -956,7 +956,7 @@ fn libm_log1pf16(x : f16) -> f16 {
 }
 
 /// The bits of a bf16.
-fn libm_bf16_to_bits(x : bf16) -> u16 {
+pub fn libm_bf16_to_bits(x : bf16) -> u16 {
   return mlir!( inputs : (%a = x : bf16), returns : u16, dialects : ["arith"]) {
     %r = arith.bitcast %a : bf16 to i16
     macro.yield %r : i16
@@ -964,7 +964,7 @@ fn libm_bf16_to_bits(x : bf16) -> u16 {
 }
 
 /// The bf16 with these bits.
-fn libm_bf16_from_bits(v : u16) -> bf16 {
+pub fn libm_bf16_from_bits(v : u16) -> bf16 {
   return mlir!( inputs : (%v = v : i16), returns : bf16, dialects : ["arith"]) {
     %r = arith.bitcast %v : i16 to bf16
     macro.yield %r : bf16
@@ -974,21 +974,21 @@ fn libm_bf16_from_bits(v : u16) -> bf16 {
 /// A bf16 widened to f32, exactly, by moving its bits. `as f32` is exact too, but LLVM then
 /// narrows a comparison such as `(x as f32) == 0.0` back to bf16, and on a CPU with AVX512-BF16
 /// it evaluates that through `vcvtneps2bf16`, which reads a subnormal as zero.
-fn libm_f32_from_bf16(x : bf16) -> f32 {
+pub fn libm_f32_from_bf16(x : bf16) -> f32 {
   return libm_f32_from_bits((libm_bf16_to_bits(x) as u32) << 16u32);
 }
 
 /// An f32 rounded to the nearest bf16, ties to even, as integer operations on its bits. `as bf16`
 /// cannot be used: on a CPU with AVX512-BF16, LLVM converts with `vcvtneps2bf16`, which reads a
 /// subnormal input as zero and flushes a subnormal result to zero.
-fn libm_bf16_from_f32(x : f32) -> bf16 {
+pub fn libm_bf16_from_f32(x : f32) -> bf16 {
   return libm_bf16_from_bits(libm_bf16_bits_from_f32(x));
 }
 
 /// The bits of `libm_bf16_from_f32(x)`. A bf16 function makes its result once, at its only
 /// return: on a CPU with AVX512-BF16, LLVM joins bf16 values from two branches through
 /// `vcvtneps2bf16`, which flushes a subnormal to zero.
-fn libm_bf16_bits_from_f32(x : f32) -> u16 {
+pub fn libm_bf16_bits_from_f32(x : f32) -> u16 {
   let b = libm_f32_to_bits(x);
   // NaN: keep the sign and the top of the payload, and make it quiet.
   if (b & 2147483647u32) > 2139095040u32 {
@@ -1022,12 +1022,12 @@ const LIBM_BF16_LOG_1_PLUS_M : Tensor<f32, [128]> = [
 /// The natural logarithm of a bf16, correctly rounded: `log_bf16` from `log_bf16.h`. With
 /// `x = 2^e * (1 + m)`, it is `e * log(2) + log(1 + m)`, the last read from a table indexed
 /// by the 7 bits of `m`.
-fn libm_log_bf16(x : bf16) -> bf16 {
+pub fn libm_log_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_bits(libm_log_bf16_bits(libm_bf16_to_bits(x)));
 }
 
 /// The bits of `libm_log_bf16`, from the bits of its input.
-fn libm_log_bf16_bits(x_bits : u16) -> u16 {
+pub fn libm_log_bf16_bits(x_bits : u16) -> u16 {
   let mut x_u = x_bits;
   // Zero, one, negative, infinity and NaN.
   if x_u == 0u16 || x_u == 16256u16 || x_u >= 32640u16 {
@@ -1062,19 +1062,19 @@ fn libm_log_bf16_bits(x_bits : u16) -> u16 {
 
 /// The logarithm to base two of a bf16, correctly rounded. LLVM libc has no `log2` for bf16:
 /// this is its `log2f` on the input widened to f32, rounded to bf16.
-fn libm_log2_bf16(x : bf16) -> bf16 {
+pub fn libm_log2_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_log2f(libm_f32_from_bf16(x)));
 }
 
 /// The logarithm to base ten of a bf16, correctly rounded. LLVM libc has no `log10` for bf16:
 /// this is its `log10f` on the input widened to f32, rounded to bf16.
-fn libm_log10_bf16(x : bf16) -> bf16 {
+pub fn libm_log10_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_log10f(libm_f32_from_bf16(x)));
 }
 
 /// `log(1 + x)` of a bf16, correctly rounded. LLVM libc has no `log1p` for bf16: this is its
 /// `log1pf` on the input widened to f32, rounded to bf16.
-fn libm_log1p_bf16(x : bf16) -> bf16 {
+pub fn libm_log1p_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_log1pf(libm_f32_from_bf16(x)));
 }
 
@@ -1095,7 +1095,7 @@ struct LibmDyadic128 {
 impl Copy for LibmDyadic128 {}
 
 /// The high 64 bits of the 128-bit product `a * b`.
-fn libm_u64_mul_hi(a : u64, b : u64) -> u64 {
+pub fn libm_u64_mul_hi(a : u64, b : u64) -> u64 {
   return mlir!( inputs : (%a = a : i64, %b = b : i64), returns : u64, dialects : ["arith"]) {
     %lo, %hi = arith.mului_extended %a, %b : i64
     macro.yield %hi : i64
@@ -1103,7 +1103,7 @@ fn libm_u64_mul_hi(a : u64, b : u64) -> u64 {
 }
 
 /// The number of zero bits above the highest set bit; 64 for zero.
-fn libm_u64_leading_zeros(a : u64) -> u64 {
+pub fn libm_u64_leading_zeros(a : u64) -> u64 {
   return mlir!( inputs : (%a = a : i64), returns : u64, dialects : ["math"]) {
     %r = math.ctlz %a : i64
     macro.yield %r : i64
@@ -1112,7 +1112,7 @@ fn libm_u64_leading_zeros(a : u64) -> u64 {
 
 /// `d` with its mantissa shifted left by `s` bits and the exponent unchanged; zero once `s`
 /// reaches 128.
-fn libm_dyadic_shl(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
+pub fn libm_dyadic_shl(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
   if s == 0u64 {
     return d;
   }
@@ -1131,7 +1131,7 @@ fn libm_dyadic_shl(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
 
 /// `d` with its mantissa shifted right by `s` bits and the exponent unchanged; zero once `s`
 /// reaches 128. The bits shifted out are lost.
-fn libm_dyadic_shr(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
+pub fn libm_dyadic_shr(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
   if s == 0u64 {
     return d;
   }
@@ -1149,7 +1149,7 @@ fn libm_dyadic_shr(d : LibmDyadic128, s : u64) -> LibmDyadic128 {
 }
 
 /// `d` with its mantissa's top bit moved to bit 127, and the exponent lowered to match.
-fn libm_dyadic_normalize(d : LibmDyadic128) -> LibmDyadic128 {
+pub fn libm_dyadic_normalize(d : LibmDyadic128) -> LibmDyadic128 {
   if d.hi == 0u64 && d.lo == 0u64 {
     return d;
   }
@@ -1164,7 +1164,7 @@ fn libm_dyadic_normalize(d : LibmDyadic128) -> LibmDyadic128 {
 }
 
 /// `x` exactly, normalized: the `DyadicFloat(double)` constructor.
-fn libm_dyadic_from_f64(x : f64) -> LibmDyadic128 {
+pub fn libm_dyadic_from_f64(x : f64) -> LibmDyadic128 {
   let b = libm_f64_to_bits(x);
   let biased = ((b >> 52u64) & 2047u64) as i32;
   let mut mantissa = b & 4503599627370495u64;
@@ -1183,7 +1183,7 @@ fn libm_dyadic_from_f64(x : f64) -> LibmDyadic128 {
 
 /// `d` with its mantissa shifted right by `s` bits and the exponent raised to match; the bits
 /// shifted out are lost.
-fn libm_dyadic_shift_right(d : LibmDyadic128, s : i32) -> LibmDyadic128 {
+pub fn libm_dyadic_shift_right(d : LibmDyadic128, s : i32) -> LibmDyadic128 {
   let m = libm_dyadic_shr(d, s as u64);
   return LibmDyadic128 {
     negative: d.negative, exponent: d.exponent + s, hi: m.hi, lo: m.lo
@@ -1192,7 +1192,7 @@ fn libm_dyadic_shift_right(d : LibmDyadic128, s : i32) -> LibmDyadic128 {
 
 /// `a + b`, within 2 units in the last place: `quick_add`. The inputs are normalized; the
 /// exponents are aligned by shifting the smaller one right, dropping its low bits.
-fn libm_dyadic_add(a0 : LibmDyadic128, b0 : LibmDyadic128) -> LibmDyadic128 {
+pub fn libm_dyadic_add(a0 : LibmDyadic128, b0 : LibmDyadic128) -> LibmDyadic128 {
   if a0.hi == 0u64 && a0.lo == 0u64 {
     return b0;
   }
@@ -1251,7 +1251,7 @@ fn libm_dyadic_add(a0 : LibmDyadic128, b0 : LibmDyadic128) -> LibmDyadic128 {
 /// `a * b`, rounded toward zero and within 2 units in the last place: `quick_mul`. The mantissa
 /// is `quick_mul_hi` of the two, the high 128 bits of their product without the low halves'
 /// product `a.lo * b.lo` and without the carry out of the bits below.
-fn libm_dyadic_mul(a : LibmDyadic128, b : LibmDyadic128) -> LibmDyadic128 {
+pub fn libm_dyadic_mul(a : LibmDyadic128, b : LibmDyadic128) -> LibmDyadic128 {
   let negative = a.negative != b.negative;
   let exponent = a.exponent + b.exponent + 128;
   if (a.hi == 0u64 && a.lo == 0u64) || (b.hi == 0u64 && b.lo == 0u64) {
@@ -1308,7 +1308,7 @@ fn libm_dyadic_mul(a : LibmDyadic128, b : LibmDyadic128) -> LibmDyadic128 {
 /// The nearest double to `d`, ties to even, for a normalized `d`: `fast_as<double>`. The top 53
 /// bits make `d_hi`; the round and sticky bits below them, scaled to `d_hi`'s last place, are
 /// added with one FMA, which rounds the sum correctly.
-fn libm_dyadic_to_f64(d : LibmDyadic128) -> f64 {
+pub fn libm_dyadic_to_f64(d : LibmDyadic128) -> f64 {
   let sign = if d.negative {
     9223372036854775808u64
   } else {
@@ -1373,7 +1373,7 @@ fn libm_dyadic_to_f64(d : LibmDyadic128) -> f64 {
 }
 
 /// `x` rounded to the nearest integer, ties to even: `fputil::nearest_integer`.
-fn libm_round_even_f32(x : f32) -> f32 {
+pub fn libm_round_even_f32(x : f32) -> f32 {
   return mlir!( inputs : (%x = x : f32), returns : f32, dialects : ["math"]) {
     %r = math.roundeven %x : f32
     macro.yield %r : f32
@@ -1484,7 +1484,7 @@ const LIBM_EXP_2_MID : Tensor<i64, [32]> = [
 /// `exp(x)`, correctly rounded: `expf` from `expf_double_eval.h`. With `x = hi + mid + lo`,
 /// `hi` an integer and `mid` a multiple of 1/128, it is `exp(hi) * exp(mid) * exp(lo)`: two
 /// tables and a degree-4 polynomial (Sollya: `fpminimax(expm1(x)/x, 3, [|D...|], [-2^-8, 2^-8])`).
-fn libm_expf(x : f32) -> f32 {
+pub fn libm_expf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32; // 0x7fffffff
   // An input where the evaluation below would round the wrong way.
@@ -1525,7 +1525,7 @@ fn libm_expf(x : f32) -> f32 {
 /// `2^x`, correctly rounded: `exp2f` from `exp2f_double_eval.h`. Near zero a degree-6
 /// polynomial; otherwise `2^x = 2^hi * 2^mid * 2^lo` with `mid` a multiple of 1/32, `2^hi`
 /// added straight into the exponent of `2^mid` from a table, and `2^lo` a degree-5 polynomial.
-fn libm_exp2f(x : f32) -> f32 {
+pub fn libm_exp2f(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32; // 0x7fffffff
   // |x| >= 128, NaN, or |x| <= 2^-5.
@@ -1584,7 +1584,7 @@ fn libm_exp2f(x : f32) -> f32 {
 
 /// `exp(x) - 1`, correctly rounded: `expm1f` from `expm1f.h`. Near zero a polynomial; otherwise
 /// `expf`'s reduction with the final step `exp(hi + mid) * exp(lo) - 1` as one FMA.
-fn libm_expm1f(x : f32) -> f32 {
+pub fn libm_expm1f(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32; // 0x7fffffff
   // An input where the evaluation below would round the wrong way.
@@ -1636,7 +1636,7 @@ fn libm_expm1f(x : f32) -> f32 {
 // exactly on a halfway point of the narrow format; checking every one of the 65,536 inputs
 // against the function computed to 120 digits finds those inputs, and each function lists them.
 
-fn libm_expf16(x : f16) -> f16 {
+pub fn libm_expf16(x : f16) -> f16 {
   // x = 0x1.de4p-8
   if libm_f16_to_bits(x) == 8057u16 {
     return libm_f16_from_bits(15367u16); // 0x1.01cp+0
@@ -1648,7 +1648,7 @@ fn libm_expf16(x : f16) -> f16 {
   return libm_expf(x as f32) as f16;
 }
 
-fn libm_exp2f16(x : f16) -> f16 {
+pub fn libm_exp2f16(x : f16) -> f16 {
   // x = 0x1.714p-11
   if libm_f16_to_bits(x) == 4549u16 {
     return libm_f16_from_bits(15361u16); // 0x1.004p+0
@@ -1656,7 +1656,7 @@ fn libm_exp2f16(x : f16) -> f16 {
   return libm_exp2f(x as f32) as f16;
 }
 
-fn libm_expm1f16(x : f16) -> f16 {
+pub fn libm_expm1f16(x : f16) -> f16 {
   // x = 0x1.6ap-11
   if libm_f16_to_bits(x) == 4520u16 {
     return libm_f16_from_bits(4521u16); // 0x1.6a4p-11
@@ -1664,15 +1664,15 @@ fn libm_expm1f16(x : f16) -> f16 {
   return libm_expm1f(x as f32) as f16;
 }
 
-fn libm_exp_bf16(x : bf16) -> bf16 {
+pub fn libm_exp_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_expf(libm_f32_from_bf16(x)));
 }
 
-fn libm_exp2_bf16(x : bf16) -> bf16 {
+pub fn libm_exp2_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_exp2f(libm_f32_from_bf16(x)));
 }
 
-fn libm_expm1_bf16(x : bf16) -> bf16 {
+pub fn libm_expm1_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_expm1f(libm_f32_from_bf16(x)));
 }
 
@@ -1680,7 +1680,7 @@ fn libm_expm1_bf16(x : bf16) -> bf16 {
 /// `sinhfcoshf_utils.h`. With `x = (hi + mid) * log(2) + lo`, `mid` a multiple of 1/32, `e^x`
 /// and `e^-x` share one reduction: `2^(hi + mid)` and `2^-(hi + mid)` from `EXP_2_MID`, and the
 /// even and odd halves of a degree-5 polynomial for `e^lo` and `e^-lo`.
-fn libm_exp_pm_eval(x : f32, is_sinh : bool) -> f64 {
+pub fn libm_exp_pm_eval(x : f32, is_sinh : bool) -> f64 {
   let xd = x as f64;
   // k = round(x * log2(e) * 2^5)
   let kd = libm_round_even_f64(libm_f64_from_bits(4631694138158056190u64) * xd); // 0x1.71547652b82fep+5
@@ -1704,7 +1704,7 @@ fn libm_exp_pm_eval(x : f32, is_sinh : bool) -> f64 {
 }
 
 /// `x` rounded to the nearest integer, ties to even, in double precision.
-fn libm_round_even_f64(x : f64) -> f64 {
+pub fn libm_round_even_f64(x : f64) -> f64 {
   return mlir!( inputs : (%x = x : f64), returns : f64, dialects : ["math"]) {
     %r = math.roundeven %x : f64
     macro.yield %r : f64
@@ -1713,7 +1713,7 @@ fn libm_round_even_f64(x : f64) -> f64 {
 
 /// The hyperbolic sine, correctly rounded: `sinhf` from `sinhf.h`. Near zero a polynomial;
 /// otherwise `libm_exp_pm_eval`.
-fn libm_sinhf(x : f32) -> f32 {
+pub fn libm_sinhf(x : f32) -> f32 {
   let x_abs = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
   // |x| >= 90, NaN, or |x| <= 0.078125
   if x_abs >= 1119092736u32 || x_abs <= 1033895936u32 { // 0x42b40000, 0x3da00000
@@ -1748,7 +1748,7 @@ fn libm_sinhf(x : f32) -> f32 {
 }
 
 /// The hyperbolic cosine, correctly rounded: `coshf` from `coshf.h`.
-fn libm_coshf(x0 : f32) -> f32 {
+pub fn libm_coshf(x0 : f32) -> f32 {
   let x_u = libm_f32_to_bits(x0) & 2147483647u32; // 0x7fffffff
   let x = libm_f32_from_bits(x_u);
   // |x| >= 90, NaN, or |x| <= 2^-26
@@ -1764,7 +1764,7 @@ fn libm_coshf(x0 : f32) -> f32 {
 /// The hyperbolic tangent, correctly rounded: `tanhf` from `tanhf.h`. Near zero a Taylor
 /// polynomial; otherwise `(e^2x - 1) / (e^2x + 1)` written as `(r - mh) / (r + mh)` with
 /// `mh = 2^-(hi + mid)` and `r` a polynomial for `e^2lo`.
-fn libm_tanhf(x : f32) -> f32 {
+pub fn libm_tanhf(x : f32) -> f32 {
   let x_abs = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
   // |x| >= 15, NaN, or |x| <= 0.078125
   if x_abs >= 1097859072u32 || x_abs <= 1033895936u32 { // 0x41700000, 0x3da00000
@@ -1808,7 +1808,7 @@ fn libm_tanhf(x : f32) -> f32 {
   return ((r - mh) / (r + mh)) as f32;
 }
 
-fn libm_sinhf16(x : f16) -> f16 {
+pub fn libm_sinhf16(x : f16) -> f16 {
   // x = 0x1.3c8p+1
   if libm_f16_to_bits(x) == 16626u16 {
     return libm_f16_from_bits(17891u16); // 0x1.78cp+2
@@ -1820,7 +1820,7 @@ fn libm_sinhf16(x : f16) -> f16 {
   return libm_sinhf(x as f32) as f16;
 }
 
-fn libm_coshf16(x : f16) -> f16 {
+pub fn libm_coshf16(x : f16) -> f16 {
   // x = 0x1.0p-5
   if libm_f16_to_bits(x) == 10240u16 {
     return libm_f16_from_bits(15361u16); // 0x1.004p+0
@@ -1832,19 +1832,19 @@ fn libm_coshf16(x : f16) -> f16 {
   return libm_coshf(x as f32) as f16;
 }
 
-fn libm_tanhf16(x : f16) -> f16 {
+pub fn libm_tanhf16(x : f16) -> f16 {
   return libm_tanhf(x as f32) as f16;
 }
 
-fn libm_sinh_bf16(x : bf16) -> bf16 {
+pub fn libm_sinh_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_sinhf(libm_f32_from_bf16(x)));
 }
 
-fn libm_cosh_bf16(x : bf16) -> bf16 {
+pub fn libm_cosh_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_coshf(libm_f32_from_bf16(x)));
 }
 
-fn libm_tanh_bf16(x : bf16) -> bf16 {
+pub fn libm_tanh_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_tanhf(libm_f32_from_bf16(x)));
 }
 
@@ -1878,7 +1878,7 @@ struct LibmTrigReduced {
   y : f64,
 }
 
-fn libm_trig_reduce(xd : f64, x_abs : u32) -> LibmTrigReduced {
+pub fn libm_trig_reduce(xd : f64, x_abs : u32) -> LibmTrigReduced {
   // |x| < 2^45
   if x_abs < 1442840576u32 { // 0x56000000
     let kd = libm_round_even_f64(xd * libm_f64_from_bits(4621923779193981059u64)); // 0x1.45f306dc9c883p+3
@@ -1932,7 +1932,7 @@ struct LibmSinCosParts {
   cosm1_y : f64,
 }
 
-fn libm_sincosf_eval(xd : f64, x_abs : u32) -> LibmSinCosParts {
+pub fn libm_sincosf_eval(xd : f64, x_abs : u32) -> LibmSinCosParts {
   let r = libm_trig_reduce(xd, x_abs);
   let y = r.y;
   let ysq = y * y;
@@ -1947,7 +1947,7 @@ fn libm_sincosf_eval(xd : f64, x_abs : u32) -> LibmSinCosParts {
 
 /// The sine, correctly rounded: `sinf` from `sinf_double_eval.h`. Near zero a polynomial;
 /// otherwise `sin(x) = sin(y*pi/32) cos(k*pi/32) + cos(y*pi/32) sin(k*pi/32)`.
-fn libm_sinf(x : f32) -> f32 {
+pub fn libm_sinf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32; // 0x7fffffff
   let xd = x as f64;
@@ -1983,7 +1983,7 @@ fn libm_sinf(x : f32) -> f32 {
 }
 
 /// The cosine, correctly rounded: `cosf` from `cosf_double_eval.h`.
-fn libm_cosf(x : f32) -> f32 {
+pub fn libm_cosf(x : f32) -> f32 {
   let x_abs = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
   let xa = libm_f32_from_bits(x_abs);
   // |x| < 2^-12
@@ -2022,7 +2022,7 @@ fn libm_cosf(x : f32) -> f32 {
 
 /// The tangent, correctly rounded: `tanf` from `tanf.h`. Near zero a polynomial; otherwise the
 /// sine over the cosine, from one reduction.
-fn libm_tanf(x : f32) -> f32 {
+pub fn libm_tanf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32; // 0x7fffffff
   let xd = x as f64;
@@ -2083,7 +2083,7 @@ fn libm_tanf(x : f32) -> f32 {
   return (s / c) as f32;
 }
 
-fn libm_sinf16(x : f16) -> f16 {
+pub fn libm_sinf16(x : f16) -> f16 {
   // x = 0x1.accp-3
   if libm_f16_to_bits(x) == 12979u16 {
     return libm_f16_from_bits(12967u16); // 0x1.a9cp-3
@@ -2103,7 +2103,7 @@ fn libm_sinf16(x : f16) -> f16 {
   return libm_sinf(x as f32) as f16;
 }
 
-fn libm_cosf16(x : f16) -> f16 {
+pub fn libm_cosf16(x : f16) -> f16 {
   // x = 0x1.dfp-5
   if libm_f16_to_bits(x) == 11132u16 {
     return libm_f16_from_bits(15357u16); // 0x1.ff4p-1
@@ -2115,7 +2115,7 @@ fn libm_cosf16(x : f16) -> f16 {
   return libm_cosf(x as f32) as f16;
 }
 
-fn libm_tanf16(x : f16) -> f16 {
+pub fn libm_tanf16(x : f16) -> f16 {
   // x = 0x1.25p-5
   if libm_f16_to_bits(x) == 10388u16 {
     return libm_f16_from_bits(10389u16); // 0x1.254p-5
@@ -2143,15 +2143,15 @@ fn libm_tanf16(x : f16) -> f16 {
   return libm_tanf(x as f32) as f16;
 }
 
-fn libm_sin_bf16(x : bf16) -> bf16 {
+pub fn libm_sin_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_sinf(libm_f32_from_bf16(x)));
 }
 
-fn libm_cos_bf16(x : bf16) -> bf16 {
+pub fn libm_cos_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_cosf(libm_f32_from_bf16(x)));
 }
 
-fn libm_tan_bf16(x : bf16) -> bf16 {
+pub fn libm_tan_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_tanf(libm_f32_from_bf16(x)));
 }
 
@@ -2164,7 +2164,7 @@ const LIBM_ASINF_COEFFS : Tensor<f64, [12]> = [
 
 /// `asin(x)/x - 1` in terms of `xsq = x^2`, for the single-precision functions: `asin_eval`
 /// from `asin_utils.h`.
-fn libm_asin_eval(xsq : f64) -> f64 {
+pub fn libm_asin_eval(xsq : f64) -> f64 {
   let x4 = xsq * xsq;
   let c0 = libm_multiply_add(xsq, LIBM_ASINF_COEFFS[1], LIBM_ASINF_COEFFS[0]);
   let c1 = libm_multiply_add(xsq, LIBM_ASINF_COEFFS[3], LIBM_ASINF_COEFFS[2]);
@@ -2181,7 +2181,7 @@ fn libm_asin_eval(xsq : f64) -> f64 {
 
 /// The arcsine, correctly rounded: `asinf` from `asinf.h`. Below about 0.5 an odd
 /// polynomial; above, `asin(x) = pi/2 - 2 asin(sqrt((1 - x) / 2))`.
-fn libm_asinf(x : f32) -> f32 {
+pub fn libm_asinf(x : f32) -> f32 {
   let x_uint = libm_f32_to_bits(x);
   let x_abs = x_uint & 2147483647u32; // 0x7fffffff
   // |x| < 0x1.088e3ap-1
@@ -2215,7 +2215,7 @@ fn libm_asinf(x : f32) -> f32 {
 
 /// The arccosine, correctly rounded: `acosf` from `acosf.h`. Up to 0.5, `pi/2 - asin(x)`;
 /// above, `2 asin(sqrt((1 - |x|) / 2))`, from pi for a negative x.
-fn libm_acosf(x : f32) -> f32 {
+pub fn libm_acosf(x : f32) -> f32 {
   let x_uint = libm_f32_to_bits(x);
   let x_abs = x_uint & 2147483647u32; // 0x7fffffff
   let x_neg = (x_uint >> 31u32) == 1u32;
@@ -2290,7 +2290,7 @@ const LIBM_ATAN_COEFFS : Tensor<f64, [153]> = [
 ];
 
 /// `atan(i/16 + x) - atan(i/16)` divided by `x`: `atan_eval` from `atan_utils.h`.
-fn libm_atan_eval(x : f64, i : i64) -> f64 {
+pub fn libm_atan_eval(x : f64, i : i64) -> f64 {
   let row = 9 * i;
   let x2 = x * x;
   let c0 = libm_multiply_add(x, LIBM_ATAN_COEFFS[row + 2], LIBM_ATAN_COEFFS[row + 1]);
@@ -2306,7 +2306,7 @@ fn libm_atan_eval(x : f64, i : i64) -> f64 {
 /// The arctangent, correctly rounded: `atanf` from `atanf.h`. Near zero and beyond 16 a
 /// Taylor polynomial (of `-1/x` beyond 16); between, `atan(k/16) + atan_eval` with
 /// `k = round(16 |x|)`, or of `1/|x|` above 1.
-fn libm_atanf(x : f32) -> f32 {
+pub fn libm_atanf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32; // 0x7fffffff
   let neg = (x_u >> 31u32) == 1u32;
@@ -2392,7 +2392,7 @@ struct LibmDoubleDouble {
 impl Copy for LibmDoubleDouble {}
 
 /// `a + b` as a double-double, exactly, for `|a| >= |b|` (Fast2Sum): `exact_add`.
-fn libm_dd_exact_add(a : f64, b : f64) -> LibmDoubleDouble {
+pub fn libm_dd_exact_add(a : f64, b : f64) -> LibmDoubleDouble {
   let hi = a + b;
   let t = hi - a;
   return LibmDoubleDouble {
@@ -2401,14 +2401,14 @@ fn libm_dd_exact_add(a : f64, b : f64) -> LibmDoubleDouble {
 }
 
 /// `a + b`: `add`.
-fn libm_dd_add(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_dd_add(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
   let r = libm_dd_exact_add(a.hi, b.hi);
   let lo = a.lo + b.lo;
   return libm_dd_exact_add(r.hi, r.lo + lo);
 }
 
 /// `a * b`, dropping the product of the low parts: `quick_mult`.
-fn libm_dd_quick_mult(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_dd_quick_mult(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
   let hi = a.hi * b.hi;
   let lo = libm_multiply_add(a.hi, b.hi, -hi);
   let t1 = libm_multiply_add(a.hi, b.lo, lo);
@@ -2419,7 +2419,7 @@ fn libm_dd_quick_mult(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleD
 }
 
 /// `a * b + c`: the double-double `multiply_add`.
-fn libm_dd_multiply_add(a : LibmDoubleDouble, b : LibmDoubleDouble, c : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_dd_multiply_add(a : LibmDoubleDouble, b : LibmDoubleDouble, c : LibmDoubleDouble) -> LibmDoubleDouble {
   return libm_dd_add(c, libm_dd_quick_mult(a, b));
 }
 
@@ -2450,7 +2450,7 @@ const LIBM_ATAN2F_COEFFS : Tensor<f64, [18]> = [
 /// `rr.hi`, moved one unit toward `rr.lo` when its bits below the target precision (`mask`)
 /// are all zero, so that rounding it to the target sees which side of a boundary the exact
 /// value is on. From the end of `atan2f_double_double`.
-fn libm_dd_nudge(rr : LibmDoubleDouble, mask : u64) -> f64 {
+pub fn libm_dd_nudge(rr : LibmDoubleDouble, mask : u64) -> f64 {
   let mut rr_bits = libm_f64_to_bits(rr.hi);
   if (rr_bits & mask) == 0u64 && rr.lo != 0.0 {
     let hi_neg = (rr_bits >> 63u64) == 1u64;
@@ -2467,7 +2467,7 @@ fn libm_dd_nudge(rr : LibmDoubleDouble, mask : u64) -> f64 {
 /// The accurate pass of `atan2f`, for a result too near a rounding boundary to trust the
 /// fast one: `atan2f_double_double` from `atan2f.h`, the same reduction in double-double.
 /// It answers the double-double; `libm_dd_nudge` turns that into a double that rounds right.
-fn libm_atan2_double_double(num_d : f64, den_d : f64, q_d : f64, idx : i64, k_d : f64, final_sign : f64, const_hi : f64, const_lo : f64) -> LibmDoubleDouble {
+pub fn libm_atan2_double_double(num_d : f64, den_d : f64, q_d : f64, idx : i64, k_d : f64, final_sign : f64, const_hi : f64, const_lo : f64) -> LibmDoubleDouble {
   let mut num_r = num_d;
   let mut den_r = den_d;
   let mut q_hi = q_d;
@@ -2505,14 +2505,14 @@ fn libm_atan2_double_double(num_d : f64, den_d : f64, q_d : f64, idx : i64, k_d 
 /// `atan2f.h`. With `q = min(|x|, |y|) / max(|x|, |y|)` it is `atan(q)` from `atan_eval`,
 /// adjusted for the quadrant; a result too near a rounding boundary is redone in
 /// double-double.
-fn libm_atan2f(y : f32, x : f32) -> f32 {
+pub fn libm_atan2f(y : f32, x : f32) -> f32 {
   return libm_atan2_value(y, x, 268435455u64, false) as f32;
 }
 
 /// `atan2(y, x)` as a double that rounds correctly to a format whose bits below its precision
 /// are `mask` in a double: the body of `atan2f`. `always_accurate` skips the fast path, for a
 /// format that the fast path's check does not cover.
-fn libm_atan2_value(y : f32, x : f32, mask : u64, always_accurate : bool) -> f64 {
+pub fn libm_atan2_value(y : f32, x : f32, mask : u64, always_accurate : bool) -> f64 {
   let x_u = libm_f32_to_bits(x);
   let y_u = libm_f32_to_bits(y);
   let x_sign = (x_u >> 31u32) == 1u32;
@@ -2613,11 +2613,11 @@ fn libm_atan2_value(y : f32, x : f32, mask : u64, always_accurate : bool) -> f64
   return libm_dd_nudge(libm_atan2_double_double(num_d, den_d, q_d, idx, k_d, final_sign, const_hi, const_lo), mask);
 }
 
-fn libm_asinf16(x : f16) -> f16 {
+pub fn libm_asinf16(x : f16) -> f16 {
   return libm_asinf(x as f32) as f16;
 }
 
-fn libm_acosf16(x : f16) -> f16 {
+pub fn libm_acosf16(x : f16) -> f16 {
   // x = -0x1.2cp-18
   if libm_f16_to_bits(x) == 32843u16 {
     return libm_f16_from_bits(15945u16); // 0x1.924p+0
@@ -2633,7 +2633,7 @@ fn libm_acosf16(x : f16) -> f16 {
   return libm_acosf(x as f32) as f16;
 }
 
-fn libm_atanf16(x : f16) -> f16 {
+pub fn libm_atanf16(x : f16) -> f16 {
   // x = 0x1.d14p-6
   if libm_f16_to_bits(x) == 10053u16 {
     return libm_f16_from_bits(10053u16); // 0x1.d14p-6
@@ -2661,22 +2661,22 @@ fn libm_atanf16(x : f16) -> f16 {
   return libm_atanf(x as f32) as f16;
 }
 
-fn libm_asin_bf16(x : bf16) -> bf16 {
+pub fn libm_asin_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_asinf(libm_f32_from_bf16(x)));
 }
 
-fn libm_acos_bf16(x : bf16) -> bf16 {
+pub fn libm_acos_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_acosf(libm_f32_from_bf16(x)));
 }
 
-fn libm_atan_bf16(x : bf16) -> bf16 {
+pub fn libm_atan_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_atanf(libm_f32_from_bf16(x)));
 }
 
 /// `d` rounded to an f32 with round-to-odd: truncated toward zero, with the last bit set when
 /// anything was dropped. Rounding that again to a format at least two bits narrower is the
 /// same as rounding `d` once.
-fn libm_f32_round_odd(d : f64) -> f32 {
+pub fn libm_f32_round_odd(d : f64) -> f32 {
   let f = d as f32;
   if (f as f64) == d || f != f {
     return f;
@@ -2691,13 +2691,13 @@ fn libm_f32_round_odd(d : f64) -> f32 {
 
 /// `atan2(y, x)` for f16, correctly rounded: the double-double accurate pass of `atan2f` on the
 /// inputs widened to f32, rounded once to f16.
-fn libm_atan2f16(y : f16, x : f16) -> f16 {
+pub fn libm_atan2f16(y : f16, x : f16) -> f16 {
   return libm_atan2_value(y as f32, x as f32, 2199023255551u64, true) as f16;
 }
 
 /// `atan2(y, x)` for bf16, correctly rounded: the double-double accurate pass of `atan2f` on
 /// the inputs widened to f32, rounded to f32 with round-to-odd and then to bf16.
-fn libm_atan2_bf16(y : bf16, x : bf16) -> bf16 {
+pub fn libm_atan2_bf16(y : bf16, x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_f32_round_odd(libm_atan2_value(libm_f32_from_bf16(y), libm_f32_from_bf16(x), 17592186044415u64, true)));
 }
 
@@ -2705,7 +2705,7 @@ fn libm_atan2_bf16(y : bf16, x : bf16) -> bf16 {
 /// from `hypotf.h`. The sum of squares is computed in double and its square root rounded to
 /// f32; when that double sits near a halfway point of f32, the error of the sum decides which
 /// way it goes.
-fn libm_hypotf(x : f32, y : f32) -> f32 {
+pub fn libm_hypotf(x : f32, y : f32) -> f32 {
   let x_a = libm_f32_to_bits(x) & 2147483647u32; // 0x7fffffff
   let y_a = libm_f32_to_bits(y) & 2147483647u32; // 0x7fffffff
   // Infinity or NaN.
@@ -2762,7 +2762,7 @@ fn libm_hypotf(x : f32, y : f32) -> f32 {
 /// infinity, then the NaN input itself. The order of `hypotf16` and `hypotbf16`. They differ in
 /// which NaN they answer: `hypotf16` the larger in size, without its sign, and `hypotbf16`
 /// (`keep_sign`) `x` if it is a NaN, else `y`, with its sign.
-fn libm_hypot16_special(x_bits : u16, y_bits : u16, exp_mask : u16, quiet : u16, keep_sign : bool) -> u32 {
+pub fn libm_hypot16_special(x_bits : u16, y_bits : u16, exp_mask : u16, quiet : u16, keep_sign : bool) -> u32 {
   let x_a = x_bits & 32767u16;
   let y_a = y_bits & 32767u16;
   if x_a < exp_mask && y_a < exp_mask {
@@ -2789,7 +2789,7 @@ fn libm_hypot16_special(x_bits : u16, y_bits : u16, exp_mask : u16, quiet : u16,
 }
 
 /// `sqrt(x^2 + y^2)` for f16: the square root of the sum in double, rounded once to f16.
-fn libm_hypotf16(x : f16, y : f16) -> f16 {
+pub fn libm_hypotf16(x : f16, y : f16) -> f16 {
   let special = libm_hypot16_special(libm_f16_to_bits(x), libm_f16_to_bits(y), 31744u16, 512u16, false);
   if special != 65536u32 {
     return libm_f16_from_bits(special as u16);
@@ -2802,7 +2802,7 @@ fn libm_hypotf16(x : f16, y : f16) -> f16 {
 /// The bits of `hypot` of two bf16s, given by their bits: the square root of the sum in
 /// double, rounded to f32 with round-to-odd and then to bf16. In bits so that the bf16 result
 /// is made once, at the end (see `libm_bf16_bits_from_f32`).
-fn libm_hypot_bf16_bits(x_bits : u16, y_bits : u16) -> u16 {
+pub fn libm_hypot_bf16_bits(x_bits : u16, y_bits : u16) -> u16 {
   let special = libm_hypot16_special(x_bits, y_bits, 32640u16, 64u16, true);
   if special != 65536u32 {
     return special as u16;
@@ -2816,13 +2816,13 @@ fn libm_hypot_bf16_bits(x_bits : u16, y_bits : u16) -> u16 {
 }
 
 /// `sqrt(x^2 + y^2)` for bf16, correctly rounded.
-fn libm_hypot_bf16(x : bf16, y : bf16) -> bf16 {
+pub fn libm_hypot_bf16(x : bf16, y : bf16) -> bf16 {
   return libm_bf16_from_bits(libm_hypot_bf16_bits(libm_bf16_to_bits(x), libm_bf16_to_bits(y)));
 }
 
 /// `10^x`, correctly rounded: `exp10f` from `exp10f_double_eval.h`, with `x = (hi + mid) *
 /// log10(2) + lo` and `10^lo` a degree-5 polynomial. Powers of ten up to 10^10 are exact.
-fn libm_exp10f(x : f32) -> f32 {
+pub fn libm_exp10f(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32; // 0x7fffffff
   // |x| >= 0x1.344136p+5
@@ -2906,7 +2906,7 @@ fn libm_exp10f(x : f32) -> f32 {
 }
 
 /// The number of zero bits below the lowest set bit; 32 for zero.
-fn libm_u32_trailing_zeros(a : u32) -> u32 {
+pub fn libm_u32_trailing_zeros(a : u32) -> u32 {
   return mlir!( inputs : (%a = a : i32), returns : u32, dialects : ["math"]) {
     %r = math.cttz %a : i32
     macro.yield %r : i32
@@ -2914,7 +2914,7 @@ fn libm_u32_trailing_zeros(a : u32) -> u32 {
 }
 
 /// The number of zero bits above the highest set bit; 32 for zero.
-fn libm_u32_leading_zeros(a : u32) -> u32 {
+pub fn libm_u32_leading_zeros(a : u32) -> u32 {
   return mlir!( inputs : (%a = a : i32), returns : u32, dialects : ["math"]) {
     %r = math.ctlz %a : i32
     macro.yield %r : i32
@@ -2922,21 +2922,21 @@ fn libm_u32_leading_zeros(a : u32) -> u32 {
 }
 
 /// Whether the f32 with bits `x_u` is a whole number (or infinite): `is_integer` from `powf.h`.
-fn libm_f32_bits_is_integer(x_u : u32) -> bool {
+pub fn libm_f32_bits_is_integer(x_u : u32) -> bool {
   let x_e = ((x_u & 2139095040u32) >> 23u32) as i32; // 0x7f800000
   let lsb = libm_u32_trailing_zeros(x_u | 2139095040u32) as i32; // 0x7f800000
   return x_e + lsb >= 150;
 }
 
 /// Whether the f32 with bits `x_u` is an odd whole number: `is_odd_integer` from `powf.h`.
-fn libm_f32_bits_is_odd_integer(x_u : u32) -> bool {
+pub fn libm_f32_bits_is_odd_integer(x_u : u32) -> bool {
   let x_e = ((x_u & 2139095040u32) >> 23u32) as i32; // 0x7f800000
   let lsb = libm_u32_trailing_zeros(x_u | 2139095040u32) as i32; // 0x7f800000
   return x_e + lsb == 150;
 }
 
 /// `x * b` as a double-double, for a double `x`: `quick_mult(double, DoubleDouble)`.
-fn libm_dd_quick_mult_d(x : f64, b : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_dd_quick_mult_d(x : f64, b : LibmDoubleDouble) -> LibmDoubleDouble {
   let hi = x * b.hi;
   let lo = libm_multiply_add(x, b.hi, -hi);
   return LibmDoubleDouble {
@@ -2945,7 +2945,7 @@ fn libm_dd_quick_mult_d(x : f64, b : LibmDoubleDouble) -> LibmDoubleDouble {
 }
 
 /// Whether the exponent of `a` is at least that of `b`: `larger_exponent` from `powf.h`.
-fn libm_larger_exponent(a : f64, b : f64) -> bool {
+pub fn libm_larger_exponent(a : f64, b : f64) -> bool {
   return ((libm_f64_to_bits(a) >> 52u64) & 2047u64) >= ((libm_f64_to_bits(b) >> 52u64) & 2047u64);
 }
 
@@ -3308,7 +3308,7 @@ const LIBM_EXP2_MID1 : Tensor<f64, [192]> = [
 
 /// The accurate pass of `powf`, as a double-double: `powf_double_double` from `powf.h`, the
 /// logarithm refined by a second table step and both polynomials in double-double.
-fn libm_powf_double_double(idx_x : i64, dx : f64, y6 : f64, lo6_hi : f64, exp2_hi_mid : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_powf_double_double(idx_x : i64, dx : f64, y6 : f64, lo6_hi : f64, exp2_hi_mid : LibmDoubleDouble) -> LibmDoubleDouble {
   let idx2 = libm_round_even_f64(libm_multiply_add(dx, 16384.0, 64.0)) as i64;
   // Exact.
   let dx2 = libm_multiply_add(1.0 + dx, LIBM_COMMON_R2[idx2], -1.0);
@@ -3399,7 +3399,7 @@ fn libm_powf_double_double(idx_x : i64, dx : f64, y6 : f64, lo6_hi : f64, exp2_h
 /// With `narrow` false the result rounds to the correct f32, as `powf` does. With `narrow` true,
 /// for f16 and bf16 inputs, every result takes the double-double pass, and `exp2f` and `exp10f`,
 /// which would round twice, are not used for `x` of 2 and 10.
-fn libm_pow_value(x0 : f32, y0 : f32, mask : u64, narrow : bool) -> f64 {
+pub fn libm_pow_value(x0 : f32, y0 : f32, mask : u64, narrow : bool) -> f64 {
   let mut x = x0;
   let mut y = y0;
   let mut x_u = libm_f32_to_bits(x);
@@ -3618,13 +3618,13 @@ fn libm_pow_value(x0 : f32, y0 : f32, mask : u64, narrow : bool) -> f64 {
 }
 
 /// `x^y`, correctly rounded: `powf` from `powf.h`.
-fn libm_powf(x : f32, y : f32) -> f32 {
+pub fn libm_powf(x : f32, y : f32) -> f32 {
   return libm_pow_value(x, y, 268435455u64, false) as f32;
 }
 
 /// `x^y` for f16, correctly rounded: `libm_pow_value` on the inputs widened to f32, always
 /// through the double-double pass, rounded once.
-fn libm_powf16(x : f16, y : f16) -> f16 {
+pub fn libm_powf16(x : f16, y : f16) -> f16 {
   // Widening to f32 would quiet a signaling NaN, and pow(1, NaN) is 1 for a quiet one.
   let x_a = libm_f16_to_bits(x) & 32767u16; // 0x7fff
   let y_a = libm_f16_to_bits(y) & 32767u16; // 0x7fff
@@ -3636,12 +3636,12 @@ fn libm_powf16(x : f16, y : f16) -> f16 {
 
 /// `x^y` for bf16, correctly rounded: as for f16, rounded to f32 with round-to-odd and then to
 /// bf16.
-fn libm_pow_bf16(x : bf16, y : bf16) -> bf16 {
+pub fn libm_pow_bf16(x : bf16, y : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_f32_round_odd(libm_pow_value(libm_f32_from_bf16(x), libm_f32_from_bf16(y), 17592186044415u64, true)));
 }
 
 /// The correctly rounded square root of an f32.
-fn libm_sqrt_f32(x : f32) -> f32 {
+pub fn libm_sqrt_f32(x : f32) -> f32 {
   return mlir!( inputs : (%x = x : f32), returns : f32, dialects : ["math"]) {
     %r = math.sqrt %x : f32
     macro.yield %r : f32
@@ -3661,7 +3661,7 @@ struct LibmI128 {
 impl Copy for LibmI128 {}
 
 /// `v` widened to 128 bits.
-fn libm_i128_from_i64(v : i64) -> LibmI128 {
+pub fn libm_i128_from_i64(v : i64) -> LibmI128 {
   let hi = if v < 0 {
     18446744073709551615u64
   } else {
@@ -3673,7 +3673,7 @@ fn libm_i128_from_i64(v : i64) -> LibmI128 {
 }
 
 /// `a + b`.
-fn libm_i128_add(a : LibmI128, b : LibmI128) -> LibmI128 {
+pub fn libm_i128_add(a : LibmI128, b : LibmI128) -> LibmI128 {
   let lo = a.lo + b.lo;
   let carry = if lo < a.lo {
     1u64
@@ -3686,7 +3686,7 @@ fn libm_i128_add(a : LibmI128, b : LibmI128) -> LibmI128 {
 }
 
 /// `a << s`, for `s` below 128.
-fn libm_i128_shl(a : LibmI128, s : u64) -> LibmI128 {
+pub fn libm_i128_shl(a : LibmI128, s : u64) -> LibmI128 {
   if s == 0u64 {
     return a;
   }
@@ -3701,7 +3701,7 @@ fn libm_i128_shl(a : LibmI128, s : u64) -> LibmI128 {
 }
 
 /// `a * s`, keeping the low 128 bits.
-fn libm_i128_mul_i64(a : LibmI128, s : i64) -> LibmI128 {
+pub fn libm_i128_mul_i64(a : LibmI128, s : i64) -> LibmI128 {
   let s_lo = s as u64;
   let s_hi = if s < 0 {
     18446744073709551615u64
@@ -3714,12 +3714,12 @@ fn libm_i128_mul_i64(a : LibmI128, s : i64) -> LibmI128 {
 }
 
 /// Whether `a` is negative.
-fn libm_i128_is_negative(a : LibmI128) -> bool {
+pub fn libm_i128_is_negative(a : LibmI128) -> bool {
   return (a.hi >> 63u64) == 1u64;
 }
 
 /// `-a`.
-fn libm_i128_negate(a : LibmI128) -> LibmI128 {
+pub fn libm_i128_negate(a : LibmI128) -> LibmI128 {
   return libm_i128_add(LibmI128 {
     hi: a.hi ^ 18446744073709551615u64, lo: a.lo ^ 18446744073709551615u64
   }, LibmI128 {
@@ -3728,13 +3728,13 @@ fn libm_i128_negate(a : LibmI128) -> LibmI128 {
 }
 
 /// Bits 68 to 99 of `a`, as `(int)(a >> 68)` with an arithmetic shift.
-fn libm_i128_bits_from_68(a : LibmI128) -> i32 {
+pub fn libm_i128_bits_from_68(a : LibmI128) -> i32 {
   return ((a.hi >> 4u64) as u32) as i32;
 }
 
 /// The dyadic float at `[4 i]` to `[4 i + 3]` of a table written by `DYADIC`: negative, exponent,
 /// mantissa high and low.
-fn libm_dyadic_from_parts(negative : u64, exponent : u64, hi : u64, lo : u64) -> LibmDyadic128 {
+pub fn libm_dyadic_from_parts(negative : u64, exponent : u64, hi : u64, lo : u64) -> LibmDyadic128 {
   return LibmDyadic128 {
     negative: negative == 1u64, exponent: (exponent as i64) as i32, hi: hi, lo: lo
   };
@@ -4558,7 +4558,7 @@ struct LibmLogReduced {
 /// Steps 2 to 4 of the range reduction for the accurate pass of `log`: `log_range_reduction`
 /// from `log_range_reduction.h`, on `m_x` with units of 2^-60. It adds `-log(r)` of each step
 /// to `sum` from `step_2`, `step_3` and `step_4` and answers what is left.
-fn libm_log_range_reduction(m_x : f64, sum0 : LibmDyadic128, step : i32) -> LibmLogReduced {
+pub fn libm_log_range_reduction(m_x : f64, sum0 : LibmDyadic128, step : i32) -> LibmLogReduced {
   let mut sum = sum0;
   // ulp = 2^-60
   let v = (m_x * libm_f64_from_bits(4877398396442247168u64)) as i64; // 0x1.0p60
@@ -4603,7 +4603,7 @@ fn libm_log_range_reduction(m_x : f64, sum0 : LibmDyadic128, step : i32) -> Libm
 
 /// Entry `i` of step `k` (1 to 4) of a logarithm's range reduction table: `log`'s while `table`
 /// is 0, `log2`'s while it is 1 and `log10`'s while it is 2.
-fn libm_log_step(table : i32, k : i32, i : i64) -> LibmDyadic128 {
+pub fn libm_log_step(table : i32, k : i32, i : i64) -> LibmDyadic128 {
   let j = 4 * i;
   if table == 2 {
     if k == 1 {
@@ -4643,7 +4643,7 @@ fn libm_log_step(table : i32, k : i32, i : i64) -> LibmDyadic128 {
 
 /// The accurate pass of `log`: `log_accurate` from `log.h`, in 128-bit dyadic floats. `e_x` and
 /// `index` are the fast pass's exponent and table index, `m_x` its reduced argument.
-fn libm_log_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
+pub fn libm_log_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
   // log(2) with 128-bit precision.
   let log_2 = LibmDyadic128 {
     negative: false, exponent: -128, hi: 12786308645202655659u64, lo: 14547668686819489455u64
@@ -4666,7 +4666,7 @@ fn libm_log_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
 /// `log(m) = -log(r) + log(1 + u)` with `r` from `RD` and `u = r * m - 1` exact; `log(1 + u)`
 /// is a degree-7 polynomial. When the error bound does not decide the rounding, the accurate
 /// pass redoes it in 128-bit dyadic floats.
-fn libm_log(x : f64) -> f64 {
+pub fn libm_log(x : f64) -> f64 {
   let mut x_u = libm_f64_to_bits(x);
   let mut x_e : i32 = -1023;
   // log(1) = +0
@@ -5415,7 +5415,7 @@ const LIBM_LOG2_BIG_COEFFS : Tensor<u64, [16]> = [
 ];
 
 /// The accurate pass of `log2`: `log2_accurate` from `log2.h`, in 128-bit dyadic floats.
-fn libm_log2_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
+pub fn libm_log2_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
   let mut sum = libm_dyadic_from_f64(e_x as f64);
   sum = libm_dyadic_add(sum, libm_log_step(1, 1, index));
   let rr = libm_log_range_reduction(m_x, sum, 1);
@@ -5433,7 +5433,7 @@ fn libm_log2_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
 /// The logarithm to base 2 of a double, correctly rounded: `log2` from `log2.h`. The same
 /// reduction as `libm_log`; the natural logarithm of the reduced argument is turned into base 2
 /// by a double-double multiply by `log2(e)`.
-fn libm_log2(x : f64) -> f64 {
+pub fn libm_log2(x : f64) -> f64 {
   let mut x_u = libm_f64_to_bits(x);
   let mut x_e : i32 = -1023;
   // log2(1) = +0
@@ -6119,7 +6119,7 @@ const LIBM_LOG10_BIG_COEFFS : Tensor<u64, [16]> = [
 ];
 
 /// The accurate pass of `log10`: `log10_accurate` from `log10.h`, in 128-bit dyadic floats.
-fn libm_log10_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
+pub fn libm_log10_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
   // log10(2) with 128-bit precision.
   let log10_2 = LibmDyadic128 {
     negative: false, exponent: -129, hi: 11106046577046714264u64, lo: 10342896614695014776u64
@@ -6142,7 +6142,7 @@ fn libm_log10_accurate(e_x : i32, index : i64, m_x : f64) -> f64 {
 /// reduction as `libm_log`, turned into base 10 by a double-double multiply by `log10(e)`.
 /// LLVM libc also answers 10^1 to 10^22 from a table when the error bound does not decide the
 /// rounding; with FMA the bound decides all 22, so the table is left out.
-fn libm_log10(x : f64) -> f64 {
+pub fn libm_log10(x : f64) -> f64 {
   let mut x_u = libm_f64_to_bits(x);
   let mut x_e : i32 = -1023;
   // log10(1) = +0
@@ -6886,7 +6886,7 @@ const LIBM_LOG1P_BIG_COEFFS : Tensor<u64, [16]> = [
 ];
 
 /// Entry `i` of `LOG_R1`, `LOG_R2` or `LOG_R3` of `log1p`, for `k` of 1, 2 or 3.
-fn libm_log1p_step(k : i32, i : i64) -> LibmDyadic128 {
+pub fn libm_log1p_step(k : i32, i : i64) -> LibmDyadic128 {
   let j = 4 * i;
   if k == 1 {
     return libm_dyadic_from_parts(LIBM_LOG1P_LOG_R1[j], LIBM_LOG1P_LOG_R1[j + 1], LIBM_LOG1P_LOG_R1[j + 2], LIBM_LOG1P_LOG_R1[j + 3]);
@@ -6899,7 +6899,7 @@ fn libm_log1p_step(k : i32, i : i64) -> LibmDyadic128 {
 
 /// The accurate pass of `log1p`: `log1p_accurate` from `log1p.h`, in 128-bit dyadic floats.
 /// `m_hi + m_lo` is the fast pass's reduced argument.
-fn libm_log1p_accurate(e_x : i32, index : i64, m_hi : f64, m_lo : f64) -> f64 {
+pub fn libm_log1p_accurate(e_x : i32, index : i64, m_hi : f64, m_lo : f64) -> f64 {
   // log(2) with 128-bit precision.
   let log_2 = LibmDyadic128 {
     negative: false, exponent: -128, hi: 12786308645202655659u64, lo: 14547668686819489455u64
@@ -6936,13 +6936,13 @@ fn libm_log1p_accurate(e_x : i32, index : i64, m_hi : f64, m_lo : f64) -> f64 {
 /// `log(1 + x)` of a double, correctly rounded and accurate for a small `x`: `log1p` from
 /// `log1p.h`. `1 + x` is formed exactly as a double-double, reduced by `R1`, and the result is
 /// `e * log(2) - log(r) + log(1 + v)` with a degree-5 polynomial for the last term.
-fn libm_log1p(x : f64) -> f64 {
+pub fn libm_log1p(x : f64) -> f64 {
   return libm_log1p_value(x, false);
 }
 
 /// `libm_log1p`, which with `always_accurate` takes the accurate pass even when the fast one
 /// decides the rounding, so that a test can reach it.
-fn libm_log1p_value(x : f64, always_accurate : bool) -> f64 {
+pub fn libm_log1p_value(x : f64, always_accurate : bool) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_exp = (x_u >> 52u64) & 2047u64;
   let mut x_dd = LibmDoubleDouble {
@@ -7155,7 +7155,7 @@ const LIBM_EXPM1_COEFFS_128 : Tensor<u64, [28]> = [
 
 /// Coefficient `i` of the double-double polynomial of `exp` (`which` 0), `exp2` (1) or
 /// `expm1` (2).
-fn libm_exp_coeff_dd(which : i32, i : i64) -> LibmDoubleDouble {
+pub fn libm_exp_coeff_dd(which : i32, i : i64) -> LibmDoubleDouble {
   if which == 0 {
     return LibmDoubleDouble {
       hi: LIBM_EXP_COEFFS_DD[2 * i + 1], lo: LIBM_EXP_COEFFS_DD[2 * i]
@@ -7173,7 +7173,7 @@ fn libm_exp_coeff_dd(which : i32, i : i64) -> LibmDoubleDouble {
 
 /// The degree-6 double-double polynomial of `exp` (`which` 0), `exp2` (1) or `expm1` (2) at
 /// `dx`, by Horner's rule: `polyeval`.
-fn libm_exp_poly_dd(which : i32, dx : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_exp_poly_dd(which : i32, dx : LibmDoubleDouble) -> LibmDoubleDouble {
   let mut p = libm_exp_coeff_dd(which, 6);
   let mut i : i64 = 5;
   while i >= 0 {
@@ -7184,7 +7184,7 @@ fn libm_exp_poly_dd(which : i32, dx : LibmDoubleDouble) -> LibmDoubleDouble {
 }
 
 /// Coefficient `i` of the 128-bit polynomial of `exp` (`which` 0), `exp2` (1) or `expm1` (2).
-fn libm_exp_coeff_128(which : i32, i : i64) -> LibmDyadic128 {
+pub fn libm_exp_coeff_128(which : i32, i : i64) -> LibmDyadic128 {
   if which == 0 {
     return libm_dyadic_from_parts(LIBM_EXP_COEFFS_128[4 * i], LIBM_EXP_COEFFS_128[4 * i + 1], LIBM_EXP_COEFFS_128[4 * i + 2], LIBM_EXP_COEFFS_128[4 * i + 3]);
   }
@@ -7196,7 +7196,7 @@ fn libm_exp_coeff_128(which : i32, i : i64) -> LibmDyadic128 {
 
 /// The 128-bit polynomial of `exp` (`which` 0), `exp2` (1) or `expm1` (2) at `dx`, with
 /// coefficients 0 to `degree`, by Horner's rule: `polyeval`.
-fn libm_exp_poly_128(which : i32, degree : i64, dx : LibmDyadic128) -> LibmDyadic128 {
+pub fn libm_exp_poly_128(which : i32, degree : i64, dx : LibmDyadic128) -> LibmDyadic128 {
   let mut p = libm_exp_coeff_128(which, degree);
   let mut i = degree - 1;
   while i >= 0 {
@@ -7208,7 +7208,7 @@ fn libm_exp_poly_128(which : i32, degree : i64, dx : LibmDyadic128) -> LibmDyadi
 
 /// `2^(idx1 / 64) * 2^(idx2 / 4096)` as a double-double, from the `hi` and `mid` parts of the
 /// two tables.
-fn libm_exp_mid_dd(idx1 : i64, idx2 : i64) -> LibmDoubleDouble {
+pub fn libm_exp_mid_dd(idx1 : i64, idx2 : i64) -> LibmDoubleDouble {
   let m1 = LibmDoubleDouble {
     hi: LIBM_EXP2_MID1[3 * idx1 + 2], lo: LIBM_EXP2_MID1[3 * idx1 + 1]
   };
@@ -7219,14 +7219,14 @@ fn libm_exp_mid_dd(idx1 : i64, idx2 : i64) -> LibmDoubleDouble {
 }
 
 /// `2^(idx1 / 64) * 2^(idx2 / 4096)` in 128 bits, from all three parts of the two tables.
-fn libm_exp_mid_128(idx1 : i64, idx2 : i64) -> LibmDyadic128 {
+pub fn libm_exp_mid_128(idx1 : i64, idx2 : i64) -> LibmDyadic128 {
   let m1 = libm_dyadic_add(libm_dyadic_from_f64(LIBM_EXP2_MID1[3 * idx1 + 2]), libm_dyadic_add(libm_dyadic_from_f64(LIBM_EXP2_MID1[3 * idx1 + 1]), libm_dyadic_from_f64(LIBM_EXP2_MID1[3 * idx1])));
   let m2 = libm_dyadic_add(libm_dyadic_from_f64(LIBM_EXP2_MID2[3 * idx2 + 2]), libm_dyadic_add(libm_dyadic_from_f64(LIBM_EXP2_MID2[3 * idx2 + 1]), libm_dyadic_from_f64(LIBM_EXP2_MID2[3 * idx2])));
   return libm_dyadic_mul(m1, m2);
 }
 
 /// `x` times `2^hi`, by adding `hi` to the exponent field. `x` and the result are normal.
-fn libm_f64_scale(x : f64, hi : i32) -> f64 {
+pub fn libm_f64_scale(x : f64, hi : i32) -> f64 {
   return libm_f64_from_bits(((libm_f64_to_bits(x) as i64) + (hi as i64) * 4503599627370496) as u64);
 }
 
@@ -7243,7 +7243,7 @@ impl Copy for LibmZivResult {}
 /// of `lo` well enough to decide the rounding: `ziv_test_denorm` from `exp_utils.h`. The value is
 /// scaled up by 2^1022 and 1.0 is added, which makes it round at the same place a subnormal
 /// would.
-fn libm_exp_ziv_denorm(hi : i32, mid : f64, lo : f64, err0 : f64) -> LibmZivResult {
+pub fn libm_exp_ziv_denorm(hi : i32, mid : f64, lo : f64, err0 : f64) -> LibmZivResult {
   let mut err = err0;
   let exp_hi = ((hi + 1022) as i64) * 4503599627370496;
   let mid_hi = libm_f64_from_bits(((libm_f64_to_bits(mid) as i64) + exp_hi) as u64);
@@ -7271,7 +7271,7 @@ fn libm_exp_ziv_denorm(hi : i32, mid : f64, lo : f64, err0 : f64) -> LibmZivResu
 
 /// `exp(x)` for the `x` the fast path leaves out: `|x| <= 2^-53`, an `x` whose result
 /// overflows or rounds to zero, infinities and NaN. `set_exceptional` from `exp.h`.
-fn libm_exp_exceptional(x : f64) -> f64 {
+pub fn libm_exp_exceptional(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_abs = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
   if x_abs <= 4368491638549381120u64 { // 0x3ca0000000000000
@@ -7294,7 +7294,7 @@ fn libm_exp_exceptional(x : f64) -> f64 {
 
 /// The 128-bit pass of `exp`: `exp_f128` from `exp.h`. `dx = x - kd * 2^-12 * log(2)` is
 /// recomputed in three parts.
-fn libm_exp_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
+pub fn libm_exp_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
   let t1 = libm_multiply_add(kd, libm_f64_from_bits(13773747375640150016u64), x); // -0x1.62e42ffp-13
   let t2 = kd * libm_f64_from_bits(4397510237897097216u64); // 0x1.718432ap-47
   let t3 = kd * libm_f64_from_bits(4254509830225397381u64); // 0x1.b0e2633fe0685p-79
@@ -7306,7 +7306,7 @@ fn libm_exp_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
 }
 
 /// The double-double pass of `exp`: `exp_double_double` from `exp.h`.
-fn libm_exp_dd(x : f64, kd : f64, exp_mid : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_exp_dd(x : f64, kd : f64, exp_mid : LibmDoubleDouble) -> LibmDoubleDouble {
   let t1 = libm_multiply_add(kd, libm_f64_from_bits(13773747375640150016u64), x); // -0x1.62e42ffp-13
   let t2 = kd * libm_f64_from_bits(4397510237897097216u64); // 0x1.718432ap-47
   let t3 = kd * libm_f64_from_bits(4254509830225397381u64); // 0x1.b0e2633fe0685p-79
@@ -7320,7 +7320,7 @@ fn libm_exp_dd(x : f64, kd : f64, exp_mid : LibmDoubleDouble) -> LibmDoubleDoubl
 /// `exp(x) = 2^hi * 2^mid1 * 2^mid2 * exp(lo)`. The two middle factors come from tables and
 /// `exp(lo)` from a short polynomial. When the error bound does not decide the rounding, the
 /// result is computed again with double-doubles, then with 128-bit floats.
-fn libm_exp(x : f64) -> f64 {
+pub fn libm_exp(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   // x < log(2^-1075), or x >= log of the largest double, or |x| < 2^-53.
   if x_u >= 13873137513782915154u64 || (x_u < 13591863675404156928u64 && x_u >= 4649454530587146736u64) || x_u < 4368491638549381120u64 { // 0xc0874910d52d3052, 0xbca0000000000000, 0x40862e42fefa39f0, 0x3ca0000000000000
@@ -7377,7 +7377,7 @@ fn libm_exp(x : f64) -> f64 {
 }
 
 /// The 128-bit pass of `exp2`: `exp2_f128` from `exp2.h`.
-fn libm_exp2_128(dx : f64, hi : i32, idx1 : i64, idx2 : i64) -> f64 {
+pub fn libm_exp2_128(dx : f64, hi : i32, idx1 : i64, idx2 : i64) -> f64 {
   let p = libm_exp_poly_128(1, 7, libm_dyadic_from_f64(dx));
   let mut r = libm_dyadic_mul(libm_exp_mid_128(idx1, idx2), p);
   r.exponent = r.exponent + hi;
@@ -7399,7 +7399,7 @@ impl Copy for LibmExp2Reduced {}
 
 /// `x = hi + mid1 + mid2 + dx` with `mid1` a multiple of 1/64, `mid2` of 1/4096 and
 /// `|dx| <= 2^-13`, and the fast pass's estimate `2^(mid1 + mid2) * 2^dx ~ exp_mid.hi + lo`.
-fn libm_exp2_reduce(x : f64) -> LibmExp2Reduced {
+pub fn libm_exp2_reduce(x : f64) -> LibmExp2Reduced {
   let k = ((libm_f64_to_bits(x + libm_f64_from_bits(4704009810788745216u64)) >> 19u64) as u32) as i32; // 0x1.800000004p21
   let kd = k as f64;
   let exp_mid = libm_exp_mid_dd(((k >> 6) & 63) as i64, (k & 63) as i64);
@@ -7418,7 +7418,7 @@ fn libm_exp2_reduce(x : f64) -> LibmExp2Reduced {
 
 /// `exp2(x)` when the result may be subnormal, `-1075 < x <= -1022`: `exp2_denorm` from
 /// `exp2.h`.
-fn libm_exp2_denorm(x : f64) -> f64 {
+pub fn libm_exp2_denorm(x : f64) -> f64 {
   let s = libm_exp2_reduce(x);
   let r = libm_exp_ziv_denorm(s.hi, s.exp_mid.hi, s.lo, libm_f64_from_bits(4323455642275676160u64)); // 0x1.0p-63
   if r.ok {
@@ -7436,7 +7436,7 @@ fn libm_exp2_denorm(x : f64) -> f64 {
 
 /// Two raised to a double, correctly rounded: `exp2` from `exp2.h`. The same scheme as
 /// `libm_exp`, without the multiplication by `log2(e)`, so the reduction is exact.
-fn libm_exp2(x : f64) -> f64 {
+pub fn libm_exp2(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   // x < -1022, or x >= 1024, or |x| < 2^-54 * log2(e), or infinity or NaN.
   if x_u > 13875572859742453760u64 || (x_u <= 13589353796997972734u64 && x_u >= 4652218415073722368u64) || x_u <= 4370485359770567421u64 { // 0xc08ff00000000000, 0xbc971547652b82fe, 0x4090000000000000, 0x3ca71547652b82fd
@@ -7481,7 +7481,7 @@ fn libm_exp2(x : f64) -> f64 {
 
 /// The 128-bit pass of `expm1`: `expm1_f128` from `expm1.h`. `2^(hi + mid) * exp(dx) - 1` is
 /// computed as `(2^mid - 2^-hi) + 2^mid * dx * P(dx)`, then scaled by `2^hi`.
-fn libm_expm1_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
+pub fn libm_expm1_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
   let t1 = libm_multiply_add(kd, libm_f64_from_bits(13773747375640150016u64), x); // -0x1.62e42ffp-13
   let t2 = kd * libm_f64_from_bits(4397510237897097216u64); // 0x1.718432ap-47
   let t3 = kd * libm_f64_from_bits(4254509830225397381u64); // 0x1.b0e2633fe0685p-79
@@ -7500,7 +7500,7 @@ fn libm_expm1_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
 
 /// `expm1(x)` for the `x` the fast path leaves out: `|x| <= 2^-53`, `x <= -37.5`, an `x` whose
 /// result overflows, infinities and NaN. `set_exceptional` from `expm1.h`.
-fn libm_expm1_exceptional(x : f64) -> f64 {
+pub fn libm_expm1_exceptional(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_abs = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
   if x_abs <= 4368491638549381120u64 { // 0x3ca0000000000000
@@ -7531,7 +7531,7 @@ fn libm_expm1_exceptional(x : f64) -> f64 {
 /// `e^x - 1` for a double, correctly rounded, and accurate for a small `x` where `exp(x) - 1`
 /// would lose every significant digit: `expm1` from `expm1.h`. The same reduction as
 /// `libm_exp`; the `- 1` is folded into the table value as `2^mid - 2^-hi`, which is exact.
-fn libm_expm1(x : f64) -> f64 {
+pub fn libm_expm1(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_is_neg = (x_u >> 63u64) == 1u64;
   // x <= -37.5, or x >= log of the largest double, or |x| <= 2^-53.
@@ -7897,7 +7897,7 @@ const LIBM_TRIG64_TAN_COEFFS : Tensor<u64, [36]> = [
 ];
 
 /// `a + b` as a double-double, exactly, in either order of size (TwoSum): `exact_add<false>`.
-fn libm_dd_two_sum(a : f64, b : f64) -> LibmDoubleDouble {
+pub fn libm_dd_two_sum(a : f64, b : f64) -> LibmDoubleDouble {
   let hi = a + b;
   let t1 = hi - a;
   let t2 = hi - t1;
@@ -7909,7 +7909,7 @@ fn libm_dd_two_sum(a : f64, b : f64) -> LibmDoubleDouble {
 }
 
 /// `a * b` as a double-double, exactly: `exact_mult` with FMA.
-fn libm_dd_exact_mult(a : f64, b : f64) -> LibmDoubleDouble {
+pub fn libm_dd_exact_mult(a : f64, b : f64) -> LibmDoubleDouble {
   let hi = a * b;
   return LibmDoubleDouble {
     hi: hi, lo: libm_multiply_add(a, b, -hi)
@@ -7917,7 +7917,7 @@ fn libm_dd_exact_mult(a : f64, b : f64) -> LibmDoubleDouble {
 }
 
 /// `a / b` as a double-double: `div` from `double_double.h`, one correction step on `a.hi / b.hi`.
-fn libm_dd_div(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_dd_div(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
   let q = 1.0 / b.hi;
   let hi = a.hi * q;
   let e_hi = libm_multiply_add(b.hi, -hi, a.hi);
@@ -7944,7 +7944,7 @@ impl Copy for LibmTrig64Reduced {}
 /// Reduction for `|x| < 2^16`: `range_reduction_small` from `range_reduction_double_common.h`.
 /// `k = round(x * 128/pi)` and `u = x - k pi/128`, with pi/128 in three parts whose first two
 /// products with `k` are exact.
-fn libm_trig64_reduce_small(x : f64) -> LibmTrig64Reduced {
+pub fn libm_trig64_reduce_small(x : f64) -> LibmTrig64Reduced {
   let kd = libm_round_even_f64(x * libm_f64_from_bits(4630930978448722051u64)); // 0x1.45f306dc9c883p5
   // Exact.
   let y_hi = libm_multiply_add(kd, libm_f64_from_bits(13806103496014954496u64), x); // -0x1.921fb544p-6
@@ -7964,7 +7964,7 @@ fn libm_trig64_reduce_small(x : f64) -> LibmTrig64Reduced {
 }
 
 /// `x` itself as `u`, with `k = 0`, for an `x` too small to need reducing.
-fn libm_trig64_reduce_none(x : f64) -> LibmTrig64Reduced {
+pub fn libm_trig64_reduce_none(x : f64) -> LibmTrig64Reduced {
   return LibmTrig64Reduced {
     k: 0, u: LibmDoubleDouble {
       hi: x, lo: 0.0
@@ -7978,7 +7978,7 @@ fn libm_trig64_reduce_none(x : f64) -> LibmTrig64Reduced {
 /// `x` is split as `2^(16 (idx - 3)) * x_reduced`, and `x_reduced` is multiplied by the row of
 /// 128/pi that starts where the integer part of the product stops mattering. The fractional
 /// part, times pi/128, is `u`.
-fn libm_trig64_reduce_large(x : f64) -> LibmTrig64Reduced {
+pub fn libm_trig64_reduce_large(x : f64) -> LibmTrig64Reduced {
   let x_u = libm_f64_to_bits(x);
   let x_e_m62 = (((x_u >> 52u64) & 2047u64) as i32) - (1023 + 62);
   let idx = ((x_e_m62 >> 4) + 3) as i64;
@@ -8003,7 +8003,7 @@ fn libm_trig64_reduce_large(x : f64) -> LibmTrig64Reduced {
 }
 
 /// pi/128 in 128 bits.
-fn libm_trig64_pi_over_128_f128() -> LibmDyadic128 {
+pub fn libm_trig64_pi_over_128_f128() -> LibmDyadic128 {
   return LibmDyadic128 {
     negative: false, exponent: -133, hi: 14488038916154245684u64, lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
   };
@@ -8011,7 +8011,7 @@ fn libm_trig64_pi_over_128_f128() -> LibmDyadic128 {
 
 /// `u` in 128 bits for the accurate pass: `range_reduction_small_f128` for `|x| < 2^16`, else
 /// `LargeRangeReduction::accurate` from the pieces `libm_trig64_reduce_large` kept.
-fn libm_trig64_reduce_f128(x : f64, r : LibmTrig64Reduced) -> LibmDyadic128 {
+pub fn libm_trig64_reduce_f128(x : f64, r : LibmTrig64Reduced) -> LibmDyadic128 {
   let x_e = ((libm_f64_to_bits(x) >> 52u64) & 2047u64) as i32;
   if x_e < 1023 + 16 {
     let kd = libm_round_even_f64(x * libm_f64_from_bits(4630930978448722051u64)); // 0x1.45f306dc9c883p5
@@ -8031,7 +8031,7 @@ fn libm_trig64_reduce_f128(x : f64, r : LibmTrig64Reduced) -> LibmDyadic128 {
 }
 
 /// `sin(k pi / 128)` as a double-double, for any integer `k`.
-fn libm_trig64_sin_k(k : i64) -> LibmDoubleDouble {
+pub fn libm_trig64_sin_k(k : i64) -> LibmDoubleDouble {
   let i = k & 255;
   return LibmDoubleDouble {
     hi: LIBM_TRIG64_SIN_K_PI_OVER_128[2 * i + 1], lo: LIBM_TRIG64_SIN_K_PI_OVER_128[2 * i]
@@ -8039,7 +8039,7 @@ fn libm_trig64_sin_k(k : i64) -> LibmDoubleDouble {
 }
 
 /// `sin(k pi / 128)` in 128 bits, for any integer `k`, from the table of the first quarter turn.
-fn libm_trig64_sin_k_f128(k : i64) -> LibmDyadic128 {
+pub fn libm_trig64_sin_k_f128(k : i64) -> LibmDyadic128 {
   let mut i = k & 63;
   if (k & 64) != 0 {
     i = 64 - (k & 63);
@@ -8053,7 +8053,7 @@ fn libm_trig64_sin_k_f128(k : i64) -> LibmDyadic128 {
 
 /// The 128-bit polynomial `which` (0 `sin(u) / u`, 1 `cos(u)`, 2 `tan(u) / u`) at `u_sq = u^2`,
 /// by Horner's rule: `polyeval`.
-fn libm_trig64_poly_f128(which : i32, u_sq : LibmDyadic128) -> LibmDyadic128 {
+pub fn libm_trig64_poly_f128(which : i32, u_sq : LibmDyadic128) -> LibmDyadic128 {
   let mut n : i64 = 7;
   if which == 2 {
     n = 9;
@@ -8068,7 +8068,7 @@ fn libm_trig64_poly_f128(which : i32, u_sq : LibmDyadic128) -> LibmDyadic128 {
 }
 
 /// Coefficient `i` of the 128-bit polynomial `which` of `libm_trig64_poly_f128`.
-fn libm_trig64_coeff_f128(which : i32, i : i64) -> LibmDyadic128 {
+pub fn libm_trig64_coeff_f128(which : i32, i : i64) -> LibmDyadic128 {
   if which == 0 {
     return libm_dyadic_from_parts(LIBM_TRIG64_SIN_COEFFS[4 * i], LIBM_TRIG64_SIN_COEFFS[4 * i + 1], LIBM_TRIG64_SIN_COEFFS[4 * i + 2], LIBM_TRIG64_SIN_COEFFS[4 * i + 3]);
   }
@@ -8088,7 +8088,7 @@ struct LibmSinCos {
 
 impl Copy for LibmSinCos {}
 
-fn libm_trig64_sincos_eval(u : LibmDoubleDouble) -> LibmSinCos {
+pub fn libm_trig64_sincos_eval(u : LibmDoubleDouble) -> LibmSinCos {
   let u_hi_sq = u.hi * u.hi;
   let p1 = libm_multiply_add(u_hi_sq, libm_f64_from_bits(13774824197408792602u64), libm_f64_from_bits(4575957461383581969u64)); // -0x1.a01a01a01a01ap-13, 0x1.1111111111111p-7
   let q1 = libm_multiply_add(u_hi_sq, libm_f64_from_bits(4586165620538955093u64), -0.5); // 0x1.5555555555555p-5
@@ -8116,7 +8116,7 @@ fn libm_trig64_sincos_eval(u : LibmDoubleDouble) -> LibmSinCos {
 }
 
 /// What `sin`, `cos` and `tan` answer for infinities and NaNs: a NaN, quiet.
-fn libm_trig64_nan(x : f64) -> f64 {
+pub fn libm_trig64_nan(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   // A signaling NaN gives the default quiet NaN.
   if (x_u & 9221120237041090560u64) == 9218868437227405312u64 && (x_u & 4503599627370495u64) != 0u64 { // 0x7ff8000000000000, 0x7ff0000000000000, 0x000fffffffffffff
@@ -8127,7 +8127,7 @@ fn libm_trig64_nan(x : f64) -> f64 {
 
 /// The 128-bit pass of `sin`: `sin_accurate` from `sin.h`. `sin(k pi/128 + u) = sin(k pi/128)
 /// cos(u) + cos(k pi/128) sin(u)`.
-fn libm_sin_accurate(x : f64, r : LibmTrig64Reduced) -> f64 {
+pub fn libm_sin_accurate(x : f64, r : LibmTrig64Reduced) -> f64 {
   let u = libm_trig64_reduce_f128(x, r);
   let u_sq = libm_dyadic_mul(u, u);
   let sin_u = libm_dyadic_mul(u, libm_trig64_poly_f128(0, u_sq));
@@ -8139,7 +8139,7 @@ fn libm_sin_accurate(x : f64, r : LibmTrig64Reduced) -> f64 {
 /// The sine of a double, correctly rounded: `sin` from `sin.h`. `x = k pi/128 + u`; the sine and
 /// cosine of `k pi/128` come from a table and those of `u` from short polynomials. When the
 /// error bound does not decide the rounding, the result is computed again in 128 bits.
-fn libm_sin(x : f64) -> f64 {
+pub fn libm_sin(x : f64) -> f64 {
   let x_e = ((libm_f64_to_bits(x) >> 52u64) & 2047u64) as i32;
   let mut r = libm_trig64_reduce_small(0.0);
   if x_e < 1023 + 16 {
@@ -8190,7 +8190,7 @@ fn libm_sin(x : f64) -> f64 {
 
 /// The 128-bit pass of `cos`: `cos_accurate` from `cos.h`. `cos(k pi/128 + u) = cos(k pi/128)
 /// cos(u) - sin(k pi/128) sin(u)`.
-fn libm_cos_accurate(x : f64, r : LibmTrig64Reduced) -> f64 {
+pub fn libm_cos_accurate(x : f64, r : LibmTrig64Reduced) -> f64 {
   let u = libm_trig64_reduce_f128(x, r);
   let u_sq = libm_dyadic_mul(u, u);
   let sin_u = libm_dyadic_mul(u, libm_trig64_poly_f128(0, u_sq));
@@ -8200,7 +8200,7 @@ fn libm_cos_accurate(x : f64, r : LibmTrig64Reduced) -> f64 {
 }
 
 /// The cosine of a double, correctly rounded: `cos` from `cos.h`, the same scheme as `libm_sin`.
-fn libm_cos(x : f64) -> f64 {
+pub fn libm_cos(x : f64) -> f64 {
   let x_e = ((libm_f64_to_bits(x) >> 52u64) & 2047u64) as i32;
   let mut r = libm_trig64_reduce_small(0.0);
   if x_e < 1023 + 16 {
@@ -8247,7 +8247,7 @@ fn libm_cos(x : f64) -> f64 {
 
 /// `a / b` in 128 bits, from the first guess `q` of `1 / b`: two Newton-Raphson steps,
 /// `newton_raphson_div` from `tan.h`.
-fn libm_dyadic_div_newton(a : LibmDyadic128, b0 : LibmDyadic128, q : f64) -> LibmDyadic128 {
+pub fn libm_dyadic_div_newton(a : LibmDyadic128, b0 : LibmDyadic128, q : f64) -> LibmDyadic128 {
   let q0 = libm_dyadic_from_f64(q);
   let two = libm_dyadic_from_f64(2.0);
   let mut b = b0;
@@ -8261,7 +8261,7 @@ fn libm_dyadic_div_newton(a : LibmDyadic128, b0 : LibmDyadic128, q : f64) -> Lib
 /// `tan(x) = (sin(k pi/128) + cos(k pi/128) tan(u)) / (cos(k pi/128) - sin(k pi/128) tan(u))`,
 /// with `tan(u)` a short polynomial and the division done in double-doubles. When the error
 /// bound does not decide the rounding, the result is computed again in 128 bits.
-fn libm_tan(x : f64) -> f64 {
+pub fn libm_tan(x : f64) -> f64 {
   let x_e = ((libm_f64_to_bits(x) >> 52u64) & 2047u64) as i32;
   let mut r = libm_trig64_reduce_small(0.0);
   if x_e < 1023 + 16 {
@@ -8673,13 +8673,13 @@ const LIBM_ATAN_I : Tensor<f64, [130]> = [
 ];
 
 /// pi/2 and pi in 128 bits.
-fn libm_pi_over_two_f128() -> LibmDyadic128 {
+pub fn libm_pi_over_two_f128() -> LibmDyadic128 {
   return LibmDyadic128 {
     negative: false, exponent: -127, hi: 14488038916154245684u64, lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
   };
 }
 
-fn libm_pi_f128() -> LibmDyadic128 {
+pub fn libm_pi_f128() -> LibmDyadic128 {
   return LibmDyadic128 {
     negative: false, exponent: -126, hi: 14488038916154245684u64, lo: 14179128828124470481u64 // 0xc90fdaa22168c234, 0xc4c6628b80dc1cd1
   };
@@ -8695,7 +8695,7 @@ struct LibmAsinEval {
 
 impl Copy for LibmAsinEval {}
 
-fn libm_asin_eval_dd(u : LibmDoubleDouble, err0 : f64) -> LibmAsinEval {
+pub fn libm_asin_eval_dd(u : LibmDoubleDouble, err0 : f64) -> LibmAsinEval {
   let k = libm_round_even_f64(u.hi * 32.0);
   let i = (k as i64) * 12;
   // Exact.
@@ -8723,14 +8723,14 @@ fn libm_asin_eval_dd(u : LibmDoubleDouble, err0 : f64) -> LibmAsinEval {
 }
 
 /// Coefficient `j` of row `idx` of `LIBM_ASIN_COEFFS_F128`.
-fn libm_asin_coeff_f128(idx : i64, j : i64) -> LibmDyadic128 {
+pub fn libm_asin_coeff_f128(idx : i64, j : i64) -> LibmDyadic128 {
   let b = 64 * idx + 4 * j;
   return libm_dyadic_from_parts(LIBM_ASIN_COEFFS_F128[b], LIBM_ASIN_COEFFS_F128[b + 1], LIBM_ASIN_COEFFS_F128[b + 2], LIBM_ASIN_COEFFS_F128[b + 3]);
 }
 
 /// `asin(x) / x` in 128 bits from row `idx`, at the reduced argument `u`: the 128-bit
 /// `asin_eval`, by Horner's rule.
-fn libm_asin_eval_f128(u : LibmDyadic128, idx : i64) -> LibmDyadic128 {
+pub fn libm_asin_eval_f128(u : LibmDyadic128, idx : i64) -> LibmDyadic128 {
   let mut p = libm_asin_coeff_f128(idx, 15);
   let mut j : i64 = 14;
   while j >= 0 {
@@ -8749,7 +8749,7 @@ struct LibmAsinSmall128 {
 
 impl Copy for LibmAsinSmall128 {}
 
-fn libm_asin_small_f128(x_sq : LibmDoubleDouble) -> LibmAsinSmall128 {
+pub fn libm_asin_small_f128(x_sq : LibmDoubleDouble) -> LibmAsinSmall128 {
   let k = libm_round_even_f64(x_sq.hi * 64.0);
   let u_hi = libm_dyadic_from_f64(libm_multiply_add(k, -0.015625, x_sq.hi));
   return LibmAsinSmall128 {
@@ -8772,7 +8772,7 @@ struct LibmAsinLarge {
 
 impl Copy for LibmAsinLarge {}
 
-fn libm_asin_large(x_abs : f64) -> LibmAsinLarge {
+pub fn libm_asin_large(x_abs : f64) -> LibmAsinLarge {
   let u = libm_multiply_add(x_abs, -0.5, 0.5);
   let v_hi = libm_sqrt_f64(u);
   let h = libm_multiply_add(v_hi, -v_hi, u);
@@ -8790,7 +8790,7 @@ fn libm_asin_large(x_abs : f64) -> LibmAsinLarge {
 
 /// `2 sqrt(u) asin(sqrt(u)) / sqrt(u)` in 128 bits, from the pieces of `libm_asin_large`, with
 /// the sign of `negative`.
-fn libm_asin_large_f128(s : LibmAsinLarge, negative : bool) -> LibmDyadic128 {
+pub fn libm_asin_large_f128(s : LibmAsinLarge, negative : bool) -> LibmDyadic128 {
   let idx = libm_round_even_f64(s.u * 64.0);
   let vl_lo = libm_multiply_add(-s.v_hi, s.vl, s.h) / s.v_hi;
   let t = s.h * -0.25 / s.u;
@@ -8803,7 +8803,7 @@ fn libm_asin_large_f128(s : LibmAsinLarge, negative : bool) -> LibmDyadic128 {
 
 /// What `asin` and `acos` answer for `|x| > 1` and NaN: a quiet NaN, the input itself if it is
 /// one.
-fn libm_asin_nan(x : f64) -> f64 {
+pub fn libm_asin_nan(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   if (x_u & 9221120237041090560u64) == 9221120237041090560u64 { // 0x7ff8000000000000, 0x7ff8000000000000
     return x;
@@ -8814,7 +8814,7 @@ fn libm_asin_nan(x : f64) -> f64 {
 /// The arcsine of a double, correctly rounded: `asin` from `asin.h`. For `|x| < 1/2` a
 /// polynomial in `x^2`, from one of 9 tables; above that `pi/2 - 2 asin(sqrt((1 - |x|) / 2))`.
 /// When the error bound does not decide the rounding, the result is computed again in 128 bits.
-fn libm_asin(x : f64) -> f64 {
+pub fn libm_asin(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_exp = ((x_u >> 52u64) & 2047u64) as i32;
   let x_abs = libm_f64_from_bits(x_u & 9223372036854775807u64); // 0x7fffffffffffffff
@@ -8867,7 +8867,7 @@ fn libm_asin(x : f64) -> f64 {
 /// The arccosine of a double, correctly rounded: `acos` from `acos.h`. `pi/2 - asin(x)` for
 /// `|x| < 1/2`; above that `2 asin(sqrt((1 - |x|) / 2))`, from pi for a negative x. When the
 /// error bound does not decide the rounding, the result is computed again in 128 bits.
-fn libm_acos(x : f64) -> f64 {
+pub fn libm_acos(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_exp = ((x_u >> 52u64) & 2047u64) as i32;
   let x_abs = libm_f64_from_bits(x_u & 9223372036854775807u64); // 0x7fffffffffffffff
@@ -8930,7 +8930,7 @@ fn libm_acos(x : f64) -> f64 {
 
 /// `atan(x)` as a double-double for a small double-double `x`: `atan_eval` from
 /// `atan_utils.h`, `x - x^3/3 + x^5/5 - x^7/7 + x^9/9` with `x.lo` added to first order.
-fn libm_atan_eval_dd(x : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_atan_eval_dd(x : LibmDoubleDouble) -> LibmDoubleDouble {
   let x_hi_sq = x.hi * x.hi;
   let c0 = libm_multiply_add(x_hi_sq, libm_f64_from_bits(4596373779694328218u64), libm_f64_from_bits(13823048456275842389u64)); // 0x1.999999999999ap-3, -0x1.5555555555555p-2
   let c1 = libm_multiply_add(x_hi_sq, libm_f64_from_bits(4592670820000712476u64), libm_f64_from_bits(13817687028148020370u64)); // 0x1.c71c71c71c71cp-4, -0x1.2492492492492p-3
@@ -8944,7 +8944,7 @@ fn libm_atan_eval_dd(x : LibmDoubleDouble) -> LibmDoubleDouble {
 }
 
 /// `atan(i / 64)` as a double-double.
-fn libm_atan_i(i : i64) -> LibmDoubleDouble {
+pub fn libm_atan_i(i : i64) -> LibmDoubleDouble {
   return LibmDoubleDouble {
     hi: LIBM_ATAN_I[2 * i + 1], lo: LIBM_ATAN_I[2 * i]
   };
@@ -8953,7 +8953,7 @@ fn libm_atan_i(i : i64) -> LibmDoubleDouble {
 /// The arctangent of a double: `atan` from `atan.h`. With `k = round(64 |x|) / 64`,
 /// `atan(|x|) = atan(k) + atan((|x| - k) / (1 + |x| k))`; above 1 the same on `1 / |x|`, from
 /// pi/2. LLVM libc has no 128-bit pass for this one, so the last bit can be off.
-fn libm_atan(x : f64) -> f64 {
+pub fn libm_atan(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_sign : f64 = if (x_u >> 63u64) == 1u64 {
     -1.0
@@ -9023,7 +9023,7 @@ fn libm_atan(x : f64) -> f64 {
 /// divided by the larger, reduced as in `libm_atan`, and the quadrant adds 0, pi/2 or pi. Values
 /// near the ends of the exponent range are scaled first. LLVM libc has no 128-bit pass for this
 /// one, so the last bit can be off.
-fn libm_atan2(y : f64, x : f64) -> f64 {
+pub fn libm_atan2(y : f64, x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let y_u = libm_f64_to_bits(y);
   let x_sign = (x_u >> 63u64) == 1u64;
@@ -9113,7 +9113,7 @@ fn libm_atan2(y : f64, x : f64) -> f64 {
 
 /// The constant `atan2` adds for the quadrant, `CONST_ADJ[x_sign][y_sign][recip]`: 0, -0, pi/2,
 /// -pi/2 or -pi as double-doubles.
-fn libm_atan2_const_adj(x_sign : bool, y_sign : bool, recip : bool) -> LibmDoubleDouble {
+pub fn libm_atan2_const_adj(x_sign : bool, y_sign : bool, recip : bool) -> LibmDoubleDouble {
   let pi_over_2 = LibmDoubleDouble {
     hi: libm_f64_from_bits(4609753056924675352u64), lo: libm_f64_from_bits(4364452196894661639u64) // 0x1.921fb54442d18p0, 0x1.1a62633145c07p-54
   };
@@ -9142,7 +9142,7 @@ fn libm_atan2_const_adj(x_sign : bool, y_sign : bool, recip : bool) -> LibmDoubl
 
 /// What `atan2` answers when either input is a zero or an infinity, before the sign of `y`:
 /// `EXCEPTS[y_except][x_except][x_sign]`.
-fn libm_atan2_except(y_except : i32, x_except : i32, x_sign : bool) -> LibmDoubleDouble {
+pub fn libm_atan2_except(y_except : i32, x_except : i32, x_sign : bool) -> LibmDoubleDouble {
   let zero = LibmDoubleDouble {
     hi: 0.0, lo: 0.0
   };
@@ -9177,7 +9177,7 @@ fn libm_atan2_except(y_except : i32, x_except : i32, x_sign : bool) -> LibmDoubl
 /// `sqrt(x^2 + y^2)` for doubles, exactly rounded with integers: the generic `hypot` from
 /// `FPUtil/Hypot.h` for `double`, in round-to-nearest. The squares of the two 54-bit mantissas
 /// are added as 128-bit integers, and the square root is taken one bit at a time.
-fn libm_hypot_exact(x : f64, y : f64) -> f64 {
+pub fn libm_hypot_exact(x : f64, y : f64) -> f64 {
   let x_abs = libm_f64_to_bits(x) & 9223372036854775807u64; // 0x7fffffffffffffff
   let y_abs = libm_f64_to_bits(y) & 9223372036854775807u64; // 0x7fffffffffffffff
   let mut a_bits = x_abs;
@@ -9276,7 +9276,7 @@ fn libm_hypot_exact(x : f64, y : f64) -> f64 {
 
 /// `hypot` when an input is an infinity or a NaN: a signaling NaN gives the quiet NaN, then an
 /// infinity gives infinity, then the NaN input itself, `x` first.
-fn libm_hypot_special(x : f64, y : f64) -> f64 {
+pub fn libm_hypot_special(x : f64, y : f64) -> f64 {
   let x_abs = libm_f64_to_bits(x) & 9223372036854775807u64; // 0x7fffffffffffffff
   let y_abs = libm_f64_to_bits(y) & 9223372036854775807u64; // 0x7fffffffffffffff
   let x_snan = x_abs > 9218868437227405312u64 && (x_abs & 2251799813685248u64) == 0u64; // 0x7ff0000000000000, 0x0008000000000000
@@ -9296,7 +9296,7 @@ fn libm_hypot_special(x : f64, y : f64) -> f64 {
 /// `hypot` when both inputs are below 2^-1022 in size: `hypot_denorm` from `hypot.h`. Both are
 /// scaled up by 2^1022 and the double-double square root is checked with 1.0 added, so it
 /// rounds at the place a subnormal result would.
-fn libm_hypot_denorm(a0 : f64, b0 : f64) -> f64 {
+pub fn libm_hypot_denorm(a0 : f64, b0 : f64) -> f64 {
   let a = a0 * libm_f64_from_bits(9209861237972664320u64); // 0x1.0p1022
   let b = b0 * libm_f64_from_bits(9209861237972664320u64); // 0x1.0p1022
   let a_sq = libm_dd_exact_mult(a, a);
@@ -9329,7 +9329,7 @@ fn libm_hypot_denorm(a0 : f64, b0 : f64) -> f64 {
 /// added as double-doubles and the square root is corrected once, after scaling by 2^-600 or
 /// 2^600 when the inputs are very large or very small. When the error bound does not decide the
 /// rounding, `libm_hypot_exact` does it with integers.
-fn libm_hypot(x : f64, y : f64) -> f64 {
+pub fn libm_hypot(x : f64, y : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let y_u = libm_f64_to_bits(y);
   // The exponent and the top 20 bits of the mantissa.
@@ -9418,7 +9418,7 @@ const LIBM_EXP10_COEFFS_128 : Tensor<u64, [32]> = [
 ];
 
 /// The degree-6 double-double polynomial of `exp10` at `dx`, by Horner's rule: `polyeval`.
-fn libm_exp10_poly_dd(dx : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_exp10_poly_dd(dx : LibmDoubleDouble) -> LibmDoubleDouble {
   let mut p = LibmDoubleDouble {
     hi: LIBM_EXP10_COEFFS_DD[13], lo: LIBM_EXP10_COEFFS_DD[12]
   };
@@ -9433,7 +9433,7 @@ fn libm_exp10_poly_dd(dx : LibmDoubleDouble) -> LibmDoubleDouble {
 }
 
 /// The degree-7 128-bit polynomial of `exp10` at `dx`, by Horner's rule: `polyeval`.
-fn libm_exp10_poly_128(dx : LibmDyadic128) -> LibmDyadic128 {
+pub fn libm_exp10_poly_128(dx : LibmDyadic128) -> LibmDyadic128 {
   let mut p = libm_dyadic_from_parts(LIBM_EXP10_COEFFS_128[28], LIBM_EXP10_COEFFS_128[29], LIBM_EXP10_COEFFS_128[30], LIBM_EXP10_COEFFS_128[31]);
   let mut i : i64 = 6;
   while i >= 0 {
@@ -9445,7 +9445,7 @@ fn libm_exp10_poly_128(dx : LibmDyadic128) -> LibmDyadic128 {
 }
 
 /// The 128-bit pass of `exp10`: `exp10_f128` from `exp10.h`.
-fn libm_exp10_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
+pub fn libm_exp10_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
   let t1 = libm_multiply_add(kd, libm_f64_from_bits(13768423335549468672u64), x); // -0x1.3441350ap-14
   let t2 = kd * libm_f64_from_bits(4377710088417181696u64); // 0x1.0c0219dcp-51
   let t3 = kd * libm_f64_from_bits(4219214883283065762u64); // 0x1.da994fd20dba2p-87
@@ -9457,7 +9457,7 @@ fn libm_exp10_128(x : f64, kd : f64, idx1 : i64, idx2 : i64) -> f64 {
 }
 
 /// The double-double pass of `exp10`: `exp10_double_double` from `exp10.h`.
-fn libm_exp10_dd(x : f64, kd : f64, exp_mid : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_exp10_dd(x : f64, kd : f64, exp_mid : LibmDoubleDouble) -> LibmDoubleDouble {
   let t1 = libm_multiply_add(kd, libm_f64_from_bits(13768423335549468672u64), x); // -0x1.3441350ap-14
   let t2 = kd * libm_f64_from_bits(4377710088417181696u64); // 0x1.0c0219dcp-51
   let t3 = kd * libm_f64_from_bits(4219214883283065762u64); // 0x1.da994fd20dba2p-87
@@ -9479,7 +9479,7 @@ struct LibmExp10Reduced {
 
 impl Copy for LibmExp10Reduced {}
 
-fn libm_exp10_reduce(x : f64) -> LibmExp10Reduced {
+pub fn libm_exp10_reduce(x : f64) -> LibmExp10Reduced {
   let tmp = libm_multiply_add(x, libm_f64_from_bits(4614662735865160561u64), libm_f64_from_bits(4704009810788745216u64)); // 0x1.a934f0979a371p+1, 0x1.800000004p21
   let k = ((libm_f64_to_bits(tmp) >> 19u64) as u32) as i32;
   let kd = k as f64;
@@ -9501,7 +9501,7 @@ fn libm_exp10_reduce(x : f64) -> LibmExp10Reduced {
 }
 
 /// `exp10(x)` when the result may be subnormal: `exp10_denorm` from `exp10.h`.
-fn libm_exp10_denorm(x : f64) -> f64 {
+pub fn libm_exp10_denorm(x : f64) -> f64 {
   let s = libm_exp10_reduce(x);
   let r = libm_exp_ziv_denorm(s.hi, s.exp_mid.hi, s.lo, libm_f64_from_bits(4325707442089361408u64)); // 0x1.8p-63
   if r.ok {
@@ -9518,7 +9518,7 @@ fn libm_exp10_denorm(x : f64) -> f64 {
 /// Ten raised to a double, correctly rounded: `exp10` from `exp10.h`. The same scheme as
 /// `libm_exp`, with `log2(10)` in place of `log2(e)`; 10^1 to 10^22, which are exact, and 10^23
 /// are answered directly when the fast pass cannot decide them.
-fn libm_exp10(x : f64) -> f64 {
+pub fn libm_exp10(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   // x < log10(2^-1075) or x >= log10 of the largest double, or |x| < 2^-56, or infinity or NaN.
   if x_u >= 13867491935800207938u64 || (x_u <= 13581672830762149134u64 && x_u >= 4644130490496809471u64) || x_u < 4362804393534743822u64 { // 0xc0733a7146f72a42, 0xbc7bcb7b1526e50e, 0x40734413509f79ff, 0x3c8bcb7b1526e50e
@@ -9933,7 +9933,7 @@ const LIBM_POW_LOG2_RD_256 : Tensor<u64, [512]> = [
 ];
 
 /// The number of zero bits below the lowest set bit; 64 for zero.
-fn libm_u64_trailing_zeros(a : u64) -> u64 {
+pub fn libm_u64_trailing_zeros(a : u64) -> u64 {
   if a == 0u64 {
     return 64u64;
   }
@@ -9956,22 +9956,22 @@ struct LibmU256 {
 
 impl Copy for LibmU256 {}
 
-fn libm_u256(w0 : u64, w1 : u64, w2 : u64, w3 : u64) -> LibmU256 {
+pub fn libm_u256(w0 : u64, w1 : u64, w2 : u64, w3 : u64) -> LibmU256 {
   return LibmU256 {
     w0: w0, w1: w1, w2: w2, w3: w3
   };
 }
 
-fn libm_u256_zero() -> LibmU256 {
+pub fn libm_u256_zero() -> LibmU256 {
   return libm_u256(0u64, 0u64, 0u64, 0u64);
 }
 
-fn libm_u256_is_zero(a : LibmU256) -> bool {
+pub fn libm_u256_is_zero(a : LibmU256) -> bool {
   return (a.w0 | a.w1 | a.w2 | a.w3) == 0u64;
 }
 
 /// Word `i` of `a`, 0 for `i` outside 0 to 3.
-fn libm_u256_word(a : LibmU256, i : i64) -> u64 {
+pub fn libm_u256_word(a : LibmU256, i : i64) -> u64 {
   if i == 0 {
     return a.w0;
   }
@@ -9995,7 +9995,7 @@ struct LibmU256Carry {
 
 impl Copy for LibmU256Carry {}
 
-fn libm_u256_add_carry(a : LibmU256, b : LibmU256) -> LibmU256Carry {
+pub fn libm_u256_add_carry(a : LibmU256, b : LibmU256) -> LibmU256Carry {
   let s0 = (a.w0 as u128) + (b.w0 as u128);
   let s1 = (a.w1 as u128) + (b.w1 as u128) + (s0 >> 64u128);
   let s2 = (a.w2 as u128) + (b.w2 as u128) + (s1 >> 64u128);
@@ -10006,12 +10006,12 @@ fn libm_u256_add_carry(a : LibmU256, b : LibmU256) -> LibmU256Carry {
 }
 
 /// `a + b`, wrapping.
-fn libm_u256_add(a : LibmU256, b : LibmU256) -> LibmU256 {
+pub fn libm_u256_add(a : LibmU256, b : LibmU256) -> LibmU256 {
   return libm_u256_add_carry(a, b).v;
 }
 
 /// `a - b`, wrapping.
-fn libm_u256_sub(a : LibmU256, b : LibmU256) -> LibmU256 {
+pub fn libm_u256_sub(a : LibmU256, b : LibmU256) -> LibmU256 {
   let two64 : u128 = (1 as u128) << 64u128;
   let d0 = (a.w0 as u128) + two64 - (b.w0 as u128);
   let b0 : u128 = if d0 < two64 {
@@ -10036,7 +10036,7 @@ fn libm_u256_sub(a : LibmU256, b : LibmU256) -> LibmU256 {
 }
 
 /// Whether `a >= b`.
-fn libm_u256_ge(a : LibmU256, b : LibmU256) -> bool {
+pub fn libm_u256_ge(a : LibmU256, b : LibmU256) -> bool {
   if a.w3 != b.w3 {
     return a.w3 > b.w3;
   }
@@ -10050,7 +10050,7 @@ fn libm_u256_ge(a : LibmU256, b : LibmU256) -> bool {
 }
 
 /// `a << s`; zero once `s` reaches 256.
-fn libm_u256_shl(a : LibmU256, s : u64) -> LibmU256 {
+pub fn libm_u256_shl(a : LibmU256, s : u64) -> LibmU256 {
   if s >= 256u64 {
     return libm_u256_zero();
   }
@@ -10082,7 +10082,7 @@ fn libm_u256_shl(a : LibmU256, s : u64) -> LibmU256 {
 }
 
 /// `a >> s`; zero once `s` reaches 256.
-fn libm_u256_shr(a : LibmU256, s : u64) -> LibmU256 {
+pub fn libm_u256_shr(a : LibmU256, s : u64) -> LibmU256 {
   if s >= 256u64 {
     return libm_u256_zero();
   }
@@ -10111,7 +10111,7 @@ fn libm_u256_shr(a : LibmU256, s : u64) -> LibmU256 {
 }
 
 /// The number of zero bits above the highest set bit; 256 for zero.
-fn libm_u256_leading_zeros(a : LibmU256) -> u64 {
+pub fn libm_u256_leading_zeros(a : LibmU256) -> u64 {
   if a.w3 != 0u64 {
     return libm_u64_leading_zeros(a.w3);
   }
@@ -10128,7 +10128,7 @@ fn libm_u256_leading_zeros(a : LibmU256) -> u64 {
 }
 
 /// Bit `p` of `a`, false for `p` past 255.
-fn libm_u256_bit(a : LibmU256, p : u64) -> bool {
+pub fn libm_u256_bit(a : LibmU256, p : u64) -> bool {
   if p >= 256u64 {
     return false;
   }
@@ -10136,7 +10136,7 @@ fn libm_u256_bit(a : LibmU256, p : u64) -> bool {
 }
 
 /// Whether any of the bits of `a` below bit `p` is set (all of them for `p` past 255).
-fn libm_u256_any_below(a : LibmU256, p : u64) -> bool {
+pub fn libm_u256_any_below(a : LibmU256, p : u64) -> bool {
   if p >= 256u64 {
     return !libm_u256_is_zero(a);
   }
@@ -10152,7 +10152,7 @@ struct LibmMulAcc {
 impl Copy for LibmMulAcc {}
 
 /// `acc + a * b`, counting a carry out of the two words: `mul_add_with_carry`.
-fn libm_mul_acc_add(m : LibmMulAcc, a : u64, b : u64) -> LibmMulAcc {
+pub fn libm_mul_acc_add(m : LibmMulAcc, a : u64, b : u64) -> LibmMulAcc {
   let p = (a as u128) * (b as u128);
   let s = m.acc + p;
   let c : u64 = if s < p {
@@ -10167,7 +10167,7 @@ fn libm_mul_acc_add(m : LibmMulAcc, a : u64, b : u64) -> LibmMulAcc {
 
 /// The accumulator moved down a word, with the carries as its new high word:
 /// `Accumulator::advance`. Its old low word is the result's next word.
-fn libm_mul_acc_advance(m : LibmMulAcc) -> LibmMulAcc {
+pub fn libm_mul_acc_advance(m : LibmMulAcc) -> LibmMulAcc {
   return LibmMulAcc {
     acc: (m.acc >> 64u128) | ((m.carry as u128) << 64u128), carry: 0u64
   };
@@ -10175,7 +10175,7 @@ fn libm_mul_acc_advance(m : LibmMulAcc) -> LibmMulAcc {
 
 /// The high 256 bits of `a * b`, without the products below the top half and the carries out of
 /// them: `UInt<256>::quick_mul_hi`, at most 3 below the exact high half.
-fn libm_u256_quick_mul_hi(a : LibmU256, b : LibmU256) -> LibmU256 {
+pub fn libm_u256_quick_mul_hi(a : LibmU256, b : LibmU256) -> LibmU256 {
   let mut m = LibmMulAcc {
     acc: 0 as u128, carry: 0u64
   };
@@ -10198,7 +10198,7 @@ fn libm_u256_quick_mul_hi(a : LibmU256, b : LibmU256) -> LibmU256 {
 }
 
 /// The high 128 bits of `a * b`, without the product of the low words: `UInt<128>::quick_mul_hi`.
-fn libm_u128_quick_mul_hi(a : u128, b : u128) -> u128 {
+pub fn libm_u128_quick_mul_hi(a : u128, b : u128) -> u128 {
   let a0 = a as u64;
   let a1 = (a >> 64u128) as u64;
   let b0 = b as u64;
@@ -10214,7 +10214,7 @@ fn libm_u128_quick_mul_hi(a : u128, b : u128) -> u128 {
 }
 
 /// Entry `i` of a table of 128-bit fractions, low word first.
-fn libm_frac128_at(t : i32, i : i64) -> u128 {
+pub fn libm_frac128_at(t : i32, i : i64) -> u128 {
   if t == 0 {
     return ((LIBM_POW_LOG2_POLY_128[2 * i + 1] as u128) << 64u128) | (LIBM_POW_LOG2_POLY_128[2 * i] as u128);
   }
@@ -10223,7 +10223,7 @@ fn libm_frac128_at(t : i32, i : i64) -> u128 {
 
 /// Entry `i` of a table of 256-bit fractions: 0 `LOG2_POLY_256`, 1 `EXP2_POLY_256`,
 /// 2 `EXP2_MID_FRAC256`, 3 `LOG2_RD_FRAC256`.
-fn libm_frac256_at(t : i32, i : i64) -> LibmU256 {
+pub fn libm_frac256_at(t : i32, i : i64) -> LibmU256 {
   if t == 0 {
     return libm_u256(LIBM_POW_LOG2_POLY_256[4 * i], LIBM_POW_LOG2_POLY_256[4 * i + 1], LIBM_POW_LOG2_POLY_256[4 * i + 2], LIBM_POW_LOG2_POLY_256[4 * i + 3]);
   }
@@ -10237,19 +10237,19 @@ fn libm_frac256_at(t : i32, i : i64) -> LibmU256 {
 }
 
 /// The top 128 bits of a 256-bit fraction: `to_frac128`.
-fn libm_frac256_to_128(a : LibmU256) -> u128 {
+pub fn libm_frac256_to_128(a : LibmU256) -> u128 {
   return ((a.w3 as u128) << 64u128) | (a.w2 as u128);
 }
 
 /// A 128-bit fraction as a dyadic float `2^exponent * m`, normalized.
-fn libm_dyadic_from_u128(negative : bool, exponent : i32, m : u128) -> LibmDyadic128 {
+pub fn libm_dyadic_from_u128(negative : bool, exponent : i32, m : u128) -> LibmDyadic128 {
   return libm_dyadic_normalize(LibmDyadic128 {
     negative: negative, exponent: exponent, hi: (m >> 64u128) as u64, lo: m as u64
   });
 }
 
 /// The mantissa of a 128-bit dyadic float as one integer.
-fn libm_dyadic_mantissa(d : LibmDyadic128) -> u128 {
+pub fn libm_dyadic_mantissa(d : LibmDyadic128) -> u128 {
   return ((d.hi as u128) << 64u128) | (d.lo as u128);
 }
 
@@ -10264,7 +10264,7 @@ struct LibmDyadic256 {
 impl Copy for LibmDyadic256 {}
 
 /// `d` with its mantissa's top bit moved to bit 255, and the exponent lowered to match.
-fn libm_dyadic256_normalize(d : LibmDyadic256) -> LibmDyadic256 {
+pub fn libm_dyadic256_normalize(d : LibmDyadic256) -> LibmDyadic256 {
   if libm_u256_is_zero(d.m) {
     return d;
   }
@@ -10275,7 +10275,7 @@ fn libm_dyadic256_normalize(d : LibmDyadic256) -> LibmDyadic256 {
 }
 
 /// `x` exactly, normalized: the `DyadicFloat(double)` constructor.
-fn libm_dyadic256_from_f64(x : f64) -> LibmDyadic256 {
+pub fn libm_dyadic256_from_f64(x : f64) -> LibmDyadic256 {
   let d = libm_dyadic_from_f64(x);
   if d.hi == 0u64 && d.lo == 0u64 {
     // A zero keeps the exponent the constructor gives it at every width.
@@ -10289,7 +10289,7 @@ fn libm_dyadic256_from_f64(x : f64) -> LibmDyadic256 {
 }
 
 /// `a + b`: `quick_add`.
-fn libm_dyadic256_add(a0 : LibmDyadic256, b0 : LibmDyadic256) -> LibmDyadic256 {
+pub fn libm_dyadic256_add(a0 : LibmDyadic256, b0 : LibmDyadic256) -> LibmDyadic256 {
   if libm_u256_is_zero(a0.m) {
     return b0;
   }
@@ -10331,7 +10331,7 @@ fn libm_dyadic256_add(a0 : LibmDyadic256, b0 : LibmDyadic256) -> LibmDyadic256 {
 }
 
 /// `a * b`: `quick_mul`, the mantissa from `quick_mul_hi`.
-fn libm_dyadic256_mul(a : LibmDyadic256, b : LibmDyadic256) -> LibmDyadic256 {
+pub fn libm_dyadic256_mul(a : LibmDyadic256, b : LibmDyadic256) -> LibmDyadic256 {
   let negative = a.negative != b.negative;
   let mut exponent = a.exponent + b.exponent + 256;
   if libm_u256_is_zero(a.m) || libm_u256_is_zero(b.m) {
@@ -10351,7 +10351,7 @@ fn libm_dyadic256_mul(a : LibmDyadic256, b : LibmDyadic256) -> LibmDyadic256 {
 
 /// The nearest double to `d`, ties to even: `fast_as<double>` for 256 bits. The top 53 bits make
 /// `d_hi`; the round and sticky bits below them are added with one FMA.
-fn libm_dyadic256_to_f64(d : LibmDyadic256) -> f64 {
+pub fn libm_dyadic256_to_f64(d : LibmDyadic256) -> f64 {
   let sign : u64 = if d.negative {
     9223372036854775808u64 // 0x8000000000000000
   } else {
@@ -10401,7 +10401,7 @@ fn libm_dyadic256_to_f64(d : LibmDyadic256) -> f64 {
 }
 
 /// Whether `x` is an odd integer: `is_odd_integer` from `pow_utils.h`.
-fn libm_pow64_is_odd_integer(x : f64) -> bool {
+pub fn libm_pow64_is_odd_integer(x : f64) -> bool {
   let x_u = libm_f64_to_bits(x);
   let x_e = (x_u >> 52u64) & 2047u64;
   let lsb = libm_u64_trailing_zeros(x_u | 9218868437227405312u64); // 0x7ff0000000000000
@@ -10409,7 +10409,7 @@ fn libm_pow64_is_odd_integer(x : f64) -> bool {
 }
 
 /// Whether `x` is an integer: `is_integer` from `pow_utils.h`.
-fn libm_pow64_is_integer(x : f64) -> bool {
+pub fn libm_pow64_is_integer(x : f64) -> bool {
   if x == 0.0 {
     return true;
   }
@@ -10421,14 +10421,14 @@ fn libm_pow64_is_integer(x : f64) -> bool {
 
 /// Infinity or zero with the sign `negative`: `set_overflow` and `set_underflow` in
 /// round-to-nearest.
-fn libm_pow64_overflow(negative : bool) -> f64 {
+pub fn libm_pow64_overflow(negative : bool) -> f64 {
   if negative {
     return libm_f64_from_bits(18442240474082181120u64); // 0xfff0000000000000
   }
   return libm_f64_from_bits(9218868437227405312u64); // 0x7ff0000000000000
 }
 
-fn libm_pow64_underflow(negative : bool) -> f64 {
+pub fn libm_pow64_underflow(negative : bool) -> f64 {
   if negative {
     return -0.0;
   }
@@ -10438,7 +10438,7 @@ fn libm_pow64_underflow(negative : bool) -> f64 {
 /// `2^hi * (mid + lo)` rounded to a double that may be subnormal and of either sign, when `err`
 /// is small enough to decide the rounding: `ziv_test_denorm` from `pow_utils.h`. The value is
 /// scaled by 2^(hi + 1022) and 1 (or -1) is added, so it rounds at the place a subnormal would.
-fn libm_pow64_ziv_denorm(hi : i32, mid : f64, lo : f64, err0 : f64, negative : bool) -> LibmZivResult {
+pub fn libm_pow64_ziv_denorm(hi : i32, mid : f64, lo : f64, err0 : f64, negative : bool) -> LibmZivResult {
   let mut err = err0;
   let exp_scale = libm_f64_from_bits(((hi + 2045) as u64) << 52u64);
   let mid_hi = mid * exp_scale;
@@ -10477,25 +10477,25 @@ struct LibmMaybeF64 {
 
 impl Copy for LibmMaybeF64 {}
 
-fn libm_some_f64(v : f64) -> LibmMaybeF64 {
+pub fn libm_some_f64(v : f64) -> LibmMaybeF64 {
   return LibmMaybeF64 {
     has: true, value: v
   };
 }
 
-fn libm_none_f64() -> LibmMaybeF64 {
+pub fn libm_none_f64() -> LibmMaybeF64 {
   return LibmMaybeF64 {
     has: false, value: 0.0
   };
 }
 
 /// Whether the bits of a double are a signaling NaN.
-fn libm_f64_bits_is_snan(a : u64) -> bool {
+pub fn libm_f64_bits_is_snan(a : u64) -> bool {
   let abs = a & 9223372036854775807u64; // 0x7fffffffffffffff
   return abs > 9218868437227405312u64 && (abs & 2251799813685248u64) == 0u64; // 0x7ff0000000000000, 0x0008000000000000
 }
 
-fn libm_pow64_special(x : f64, y : f64) -> LibmMaybeF64 {
+pub fn libm_pow64_special(x : f64, y : f64) -> LibmMaybeF64 {
   let x_u = libm_f64_to_bits(x);
   let y_u = libm_f64_to_bits(y);
   let x_sign = (x_u >> 63u64) == 1u64;
@@ -10580,7 +10580,7 @@ struct LibmPow64State {
 
 impl Copy for LibmPow64State {}
 
-fn libm_pow64_exceptional(s0 : LibmPow64State) -> LibmPow64State {
+pub fn libm_pow64_exceptional(s0 : LibmPow64State) -> LibmPow64State {
   let mut s = s0;
   let x_u = libm_f64_to_bits(s.x);
   let y_u = libm_f64_to_bits(s.y);
@@ -10670,7 +10670,7 @@ struct LibmPow64Exact {
 
 impl Copy for LibmPow64Exact {}
 
-fn libm_pow64_exact(x : f64, y : f64) -> LibmPow64Exact {
+pub fn libm_pow64_exact(x : f64, y : f64) -> LibmPow64Exact {
   let none = LibmPow64Exact {
     ok: false, m: 0u64, e: 0
   };
@@ -10756,7 +10756,7 @@ fn libm_pow64_exact(x : f64, y : f64) -> LibmPow64Exact {
 }
 
 /// The exact value `m * 2^e` with the sign `negative`, rounded to a double.
-fn libm_pow64_exact_to_f64(negative : bool, m : u64, e : i32) -> f64 {
+pub fn libm_pow64_exact_to_f64(negative : bool, m : u64, e : i32) -> f64 {
   let l = 64u64 - libm_u64_leading_zeros(m);
   let d = libm_dyadic_from_u128(negative, e + (l as i32) - 128, (m as u128) << ((128u64 - l) as u128));
   return libm_dyadic_to_f64(d);
@@ -10765,7 +10765,7 @@ fn libm_pow64_exact_to_f64(negative : bool, m : u64, e : i32) -> f64 {
 /// `log2(x)` in 128 bits from `x = 2^x_e * (1 + dx) / r`, with `-log2(r)` from row `idx_x`:
 /// `log2_f128` from `pow_accurate_128.h`. `log2(1 + dx)` is a polynomial in fixed point,
 /// evaluated in 64 bits for its top terms and in 128 bits for the rest.
-fn libm_pow64_log2_f128(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic128 {
+pub fn libm_pow64_log2_f128(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic128 {
   let x_e_f128 = libm_dyadic_from_f64(x_e as f64);
   let log2_rd = libm_frac256_to_128(libm_frac256_at(3, idx_x));
   if dx == 0.0 {
@@ -10819,7 +10819,7 @@ fn libm_pow64_log2_f128(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic128 {
 
 /// `2^z` in 128 bits: `exp2_f128` from `pow_accurate_128.h`. `z = hi + idx/64 + lo`; `2^(idx/64)`
 /// comes from a table and `2^lo - 1` from a polynomial in fixed point.
-fn libm_pow64_exp2_f128(z : LibmDyadic128) -> LibmDyadic128 {
+pub fn libm_pow64_exp2_f128(z : LibmDyadic128) -> LibmDyadic128 {
   let z_d = libm_dyadic_to_f64(z);
   let kd = libm_round_even_f64(z_d * 64.0);
   let k = kd as i32;
@@ -10879,7 +10879,7 @@ fn libm_pow64_exp2_f128(z : LibmDyadic128) -> LibmDyadic128 {
 
 /// `log2(x)` in 256 bits: `log2_f256` from `pow_accurate_256.h`, the same scheme as
 /// `libm_pow64_log2_f128` with three precisions.
-fn libm_pow64_log2_f256(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic256 {
+pub fn libm_pow64_log2_f256(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic256 {
   let x_e_f256 = libm_dyadic256_from_f64(x_e as f64);
   let log2_rd = libm_frac256_at(3, idx_x);
   if dx == 0.0 {
@@ -10949,7 +10949,7 @@ fn libm_pow64_log2_f256(x_e : i32, idx_x : i64, dx : f64) -> LibmDyadic256 {
 }
 
 /// `2^z` in 256 bits: `exp2_f256` from `pow_accurate_256.h`.
-fn libm_pow64_exp2_f256(z : LibmDyadic256) -> LibmDyadic256 {
+pub fn libm_pow64_exp2_f256(z : LibmDyadic256) -> LibmDyadic256 {
   let z_d = libm_dyadic256_to_f64(z);
   let kd = libm_round_even_f64(z_d * 64.0);
   let k = kd as i32;
@@ -11025,7 +11025,7 @@ fn libm_pow64_exp2_f256(z : LibmDyadic256) -> LibmDyadic256 {
 }
 
 /// The last pass of `pow`, in 256 bits: `pow_accurate_256` from `pow_accurate_256.h`.
-fn libm_pow64_accurate_256(y : f64, is_neg : bool, x_e : i32, idx_x : i64, dx : f64) -> f64 {
+pub fn libm_pow64_accurate_256(y : f64, is_neg : bool, x_e : i32, idx_x : i64, dx : f64) -> f64 {
   let log2_x = libm_pow64_log2_f256(x_e, idx_x, dx);
   let z = libm_dyadic256_mul(libm_dyadic256_from_f64(y), log2_x);
   if !libm_u256_is_zero(z.m) && z.exponent + 255 <= -55 {
@@ -11052,7 +11052,7 @@ fn libm_pow64_accurate_256(y : f64, is_neg : bool, x_e : i32, idx_x : i64, dx : 
 /// The accurate pass of `pow`, in 128 bits: `pow_accurate` from `pow_accurate_128.h`. When the
 /// result lands too near a rounding boundary to trust, it checks whether `x^y` is exactly a
 /// boundary, and otherwise redoes it in 256 bits.
-fn libm_pow64_accurate(x : f64, y : f64, is_neg : bool, x_e : i32, idx_x : i64, dx : f64) -> f64 {
+pub fn libm_pow64_accurate(x : f64, y : f64, is_neg : bool, x_e : i32, idx_x : i64, dx : f64) -> f64 {
   let log2_x = libm_pow64_log2_f128(x_e, idx_x, dx);
   let z = libm_dyadic_mul(libm_dyadic_from_f64(y), log2_x);
   let z_d = libm_dyadic_to_f64(z);
@@ -11125,7 +11125,7 @@ fn libm_pow64_accurate(x : f64, y : f64, is_neg : bool, x_e : i32, idx_x : i64, 
 /// from a table of `2^(i/64)` and a polynomial. When the error bound does not decide the
 /// rounding, the accurate passes redo it in 128 and then 256 bits, after checking for a result
 /// that lies exactly on a rounding boundary.
-fn libm_pow(x0 : f64, y0 : f64) -> f64 {
+pub fn libm_pow(x0 : f64, y0 : f64) -> f64 {
   let x_u0 = libm_f64_to_bits(x0);
   let y_u = libm_f64_to_bits(y0);
   let y_a = y_u & 9223372036854775807u64; // 0x7fffffffffffffff
@@ -11279,7 +11279,7 @@ struct LibmExpParts {
 
 impl Copy for LibmExpParts {}
 
-fn libm_exp_parts(a : f64) -> LibmExpParts {
+pub fn libm_exp_parts(a : f64) -> LibmExpParts {
   let tmp = libm_multiply_add(a, libm_f64_from_bits(4609176140021203710u64), libm_f64_from_bits(4704009810788745216u64)); // 0x1.71547652b82fep+0, 0x1.800000004p21
   let k = ((libm_f64_to_bits(tmp) >> 19u64) as u32) as i32;
   let kd = k as f64;
@@ -11291,7 +11291,7 @@ fn libm_exp_parts(a : f64) -> LibmExpParts {
 
 /// `v * 2^e` for a normal `v`, in two steps so that a result past the largest double overflows to
 /// infinity instead of wrapping the exponent field.
-fn libm_f64_ldexp(v : f64, e : i32) -> f64 {
+pub fn libm_f64_ldexp(v : f64, e : i32) -> f64 {
   let e1 = e / 2;
   let e2 = e - e1;
   let f1 = libm_f64_from_bits(((1023 + e1) as u64) << 52u64);
@@ -11302,7 +11302,7 @@ fn libm_f64_ldexp(v : f64, e : i32) -> f64 {
 /// `(e^a + sign * e^-a) / 2` for `a` from 2^-6 to 711, from the double-double `e^a` of
 /// `libm_exp_parts`: `2^(hi - 1) * (m + sign * 2^(-2 hi) / m)`, rounded once. When `2^(-2 hi)` is
 /// below 2^-120 the second term cannot change the result and is left out.
-fn libm_exp_half_sum(a : f64, sign : f64) -> f64 {
+pub fn libm_exp_half_sum(a : f64, sign : f64) -> f64 {
   let e = libm_exp_parts(a);
   let mut t = e.m;
   if e.hi < 60 {
@@ -11320,7 +11320,7 @@ fn libm_exp_half_sum(a : f64, sign : f64) -> f64 {
 /// `x + x^3 (c + x^2 rest)` for a small `x`, with `c = c_hi + c_lo` a double-double and `x^3`
 /// kept as a double-double, so that only `x^5 rest`, which is far below the last place, is rounded
 /// on its own: the series of `sinh` and `tanh` below 1/64.
-fn libm_odd_series_small(x : f64, c_hi : f64, c_lo : f64, rest : f64) -> f64 {
+pub fn libm_odd_series_small(x : f64, c_hi : f64, c_lo : f64, rest : f64) -> f64 {
   let x2 = libm_dd_exact_mult(x, x);
   let x3 = libm_dd_quick_mult(LibmDoubleDouble {
     hi: x, lo: 0.0
@@ -11336,7 +11336,7 @@ fn libm_odd_series_small(x : f64, c_hi : f64, c_lo : f64, rest : f64) -> f64 {
 /// 1/64 in size, the Taylor series up to `x^11` from `libm_odd_series_small`. Above that,
 /// `(e^|x| - e^-|x|) / 2` from `libm_exp_half_sum`, whose double-double error is far below one
 /// unit in the last place. The result is almost always correctly rounded, but that is not proven.
-fn libm_sinh(x : f64) -> f64 {
+pub fn libm_sinh(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
   // |x| < 2^-26: sinh(x) rounds to x.
@@ -11369,7 +11369,7 @@ fn libm_sinh(x : f64) -> f64 {
 /// Below 1/64 in size, `1 + x^2 / 2 + x^4 Q(x^2)`; above that `(e^|x| + e^-|x|) / 2` from
 /// `libm_exp_half_sum`, which has no cancellation. The
 /// result is almost always correctly rounded, but that is not proven.
-fn libm_cosh(x : f64) -> f64 {
+pub fn libm_cosh(x : f64) -> f64 {
   let x_abs_u = libm_f64_to_bits(x) & 9223372036854775807u64; // 0x7fffffffffffffff
   // |x| < 2^-26: cosh(x) rounds to 1.
   if x_abs_u < 4490088828488384512u64 { // 0x3e50000000000000
@@ -11410,7 +11410,7 @@ fn libm_cosh(x : f64) -> f64 {
 /// Above that, `(E - 1) / (E + 1)` with `E = e^(2 |x|)` as a double-double, divided as
 /// double-doubles; from 19.06 up it rounds to 1. The result is almost always correctly rounded, but
 /// that is not proven.
-fn libm_tanh(x : f64) -> f64 {
+pub fn libm_tanh(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
   // |x| < 2^-27: tanh(x) rounds to x.
@@ -11453,7 +11453,7 @@ fn libm_tanh(x : f64) -> f64 {
 
 /// The inverse hyperbolic sine of an f16, correctly rounded: `asinhf16` from `asinhf16.h`. Below
 /// 2^-2 in size a polynomial in f32; above, `log(|x| + sqrt(x^2 + 1))` with the double `log_eval`.
-fn libm_asinhf16(x : f16) -> f16 {
+pub fn libm_asinhf16(x : f16) -> f16 {
   let x_u = libm_f16_to_bits(x);
   let x_abs = x_u & 32767u16;
   if x_abs >= 31744u16 {
@@ -11508,7 +11508,7 @@ fn libm_asinhf16(x : f16) -> f16 {
 /// The inverse hyperbolic cosine of an f16, correctly rounded; NaN below 1: `acoshf16` from
 /// `acoshf16.h`. Just above 1, `sqrt(2 d)` times a polynomial in `d = x - 1`; above that,
 /// `log(x + sqrt(x^2 - 1))` with the double `log_eval`, rounded to f32 and then to f16 as LLVM does.
-fn libm_acoshf16(x : f16) -> f16 {
+pub fn libm_acoshf16(x : f16) -> f16 {
   let x_u = libm_f16_to_bits(x);
   if (x_u & 32767u16) >= 31744u16 {
     // A signaling NaN, or anything negative, gives the quiet NaN; a positive quiet NaN and plus
@@ -11615,7 +11615,7 @@ const LIBM_ATANHF16_LOG_F : Tensor<f32, [128]> = [
 
 /// `log(|x|)` in f32 from a table and a degree-7 polynomial: `log_eval_f` from `atanhf16.h`. The
 /// sign of `x` is not read.
-fn libm_atanhf16_log_eval(x : f32) -> f32 {
+pub fn libm_atanhf16_log_eval(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let ex = (((x_u >> 23u32) & 255u32) as i32 - 127) as f32;
   let p1 = ((x_u >> 16u32) & 127u32) as i64;
@@ -11633,7 +11633,7 @@ fn libm_atanhf16_log_eval(x : f32) -> f32 {
 /// The inverse hyperbolic tangent of an f16, correctly rounded; infinite at 1 and NaN past it:
 /// `atanhf16` from `atanhf16.h`. Below 0.25 in size a polynomial in f32; above,
 /// `log((1 + x) / (1 - x)) / 2`.
-fn libm_atanhf16(x : f16) -> f16 {
+pub fn libm_atanhf16(x : f16) -> f16 {
   let x_u = libm_f16_to_bits(x);
   let x_abs = x_u & 32767u16;
   if x_abs >= 15360u16 { // 0x3c00
@@ -11668,13 +11668,13 @@ fn libm_atanhf16(x : f16) -> f16 {
 }
 
 /// `a + b` for double-doubles of either order of size: TwoSum on the high parts.
-fn libm_dd_add_any(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_dd_add_any(a : LibmDoubleDouble, b : LibmDoubleDouble) -> LibmDoubleDouble {
   let s = libm_dd_two_sum(a.hi, b.hi);
   return libm_dd_exact_add(s.hi, s.lo + (a.lo + b.lo));
 }
 
 /// The square root of a double-double, as a double-double: the double root corrected once.
-fn libm_dd_sqrt(a : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_dd_sqrt(a : LibmDoubleDouble) -> LibmDoubleDouble {
   let r = libm_sqrt_f64(a.hi);
   let r_sq = libm_dd_exact_mult(r, r);
   let lo = (((a.hi - r_sq.hi) - r_sq.lo) + a.lo) / (2.0 * r);
@@ -11686,7 +11686,7 @@ fn libm_dd_sqrt(a : LibmDoubleDouble) -> LibmDoubleDouble {
 /// `x = 2^e * m`, `log(m) = -log(r) + log(1 + u)` with `r` from `RD` and `u = r * m - 1` exact.
 /// `log(1 + u)` is `u - u^2 / 2` with `u^2` exact, plus `u^3 (1/3 + u R(u))` with `u^3` and 1/3
 /// as double-doubles; the low part of `a` adds `a.lo / a.hi`.
-fn libm_log_dd(a : LibmDoubleDouble) -> LibmDoubleDouble {
+pub fn libm_log_dd(a : LibmDoubleDouble) -> LibmDoubleDouble {
   let x_u = libm_f64_to_bits(a.hi);
   let index = ((x_u >> 45u64) & 127u64) as i64;
   // The unbiased exponent, plus 1 when the 8 leading fraction bits are all 1.
@@ -11720,7 +11720,7 @@ fn libm_log_dd(a : LibmDoubleDouble) -> LibmDoubleDouble {
 }
 
 /// log(2) as a double-double.
-fn libm_log2_dd() -> LibmDoubleDouble {
+pub fn libm_log2_dd() -> LibmDoubleDouble {
   return LibmDoubleDouble {
     hi: libm_f64_from_bits(4604418534313441775u64), lo: libm_f64_from_bits(4358002977218854975u64) // 0x1.62e42fefa39efp-1, 0x1.abc9e3b39803fp-56
   };
@@ -11730,7 +11730,7 @@ fn libm_log2_dd() -> LibmDoubleDouble {
 /// `asinh`. Below 1/64 in size, its Taylor series up to `x^11` from `libm_odd_series_small`;
 /// above, `log(|x| + sqrt(x^2 + 1))` with every step a double-double, and from 2^40 up
 /// `log(|x|) + log(2)`. The result is almost always correctly rounded, but that is not proven.
-fn libm_asinh(x : f64) -> f64 {
+pub fn libm_asinh(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
   // |x| < 2^-26: asinh(x) rounds to x.
@@ -11775,7 +11775,7 @@ fn libm_asinh(x : f64) -> f64 {
 /// double-precision `acosh`. `log(x + sqrt(x^2 - 1))` with every step a double-double (`x^2 - 1`
 /// is exact before the square root), and from 2^40 up `log(x) + log(2)`. The result is almost
 /// always correctly rounded, but that is not proven.
-fn libm_acosh(x : f64) -> f64 {
+pub fn libm_acosh(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   if x_u >= 9218868437227405312u64 { // 0x7ff0000000000000
     // +infinity stays; a NaN stays NaN, made quiet; anything negative is not in the domain.
@@ -11814,7 +11814,7 @@ fn libm_acosh(x : f64) -> f64 {
 /// libc has no double-precision `atanh`. Below 1/64 in size, its Taylor series up to `x^13` from
 /// `libm_odd_series_small`; above, `log((1 + |x|) / (1 - |x|)) / 2` with the ratio and the log as
 /// double-doubles. The result is almost always correctly rounded, but that is not proven.
-fn libm_atanh(x : f64) -> f64 {
+pub fn libm_atanh(x : f64) -> f64 {
   let x_u = libm_f64_to_bits(x);
   let x_abs_u = x_u & 9223372036854775807u64; // 0x7fffffffffffffff
   // |x| < 2^-27: atanh(x) = x + x^3/3 rounds to x.
@@ -11849,15 +11849,15 @@ fn libm_atanh(x : f64) -> f64 {
 
 /// The inverse hyperbolic functions of a bf16: the double result rounded once, to odd in f32 and
 /// then to bf16, which gives the same bf16 as rounding the double directly.
-fn libm_asinh_bf16(x : bf16) -> bf16 {
+pub fn libm_asinh_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_f32_round_odd(libm_asinh(libm_f32_from_bf16(x) as f64)));
 }
 
-fn libm_acosh_bf16(x : bf16) -> bf16 {
+pub fn libm_acosh_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_f32_round_odd(libm_acosh(libm_f32_from_bf16(x) as f64)));
 }
 
-fn libm_atanh_bf16(x : bf16) -> bf16 {
+pub fn libm_atanh_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_f32_round_odd(libm_atanh(libm_f32_from_bf16(x) as f64)));
 }
 
@@ -11906,7 +11906,7 @@ const LIBM_CBRTF16_COEFFS : Tensor<f32, [80]> = [
 /// the cube root of `m` comes from a polynomial for one of 16 slices of [1, 2), times `2^(s/3)`,
 /// computed in double. A double result too near a rounding boundary of f32 is an exact cube
 /// root, and is moved onto it.
-fn libm_cbrtf(x : f32) -> f32 {
+pub fn libm_cbrtf(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32;
   let sign_bit = ((x_u >> 31u32) as u64) << 11u64;
@@ -11952,7 +11952,7 @@ fn libm_cbrtf(x : f32) -> f32 {
 /// The cube root of an f16, correctly rounded: `cbrtf16` from `cbrtf16.h`, the scheme of
 /// `libm_cbrtf` in f32. LLVM answers a signaling NaN with the number 32256 (it converts the bits
 /// of the quiet NaN as an integer); this answers the quiet NaN.
-fn libm_cbrtf16(x : f16) -> f16 {
+pub fn libm_cbrtf16(x : f16) -> f16 {
   let x_u = libm_f16_to_bits(x);
   let x_abs = x_u & 32767u16;
   let sign_bit = ((x_u >> 15u16) as u32) << 8u32;
@@ -11996,12 +11996,12 @@ fn libm_cbrtf16(x : f16) -> f16 {
 }
 
 /// The cube root of a bf16: LLVM libc's `cbrtbf16`, `cbrtf` of it rounded to bf16.
-fn libm_cbrt_bf16(x : bf16) -> bf16 {
+pub fn libm_cbrt_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_cbrtf(libm_f32_from_bf16(x)));
 }
 
 /// `x0^3 * a^2 - 1` from the double-doubles `x0^3` and `a^2`: `get_error` from `cbrt.h` with FMA.
-fn libm_cbrt_error(x_3 : LibmDoubleDouble, a_sq : LibmDoubleDouble) -> f64 {
+pub fn libm_cbrt_error(x_3 : LibmDoubleDouble, a_sq : LibmDoubleDouble) -> f64 {
   return libm_multiply_add(x_3.hi, a_sq.hi, -1.0) + libm_multiply_add(x_3.lo, a_sq.hi, x_3.hi * a_sq.lo);
 }
 
@@ -12010,13 +12010,13 @@ fn libm_cbrt_error(x_3 : LibmDoubleDouble, a_sq : LibmDoubleDouble) -> f64 {
 /// `a * x ~ a^(1/3)`. One step in double-doubles usually decides the rounding; otherwise a
 /// second, and then a third in 128 bits, where a result on or next to a rounding boundary is
 /// an exact cube root and is moved onto it.
-fn libm_cbrt(x : f64) -> f64 {
+pub fn libm_cbrt(x : f64) -> f64 {
   return libm_cbrt_value(x, false);
 }
 
 /// `libm_cbrt`, or with `always_accurate` its third step on every input, skipping the two checks
 /// that would stop earlier: the fixtures use it to reach that step, which no known input needs.
-fn libm_cbrt_value(x0_in : f64, always_accurate : bool) -> f64 {
+pub fn libm_cbrt_value(x0_in : f64, always_accurate : bool) -> f64 {
   let mut x = x0_in;
   let x_abs = libm_f64_to_bits(x) & 9223372036854775807u64; // 0x7fffffffffffffff
   // 1023 * 2/3.
@@ -12119,7 +12119,7 @@ fn libm_cbrt_value(x0_in : f64, always_accurate : bool) -> f64 {
 
 /// `r`, which lies in [1, 2) in size, with its exponent replaced by `out_e`: `update_exponent`
 /// from `cbrt.h`.
-fn libm_cbrt_update_exponent(r : f64, out_e : u64) -> f64 {
+pub fn libm_cbrt_update_exponent(r : f64, out_e : u64) -> f64 {
   let r_m = libm_f64_to_bits(r) - 4607182418800017408u64; // 0x3ff0000000000000
   return libm_f64_from_bits(r_m + (out_e << 52u64));
 }
@@ -12199,7 +12199,7 @@ const LIBM_ERFF16_COEFFS : Tensor<f32, [256]> = [
 
 /// `erf(x)` in double for a finite `|x|` below 4: the polynomial of `erff.h` for the slice `|x|`
 /// is in.
-fn libm_erf_eval(x : f32) -> f64 {
+pub fn libm_erf_eval(x : f32) -> f64 {
   let x_abs = libm_f32_to_bits(x) & 2147483647u32;
   let xd = x as f64;
   let xsq = xd * xd;
@@ -12220,7 +12220,7 @@ fn libm_erf_eval(x : f32) -> f64 {
 /// The error function of an f32, correctly rounded: `erff` from `erff.h`. From 4 up in size it
 /// rounds to 1; below, a polynomial for one of 32 slices, in double, with two inputs whose double
 /// result would round the wrong way answered from a list.
-fn libm_erff(x : f32) -> f32 {
+pub fn libm_erff(x : f32) -> f32 {
   let x_u = libm_f32_to_bits(x);
   let x_abs = x_u & 2147483647u32;
   let negative = (x_u >> 31u32) == 1u32;
@@ -12266,7 +12266,7 @@ fn libm_erff(x : f32) -> f32 {
 
 /// The error function of an f16, correctly rounded: `erff16` from `erff16.h`, the polynomial of
 /// `erff` in f32. From 3 up in size it rounds to +-1.
-fn libm_erff16(x : f16) -> f16 {
+pub fn libm_erff16(x : f16) -> f16 {
   let x_u = libm_f16_to_bits(x);
   let x_abs = x_u & 32767u16;
   let negative = (x_u >> 15u16) == 1u16;
@@ -12329,7 +12329,7 @@ fn libm_erff16(x : f16) -> f16 {
 
 /// The error function of a bf16: the double result of `erff`'s polynomial rounded once to bf16.
 /// LLVM libc has no bf16 `erf`.
-fn libm_erf_bf16(x : bf16) -> bf16 {
+pub fn libm_erf_bf16(x : bf16) -> bf16 {
   let xf = libm_f32_from_bf16(x);
   let x_abs = libm_f32_to_bits(xf) & 2147483647u32;
   if x_abs >= 1082130432u32 || x_abs == 0u32 {
@@ -12341,7 +12341,7 @@ fn libm_erf_bf16(x : bf16) -> bf16 {
 
 /// What `rsqrt` answers for zero, a negative number, infinity and NaN, as the bits of a float with
 /// exponent mask `inf` and quiet bit `quiet`, or no answer (`ok` false) for a positive finite x.
-fn libm_rsqrt_special(x_u : u64, sign_bit : u64, inf : u64, quiet : u64) -> LibmZivResult {
+pub fn libm_rsqrt_special(x_u : u64, sign_bit : u64, inf : u64, quiet : u64) -> LibmZivResult {
   let x_abs = x_u & (sign_bit - 1u64);
   if x_u != 0u64 && x_u < inf {
     return LibmZivResult {
@@ -12369,7 +12369,7 @@ fn libm_rsqrt_special(x_u : u64, sign_bit : u64, inf : u64, quiet : u64) -> Libm
 }
 
 /// `1 / sqrt(x)` for an f32: `rsqrtf` from `rsqrtf.h`, the double result rounded to f32.
-fn libm_rsqrtf(x : f32) -> f32 {
+pub fn libm_rsqrtf(x : f32) -> f32 {
   let s = libm_rsqrt_special(libm_f32_to_bits(x) as u64, 2147483648u64, 2139095040u64, 4194304u64);
   if s.ok {
     return libm_f32_from_bits(libm_f64_to_bits(s.value) as u32);
@@ -12379,7 +12379,7 @@ fn libm_rsqrtf(x : f32) -> f32 {
 
 /// `1 / sqrt(x)` for an f16, correctly rounded: `rsqrtf16` from `rsqrtf16.h`, in f32, with two
 /// mantissas whose f32 result would round the wrong way nudged first.
-fn libm_rsqrtf16(x : f16) -> f16 {
+pub fn libm_rsqrtf16(x : f16) -> f16 {
   let x_u = libm_f16_to_bits(x);
   let s = libm_rsqrt_special(x_u as u64, 32768u64, 31744u64, 512u64);
   if s.ok {
@@ -12399,7 +12399,7 @@ fn libm_rsqrtf16(x : f16) -> f16 {
 /// `rsqrt`. The square root as a double-double, then one double-double division, rounded once;
 /// `1 / sqrt(x)` is never exactly halfway between two doubles unless it is a double, so that
 /// rounding is right.
-fn libm_rsqrt(x : f64) -> f64 {
+pub fn libm_rsqrt(x : f64) -> f64 {
   let s = libm_rsqrt_special(libm_f64_to_bits(x), 9223372036854775808u64, 9218868437227405312u64, 2251799813685248u64); // 0x8000000000000000, 0x7ff0000000000000, 0x0008000000000000
   if s.ok {
     return s.value;
@@ -12422,6 +12422,6 @@ fn libm_rsqrt(x : f64) -> f64 {
 
 /// `1 / sqrt(x)` for a bf16: the double result rounded once to bf16. LLVM libc has no bf16
 /// `rsqrt`.
-fn libm_rsqrt_bf16(x : bf16) -> bf16 {
+pub fn libm_rsqrt_bf16(x : bf16) -> bf16 {
   return libm_bf16_from_f32(libm_f32_round_odd(libm_rsqrt(libm_f32_from_bf16(x) as f64)));
 }
