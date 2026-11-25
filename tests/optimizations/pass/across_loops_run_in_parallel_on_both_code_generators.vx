@@ -45,14 +45,14 @@
 // MLIR-DAG: arith.minsi %c64_i32{{(_[0-9]+)?}}, %{{[0-9]+}} : i32
 // MLIR-DAG: arith.cmpi eq, %{{[0-9]+}}, %c0_i32
 // MLIR-DAG: {{^ *}}vx.barrier{{$}}
-// MLIR-DAG: vx.across}
+// MLIR-DAG: vx.across, vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64}
 // MLIR-LABEL: func.func @row_sums(
 // MLIR-DAG: vx.launch_dim %c64_i32 axis(3)
 // MLIR-DAG: arith.divsi %{{[0-9]+}}, %c32_i32
 // MLIR-DAG: arith.remsi %{{[0-9]+}}, %c32_i32{{.*}}
 // MLIR-DAG: vx.barrier {subgroup}
 // MLIR-DAG: {{^ *}}vx.barrier{{$}}
-// MLIR-DAG: vx.across}
+// MLIR-DAG: vx.across, vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64}
 //
 // One barrier after each lane loop and one after each stretch that lane 0 runs. In `row_sums`,
 // one after the lane loop and one after lane 0's sum, for the subgroup, and one after the loop

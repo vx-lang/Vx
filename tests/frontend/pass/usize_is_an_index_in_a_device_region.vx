@@ -41,7 +41,7 @@ Topology Narrow {
   transfer Memory::CPU_DRAM -> Memory::HBM2 : 31.5 GB/s
 }
 
-pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+extern fn k(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Hopper) {
     let n : usize = 4;
     let flag = n > 2;
@@ -54,7 +54,7 @@ pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
   return;
 }
 
-pub fn narrow(out : &mut Tensor<f32, [?], Memory::HBM2>) -> void {
+extern fn narrow(out : &mut Tensor<f32, [?], Memory::HBM2>) -> void {
   spawn on(Topology::Narrow) {
     let n : usize = 4;
     if n > 2 {
@@ -84,7 +84,7 @@ fn main() -> i32 {
 // CHECK:        %c4_i64 = arith.constant 4 : i64
 // CHECK:        arith.cmpi ugt, %{{.*}} : i64
 // CHECK:        memref.store %cst, %arg0[%{{.*}}] : memref<?xf32>
-// CHECK:        } {arch = "spirv64", offload = false, topology_name = "Narrow"}
+// CHECK:        } {arch = "spirv64", offload = false, topology_name = "Narrow", vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64}
 // CHECK-LABEL: func.func @k(%arg0: memref<?xf32> {llvm.noalias}) attributes {vx.pub} {
 // CHECK:        vx.spawn topology({{[0-9]+}}) {
 // CHECK:        %c4_i64 = arith.constant 4 : i64

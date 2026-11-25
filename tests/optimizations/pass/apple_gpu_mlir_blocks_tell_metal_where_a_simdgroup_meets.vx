@@ -24,12 +24,12 @@ pub fn lanes(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
       for l in 0..32 across lanes(32) {
-        let _d = mlir!( inputs : (%o = out : memref<?xi32>, %l = l : i32), returns : i32, dialects : ["arith", "memref", "vx"], ensures : [writes_only(out[l])]) {
-          %k = arith.index_cast %l : i32 to index
-          vx.subgroup_schedule_barrier
-          memref.store %l, %o[%k] : memref<?xi32>
-          macro.yield %l : i32
-        };
+        let _d = unsafe { mlir!( inputs : (%o = out : memref<?xi32>, %l = l : i32), returns : i32, dialects : ["arith", "memref", "vx"], ensures : [writes_only(out[l])]) {
+            %k = arith.index_cast %l : i32 to index
+            vx.subgroup_schedule_barrier
+            memref.store %l, %o[%k] : memref<?xi32>
+            macro.yield %l : i32
+          } };
       }
     }
   }
@@ -39,13 +39,13 @@ pub fn lanes(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
 pub fn sevens(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..2 across blocks {
-      let _d = mlir!( threads : 32, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "vx"], ensures : [writes_only(out[b..b + 1])]) {
-        %k = arith.index_cast %b : i32 to index
-        %c7 = arith.constant 7 : i32
-        vx.subgroup_schedule_barrier
-        memref.store %c7, %o[%k] : memref<?xi32>
-        macro.yield %c7 : i32
-      };
+      let _d = unsafe { mlir!( threads : 32, inputs : (%o = out : memref<?xi32>, %b = b : i32), returns : i32, dialects : ["arith", "memref", "vx"], ensures : [writes_only(out[b..b + 1])]) {
+          %k = arith.index_cast %b : i32 to index
+          %c7 = arith.constant 7 : i32
+          vx.subgroup_schedule_barrier
+          memref.store %c7, %o[%k] : memref<?xi32>
+          macro.yield %c7 : i32
+        } };
     }
   }
   return;

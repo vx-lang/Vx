@@ -1670,6 +1670,8 @@ impl<'a> TypeChecker<'a> {
                 self.next_id += 1;
 
                 let cloned_params = e.params.clone();
+                // A `let` with a type makes the closure a value of that type, which copies.
+                let typed = self.expected_type.is_some();
                 // The `let` whose value this closure is. A `let` in the body changes the field.
                 let in_let = self
                     .let_closure
@@ -1779,6 +1781,31 @@ impl<'a> TypeChecker<'a> {
                 let mut captured_vars: Vec<(crate::symbol::Symbol, Type)> =
                     captured_vars_map.into_iter().collect();
                 captured_vars.sort_by(|a, b| a.0.cmp(&b.0)); // Stable layout
+
+                // A body that moves a capture can run only once.
+                let moved_capture = captured_vars
+                    .iter()
+                    .find(|(name, ty)| {
+                        !matches!(ty, Type::Tensor(..)) && self.is_moved(name.as_ref())
+                    })
+                    .map(|(name, _)| name.clone());
+                if let Some(moved) = &moved_capture {
+                    self.mono
+                        .closures_that_run_once
+                        .insert(struct_name.clone().into(), moved.clone());
+                    // `std::sync::within` calls its body once.
+                    if !self.speculating && (in_let.is_none() || typed) && !in_within {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4017,
+                            format!(
+                                "this closure moves `{moved}`, a value that it captures, so it \
+                                 can run only once. Write it in a `let` with no type, and call \
+                                 it there"
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                        );
+                    }
+                }
 
                 // How the closure takes each capture: by value, or through `&` or `&mut` (C1 in
                 // docs/discussions/closures_that_change_captured_locals.md).
@@ -1934,7 +1961,8 @@ impl<'a> TypeChecker<'a> {
 
                 let call_func = decl::Function {
                     is_unsafe: false,
-                    is_pub: false,
+                    visibility: crate::gid::Visibility::Private,
+                    exported: false,
                     name: func_name.clone().into(),
                     generics: vec![],
                     params: env_params,
@@ -1948,6 +1976,7 @@ impl<'a> TypeChecker<'a> {
                     doc_comment: None,
                     span: e.span,
                     file: self.errors.file.clone(),
+                    package: None,
                 };
 
                 self.mono.functions.push((call_func, 0));
@@ -2003,6 +2032,7 @@ impl<'a> TypeChecker<'a> {
                     name: struct_name.clone().into(),
                     fields,
                     type_id: None,
+                    made_by_the_compiler: true,
                     span: e.span,
                 });
 

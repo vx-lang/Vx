@@ -1,0 +1,19 @@
+//===- joining_a_job_needs_the_file_and_network_rights.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `join_job` writes or reads the NCCL id file, and NCCL connects the ranks over the network. So
+// it takes the file right and the network right. A call with only the rank and the job size is
+// an error.
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import std::collective;
+
+fn main() -> i32 {
+  // CHECK: Error[E3010] at {{.*}}joining_a_job_needs_the_file_and_network_rights.vx:[[@LINE+1]]:3: Function 'join_job' expects 4 arguments, got 2
+  join_job(0, 1);
+  return 0;
+}

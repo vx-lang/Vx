@@ -473,6 +473,24 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Type::Unknown;
                 }
+                // A closure that runs once is only called, and a call does not come here.
+                if let (Some((Type::Struct(closure, _), _)), false) =
+                    (&lookup_res, self.speculating)
+                {
+                    if let Some(moved) = self.mono.closures_that_run_once.get(closure).cloned() {
+                        if !self.is_moved(name.as_ref()) {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4017,
+                                format!(
+                                    "`{name}` moves `{moved}`, a value that it captures, so it \
+                                     can run only once. Call `{name}`, and do not copy, return \
+                                     or pass it"
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                            );
+                        }
+                    }
+                }
                 if self.is_moved(name.as_ref()) {
                     if !self.speculating {
                         self.errors.error_with_code(
@@ -528,6 +546,14 @@ impl<'a> TypeChecker<'a> {
                             }
                             None => decl.ty.clone(),
                         };
+                    }
+                    if name.as_ref() == "main" {
+                        self.refuse_a_use_of_main(&span);
+                        return Type::Unknown;
+                    }
+                    if let Some(place) = self.place_of_function(name.as_ref()) {
+                        let shown = name.to_string();
+                        self.refuse_a_private_function(&shown, &shown, &place, &span);
                     }
                     self.check_function_value(name.as_ref(), span);
                     if let Some((ret_ty, is_unsafe, params, _, _, _)) =
@@ -782,7 +808,12 @@ impl<'a> TypeChecker<'a> {
     /// `*p` or `p[i]` read by value through a raw pointer: the value stays with its owner, so
     /// moving it out would drop it twice. An `unsafe fn` such as `core::ptr::read` may, for its
     /// caller.
-    fn refuse_move_through_raw_pointer(&mut self, inner: &Type, consume: bool, span: &Span) {
+    pub(crate) fn refuse_move_through_raw_pointer(
+        &mut self,
+        inner: &Type,
+        consume: bool,
+        span: &Span,
+    ) {
         if !consume
             || self.checking_assign_lhs
             || self.speculating
@@ -802,10 +833,22 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// A `void` pointer has no element type, so `*p` and `p[i]` on it have nothing to read.
+    fn refuse_void_pointer_access(&mut self, inner: &Type, what: &str, span: &Span) {
+        if !matches!(inner, Type::Struct(n, None) if n.as_ref() == "void") {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3067,
+            format!("{what} needs an element type, and a `void` pointer has none"),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// A raw-pointer access needs an unsafe context: nothing here knows the address is valid,
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
-    fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
+    pub(crate) fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
         if !self.unsafe_is_missing() {
             return;
         }
@@ -1427,6 +1470,18 @@ impl<'a> TypeChecker<'a> {
                 .rev()
                 .find(|c| c.var == *name);
             match candidate {
+                // The row of a subgroup in a tile of sums in registers, `acc[w]`. Only such a
+                // tile may take the variable of an `across` loop, which is never unrolled. The
+                // end of the function decides (check/subgroup_registers.rs).
+                Some(c) if c.across => {
+                    if let Some((root, _)) = crate::hir::places::base_and_path(base) {
+                        self.across_register_indices.push((
+                            root.to_string(),
+                            name.to_string(),
+                            *ix_span,
+                        ));
+                    }
+                }
                 Some(c) => match c.bounds {
                     Some((lo, hi)) if hi - lo <= MAX_UNROLLED_PASSES => c.used = true,
                     Some((lo, hi)) => {
@@ -1847,6 +1902,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Type::Pointer(inner, _, _) = &base {
                     self.require_unsafe_raw_access("Indexing a raw pointer", &ix_span);
+                    self.refuse_void_pointer_access(inner, "Indexing a raw pointer", &ix_span);
                     self.check_pointer_target_is_visible(&base, "Indexing a raw pointer", &ix_span);
                     self.refuse_move_through_raw_pointer(inner, consume, &ix_span);
                 }
@@ -1983,7 +2039,9 @@ impl<'a> TypeChecker<'a> {
                 if let Expr::Identifier(id) = &**inner {
                     self.borrowed_name = Some(id.span);
                 }
-                let inner_ty = self.check_expr_type_flag(inner, false);
+                // `&r.unwrap()` borrows the value that the call gives, and the call moves `r`.
+                let inner_is_a_call = matches!(&**inner, Expr::MethodCall(_));
+                let inner_ty = self.check_expr_type_flag(inner, inner_is_a_call);
                 self.borrowed_name = old_borrowed;
                 self.allow_cross_topology = old_allow;
                 // Quiet when a reference to a reference is what was asked for, as in
@@ -2851,6 +2909,7 @@ impl<'a> TypeChecker<'a> {
                             "Dereferencing a raw pointer"
                         };
                         self.require_unsafe_raw_access(verb, &e.span);
+                        self.refuse_void_pointer_access(&t, verb, &e.span);
                         self.check_pointer_target_is_visible(&inner_ty, verb, &e.span);
                         *t
                     }

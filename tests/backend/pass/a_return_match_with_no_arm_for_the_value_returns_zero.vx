@@ -1,0 +1,52 @@
+//===- a_return_match_with_no_arm_for_the_value_returns_zero.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each function returns a `match` with arms for some numbers only, and each arm returns. When
+// no arm matches, the function returns 0 for a number and null for a pointer. For a struct, the
+// program stops: tests/backend/fail/return_a_match_with_no_matching_arm.vx.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::ptr;
+
+fn code_for(n : i32) -> i32 {
+  return match n {
+    0 => {
+      return 7;
+    }
+    1 => {
+      return 8;
+    }
+  };
+}
+
+fn scale_for(n : i32) -> f64 {
+  return match n {
+    0 => {
+      return 1.5;
+    }
+  };
+}
+
+fn name_for(n : i32) -> *const i8 {
+  return match n {
+    0 => {
+      return "zero";
+    }
+  };
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}code 8 0{{$}}
+  println!("code {} {}", code_for(1), code_for(5));
+  // CHECK-NEXT: {{^}}scale 1.5 0{{$}}
+  println!("scale {} {}", scale_for(0), scale_for(5));
+  // CHECK-NEXT: {{^}}name null false true{{$}}
+  println!("name null {} {}", is_null(name_for(0)), is_null(name_for(5)));
+  return 0;
+}

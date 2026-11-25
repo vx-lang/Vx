@@ -54,12 +54,14 @@ struct MutexGuard<T> {
   sleepers : &AtomicI64,
   holder : &AtomicI64,
   value : *mut T,
+
+  invariant true,
 }
 
 impl<T>
 Mutex<T> {
   /// A new `Mutex` that holds `v`.
-  fn new(v : T, at : Caller) -> Mutex<T> {
+  pub fn new(v : T, at : Caller) -> Mutex<T> {
     return Mutex<T> {
       next : AtomicI64::new(0),
       serving : AtomicI64::new(0),
@@ -71,7 +73,7 @@ Mutex<T> {
   }
 
   /// Wait until no other task holds the lock, and take it.
-  fn lock(self : &Mutex<T>, at : Caller) -> MutexGuard<T> {
+  pub fn lock(self : &Mutex<T>, at : Caller) -> MutexGuard<T> {
     let ticket = self.next.fetch_add(1, AtomicOrdering::Relaxed);
     let mut now = self.serving.load(AtomicOrdering::Acquire);
     while now != ticket {
@@ -88,7 +90,7 @@ Mutex<T> {
   }
 
   /// The value, out of the `Mutex`.
-  fn into_inner(self : Mutex<T>) -> T {
+  pub fn into_inner(self : Mutex<T>) -> T {
     return self.value.into_inner();
   }
 }
@@ -96,7 +98,7 @@ Mutex<T> {
 impl<T>
 MutexGuard<T> {
   /// The value in the `Mutex`.
-  fn get(self : &mut MutexGuard<T>) -> &mut T {
+  pub fn get(self : &mut MutexGuard<T>) -> &mut T {
     let p = self.value;
     return unsafe { &mut *p };
   }

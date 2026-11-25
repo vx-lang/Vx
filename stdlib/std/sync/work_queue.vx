@@ -23,6 +23,7 @@ import core::result;
 import core::sync::atomic;
 import core::time;
 import std::sync::channel;
+import std::sync::select;
 import std::sync::wait;
 import std::time;
 
@@ -34,6 +35,8 @@ struct WorkReceiver<T> {
   cap : i64,
   // The line that made the work queue, for the deadlock report.
   made : Location,
+
+  invariant true,
 }
 
 unsafe impl<T : Send> Send for WorkReceiver<T> {}
@@ -42,7 +45,7 @@ impl<T> ReceiverOfAChannel for WorkReceiver<T> {}
 
 /// A work queue with room for `n` values. `n` must be at least 1. Send with the `Sender`, as on a
 /// `channel`.
-fn work_queue<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, WorkReceiver<T>) {
+pub fn work_queue<T : Send + Owned>(n : i64, at : Caller) -> (Sender<T>, WorkReceiver<T>) {
   let (tx, rx) = channel<T>(n, at);
   let r = WorkReceiver<T> {
     words : rx.words, data : rx.data, cap : rx.cap, made : rx.made
@@ -56,17 +59,17 @@ impl<T>
 WorkReceiver<T> {
   /// The next value. Wait while the queue is empty. When each `Sender` was dropped and no value is
   /// left, give `Closed`. When the `tasks` block of this task was cancelled, give `Cancelled`.
-  fn recv(self : &WorkReceiver<T>, at : Caller) -> Result<T, RecvError> {
+  pub fn recv(self : &WorkReceiver<T>, at : Caller) -> Result<T, RecvError> {
     return self.recv_until(Instant::never(), at);
   }
 
   /// `recv`, and give `TimedOut` when it waited `limit` for a value.
-  fn recv_for(self : &WorkReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+  pub fn recv_for(self : &WorkReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
     return self.recv_until(deadline_after(limit), at);
   }
 
   /// `recv` until the clock reaches `deadline`.
-  fn recv_until(self : &WorkReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
+  pub fn recv_until(self : &WorkReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
     let words = self.words;
     let mut why = RecvError::Closed;
     loop {
@@ -98,12 +101,12 @@ WorkReceiver<T> {
   }
 
   /// The next value, if one is in the queue now. It does not wait.
-  fn try_recv(self : &WorkReceiver<T>) -> Result<T, TryRecvError> {
+  pub fn try_recv(self : &WorkReceiver<T>) -> Result<T, TryRecvError> {
     return self.take();
   }
 
   /// Take the next value, or pass the numbers of cancelled sends until none is left.
-  fn take(self : &WorkReceiver<T>) -> Result<T, TryRecvError> {
+  pub fn take(self : &WorkReceiver<T>) -> Result<T, TryRecvError> {
     let words = self.words;
     let recvs = word(words, RECVS);
     loop {
@@ -136,6 +139,36 @@ WorkReceiver<T> {
       }
     }
     return Result<T, TryRecvError>::Err(TryRecvError::Empty);
+  }
+}
+
+// A `select` can wait until a value is in the queue, or the queue is closed. Many
+// `WorkReceiver`s share the queue, so another one can take the value after the `select`. Then
+// `try_recv` gives `Empty`, and the caller calls `select` again.
+impl<T> WaitSource for WorkReceiver<T> {
+  fn is_ready(self : &WorkReceiver<T>) -> bool {
+    let words = self.words;
+    let _events = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    let recvs = word(words, RECVS);
+    loop {
+      let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+      let k = recvs.load(AtomicOrdering::SeqCst);
+      if word(words, SLOTS + k % self.cap).load(AtomicOrdering::Acquire) == 2 * k + 1 {
+        return true;
+      }
+      if !pass_a_skip(words, self.cap, k) {
+        return closed && recvs.load(AtomicOrdering::SeqCst) >= word(words, SENDS).load(AtomicOrdering::SeqCst);
+      }
+    }
+    return false;
+  }
+
+  fn watch(self : &WorkReceiver<T>, w : &Waiter) -> void {
+    watch_channel(self.words, self.made, w);
+  }
+
+  fn unwatch(self : &WorkReceiver<T>, w : &Waiter) -> void {
+    unwatch_channel(self.words, w);
   }
 }
 

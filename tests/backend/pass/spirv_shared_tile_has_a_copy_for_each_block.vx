@@ -1,0 +1,86 @@
+//===- spirv_shared_tile_has_a_copy_for_each_block.vx -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A kernel for an Intel GPU (`arch: spirv64`) keeps a tile in shared memory.
+// In the SPIR-V image the tile is Workgroup storage, so each block has its own
+// copy. Each lane writes its element of the row, and the block waits at the end
+// of the lane loop. Then each lane reads the element of another lane, so the
+// rows come out reversed. A tile that the blocks shared, or a missing wait,
+// gives other numbers. `big_tile` keeps 52 KiB, which an NVIDIA GPU puts in
+// dynamic shared memory. The Workgroup storage of SPIR-V needs no such form.
+// The capacity of `SMEM` here is that of the Arc A770.
+// tests/integration_test/spirv_images_on_pocl.rs runs the image on the CPU with
+// pocl and compares the output with this one.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --implicit-check-not=Warning
+// CHECK: @vx_npu_kernel_0_str("vx_npu_kernel_0\00{{.*}}format=spirv
+// CHECK: @vx_npu_kernel_1_str("vx_npu_kernel_1\00{{.*}}format=spirv
+// EXPECT: first row 63 62 0, last row 363 362 300
+// EXPECT: big tile 13311 0
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+Memory SMEM {
+  within: Memory::DEV_HBM, capacity: 64 KiB, managed: explicit, scope: sm
+}
+Topology Simd {
+  arch: spirv64,
+  levels: [blocks(max_lanes: 1024, memory: cta), lanes(memory: thread)],
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::SMEM
+}
+
+fn reverse_rows(out : &mut Tensor<f32, [4, 64]>, x : &Tensor<f32, [4, 64]>) -> void {
+  spawn on(Topology::Simd) {
+    for b in 0..4 across blocks {
+      let mut row = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes {
+        row[t] = x[b][t];
+      }
+      for t in 0..64 across lanes {
+        out[b][t] = row[63 - t];
+      }
+    }
+  }
+  return;
+}
+
+fn big_tile(out : &mut Tensor<f32, [13312]>) -> void {
+  spawn on(Topology::Simd) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [13312], Memory::SMEM>::uninit() };
+      for t in 0..13312 across lanes(256) {
+        tile[t] = t as f32;
+      }
+      for t in 0..13312 across lanes(256) {
+        out[t] = tile[13311 - t];
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut x = Tensor<f32, [4, 64]>::fill(0.0);
+  for b in 0..4 {
+    for t in 0..64 {
+      x[b][t] = (b * 100 + t) as f32;
+    }
+  }
+  let mut o = Tensor<f32, [4, 64]>::fill(0.0);
+  reverse_rows(&mut o, &x);
+  println!("first row {} {} {}, last row {} {} {}", o[0][0] as i32, o[0][1] as i32, o[0][63] as i32, o[3][0] as i32, o[3][1] as i32, o[3][63] as i32);
+  let mut big = Tensor<f32, [13312]>::fill(0.0);
+  big_tile(&mut big);
+  println!("big tile {} {}", big[0] as i32, big[13311] as i32);
+  return 0;
+}

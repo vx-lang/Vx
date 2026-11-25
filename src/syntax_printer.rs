@@ -250,6 +250,7 @@ impl AstPrinter {
                 type_args: _,
                 args,
                 span: _,
+                ..
             }) => {
                 indent.print(w)?;
                 writeln!(w, "{}Call({})", prefix, name)?;

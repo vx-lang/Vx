@@ -25,21 +25,21 @@
 fn add_i32(t : &Tensor<i32, [?], Memory::HBM>, i : i32, v : i32) on Topology::Device -> i32
 ensures atomic(t)
 {
-  return mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32, %v = v : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
-    %k = arith.index_cast %i : i32 to index
-    %old = memref.atomic_rmw addi %v, %t[%k] : (i32, memref<?xi32>) -> i32
-    macro.yield %old : i32
-  };
+  return unsafe { mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32, %v = v : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
+      %k = arith.index_cast %i : i32 to index
+      %old = memref.atomic_rmw addi %v, %t[%k] : (i32, memref<?xi32>) -> i32
+      macro.yield %old : i32
+    } };
 }
 
 fn add_f32(t : &Tensor<f32, [?], Memory::HBM>, i : i32, v : f32) on Topology::Device -> f32
 ensures atomic(t)
 {
-  return mlir!( inputs : (%t = t : memref<?xf32>, %i = i : i32, %v = v : f32), returns : f32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
-    %k = arith.index_cast %i : i32 to index
-    %old = memref.atomic_rmw addf %v, %t[%k] : (f32, memref<?xf32>) -> f32
-    macro.yield %old : f32
-  };
+  return unsafe { mlir!( inputs : (%t = t : memref<?xf32>, %i = i : i32, %v = v : f32), returns : f32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
+      %k = arith.index_cast %i : i32 to index
+      %old = memref.atomic_rmw addf %v, %t[%k] : (f32, memref<?xf32>) -> f32
+      macro.yield %old : f32
+    } };
 }
 
 fn main() -> i32 {
@@ -61,12 +61,12 @@ fn main() -> i32 {
         let _t = add_f32(&total, 0, 0.5);
       }
       for l in 0..32 across lanes {
-        let _d = mlir!( inputs : (%t = &direct : memref<?xi32>), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(direct)]) {
-          %k = arith.constant 0 : index
-          %one = arith.constant 1 : i32
-          %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
-          macro.yield %old : i32
-        };
+        let _d = unsafe { mlir!( inputs : (%t = &direct : memref<?xi32>), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(direct)]) {
+            %k = arith.constant 0 : index
+            %one = arith.constant 1 : i32
+            %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
+            macro.yield %old : i32
+          } };
       }
     }
   }

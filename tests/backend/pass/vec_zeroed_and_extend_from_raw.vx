@@ -1,0 +1,85 @@
+//===- vec_zeroed_and_extend_from_raw.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Vec::zeroed` makes a vector of zeros with one fill, and `Vec::extend_from_raw` adds values with
+// one copy. They use `write_bytes` and `copy_nonoverlapping` of `core::ptr`, which count values,
+// not bytes, so the checks use `i32` values of 4 bytes too.
+//
+// Before each `zeroed`, the program frees a buffer of the same size that holds no zeros. The
+// allocator usually gives that memory again, so a fill that is too short leaves numbers that are
+// not zero.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}zeroed u8: 64 values, all zero: true{{$}}
+// CHECK-NEXT: {{^}}zeroed i32: 16 values, all zero: true{{$}}
+// CHECK-NEXT: {{^}}write_bytes: 9 7 7 9{{$}}
+// CHECK-NEXT: {{^}}extend_from_raw: 11 values, 1 then 10 to 19: true{{$}}
+// CHECK-NEXT: {{^}}extend_from_raw from the middle: 13 values, last two 18 19{{$}}
+
+import core::ptr;
+import std::vec;
+
+/// `count` copies of `value`, freed when the caller drops it.
+fn filled_u8(value : u8, count : i32) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  for _i in 0..count {
+    v.push(value);
+  }
+  return v;
+}
+
+fn filled_i32(value : i32, count : i32) -> Vec<i32> {
+  let mut v = Vec<i32>::new();
+  for _i in 0..count {
+    v.push(value);
+  }
+  return v;
+}
+
+fn main() -> i32 {
+  let dirty = filled_u8(255u8, 64);
+  drop(dirty);
+  let zeros = unsafe { Vec<u8>::zeroed(64) };
+  let mut all_zero = true;
+  for i in 0..zeros.len() {
+    all_zero = all_zero && zeros.get(i) == 0u8;
+  }
+  println!("zeroed u8: {} values, all zero: {}", zeros.len(), all_zero);
+
+  let dirty_numbers = filled_i32(-1, 16);
+  drop(dirty_numbers);
+  let numbers = unsafe { Vec<i32>::zeroed(16) };
+  let mut all_zero_numbers = true;
+  for i in 0..numbers.len() {
+    all_zero_numbers = all_zero_numbers && numbers.get(i) == 0;
+  }
+  println!("zeroed i32: {} values, all zero: {}", numbers.len(), all_zero_numbers);
+
+  let mut four = filled_u8(9u8, 4);
+  unsafe { write_bytes(add_mut(four.as_mut_ptr(), 1usize), 7u8, 2usize); }
+  println!("write_bytes: {} {} {} {}", four.get(0), four.get(1), four.get(2), four.get(3));
+
+  let mut source = Vec<i32>::new();
+  for i in 10..20 {
+    source.push(i);
+  }
+  // The vector has room for 2 values, so the copy of 10 makes it grow.
+  let mut v = Vec<i32>::new();
+  v.push(1);
+  unsafe { v.extend_from_raw(source.as_mut_ptr() as *const i32, 10); }
+  let mut in_order = v.get(0) == 1;
+  for i in 1..v.len() {
+    in_order = in_order && v.get(i) == 9 + i;
+  }
+  println!("extend_from_raw: {} values, 1 then 10 to 19: {}", v.len(), in_order);
+  unsafe {
+    v.extend_from_raw(add(source.as_mut_ptr() as *const i32, 8usize), 2);
+  }
+  println!("extend_from_raw from the middle: {} values, last two {} {}", v.len(), v.get(11), v.get(12));
+  return 0;
+}

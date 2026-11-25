@@ -47,7 +47,7 @@ stamp_default!(f32 , 0.0);
 stamp_default!(f64 , 0.0);
 stamp_default!(bool , false);
 
-impl<T> Default for Option<T> {
+extern impl<T> Default for Option<T> {
   /// `None`, whatever `T` is: an option's default is the absent one.
   fn default() -> Option<T> {
     return Option<T>::None();

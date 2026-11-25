@@ -13,7 +13,7 @@ struct Error {
   code: Option<i64>
 }
 
-fn make_error(code: i64) -> Error {
+pub fn make_error(code: i64) -> Error {
   return Error {
     small: 2u8,
     code: Option<i64>::Some(code)

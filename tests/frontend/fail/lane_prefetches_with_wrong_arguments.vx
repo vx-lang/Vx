@@ -1,0 +1,82 @@
+//===- lane_prefetches_with_wrong_arguments.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::prefetch(&x, [i, j], [rows, cols])` takes a borrowed tensor that is not in shared
+// memory, its place and its shape. The place and the shape each have one integer for each
+// dimension of the tensor. Each function below breaks one rule. The last one calls it in a lane
+// loop, where each lane would prefetch the whole part.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E3003] at {{.*}}lane_prefetches_with_wrong_arguments.vx:25:{{.*}}`lanes::prefetch` takes 3 arguments
+// CHECK: Error[E3003] at {{.*}}lane_prefetches_with_wrong_arguments.vx:36:{{.*}}the first argument of `lanes::prefetch` must borrow a tensor that is not in shared memory, such as `&w`, but it is `&Tensor<f32, [4, 32], Memory::SMEM>`
+// CHECK: Error[E3003] at {{.*}}lane_prefetches_with_wrong_arguments.vx:46:{{.*}}the first argument of `lanes::prefetch` must borrow a tensor that is not in shared memory, such as `&w`, but it is `i32`
+// CHECK: Error[E3003] at {{.*}}lane_prefetches_with_wrong_arguments.vx:56:{{.*}}the second argument of `lanes::prefetch` is the place of the part, written as a list of 2 integers
+// CHECK: Error[E3003] at {{.*}}lane_prefetches_with_wrong_arguments.vx:66:{{.*}}the third argument of `lanes::prefetch` is the shape of the part, written as a list of 2 integers
+// CHECK: Error[E6032] at {{.*}}lane_prefetches_with_wrong_arguments.vx:77:{{.*}}`lanes::prefetch` must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane loops
+
+// The shape is missing.
+pub fn no_shape(x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      lanes::prefetch(x, [0, 0]);
+    }
+  }
+  return;
+}
+
+// The tensor is a tile in shared memory, which is not in L2.
+pub fn tile_in_shared_memory(x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let tile = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      lanes::prefetch(&tile, [0, 0], [4, 32]);
+    }
+  }
+  return;
+}
+
+// The first argument is a number, not a tensor.
+pub fn number(n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      lanes::prefetch(n, [0], [1]);
+    }
+  }
+  return;
+}
+
+// The place has 1 integer, and `x` has 2 dimensions.
+pub fn short_place(x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      lanes::prefetch(x, [0], [1, 32]);
+    }
+  }
+  return;
+}
+
+// The shape has floats.
+pub fn shape_of_floats(x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      lanes::prefetch(x, [0, 0], [1.0, 32.0]);
+    }
+  }
+  return;
+}
+
+// A prefetch in a lane loop.
+pub fn in_a_lane_loop(x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        lanes::prefetch(x, [b, 0], [1, 32]);
+      }
+    }
+  }
+  return;
+}

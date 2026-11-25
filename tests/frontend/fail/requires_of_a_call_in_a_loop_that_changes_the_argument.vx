@@ -94,8 +94,8 @@ fn clobbered_by_an_mlir_block() -> i64 {
   if n < 5i64 {
     for i in 0i64..3i64 {
       need(n);
-      let _w = mlir!(inputs : (), clobbers : [n], returns : void, dialects : []) {
-      };
+      let _w = unsafe { mlir!(inputs : (), clobbers : [n], returns : void, dialects : []) {
+        } };
     }
   }
   return n;

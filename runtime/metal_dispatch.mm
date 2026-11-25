@@ -215,6 +215,9 @@ Region keptHolding(uintptr_t start, uintptr_t end) {
 // failed assert stores its number.
 struct Check {
   std::string kernel;
+  // The kernel with its Vx function and line. It points into `kernels`, which
+  // keeps every entry.
+  const char *label;
   const char *image;
   id<MTLBuffer> words;
   size_t at;
@@ -243,7 +246,8 @@ struct Batch {
   id<MTLComputeCommandEncoder> encoder;
   // The launches in `commands`.
   size_t unsent = 0;
-  std::vector<std::string> kernels;
+  // The kernels of the launches, as labels that point into `kernels`.
+  std::vector<const char *> labels;
   std::vector<Region> regions;
   std::vector<Access> accesses;
   // The accesses of the launches in `encoder` after its last barrier. The GPU
@@ -342,18 +346,20 @@ void report(const Batch &b) {
     const uint32_t number =
         static_cast<const volatile uint32_t *>(c.words.contents)[c.at];
     if (number != 0)
-      die(c.kernel.c_str(), "%s",
+      die(c.label, "%s",
           assertMessage(c.image, c.kernel.c_str(), number).c_str());
   }
-  const size_t count = b.kernels.size();
+  const size_t count = b.labels.size();
   std::vector<id<MTLCommandBuffer>> all = b.sent;
   all.push_back(b.commands);
   double seconds = 0;
   for (id<MTLCommandBuffer> commands : all) {
     if (commands.status != MTLCommandBufferStatusCompleted) {
       std::string names;
-      for (const std::string &k : b.kernels)
-        names += (names.empty() ? "" : ", ") + k;
+      for (const char *k : b.labels) {
+        names += names.empty() ? "" : ", ";
+        names += k;
+      }
       fprintf(stderr, "[Vx Metal] FATAL: the GPU did not finish %s: %s\n",
               names.c_str(), commands.error.localizedDescription.UTF8String);
       if (count > 1)
@@ -419,7 +425,8 @@ std::string keyOf(const char *image, const char *kernel) {
   return std::to_string(reinterpret_cast<uintptr_t>(image)) + "/" + kernel;
 }
 
-id<MTLComputePipelineState> pipelineFor(const char *image, const char *kernel) {
+id<MTLComputePipelineState> pipelineFor(const char *image, const char *kernel,
+                                        const char *label) {
   std::lock_guard<std::mutex> hold(cacheLock);
   std::string key = keyOf(image, kernel);
   auto found = pipelines.find(key);
@@ -427,7 +434,7 @@ id<MTLComputePipelineState> pipelineFor(const char *image, const char *kernel) {
     return found->second;
   id<MTLDevice> device = gpu().device;
   if (!device)
-    die(kernel, "this machine has no Metal GPU");
+    die(label, "this machine has no Metal GPU");
   NSError *error = nil;
   id<MTLLibrary> library = libraries[image];
   if (!library) {
@@ -438,24 +445,25 @@ id<MTLComputePipelineState> pipelineFor(const char *image, const char *kernel) {
                                    options:options
                                      error:&error];
     if (!library)
-      die(kernel, "Metal could not compile the kernel:\n%s",
+      die(label, "Metal could not compile the kernel:\n%s",
           error.localizedDescription.UTF8String);
     libraries[image] = library;
   }
   id<MTLFunction> function = [library newFunctionWithName:@(kernel)];
   if (!function)
-    die(kernel, "the image has no kernel of this name");
+    die(label, "the image has no kernel of this name");
   id<MTLComputePipelineState> pipeline =
       [device newComputePipelineStateWithFunction:function error:&error];
   if (!pipeline)
-    die(kernel, "Metal could not make a pipeline for the kernel: %s",
+    die(label, "Metal could not make a pipeline for the kernel: %s",
         error.localizedDescription.UTF8String);
   pipelines[key] = pipeline;
   return pipeline;
 }
 
 // The parameters that the `// vx.kernel` line in `image` gives for `kernel`.
-std::vector<std::string> parametersOf(const char *image, const char *kernel) {
+std::vector<std::string> parametersOf(const char *image, const char *kernel,
+                                      const char *label) {
   std::string key = std::string("// vx.kernel ") + kernel;
   for (const char *at = strstr(image, key.c_str()); at;
        at = strstr(at + 1, key.c_str())) {
@@ -476,7 +484,7 @@ std::vector<std::string> parametersOf(const char *image, const char *kernel) {
     }
     return out;
   }
-  die(kernel, "the image has no `// vx.kernel` line for this kernel");
+  die(label, "the image has no `// vx.kernel` line for this kernel");
 }
 
 // What the image says about a kernel. A search of the image took longer than
@@ -484,17 +492,28 @@ std::vector<std::string> parametersOf(const char *image, const char *kernel) {
 struct Kernel {
   std::vector<std::string> params;
   bool asserts = false;
+  // The kernel with its Vx function and the line of its `spawn`, for messages.
+  std::string label;
 };
 std::unordered_map<std::string, Kernel> kernels;
 
-const Kernel &kernelOf(const char *image, const char *kernel) {
+// The kernel of `payload` for a message.
+std::string labelOf(const void *payload, size_t payload_size) {
+  char text[512];
+  return vx_kernel_label(payload, payload_size, text, sizeof text);
+}
+
+const Kernel &kernelOf(const char *image, const void *payload,
+                       size_t payload_size) {
+  const char *kernel = static_cast<const char *>(payload);
   std::lock_guard<std::mutex> hold(cacheLock);
   std::string key = keyOf(image, kernel);
   auto found = kernels.find(key);
   if (found != kernels.end())
     return found->second;
-  Kernel k{parametersOf(image, kernel),
-           assertLine(image, kernel, 1) != nullptr};
+  std::string label = labelOf(payload, payload_size);
+  Kernel k{parametersOf(image, kernel, label.c_str()),
+           assertLine(image, kernel, 1) != nullptr, label};
   return kernels.emplace(key, std::move(k)).first->second;
 }
 
@@ -532,10 +551,10 @@ struct Bound {
   bool written = false;
 };
 
-void pushWord(std::vector<uint32_t> &words, int64_t value, const char *kernel,
+void pushWord(std::vector<uint32_t> &words, int64_t value, const char *label,
               const char *what) {
   if (value < INT32_MIN || value > INT32_MAX)
-    die(kernel, "%s is %lld, and a Metal kernel takes 32-bit indices", what,
+    die(label, "%s is %lld, and a Metal kernel takes 32-bit indices", what,
         (long long)value);
   words.push_back(static_cast<uint32_t>(static_cast<int32_t>(value)));
 }
@@ -827,10 +846,10 @@ extern "C" void vx_metal_wait_for_launch(const void *payload,
   if (format && strcmp(format, "msl") == 0) {
     const char *image = vx_payload_field(payload, payload_size, "image=");
     if (!image)
-      die(static_cast<const char *>(payload),
+      die(labelOf(payload, payload_size).c_str(),
           "the payload says `format=msl` and has no image");
     const std::vector<std::string> &params =
-        kernelOf(image, static_cast<const char *>(payload)).params;
+        kernelOf(image, payload, payload_size).params;
     size_t k = 0;
     for (int64_t i = 0; i < num_args && i < (int64_t)params.size(); ++i)
       if (VX_ABI_KIND(arg_tags[i]) == VX_ABI_KIND_MEMREF)
@@ -849,17 +868,21 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
   const char *kernel = static_cast<const char *>(payload);
   const char *image = vx_payload_field(payload, payload_size, "image=");
   if (!image)
-    die(kernel, "the payload says `format=msl` and has no image");
+    die(labelOf(payload, payload_size).c_str(),
+        "the payload says `format=msl` and has no image");
 
   @autoreleasepool {
-    const Kernel &info = kernelOf(image, kernel);
+    const Kernel &info = kernelOf(image, payload, payload_size);
+    // Errors name the kernel with its Vx function and line. The lines that
+    // trace each launch keep the short name.
+    const char *label = info.label.c_str();
     const std::vector<std::string> &params = info.params;
     if ((int64_t)params.size() != num_args)
-      die(kernel, "the kernel has %zu parameters, and the launch passes %lld",
+      die(label, "the kernel has %zu parameters, and the launch passes %lld",
           params.size(), (long long)num_args);
 
     id<MTLDevice> device = gpu().device;
-    id<MTLComputePipelineState> pipeline = pipelineFor(image, kernel);
+    id<MTLComputePipelineState> pipeline = pipelineFor(image, kernel, label);
     const uintptr_t page = vm_page_size;
     std::vector<Bound> bound;
     std::vector<uint32_t> words;
@@ -871,14 +894,14 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       if (p[0] == 'm') {
         int rank = atoi(p.c_str() + 1);
         if (kind != VX_ABI_KIND_MEMREF || VX_ABI_RANK(tag) != rank)
-          die(kernel,
+          die(label,
               "parameter %lld is a tensor of rank %d, and the launch "
               "passes something else",
               (long long)i, rank);
         const void *desc = vx_operand_desc(device_args, arg_tags, (int)i);
         const size_t bytes = vx_dtype_bytes(VX_ABI_ELEM(tag));
         if (!desc || bytes == 0)
-          die(kernel, "parameter %lld has no tensor", (long long)i);
+          die(label, "parameter %lld has no tensor", (long long)i);
         char *aligned = static_cast<char *>(vx_memref_aligned(desc));
         const int64_t offset = vx_memref_offset(desc);
         const int64_t *sizes = vx_memref_sizes(desc);
@@ -896,19 +919,19 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
             (int64_t)(reinterpret_cast<uintptr_t>(aligned) - b.start) /
             (int64_t)bytes;
         if ((reinterpret_cast<uintptr_t>(aligned) - b.start) % bytes != 0)
-          die(kernel, "tensor %lld is not aligned to its element size",
+          die(label, "tensor %lld is not aligned to its element size",
               (long long)i);
         if ((b.end - b.start) / bytes > (uintptr_t)INT32_MAX)
-          die(kernel,
+          die(label,
               "tensor %lld spans %llu elements, and a Metal kernel "
               "takes 32-bit indices",
               (long long)i, (unsigned long long)((b.end - b.start) / bytes));
-        pushWord(words, base, kernel, "a tensor's start in its buffer");
-        pushWord(words, offset, kernel, "a tensor's offset");
+        pushWord(words, base, label, "a tensor's start in its buffer");
+        pushWord(words, offset, label, "a tensor's offset");
         for (int d = 0; d < rank; ++d)
-          pushWord(words, sizes[d], kernel, "a tensor's size");
+          pushWord(words, sizes[d], label, "a tensor's size");
         for (int d = 0; d < rank; ++d)
-          pushWord(words, strides[d], kernel, "a tensor's stride");
+          pushWord(words, strides[d], label, "a tensor's stride");
         bound.push_back(b);
         continue;
       }
@@ -933,9 +956,9 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       } else if (p == "index" && kind == VX_ABI_KIND_I64) {
         int64_t v;
         memcpy(&v, value, 8);
-        pushWord(words, v, kernel, "an index parameter");
+        pushWord(words, v, label, "an index parameter");
       } else {
-        die(kernel,
+        die(label,
             "parameter %lld is %s, and the launch passes a value of "
             "kind %d",
             (long long)i, p.c_str(), kind);
@@ -947,9 +970,9 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     char why[256] = {0};
     if (vx_launch_shape(payload, payload_size, device_args, arg_tags, num_args,
                         grid, &block, why, sizeof why) < 0)
-      die(kernel, "%s", why);
+      die(label, "%s", why);
     if (block > pipeline.maxTotalThreadsPerThreadgroup)
-      die(kernel,
+      die(label,
           "a block of %u threads, and this kernel can run at most %lu "
           "threads in a block on this GPU",
           block, (unsigned long)pipeline.maxTotalThreadsPerThreadgroup);
@@ -1045,7 +1068,7 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
                                      length:b.end - b.start
                                     options:MTLResourceStorageModeShared];
       if (!b.buffer)
-        die(kernel, "Metal could not make a buffer for tensor %zu", i);
+        die(label, "Metal could not make a buffer for tensor %zu", i);
       b.copied = static_cast<char *>(b.buffer.contents);
       if (verbose())
         fprintf(stderr, "[Vx Metal] %s: tensor %zu is copied\n", kernel, i);
@@ -1056,8 +1079,8 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
       for (size_t b = 0; b < bound.size(); ++b)
         if (a != b && bound[a].copied && bound[a].written && bound[b].written &&
             bound[a].first < bound[b].last && bound[b].first < bound[a].last)
-          die(kernel, "two tensors share memory that Metal could not use as "
-                      "it is");
+          die(label, "two tensors share memory that Metal could not use as "
+                     "it is");
 
     if (!here) {
       here = std::make_shared<Batch>();
@@ -1109,11 +1132,11 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
             [device newBufferWithLength:assertWords * sizeof(uint32_t)
                                 options:MTLResourceStorageModeShared];
         if (!here->assertBuffer)
-          die(kernel, "Metal could not make the buffer for its asserts");
+          die(label, "Metal could not make the buffer for its asserts");
         memset(here->assertBuffer.contents, 0, assertWords * sizeof(uint32_t));
         here->assertsGiven = 0;
       }
-      Check c{kernel, image, here->assertBuffer, here->assertsGiven++};
+      Check c{kernel, label, image, here->assertBuffer, here->assertsGiven++};
       [encoder setBuffer:c.words
                   offset:c.at * sizeof(uint32_t)
                  atIndex:bound.size() + 1];
@@ -1121,7 +1144,7 @@ extern "C" int vx_metal_dispatch(const void *payload, size_t payload_size,
     }
     [encoder dispatchThreadgroups:MTLSizeMake(grid[0], grid[1], grid[2])
             threadsPerThreadgroup:MTLSizeMake(block, 1, 1)];
-    here->kernels.push_back(kernel);
+    here->labels.push_back(label);
     if (verbose())
       fprintf(stderr, "[Vx Metal] %s: grid %u x %u x %u, block %u\n", kernel,
               grid[0], grid[1], grid[2], block);

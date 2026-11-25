@@ -27,7 +27,7 @@
 
 use crate::ffi::sched::{self, FiberRef};
 use crate::ffi::tsan;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -871,6 +871,8 @@ fn report() -> String {
             .map(|who| format!(", which only {} can {verb}", who.text()))
             .unwrap_or_default()
     };
+    // The channels that a stuck `select` watches, for the list of channels at the end.
+    let mut watched = Vec::new();
     let mut doing = Vec::new();
     for (i, (_, word, what, at, made)) in waits.iter().enumerate() {
         // ` at main.vx:15` and `, made at main.vx:11`, or nothing when the line is not known.
@@ -899,7 +901,43 @@ fn report() -> String {
                     number(&mut locks, *word)
                 )
             }
-            What::Select => format!("waits in `select`{at}"),
+            What::Select => {
+                let mut on = Vec::new();
+                let mut others = 0;
+                for w in watched_by(*word) {
+                    let made = w
+                        .made
+                        .map(|p| format!(", made at {}", p.text()))
+                        .unwrap_or_default();
+                    match w.kind {
+                        SOURCE_CHANNEL => {
+                            on.push(format!("channel {}{made}", number(&mut channels, w.key)));
+                            watched.push(w);
+                        }
+                        SOURCE_SEMAPHORE => {
+                            on.push(format!(
+                                "semaphore {}{made}",
+                                number(&mut semaphores, w.key)
+                            ));
+                        }
+                        _ => others += 1,
+                    }
+                }
+                match others {
+                    0 => {}
+                    1 => on.push("1 other source".to_string()),
+                    n => on.push(format!("{n} other sources")),
+                }
+                match on.len() {
+                    0 => format!("waits in `select`{at}"),
+                    1 => format!("waits in `select`{at} on {}", on[0]),
+                    n => format!(
+                        "waits in `select`{at} on {}, and on {}",
+                        on[..n - 1].join(", on "),
+                        on[n - 1]
+                    ),
+                }
+            }
             What::Acquire => format!(
                 "waits in `acquire`{at} on semaphore {}{made}",
                 number(&mut semaphores, *word)
@@ -942,7 +980,11 @@ fn report() -> String {
         out += "  the channels of these waits:\n";
     }
     for (i, &word) in channels.iter().enumerate() {
-        out += &format!("    channel {}{}\n", i + 1, channel_text(&waits, word));
+        out += &format!(
+            "    channel {}{}\n",
+            i + 1,
+            channel_text(&waits, &watched, word)
+        );
     }
     out
 }
@@ -951,11 +993,14 @@ fn report() -> String {
 /// dropped, in the words of a channel, as stdlib/std/sync/channel.vx lays them out.
 const SENDERS: usize = 2;
 const RECEIVER: usize = 3;
+/// The index of the word that a wait on a channel sleeps on, and that a `select` watches.
+const WAKE: usize = 5;
 
-/// The waits on the channel whose waits sleep on `word`, and its `Sender`s that are not dropped:
-/// `, made at main.vx:43: 1 wait in `recv` and 0 in `send`. 1 `Sender` is not dropped.` A wait
-/// holds the `Receiver`, or waits only while it is not dropped, so the text does not name it.
-fn channel_text(waits: &[Wait], word: usize) -> String {
+/// The waits on the channel whose waits sleep on `word`, the `select` calls of `watched` that
+/// watch it, and its `Sender`s that are not dropped: `, made at main.vx:43: 1 wait in `recv` and
+/// 0 in `send`. 1 `select` watches it. 1 `Sender` is not dropped.` A wait holds the `Receiver`,
+/// or waits only while it is not dropped, so the text does not name it.
+fn channel_text(waits: &[Wait], watched: &[Watch], word: usize) -> String {
     let on_it = |w: &&Wait| w.1 == word;
     let recvs = (waits.iter().filter(on_it))
         .filter(|w| matches!(w.2, What::Recv(_)))
@@ -963,17 +1008,27 @@ fn channel_text(waits: &[Wait], word: usize) -> String {
     let sends = (waits.iter().filter(on_it))
         .filter(|w| matches!(w.2, What::Send(_)))
         .count();
+    let selects = watched.iter().filter(|w| w.key == word).count();
     let (words, made) = (waits.iter().filter(on_it))
         .find_map(|w| match w.2 {
             What::Send(words) | What::Recv(words) => Some((words, w.4)),
             _ => None,
         })
-        .expect("a channel of the report has a wait on it");
+        .or_else(|| {
+            let w = watched.iter().find(|w| w.key == word)?;
+            Some((word - WAKE * 8, w.made))
+        })
+        .expect("a channel of the report has a wait on it, or a select that watches it");
     let made = made
         .map(|p| format!(", made at {}", p.text()))
         .unwrap_or_default();
     let plural = if recvs == 1 { "wait" } else { "waits" };
     let mut text = format!("{made}: {recvs} {plural} in `recv` and {sends} in `send`.");
+    text += &match selects {
+        0 => String::new(),
+        1 => " 1 `select` watches it.".to_string(),
+        n => format!(" {n} `select` calls watch it."),
+    };
     if words != 0 {
         let senders = unsafe { &*(words as *const AtomicI64).add(SENDERS) };
         text += &match senders.load(Ordering::SeqCst) {
@@ -1098,6 +1153,7 @@ mod deadlock {
             && WAITING.load(Ordering::SeqCst) == THREADS.load(Ordering::SeqCst)
             && !super::timer::pending()
             && !crate::ffi::io::pending()
+            && !crate::ffi::copies::pending()
     }
 
     /// One check of the watcher. `seen` is the progress count of the last check, if that check
@@ -1175,14 +1231,157 @@ mod deadlock {
 
 pub(crate) use deadlock::{thread_ended, thread_started};
 
-/// Two words for `select`, which waits on several channels at once. Each channel event adds 1 to
-/// the first word, and the second word counts the threads in a `select` that sleep on it.
-static ANY_CHANNEL: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+/// The watch list of `select` (docs/discussions/select_on_channels_sockets_timers_and_tokens.md,
+/// section 5): for each key, the waiter words of the `select` calls that watch it. A key is the
+/// address of a word that a source owns. A waiter changes only under the lock of its shard, so
+/// after `vx_unwatch` returns, no wake writes to the waiter.
+static WATCHES: [Mutex<Vec<Watch>>; BUCKETS] = [const { Mutex::new(Vec::new()) }; BUCKETS];
 
-/// The address of the two words for `select`.
+/// One watch of a key by a waiter. The deadlock report names the source by its kind and the line
+/// that made it, in the order of the watches of the `select`.
+#[derive(Clone, Copy)]
+struct Watch {
+    key: usize,
+    waiter: usize,
+    kind: i32,
+    made: Option<Place>,
+    order: u64,
+}
+
+/// The kinds of source that `vx_watch_source` knows. The key of a channel is its `WAKE` word, and
+/// the key of a semaphore is its word of free permits.
+const SOURCE_CHANNEL: i32 = 1;
+const SOURCE_SEMAPHORE: i32 = 2;
+
+static WATCH_ORDER: AtomicU64 = AtomicU64::new(0);
+
+fn watches(key: *const i64) -> std::sync::MutexGuard<'static, Vec<Watch>> {
+    WATCHES[(key as usize >> 3) % BUCKETS]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Until `vx_unwatch` with the same pair, `vx_wake_watchers(key)` adds 1 to `waiter` and wakes it.
+/// A `select` can watch one key twice, when it has one source twice. The deadlock report does not
+/// name the source.
+///
+/// # Safety
+///
+/// `waiter` points to a live `i64` until the `vx_unwatch` of the pair.
 #[no_mangle]
-pub extern "C" fn vx_any_channel_words() -> *mut i64 {
-    ANY_CHANNEL.as_ptr() as *mut i64
+pub unsafe extern "C" fn vx_watch(key: *const i64, waiter: *mut i64) {
+    unsafe { vx_watch_source(key, waiter, 0, std::ptr::null(), 0) };
+}
+
+/// As `vx_watch`, for a source of the kind `kind` that the line `made_file:made_line` made. The
+/// deadlock report names it.
+///
+/// # Safety
+///
+/// As for `vx_watch`, and `made_file` is null or a C string that lives as long as the program.
+#[no_mangle]
+pub unsafe extern "C" fn vx_watch_source(
+    key: *const i64,
+    waiter: *mut i64,
+    kind: i32,
+    made_file: *const libc::c_char,
+    made_line: i32,
+) {
+    watches(key).push(Watch {
+        key: key as usize,
+        waiter: waiter as usize,
+        kind,
+        made: Place::new(made_file, made_line),
+        order: WATCH_ORDER.fetch_add(1, Ordering::Relaxed),
+    });
+}
+
+/// The sources that `waiter` watches, in the order of the watches, each key once.
+fn watched_by(waiter: usize) -> Vec<Watch> {
+    let mut found: Vec<Watch> = Vec::new();
+    for shard in &WATCHES {
+        let w = shard.lock().unwrap_or_else(|e| e.into_inner());
+        found.extend(w.iter().filter(|e| e.waiter == waiter));
+    }
+    found.sort_by_key(|e| e.order);
+    let mut seen = Vec::new();
+    found.retain(|e| {
+        let new = !seen.contains(&e.key);
+        seen.push(e.key);
+        new
+    });
+    found
+}
+
+/// Undoes one `vx_watch(key, waiter)`.
+#[no_mangle]
+pub extern "C" fn vx_unwatch(key: *const i64, waiter: *mut i64) {
+    let mut w = watches(key);
+    let i = (w
+        .iter()
+        .position(|e| (e.key, e.waiter) == (key as usize, waiter as usize)))
+    .expect("an unwatch of a waiter that does not watch the key");
+    w.swap_remove(i);
+}
+
+/// Adds 1 to each waiter that watches `key`, and wakes it. The wake comes after the lock, when a
+/// waiter can be gone, but `vx_wake_all` does not read its word.
+#[no_mangle]
+pub extern "C" fn vx_wake_watchers(key: *const i64) {
+    let woken: Vec<usize> = {
+        let w = watches(key);
+        (w.iter().filter(|e| e.key == key as usize))
+            .map(|&Watch { waiter, .. }| {
+                unsafe { &*(waiter as *const AtomicI64) }.fetch_add(1, Ordering::SeqCst);
+                waiter
+            })
+            .collect()
+    };
+    for waiter in woken {
+        unsafe { vx_wake_all(waiter as *const i64) };
+    }
+}
+
+/// For a test: VX_TEST_SELECT_PAUSE_MS holds a `select` between its first search and its watch,
+/// so that a send can come in between. The thread sleeps, so on the shared runtime the worker
+/// stops too.
+#[no_mangle]
+pub extern "C" fn vx_test_select_pause() {
+    static PAUSE: OnceLock<Option<Duration>> = OnceLock::new();
+    let pause = *PAUSE.get_or_init(|| {
+        let ms = std::env::var("VX_TEST_SELECT_PAUSE_MS").ok()?;
+        let Ok(ms) = ms.parse::<u64>() else {
+            eprintln!("vx: VX_TEST_SELECT_PAUSE_MS must be a number, not '{ms}'");
+            std::process::abort();
+        };
+        Some(Duration::from_millis(ms))
+    });
+    if let Some(pause) = pause {
+        std::thread::sleep(pause);
+    }
+}
+
+thread_local! {
+    /// Where the next `select` of the task that this thread runs starts its search: the index
+    /// after its last choice.
+    static SELECT_TURN: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+}
+
+/// The index after the last choice of a `select` in this task.
+#[no_mangle]
+pub extern "C" fn vx_select_turn() -> i64 {
+    SELECT_TURN.with(|t| t.get())
+}
+
+/// A `select` of this task chose the index `next - 1`.
+#[no_mangle]
+pub extern "C" fn vx_select_chose(next: i64) {
+    SELECT_TURN.with(|t| t.set(next));
+}
+
+/// Swaps the turn of a task that does not run now with the turn of this thread.
+pub(crate) fn swap_select_turn(turn: &mut i64) {
+    SELECT_TURN.with(|t| *turn = t.replace(*turn));
 }
 
 /// The send numbers that a cancelled `send` left without a value, with the address of the words
@@ -1487,6 +1686,50 @@ mod tests {
             [16],
             "after a wake of a word, the notes are not those of the fibers that stay parked"
         );
+    }
+
+    /// A wake of a key adds 1 to each waiter that watches it, once for each watch, and to no other
+    /// waiter. After the unwatch, a wake does not touch the waiter.
+    #[test]
+    fn a_wake_of_a_key_adds_1_to_each_waiter_that_watches_it() {
+        let keys: [AtomicI64; 2] = std::array::from_fn(|_| AtomicI64::new(0));
+        let waiters: [AtomicI64; 3] = std::array::from_fn(|_| AtomicI64::new(0));
+        let (a, b) = (keys[0].as_ptr(), keys[1].as_ptr());
+        let w = |i: usize| waiters[i].as_ptr();
+        let counts = || {
+            waiters
+                .iter()
+                .map(|w| w.load(Ordering::SeqCst))
+                .collect::<Vec<_>>()
+        };
+        unsafe {
+            vx_watch(a, w(0));
+            vx_watch(a, w(1));
+            vx_watch(a, w(1));
+            vx_watch(b, w(2));
+        }
+        vx_wake_watchers(a);
+        assert_eq!(
+            counts(),
+            [1, 2, 0],
+            "a wake of a key did not add 1 for each watch of it"
+        );
+        vx_unwatch(a, w(1));
+        vx_wake_watchers(a);
+        assert_eq!(
+            counts(),
+            [2, 3, 0],
+            "an unwatch took more than one watch of a waiter"
+        );
+        vx_unwatch(a, w(0));
+        vx_unwatch(a, w(1));
+        vx_wake_watchers(a);
+        assert_eq!(
+            counts(),
+            [2, 3, 0],
+            "a wake touched a waiter after its unwatch"
+        );
+        vx_unwatch(b, w(2));
     }
 
     struct Gate {

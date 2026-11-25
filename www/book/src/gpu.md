@@ -285,6 +285,69 @@ block or the subgroup sets a part of the tile, so it is faster than a loop on on
 Flash attention does this to its output sums between two matmuls. The sums of a tensor-core
 matmul can then stay in registers.
 
+`lanes::prefetch(&x, [i, j], [rows, cols])` asks for the part of `x` at `[i, j]`, with the shape
+`[rows, cols]`, to come into the L2 cache. The lanes of the block or the subgroup share its rows.
+It reads no value, so it never changes a result. The part stops at the ends of `x`. On an H100 or
+a later NVIDIA GPU, each row is one `cp.async.bulk.prefetch.L2`. On an older NVIDIA GPU, each line
+of 128 bytes is one `prefetch.L2`. On other GPUs and on the CPU, it does nothing.
+`tests/optimizations/pass/lane_prefetch_into_the_l2_cache.vx` is a complete program.
+
+A prefetch saves time only when other work runs between the prefetch and the reads of the part.
+A prefetch right before the reads costs time. On an H200, each block of a matrix-vector product
+prefetched the weight rows that it then read. The decode step of a language model got 4% slower
+than without the prefetch, with the kernels started early in both.
+
+## Sums in registers
+
+The sums of a matmul of tiles can be in `Memory::REG`, as a tile with a row for each subgroup:
+
+```rust
+let mut acc = unsafe { Tensor<f32, [4, 64, 64], Memory::REG>::uninit() };
+for w in 0..4 across subgroups {
+  lanes::fill(&mut acc[w], 0.0);
+  acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+  lanes::copy(c, &acc[w], [w * 64, 0]);
+}
+```
+
+Each lane holds its part of the row of its subgroup in its registers, so `acc` takes no shared
+memory. The compiler keeps the tile in registers, or it reports an error. It does not move the
+tile to memory. So each use takes the row of its subgroup, `acc[w]`, in one of these:
+
+- `lanes::fill`
+- `lanes::scale_rows`
+- a matmul that adds to it
+- `lanes::copy` out of it, into a tensor that is not in shared memory
+
+Another use, such as a read by the lanes, is an error (E6033). The part of each lane must fit in
+the `capacity` of `Memory::REG` (E6009). The compiler keeps at most 128 sums of a lane, which is a
+row of 64 x 64. On an NVIDIA GPU, the tile needs `mma.sync`, which `sm_80` and later have.
+
+A tile in `Memory::SMEM` with only these uses also stays in registers, but nothing guarantees it.
+When such a tile stays in shared memory, the compiler warns (W1037) and names the use that keeps
+it there. With both `Memory::REG` and `Memory::SMEM`, the assembler of NVIDIA (`ptxas`) can still
+move some registers to local memory.
+`tests/optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx` is a complete
+program.
+
+## Starting a kernel early
+
+On an H100 or a later NVIDIA GPU, a kernel can start while the kernel before it on the stream
+still runs. This hides the time that each kernel takes to start and to end, which matters in a
+program of many short kernels, such as the decode step of a language model. It takes two settings:
+
+- `VX_GPU_PDL=1` when you compile. Each kernel for `sm_90` or later then waits for the kernels
+  before it (`griddepcontrol.wait`) before its first read or write of global memory. Before the
+  wait, the blocks can only compute values, fill shared memory and call `lanes::prefetch`. After a
+  launch in the usual way, the wait has nothing to wait for.
+- `VX_CUDA_PDL=1` when you run. Vx's runtime then launches each kernel that waits with
+  programmatic dependent launch. It needs a CUDA 12 driver or later.
+
+A kernel that waits does not read its buffers through the read-only cache (`ld.global.nc`), because
+the kernel before it may still write them. A program that launches the kernels of `--emit-ptx`
+itself finds `"waits_for_earlier_kernels": true` in the manifest of each kernel that waits
+(`docs/lang/abi.md`, section 3.5).
+
 ## Math functions in a kernel
 
 `x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel
@@ -295,5 +358,8 @@ a few `f32` instructions. [Exact and fast math](exact-and-fast-math.md) explains
 
 - An NVIDIA GPU runs each feature of this chapter. The compiler generates PTX.
 - An Apple GPU runs block and lane loops, shared memory, and atomics on `i32` and `u32`.
+- An Intel GPU (`arch: spirv64`) runs block, subgroup and lane loops, shared memory and the lane
+  routines. Each kernel asks for subgroups of 32 lanes. It does not run `lanes::copy_async` and
+  `lanes::copy_rows_async` yet. A region with one of them gets no image, and the compiler says why.
 - Each kernel also has a copy for the CPU, which runs when there is no GPU. The threads of the host
   share the blocks. `VX_HOST_THREADS=n` sets their number.

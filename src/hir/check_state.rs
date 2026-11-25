@@ -67,8 +67,8 @@ pub struct Placement {
     /// The first position in program order where the tile is gone, because a statement moved
     /// it out of its variable.
     pub end: Option<usize>,
-    /// The element type and sizes of a tile in shared memory whose sizes are numbers. A lane
-    /// matmul can keep such a tile in registers (check/subgroup_registers.rs).
+    /// The element type and sizes of a tile in shared memory or in registers, whose sizes are
+    /// numbers. A lane matmul can keep such a tile in registers (check/subgroup_registers.rs).
     pub shared_tile: Option<(crate::syntax::ElementType, Vec<u64>)>,
     /// E6009 for a tile that may stay in registers, reported once the checker knows it does not.
     pub held_e6009: Option<HeldE6009>,
@@ -752,6 +752,9 @@ pub struct MonoState {
     /// erases the call signature, so unifying it against a `ClosureK<Args.., Ret>` parameter needs
     /// this side table to recover the args/ret and bind the method's generics.
     pub closure_signatures: HashMap<Symbol, (Vec<Type>, Type)>,
+    /// The closures that run at most once, by their `Closure_N` struct name, each with a
+    /// captured value that its body moves. A call uses up such a closure.
+    pub closures_that_run_once: HashMap<Symbol, Symbol>,
     /// Nesting depth of each open closure literal, innermost last.
     pub closure_depths: Vec<usize>,
     /// Variables each open closure literal captured, innermost last.

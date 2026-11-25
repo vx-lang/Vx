@@ -54,7 +54,7 @@ pub enum Action {
     EmitMsl,
     /// Parse and typecheck the program, then print each fact that the compiler trusts without a
     /// proof: each `assume`, each pointer clause that a call in `unsafe` code trusts, each
-    /// `ensures` of an `extern` function, and each pointer `requires` of a `pub fn`
+    /// `ensures` of a function in an `extern` block, and each pointer `requires` of an `extern fn`
     Audit,
 }
 
@@ -115,6 +115,10 @@ pub struct DriverOptions {
     #[arg(long = "audit", overrides_with = "action")]
     pub audit: bool,
 
+    /// With the audit, also list each use of trusted code in `core` and `std`
+    #[arg(long = "audit-library")]
+    pub audit_library: bool,
+
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
     /// flat-HIR bodies link in the flat codegen — all without parsing the library's source (#265 step
@@ -135,6 +139,12 @@ pub struct DriverOptions {
     /// imports that start with `name`. Can be given more than once.
     #[arg(long = "package", value_name = "NAME=DIR", value_parser = parse_package)]
     pub packages: Vec<(String, PathBuf)>,
+
+    /// Refuse trusted code in the package NAME: each `unsafe` block or `unsafe fn`, `mlir!`
+    /// block, `extern` function, `extern impl` and `unsafe impl` in it is an error. Can be given
+    /// more than once.
+    #[arg(long = "no-trusted-code", value_name = "NAME")]
+    pub no_trusted_code: Vec<String>,
 
     /// Read the standard library from DIR instead of from beside the compiler. Can be given more
     /// than once; the directories are searched in order.
@@ -373,7 +383,7 @@ impl CompilerDriver {
             options.action = Action::EmitPtx;
         } else if options.emit_msl {
             options.action = Action::EmitMsl;
-        } else if options.audit {
+        } else if options.audit || options.audit_library {
             options.action = Action::Audit;
         } else if options.compile {
             options.action = Action::EmitObj;
@@ -568,7 +578,12 @@ impl CompilerDriver {
         }
 
         let compile = || -> Result<Option<(String, Option<String>)>, String> {
-            let (programs, interfaces) = self.load_modules(filename, sched)?;
+            let (mut programs, interfaces) = self.load_modules(filename, sched)?;
+            crate::hir::check::audit::mark_refused_packages(
+                &mut programs,
+                &self.options.no_trusted_code,
+                &self.options.packages,
+            )?;
             if !interfaces.is_empty() {
                 eprintln!(
                     "[parallel-frontend] an import resolved to a .vxlib interface, which the \
@@ -749,6 +764,25 @@ impl CompilerDriver {
         // per-compilation by `GlobalAstEnv`, so there is no process-global state to reset --
         // declarations cannot leak between compilations by construction.
         let (mut program_arr, auto_interfaces) = self.load_and_expand(filename)?;
+        crate::hir::check::audit::mark_refused_packages(
+            &mut program_arr,
+            &self.options.no_trusted_code,
+            &self.options.packages,
+        )?;
+        let refused: Vec<_> = program_arr
+            .iter()
+            .flat_map(crate::hir::check::audit::refused_trusted_code)
+            .collect();
+        if !refused.is_empty() {
+            for d in &refused {
+                eprintln!("{d}");
+            }
+            return Err(format!(
+                "Semantic check failed on '{}': {} error(s) emitted",
+                filename,
+                refused.len()
+            ));
+        }
 
         if self.options.action == Action::ParseOnly {
             return self.handle_parse_only(&program_arr, filename);
@@ -857,14 +891,9 @@ impl CompilerDriver {
             program_arr.push(Self::native_host_program());
         }
 
-        let mut global_macros = std::collections::HashMap::new();
-        for m in &program_arr {
-            for mac in &m.macros {
-                global_macros.insert(mac.name.clone(), mac.rules.clone());
-            }
-        }
+        let macros = crate::parser::MacroTable::new(&program_arr);
         let trait_defaults = crate::resolver::collect_trait_defaults(program_arr.iter());
-        let expander = MacroExpander::new(&global_macros, &trait_defaults);
+        let expander = MacroExpander::new(&macros, &trait_defaults);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));
@@ -886,6 +915,7 @@ impl CompilerDriver {
     fn native_host_program() -> crate::syntax::Program {
         crate::syntax::Program {
             module_path: crate::symbol::Symbol::from(NATIVE_HOST_MODULE),
+            package: None,
             file: None,
             item_macros: Vec::new(),
             memories: vec![crate::syntax::MemoryDecl {
@@ -919,6 +949,8 @@ impl CompilerDriver {
             // is a declaration like any other and the triple is derived the
             // same way for it as for a host file (#342).
             transfer_impls: Vec::new(),
+            macro_call_sites: Vec::new(),
+            no_trusted_code: None,
             topologies: vec![crate::arch::TopologyDecl {
                 name: crate::symbol::Symbol::from("Host"),
                 descriptor: crate::arch::TopologyDescriptor {
@@ -1111,6 +1143,7 @@ impl CompilerDriver {
         Some(crate::syntax::Program {
             item_macros: Vec::new(),
             module_path: "<interfaces>".into(),
+            package: None,
             file: None,
             imports: Vec::new(),
             macros: Vec::new(),
@@ -1124,6 +1157,8 @@ impl CompilerDriver {
             topologies: Vec::new(),
             memories: Vec::new(),
             transfer_impls: Vec::new(),
+            macro_call_sites: Vec::new(),
+            no_trusted_code: None,
         })
     }
 
@@ -1405,11 +1440,23 @@ impl CompilerDriver {
         }
 
         if let Some(mut trusted) = checker.trusted.take() {
+            use crate::hir::check::audit;
+            let mut library = std::collections::BTreeMap::new();
             for p in std::iter::once(&*ast).chain(other_asts.values()) {
-                trusted.extend(crate::hir::check::audit::trusted_declarations(p));
+                trusted.extend(audit::trusted_declarations(p));
+                for (kind, item) in audit::trusted_code(p) {
+                    if audit::is_library(p) && !self.options.audit_library {
+                        *library.entry(kind).or_insert(0) += 1;
+                    } else {
+                        trusted.insert(item);
+                    }
+                }
             }
             for item in &trusted {
                 println!("{item}");
+            }
+            if let Some(line) = audit::library_count_line(&library) {
+                println!("{line}");
             }
         }
 
@@ -2038,7 +2085,8 @@ impl CompilerDriver {
             }
             let synth = crate::syntax::Function {
                 is_unsafe: false,
-                is_pub: false,
+                visibility: crate::gid::Visibility::Private,
+                exported: false,
                 name: body.name.clone(),
                 generics: vec![],
                 params: body
@@ -2062,6 +2110,7 @@ impl CompilerDriver {
                 doc_comment: None,
                 span: crate::syntax::Span::default(),
                 file: None,
+                package: None,
             };
             imported_entries.push((synth, body.hir.clone(), body.types.clone()));
         }

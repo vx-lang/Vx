@@ -392,6 +392,29 @@ static inline int vx_launch_takes_assert_flag(const void *payload,
   return flag && strcmp(flag, "1") == 0;
 }
 
+/* The kernel of `payload` for an error message, in `out`: for example
+   "vx_npu_kernel_3 (from pdl_chain at chain.vx:18)". The function and the
+   line come from the `function=` and `source=` entries, so an error tells the
+   programmer which `spawn` to look at. A payload without them gives the name
+   of the kernel only. Returns `out`. */
+static inline const char *vx_kernel_label(const void *payload,
+                                          size_t payload_size, char *out,
+                                          size_t size) {
+  const char *name = payload ? (const char *)payload : "?";
+  const char *fn = vx_payload_field(payload, payload_size, "function=");
+  const char *at = vx_payload_field(payload, payload_size, "source=");
+  if (fn && at) {
+    snprintf(out, size, "%s (from %s at %s)", name, fn, at);
+  } else if (fn) {
+    snprintf(out, size, "%s (from %s)", name, fn);
+  } else if (at) {
+    snprintf(out, size, "%s (at %s)", name, at);
+  } else {
+    snprintf(out, size, "%s", name);
+  }
+  return out;
+}
+
 /* One size of a launch shape, from `text`: `$j` is the `i32` launch value j,
    which the compiled code puts after the kernel's `num_args` arguments, and a
    number is that size. Moves `*text` past the entry and its comma. Returns -1

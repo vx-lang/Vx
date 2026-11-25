@@ -5,13 +5,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A tile in `Memory::SMEM` becomes real shared storage in the device copy, and
-// the SPIR-V image has no form for it yet. The region runs on the host, the
-// compiler says so, and the values come out right. The same program compiles
-// for `nvptx64`, where the tile becomes a `.shared` declaration.
+// A `transfer` into `Memory::SMEM` copies a tensor into a tile in the device
+// copy, and the SPIR-V image has no form for that copy yet. The region runs on
+// the host, the compiler says so, and the values come out right. The same
+// program compiles for `nvptx64`, where the tile becomes a `.shared`
+// declaration. spirv_shared_tile_has_a_copy_for_each_block.vx has a tile that
+// the lanes fill, which the image does hold.
 //
 // RUN: vxc %s --emit-llvm 2>&1 >/dev/null | FileCheck %s
-// CHECK: cannot become a `spirv64` device image: it keeps a tile in shared memory
+// CHECK: cannot become a `spirv64` device image: it hands a tensor to `memref.copy`
 // CHECK-SAME: It will run on the host instead.
 // EXPECT: [[0,   1],
 // EXPECT:  [1,   2]]

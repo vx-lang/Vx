@@ -1,0 +1,61 @@
+//===- copy_impls_of_generic_types.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=E3031
+//
+// A generic type can be `Copy` only if each value that it holds is `Copy`. `Twice<T>` holds a `T`,
+// so its `impl Copy` needs `T : Copy`. Without the bound, a copy of a `Twice<Vec<i64>>` copied the
+// pointer of the `Vec`, and safe code read freed memory. A field that does not depend on `T` gets
+// the same check as in a type with no parameters. A pointer to a `T` and a function that takes a
+// `T` hold no `T`, so they need no bound.
+import core::marker;
+import core::option;
+import std::vec;
+
+struct Twice<T> {
+  inner : T,
+}
+
+// CHECK: Error[E3031] at {{.*}}.vx:[[@LINE+1]]:1: 'Twice' cannot be `Copy` for each `T`: its field 'inner' has type T. Write `T : Copy` in the impl
+impl<T> Copy for Twice<T> {}
+
+struct Holds<T> {
+  v : Vec<i64>,
+  t : T,
+}
+
+// CHECK: Error[E3031] at {{.*}}.vx:[[@LINE+1]]:1: 'Holds' cannot be `Copy`: its field 'v' has type Vec<i64>, which is moved rather than copied
+impl<T : Copy> Copy for Holds<T> {}
+
+// The impl names the parameter `U`, and the enum holds it in an `Option`.
+enum Maybe<T> {
+  Some(Option<T>),
+  Nothing,
+}
+
+// CHECK: Error[E3031] at {{.*}}.vx:[[@LINE+1]]:1: 'Maybe' cannot be `Copy` for each `U`: its variant 'Some' has type Option<U>. Write `U : Copy` in the impl
+impl<U> Copy for Maybe<U> {}
+
+struct Behind<T> {
+  p : *const T,
+  f : fn(T) -> i64,
+}
+
+impl<T> Copy for Behind<T> {}
+
+// With the bound, a `T` and an `Option<T>` copy.
+struct Bounded<T> {
+  inner : T,
+  maybe : Option<T>,
+}
+
+impl<T : Copy> Copy for Bounded<T> {}
+
+fn main() -> i32 {
+  return 0;
+}
+// CHECK: 3 error(s) emitted

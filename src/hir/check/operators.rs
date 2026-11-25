@@ -358,6 +358,14 @@ impl<'a> TypeChecker<'a> {
             {
                 return target_ty;
             }
+            // Any pointer to `*const void` in the same memory: an address that no program can
+            // read through, as C's `void *`.
+            (Type::Pointer(_, from_space, _), Type::Pointer(to, to_space, _))
+                if matches!(to.as_ref(), Type::Struct(n, None) if n.as_ref() == "void")
+                    && from_space == to_space =>
+            {
+                return target_ty;
+            }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
                 if self.unsafe_is_missing() {
@@ -709,37 +717,33 @@ impl<'a> TypeChecker<'a> {
                                     return Type::Unknown;
                                 }
                             }
-                            // In a device region, tiles in two memories, such as weights in HBM
-                            // and activations in shared memory, give a product in the memory that
-                            // its target names. With no such target there is no default, which
-                            // would hide a copy.
+                            // In a device region, the product goes to the memory that its
+                            // target names, such as registers for sums in `Memory::REG`. Tiles in
+                            // two memories, such as weights in HBM and activations in shared
+                            // memory, need such a target: a default would hide a copy.
+                            let target = self
+                                .expected_type
+                                .as_ref()
+                                .and_then(Self::as_tensor_operand)
+                                .and_then(|(_, _, t)| t.clone())
+                                .filter(|_| self.device_spawn.is_some());
                             let top = match (top_l, top_r) {
+                                _ if target.is_some() => target,
                                 (Some(l), Some(r))
                                     if l.space != r.space && self.device_spawn.is_some() =>
                                 {
-                                    let target = self
-                                        .expected_type
-                                        .as_ref()
-                                        .and_then(Self::as_tensor_operand)
-                                        .and_then(|(_, _, t)| t.clone());
-                                    if target.is_none() {
-                                        self.errors.error_with_code(
-                                            crate::diagnostic::DiagnosticCode::E3004,
-                                            format!(
-                                                "the tiles of this `@` are in {} and in {}, so \
-                                                 the product needs a target that names its \
-                                                 memory; assign it to a tensor whose type names \
-                                                 one",
-                                                l.as_written(),
-                                                r.as_written()
-                                            ),
-                                            Some(crate::diagnostic::SourceSpan::from_ast_span(
-                                                span,
-                                            )),
-                                        );
-                                        return Type::Unknown;
-                                    }
-                                    target
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3004,
+                                        format!(
+                                            "the tiles of this `@` are in {} and in {}, so the \
+                                             product needs a target that names its memory; \
+                                             assign it to a tensor whose type names one",
+                                            l.as_written(),
+                                            r.as_written()
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                    return Type::Unknown;
                                 }
                                 _ => top_l.clone(),
                             };
@@ -800,7 +804,7 @@ impl<'a> TypeChecker<'a> {
                                 return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
                             }
                         }
-                        return shape_side.clone();
+                        return Self::owned_tensor_result(shape_side);
                     }
                 }
 
@@ -847,9 +851,18 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
-                lhs_ty
+                Self::owned_tensor_result(&lhs_ty)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// The type of the result of an elementwise operation whose operand has type `operand`. The
+    /// result is a new tensor, also when the operand is a borrow of one, as in `&a + &a`.
+    fn owned_tensor_result(operand: &Type) -> Type {
+        match operand {
+            Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => (**inner).clone(),
+            other => other.clone(),
         }
     }
 
@@ -1084,9 +1097,8 @@ impl<'a> TypeChecker<'a> {
             Some(ElementType::I64),
             *span,
         ));
-        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::new(
+        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::by_the_compiler(
             "c_str_equals".into(),
-            None,
             vec![(**lhs).clone(), (**rhs).clone(), bound],
             *span,
         ));
@@ -1207,6 +1219,7 @@ impl<'a> TypeChecker<'a> {
                     type_args: None,
                     args: vec![lhs_ref, rhs_ref],
                     span,
+                    by_the_compiler: false,
                 });
                 let ty = self.check_expr_type_flag(&mut call, false);
                 *expr = call;

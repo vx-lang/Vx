@@ -24,6 +24,8 @@ pub struct SourceSpan {
     pub line: usize,
     pub column: usize,
     pub length: usize,
+    /// The macro expansion that wrote the code at this place, or 0 for source code.
+    pub expansion: u32,
 }
 
 impl SourceSpan {
@@ -32,6 +34,7 @@ impl SourceSpan {
             line,
             column,
             length,
+            expansion: 0,
         }
     }
 
@@ -41,9 +44,17 @@ impl SourceSpan {
             line: span.line,
             column: span.column,
             length: span.length,
+            expansion: span.expansion,
         }
     }
 }
+
+/// For each file, the place to report the code of each macro expansion at, by the expansion id
+/// less 1. It is the macro call when another file declares the macro, because the places in such
+/// code are in that other file. `None` keeps the places in the code.
+pub type MacroCallSites = std::sync::Arc<
+    std::collections::HashMap<crate::symbol::Symbol, Vec<Option<crate::syntax::Span>>>,
+>;
 
 /// Stable warning/error codes for diagnostics.
 /// Warning codes use the W prefix, error codes use the E prefix.
@@ -146,6 +157,15 @@ pub enum DiagnosticCode {
     /// default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them
     /// gets the warning too, because it runs before the drop and should only return a time.
     W1036,
+    /// The tile of the sums of a lane matmul in a GPU kernel stays in shared memory, which makes
+    /// the kernel slower. On a GPU with tensor cores, the compiler keeps the tile in registers
+    /// when each use of the tile takes the row of its subgroup. The warning names the use or the
+    /// matmul that keeps the tile in memory. With the tile in `Memory::REG`, the compiler keeps
+    /// the tile in registers or reports an error (E6033).
+    W1037,
+    /// A `tasks` block that can fail, whose value nothing uses. When the block fails, the code
+    /// after it goes on, and nothing sees the error.
+    W1038,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -316,7 +336,9 @@ pub enum DiagnosticCode {
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
     /// that promise for the whole type -- which would be a way to duplicate a tensor, or any
-    /// other placed value, without saying so.
+    /// other placed value, without saying so. In `impl<T> Copy for Twice<T>`, a field of type
+    /// `T` needs the bound `T : Copy`. A type with a `Drop` impl cannot be `Copy` either,
+    /// because the drop of a `Copy` value does not run.
     E3031,
     /// A chain of generic instantiations that does not end -- `f<N - 1>()` whose base case
     /// is never reached. Reported here rather than left to run out of stack, which gave no
@@ -460,6 +482,16 @@ pub enum DiagnosticCode {
     /// (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so
     /// it must be known while compiling. A range past the last row is E8003.
     E3065,
+    /// An `impl` in the wrong file, or with the wrong `extern`. Only the file that declares a
+    /// struct or an enum writes a plain `impl` of it. `core` and `std` declare the built-in types,
+    /// such as `i32` and `Tensor`. An impl in another file, for example to break an import cycle,
+    /// is `extern impl`, so that a review finds each one. An `extern impl` in the file of the
+    /// type is an error too. A macro cannot write `extern impl`: write it in the file.
+    E3066,
+    /// A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an
+    /// address, for example one that `p as *const void` made to give to a C function. It has no
+    /// element type, so the compiler does not know what to read.
+    E3067,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -490,7 +522,8 @@ pub enum DiagnosticCode {
     E4007,
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
-    /// away. Copy or clone it instead. A `match` on a reference names parts of the value behind
+    /// away. Copy or clone it instead. A method that takes `self` by value, called as `r.f()`,
+    /// takes `*r` the same way. A `match` on a reference names parts of the value behind
     /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
     /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
     /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take
@@ -541,14 +574,36 @@ pub enum DiagnosticCode {
     /// outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its
     /// own.
     E4016,
+    /// A closure that runs only once is copied, returned, passed or written outside a `let`. A
+    /// closure whose body moves a value that it captures can run only once, because a second
+    /// call would move the value again. Write such a closure in a `let` with no type, and call
+    /// it there. A second call of it is E4001.
+    E4017,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements
     /// hold whatever the memory held, so the program says with `unsafe` that it writes each one
     /// before reading it.
     E5001,
-    /// Unsafe memory operation outside unsafe block
+    /// An operation that only an `unsafe` block allows, outside one. An access through a raw
+    /// pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot
+    /// know that the value is still at the address. So is `assume`.
     E5002,
+    /// Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or
+    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`.
+    /// The program that uses the package gives the flag, so a new version of the package cannot
+    /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
+    E5003,
+    /// A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that
+    /// takes a `Root` makes the capabilities of the program, so a second start would give them to
+    /// code that did not get them.
+    E5004,
+    /// A call of a private function from another file, or such a function used as a value. A
+    /// function, an associated function or a method with no `pub` is private to its file, as
+    /// in Rust. A `pkg` function is visible to the files of its package only. So a
+    /// library can keep a helper that only its own code may call, such as one that reads
+    /// through a raw pointer.
+    E5005,
 
     // --- Topology/Hardware Errors (E6xxx) ---
     /// Topology mismatch in function call
@@ -725,7 +780,10 @@ pub enum DiagnosticCode {
     /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
     /// a tensor stays in registers, and a register has no address. So each index must be a
     /// constant, or made of constants and the variables of `for` loops with constant bounds, at
-    /// most 1024 passes each. The code generator unrolls those loops.
+    /// most 1024 passes each. The code generator unrolls those loops. Also a tile of sums in such
+    /// a space, with a row for each subgroup, that the compiler cannot keep in registers: a use
+    /// other than a `lanes::fill`, `lanes::scale_rows`, lane matmul or `lanes::copy` of the row of
+    /// its subgroup, a GPU without `mma.sync`, or more than 128 sums for each lane.
     E6033,
     /// An `aligned(N)` in a tensor type that the compiler cannot give: the space is not one whose
     /// storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the
@@ -819,17 +877,29 @@ pub enum DiagnosticCode {
     /// and its body gives `p`, or a value that it gets from `p`, to code that can free memory,
     /// such as a call without `!frees` for that parameter, a store or an `mlir!` block.
     E8012,
-    /// A type invariant that is not well formed. An `invariant` of a struct can use `self`, the
-    /// fields of `self` at any depth, numbers, operators and the pointer clauses `valid`,
-    /// `initialized` and `overlaps`. It calls no other function.
+    /// A type invariant that is not well formed. An `invariant` comes after the last field of a
+    /// struct, inside its braces. It can use the fields of the struct at any depth, numbers,
+    /// operators, `as` and the pointer clauses `valid`, `initialized` and `overlaps`. It calls
+    /// no other function, and it names no constant.
     E8013,
     /// Code outside the module of a type with an invariant changes a field of the type. Only
     /// the module (the `.vx` file) that declares the type can write a field, take a `&mut` to a
     /// field, call a method that takes `&mut self` on a field, move a field out of the value, or
-    /// build the type with a struct literal. Other code calls a function of the module to change
-    /// a value of the type. Then
-    /// the invariant holds for each value of the type outside its module.
+    /// make a value of the type with a struct literal or an `mlir!` block. Other code calls a
+    /// function of the module to change a value of the type. Then the invariant holds for each
+    /// value of the type outside its module.
     E8014,
+    /// A `safe` extern function that returns a value of a type with an invariant, or takes a
+    /// `&mut` or a `*mut` to such a value. C code does not keep the invariant, and a call of a
+    /// `safe` function needs no `unsafe`. So C code could return or change such a value with no
+    /// mark in the program. Remove `safe`, so that each call is in an `unsafe` block.
+    E8015,
+    /// An `mlir!` block outside `unsafe` that the compiler cannot verify as safe. The compiler
+    /// verifies a block whose operations are on a list of `arith` and `math` operations that give
+    /// a defined result for every input, with no `overflow` or `fastmath` flags, and that takes
+    /// and gives only numbers. Any other block goes in `unsafe { }`, because the compiler does not
+    /// verify what its operations do.
+    E8016,
 }
 
 impl std::fmt::Display for DiagnosticCode {
@@ -1041,6 +1111,8 @@ pub struct DiagnosticsVec {
     /// Where the checker is in `file`: the statement it checks, or the function outside its
     /// statements. A diagnostic reported with no place of its own points there.
     pub at: crate::syntax::Span,
+    /// Where to point for code that a macro of another file wrote.
+    pub macro_call_sites: MacroCallSites,
 }
 
 impl DiagnosticsVec {
@@ -1049,6 +1121,7 @@ impl DiagnosticsVec {
             inner: Vec::new(),
             file: None,
             at: crate::syntax::Span::default(),
+            macro_call_sites: MacroCallSites::default(),
         }
     }
 
@@ -1082,11 +1155,21 @@ impl DiagnosticsVec {
         self.at = here.at;
     }
 
-    /// `span`, or where the checker is when `span` is `None`.
+    /// `span`, or where the checker is when `span` is `None`. In code that a macro of another
+    /// file wrote, it is the macro call.
     fn place(&self, span: Option<SourceSpan>) -> Option<SourceSpan> {
-        span.or_else(|| {
+        let span = span.or_else(|| {
             (self.at != crate::syntax::Span::default()).then(|| SourceSpan::from_ast_span(&self.at))
-        })
+        })?;
+        let sites = self
+            .file
+            .as_ref()
+            .and_then(|f| self.macro_call_sites.get(f));
+        let index = span.expansion.checked_sub(1).map(|i| i as usize);
+        match sites.zip(index).and_then(|(sites, i)| sites.get(i)) {
+            Some(Some(call)) => Some(SourceSpan::from_ast_span(call)),
+            _ => Some(span),
+        }
     }
 
     pub fn report(&mut self, level: DiagnosticLevel, message: impl Into<Cow<'static, str>>) {

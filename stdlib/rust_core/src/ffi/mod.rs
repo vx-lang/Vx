@@ -11,6 +11,7 @@
 // statically compiled Rust standard library, ensuring safe data boundary crossings.
 //
 //===----------------------------------------------------------------------===//
+pub mod copies;
 pub(crate) mod crash_report;
 pub mod io;
 pub mod llama;

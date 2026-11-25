@@ -1,6 +1,9 @@
 # One `select` for channels, sockets, timers and tokens
 
-Issue #3414, part of #3413. This is a design for review. No code comes before the review.
+Issue #3414, part of #3413. The review took the recommended answer of each question in section 10.
+The five stages of section 9 are done: the core in `stdlib/std/sync/select.vx`, the sockets in
+`stdlib/std/net.vx`, the sources of #3415 to #3418 next to their types, the deadlock report in
+`ffi/wait.rs`, and `t.copy_end()` for the token of a `transfer_async` (`ffi/copies.rs`).
 
 ## 1. The problem
 
@@ -24,14 +27,19 @@ let mut tick = Interval::every(Duration::from_secs(1));
 let mut jobs_open = true;
 loop {
   match select3(&when(jobs_open, &jobs), &listener, &tick) {
-    Result<i32, SelectError>::Ok(0) => {
-      match jobs.try_recv() {
-        Result<Job, TryRecvError>::Ok(job) => { run(job); }
-        Result<Job, TryRecvError>::Err(_) => { jobs_open = false; }
+    Result<i32, SelectError>::Ok(i) => {
+      if i == 0 {
+        match jobs.try_recv() {
+          Result<Job, TryRecvError>::Ok(job) => { run(job); }
+          Result<Job, TryRecvError>::Err(_) => { jobs_open = false; }
+        }
+      } else if i == 1 {
+        serve(listener.accept()?);
+      } else {
+        tick.next();
+        flush_log();
       }
     }
-    Result<i32, SelectError>::Ok(1) => { serve(listener.accept()?); }
-    Result<i32, SelectError>::Ok(_) => { tick.next(); flush_log(); }
     Result<i32, SelectError>::Err(_) => { break; } // the `tasks` block was cancelled
   }
 }
@@ -66,8 +74,9 @@ task.
   `vx-timer` thread to wake the bucket of its word at the deadline.
 - **Cancel and `within`.** A cancel wakes each wait that can be cancelled. In `within` or a `drop`,
   each wait that can be cancelled ends at the earliest deadline around it (F6a).
-- **Tokens.** `transfer_async` gives a `Token<T>`, a type that the compiler knows. Today the copy
-  ends before `transfer_async` returns, so a token is always done.
+- **Tokens.** `transfer_async` gives a `Token<T>`, a type that the compiler knows. On a GPU, the
+  copy runs in the background. On the CPU and the Apple NPU, the copy ends before `transfer_async`
+  returns, so a token is always done.
 - **The deadlock report.** A wait with no time limit leaves a note in its bucket. A program in
   which each thread and task sleeps with no limit, with no timer and no socket pending, stops with
   a report.
@@ -202,7 +211,11 @@ is the rule that the poller already follows.
 | sockets, and #3415 | the buffer has bytes, or `poll` with a time limit of 0 says ready | put `(fd, events, waiter)` on the list of the poller, which adds 1 to the waiter (section 2) |
 | `Deadline`, `Interval` | the clock passed the time | nothing: `select` waits with the earliest `deadline()` |
 | semaphore (#3418) | a permit is free | as a channel |
-| `Token<T>` | the copy ended | today: always ready. With a background copy: the end of the copy calls `vx_wake_watchers` |
+| `t.copy_end()` of a `Token<T>` | the copy ended | the CUDA backend runs a function on the copy stream after the copy, and it calls `vx_wake_watchers`. On the other backends, the copy ended when `transfer_async` returned. |
+
+Before stage 2, the poller stored 1 in the word of a wait. It now adds 1, because the word of a
+`select` can hold 1 already, and a store of 1 would then not change it. The poller takes off only
+the entry of the socket that got ready, so the other sockets of the `select` stay on the list.
 
 A new source implements the four methods of the trait. The three runtime calls are its whole
 interface to the runtime.
@@ -220,7 +233,11 @@ Step 3 closes the race between the first search and the watch. A source that get
 step 2 adds 1 to the word, and the wait of step 4 returns at once. The pair "the source changes
 its state and then reads `WATCHERS`", and "the select adds 1 to `WATCHERS` and then reads the
 state", is the store-buffering pattern. Both sides need `SeqCst`, as the channel needs today for
-`SLEEPERS` (see the header of `channel.vx`). A herd7 test checks it.
+`SLEEPERS` (see the header of `channel.vx`). A `send` fills its slot with only `Release`, so the
+check of a `Receiver` reads `WAKE` with `SeqCst` before the slot: the `notify` of the `send` adds
+to `WAKE` with `SeqCst`. Two herd7 tests check this.
+`select_watch_then_check_slot_only.litmus` shows the lost wake when the check reads only the slot,
+and `select_watch_then_check_seq_cst.litmus` shows that the read of `WAKE` prevents it.
 
 **Two sources get ready at once.** Both add 1 to the word. The fiber is on the list of one
 bucket, so the first `wake_all` removes it from the list, and the second finds nothing. The search
@@ -291,7 +308,9 @@ Each stage is one PR with its own tests.
 1. **The new sources.** The buffered socket (#3415), the channels (#3416), `Interval` (#3417) and
    the semaphore (#3418). Each one is a small PR after its parent PR and stage 1 merged.
 1. **The deadlock report** lists the sources of a `select`.
-1. **Tokens**, when a background copy exists (#244).
+1. **Tokens.** `t.copy_end()` gives a library struct `CopyEnd` that holds the address that the
+   copy fills. A pointer can be cast to `*const void` for it, and a read through a `void` pointer
+   is an error.
 
 **Tests.** Each Vx fixture in `tests/backend/pass/` runs on the AST code generator, the flat
 code generator, and the shared runtime with one worker, as the `select` tests do today.
@@ -335,4 +354,5 @@ Each question has a recommended answer.
    it is a shared source. Recommended: not in stage 1. Add it with the channels of #3416.
 1. **Tokens.** `Token<T>` is a type that the compiler knows, so a library `impl` for it needs a
    change in the checker, or a library struct for the token. Recommended: wait for the background
-   copy of #244. Until then, a token is always ready, and a `select` on it has no use.
+   copy of #244. Until then, a token is always ready, and a `select` on it has no use. Stage 5
+   took the library struct, `CopyEnd` from `t.copy_end()`, after #3483 added the copy.

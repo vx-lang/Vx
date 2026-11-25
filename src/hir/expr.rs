@@ -385,15 +385,18 @@ impl<'a> TypeChecker<'a> {
                 self.expected_type = expected;
                 ty
             }
-            Expr::MethodCall(..) => {
-                self.check_a_call_that_can_change_facts(expr, |c, e| match c.check_token_wait(e) {
+            Expr::MethodCall(..) => self.check_a_call_that_can_change_facts(expr, |c, e| {
+                if let Some(ty) = c.check_token_wait(e) {
+                    return ty;
+                }
+                if let Some(ty) = c.check_token_copy_end(e) {
+                    return ty;
+                }
+                match c.check_task_join(e, consume && !value_unused) {
                     Some(ty) => ty,
-                    None => match c.check_task_join(e, consume && !value_unused) {
-                        Some(ty) => ty,
-                        None => c.check_methodcall_expr(e, consume),
-                    },
-                })
-            }
+                    None => c.check_methodcall_expr(e, consume),
+                }
+            }),
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
             Expr::RelationalOp(..) => self.check_relationalop_expr(expr),
             Expr::LogicalOp(..) => self.check_logicalop_expr(expr),
@@ -490,6 +493,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.check_atomic_block(e);
                 self.check_block_dialects(e);
+                self.check_mlir_is_verified(e);
                 // The block can free memory through a pointer that it gets.
                 let frees = !e.clobbers.is_empty()
                     || e.inputs.iter().any(|(_, arg, _)| {
@@ -508,6 +512,9 @@ impl<'a> TypeChecker<'a> {
                     self.check_expr_type_flag(clobber, consume);
                 }
 
+                if let Some(returns) = &e.returns {
+                    self.check_mlir_block_module(returns, &e.span);
+                }
                 // Return the specified type or Unknown if void
                 e.returns.clone().unwrap_or(Type::Unknown)
             }

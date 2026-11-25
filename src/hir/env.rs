@@ -94,6 +94,9 @@ pub struct GlobalAstEnv<'a> {
     pub functions:
         HashMap<crate::symbol::Symbol, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
     pub syntax_functions: HashMap<crate::symbol::Symbol, &'a Function>,
+    /// The package of each file, from the items written in it. A `pkg fn` is visible to
+    /// the files of its package.
+    pub file_packages: HashMap<crate::symbol::Symbol, crate::symbol::Symbol>,
     /// Bodies the compile-time evaluator can run, owned rather than borrowed.
     ///
     /// The resolution env is built from signature-stripped modules, so a non-generic function
@@ -158,6 +161,10 @@ pub struct GlobalAstEnv<'a> {
     /// Top-level `const` items of every module, by name. A use of one is replaced by its value
     /// where the checker resolves the name.
     pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
+    /// Where to report the code that a macro of another file wrote, by the file of the call.
+    pub macro_call_sites: crate::diagnostic::MacroCallSites,
+    /// The files of the modules of `core` and `std`, which declare the built-in types.
+    pub library_files: std::collections::HashSet<crate::symbol::Symbol>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -174,6 +181,7 @@ impl<'a> GlobalAstEnv<'a> {
             impls: HashMap::new(),
             functions: HashMap::new(),
             syntax_functions: HashMap::new(),
+            file_packages: HashMap::new(),
             comptime_bodies: HashMap::new(),
             generic_functions: HashMap::new(),
             memories: HashMap::new(),
@@ -189,7 +197,36 @@ impl<'a> GlobalAstEnv<'a> {
             decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
+            macro_call_sites: Default::default(),
+            library_files: Default::default(),
         };
+        let mut macro_call_sites = HashMap::new();
+        for module in modules {
+            if let Some(file) = &module.file {
+                let path = module.module_path.as_ref();
+                let library = ["core", "std"]
+                    .iter()
+                    .any(|l| path == *l || path.starts_with(&format!("{l}::")));
+                if library {
+                    env.library_files.insert(file.clone());
+                }
+                if module.macro_call_sites.iter().any(Option::is_some) {
+                    macro_call_sites.insert(file.clone(), module.macro_call_sites.clone());
+                }
+            }
+        }
+        for module in modules {
+            let methods = module.impls.iter().flat_map(|i| i.methods.iter());
+            let functions = module.functions.iter().chain(methods);
+            let places = functions.map(|f| (&f.file, &f.package));
+            let places = places.chain(module.externs.iter().map(|e| (&e.file, &e.package)));
+            for (file, package) in places {
+                if let (Some(file), Some(package)) = (file, package) {
+                    env.file_packages.insert(file.clone(), package.clone());
+                }
+            }
+        }
+        env.macro_call_sites = std::sync::Arc::new(macro_call_sites);
 
         // Where each trait impl was first written, to report a second one for the same type.
         let mut impl_modules: HashMap<String, (crate::symbol::Symbol, &ImplBlock)> = HashMap::new();
@@ -746,6 +783,9 @@ pub struct TypeChecker<'a> {
     /// The integer type of each value of the variable of a `for` loop where the loop ends, as
     /// `$exit_N`. Each loop gets its own name, so the facts of two loops over `i` do not meet.
     pub(crate) exit_values: Vec<ElementType>,
+    /// The integer type of the end of each `for` loop over a range, as `$end_N`. A loop reads its
+    /// end once, so the name holds that value also after the body changes the variables of `b`.
+    pub(crate) end_values: Vec<ElementType>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -781,6 +821,13 @@ pub struct TypeChecker<'a> {
     /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
     /// call.
     pub(crate) lane_copies_out: HashMap<crate::syntax::Span, Vec<u64>>,
+    /// The tensors in a `scope: thread` space that the code of a block makes outside its lane
+    /// loops, with the position of each `let` and the type of the tensor. Each one must be a tile
+    /// of sums that stays in the registers of the subgroups (check/subgroup_registers.rs).
+    pub(crate) block_register_tiles: Vec<(String, crate::syntax::Span, crate::syntax::Type)>,
+    /// Each index into a register tensor with the variable of an `across` loop: the tensor, the
+    /// variable and the position of the index.
+    pub(crate) across_register_indices: Vec<(String, String, crate::syntax::Span)>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -800,7 +847,10 @@ impl<'a> TypeChecker<'a> {
             env,
             worker,
             scopes: vec![HashMap::new()],
-            errors: crate::diagnostic::DiagnosticsVec::new(),
+            errors: crate::diagnostic::DiagnosticsVec {
+                macro_call_sites: env.macro_call_sites.clone(),
+                ..crate::diagnostic::DiagnosticsVec::new()
+            },
             in_unsafe_block: false,
             tokens: Vec::new(),
             closure_body_next: false,
@@ -847,6 +897,7 @@ impl<'a> TypeChecker<'a> {
             fact_change_frames: Vec::new(),
             old_values: Vec::new(),
             exit_values: Vec::new(),
+            end_values: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
@@ -862,6 +913,8 @@ impl<'a> TypeChecker<'a> {
             traffic: Default::default(),
             lane_reductions: HashMap::new(),
             lane_copies_out: HashMap::new(),
+            block_register_tiles: Vec::new(),
+            across_register_indices: Vec::new(),
         }
     }
 
@@ -1970,7 +2023,8 @@ impl<'a> TypeChecker<'a> {
 
         Some(Function {
             is_unsafe: generic_func.is_unsafe,
-            is_pub: generic_func.is_pub,
+            visibility: generic_func.visibility,
+            exported: generic_func.exported,
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,
@@ -1993,11 +2047,43 @@ impl<'a> TypeChecker<'a> {
             doc_comment: generic_func.doc_comment.clone(),
             span: generic_func.span,
             file: generic_func.file.clone(),
+            package: generic_func.package.clone(),
         })
     }
 
     pub fn mangle_path(path: &str) -> String {
         path.replace("/", "_").replace(".", "_")
+    }
+
+    /// The names that the tensor dimensions in `t` use.
+    fn dimension_names(t: &Type, out: &mut Vec<crate::symbol::Symbol>) {
+        match t {
+            Type::Tensor(_, dims, _) => {
+                for d in dims.iter().filter_map(|d| d.as_static()) {
+                    crate::syntax::expr::visit_expr(d, &mut |e| {
+                        if let Expr::Identifier(id) = e {
+                            out.push(id.name.clone());
+                        }
+                    });
+                }
+            }
+            Type::Pointer(i, ..)
+            | Type::Ref(i, _)
+            | Type::Pinned(i, _)
+            | Type::Verified(i)
+            | Type::Distinct(i)
+            | Type::DisjointRanges(i)
+            | Type::Borrow { inner: i, .. } => Self::dimension_names(i, out),
+            Type::GenericInstance(b, args) => {
+                Self::dimension_names(b, out);
+                args.iter().for_each(|a| Self::dimension_names(a, out));
+            }
+            Type::Function(ps, r, _) | Type::Closure(ps, r) => {
+                ps.iter().for_each(|a| Self::dimension_names(a, out));
+                Self::dimension_names(r, out);
+            }
+            _ => {}
+        }
     }
 
     pub fn check_function(&mut self, func: &mut Function) {
@@ -2163,7 +2249,43 @@ impl<'a> TypeChecker<'a> {
         let prev_in_unsafe_fn = std::mem::replace(&mut self.in_unsafe_fn, func.is_unsafe);
         let prev_written_unsafe = std::mem::take(&mut self.in_written_unsafe_block);
         let prev_unsafe_op_seen = std::mem::take(&mut self.unsafe_op_seen);
+        // A generic body is checked at its first call, inside the caller's scopes. The body must
+        // not see the caller's variables, so only the base scope stays.
+        let outer_scopes = self.scopes.split_off(1);
+        let outer_moved = self.borrow.moved_vars.split_off(1);
+        let outer_mutable = self.borrow.mutable_vars.split_off(1);
+        let outer_bound = self.borrow.bound_behind_ref.split_off(1);
+        let outer_consteval = self.consteval.env.split_off(1);
+        // Nor is the body inside a closure of the caller, so its variables are not captures.
+        let outer_closure_depths = std::mem::take(&mut self.mono.closure_depths);
+        let outer_captures = std::mem::take(&mut self.mono.closure_captures_stack);
+        let outer_capture_uses = std::mem::take(&mut self.mono.closure_capture_uses);
+        // The transfer tokens of the caller are waited in the caller. The body starts again at
+        // the depth of the base scope, so the end of one of its scopes could look like theirs.
+        let outer_tokens = std::mem::take(&mut self.tokens);
         self.push_scope();
+        // A dimension in the signature can name a variable of the caller, as `n` in
+        // `Tensor<f32, [n, m]>`. The body sees that variable, and what is known about its value.
+        let mut dims = Vec::new();
+        for (_, t) in &func.params {
+            Self::dimension_names(t, &mut dims);
+        }
+        Self::dimension_names(&func.return_type, &mut dims);
+        for name in dims {
+            if let Some(v) = outer_scopes.iter().rev().find_map(|s| s.get(&name)) {
+                self.scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), v.clone());
+            }
+            if let Some(v) = outer_consteval.iter().rev().find_map(|s| s.get(&name)) {
+                self.consteval
+                    .env
+                    .last_mut()
+                    .unwrap()
+                    .insert(name, v.clone());
+            }
+        }
 
         let prev_top = self.active_topology.clone();
         self.set_active_topology(func.topology.clone());
@@ -2373,6 +2495,20 @@ impl<'a> TypeChecker<'a> {
         self.refuse_a_returned_channel_end(&func.return_type);
 
         self.pop_scope();
+        assert_eq!(self.scopes.len(), 1, "a function body left a scope open");
+        self.scopes.extend(outer_scopes);
+        self.borrow.moved_vars.extend(outer_moved);
+        self.borrow.mutable_vars.extend(outer_mutable);
+        self.borrow.bound_behind_ref.extend(outer_bound);
+        self.consteval.env.extend(outer_consteval);
+        self.mono.closure_depths = outer_closure_depths;
+        self.mono.closure_captures_stack = outer_captures;
+        self.mono.closure_capture_uses = outer_capture_uses;
+        assert!(
+            self.tokens.is_empty(),
+            "a function body left a transfer token in the list"
+        );
+        self.tokens = outer_tokens;
         self.traffic.memory_placements = prev_placements;
         self.traffic.call_sites = prev_call_sites;
         self.traffic.channel_rooms = prev_channel_rooms;

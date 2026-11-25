@@ -21,7 +21,8 @@ fn main() -> i32 {
 ```
 
 Reading through a raw pointer — `*p` — is the operation that needs the block. So does indexing
-through one, or reading a field through one.
+through one, reading a field through one, or calling a method through one. `p.get()` gives the
+method a reference to `*p`, and the compiler cannot know that `*p` is still there.
 
 ## Raw pointers
 
@@ -42,6 +43,11 @@ Unlike `&T` and `&mut T`, raw pointers are not tracked by the borrow checker. No
 A raw pointer can name a memory, as in `*mut f32 in Memory::GPU_HBM`. The functions of `core::ptr`
 that move a pointer keep its memory: `offset`, `add` and `sub` and their `_mut` forms take a pointer
 in any memory `M` and give a pointer in `M`. `read` and `write` take only a host pointer.
+
+Any pointer can be cast to `*const void` or `*mut void` in the same memory, as in
+`p as *const void in Memory::GPU_HBM`. A `void` pointer is only an address, as C's `void *`, for
+example to give to a C function. It has no element type, so a read or a write through it is error
+E3067.
 
 ## unsafe functions
 
@@ -185,7 +191,7 @@ fn main() -> i32 {
     }
     let x = first(p as *const i64);
     let bytes : *mut i8 = p;
-    dealloc(bytes, 16i64);
+    unsafe { dealloc(bytes, 16i64) };
     return (x - 7i64) as i32;
 }
 ```
@@ -242,7 +248,17 @@ result can be read. A clause that does not hold is undefined behavior, as a wron
 - each `assume`
 - each pointer clause that a call in `unsafe` code trusts, because the compiler cannot prove it
 - each `ensures` of an `extern` function
-- each pointer `requires` of a `pub fn`, because a call from C proves nothing
+- each pointer `requires` of an `extern fn`, because a call from C proves nothing
+
+It also lists each use of trusted code, which the compiler does not check: each `unsafe` block and
+`unsafe fn` that the program writes, each `mlir!` block that the compiler does not verify, each
+`extern` function, and each `extern impl` and `unsafe impl`. Code with none of these cannot forge a
+value that only one module can build. For `core` and `std`, a last line gives only the counts. `vxc --audit-library` lists
+their uses too.
+
+To keep trusted code out of a package, give `--no-trusted-code NAME` with `--package NAME=DIR`.
+Each use of trusted code in the package is then an error (E5003). The program that uses the package
+gives the flag, so a new version of the package cannot add trusted code without an error.
 
 Each line starts with the file, the line and the column, and the lines are in that order. So a
 review can compare the audit of two versions of a program.
@@ -273,11 +289,11 @@ Use `safe` sparingly. It is a promise the compiler cannot verify, and it is the 
 
 ## Calling Vx from C
 
-An object file exports only the functions marked `pub`. Every other function the program defines
-is hidden, so C cannot call it.
+An object file exports only the functions marked `extern`. Every other function the program
+defines is hidden, so C cannot call it.
 
 ```rust
-pub fn add_one(x : i32) -> i32 {
+extern fn add_one(x : i32) -> i32 {
     return x + 1;
 }
 ```
@@ -287,9 +303,9 @@ vxc add_one.vx --action emit-obj -o add_one.o
 cc -shared -o libadd_one.so add_one.o
 ```
 
-C, or Python's `ctypes`, can now load `libadd_one.so` and call `add_one`. Give a `pub` function
+C, or Python's `ctypes`, can now load `libadd_one.so` and call `add_one`. Give an `extern fn`
 parameters and a result that C can pass: numbers, `bool` and raw pointers. Only a top-level
-function that is not generic can be `pub` for now.
+function that is not generic can be `extern`.
 
 ## Inline MLIR
 
@@ -330,9 +346,34 @@ The `dialects` list must agree with the body. If `count_ones` listed `"arith"` a
 the compiler would give the error E8010: the block uses `math.ctpop`, but the list does not name
 `math`. A name in the list that is not a dialect is also E8010.
 
-The compiler does not check what the MLIR operations do. So treat each `mlir!` block as code that
-the compiler trusts, as you treat an `unsafe` block. The standard library uses `mlir!` in this way.
-`core::ptr` moves a raw pointer and compares two raw pointers with one LLVM operation each.
+An `mlir!` block outside `unsafe` must be one that the compiler can verify as safe. The compiler
+verifies a block when each of its operations is on a short list, and the block takes and gives
+only numbers. The list has `arith` operations such as `addi`, `cmpi` and `select`, and `math`
+operations such as `ctpop` and `sqrt`. Both blocks above are on it. These operations are not on
+the list:
+
+- an operation with an `overflow` or a `fastmath` flag, because the flag can make the result
+  poison
+- integer division, remainder and shifts, because a zero divisor or a large shift gives undefined
+  behavior
+- each operation of another dialect, such as `llvm.load`
+
+Any other block must be in an `unsafe` block. If it is not, the error E8016 names the first
+operation that the compiler cannot verify:
+
+```vx
+fn peek(addr : i64) -> i64 {
+  return unsafe { mlir!(inputs : (%a = addr : i64), returns : i64, dialects : ["llvm"]) {
+    %p = llvm.inttoptr %a : i64 to !llvm.ptr
+    %v = llvm.load %p : !llvm.ptr -> i64
+    macro.yield %v : i64
+  } };
+}
+```
+
+The compiler does not verify what the operations of such a block do, so `vxc --audit` lists it.
+The standard library uses `unsafe` blocks in this way: `core::ptr` moves a raw pointer and
+compares two raw pointers with one LLVM operation each.
 
 The compiler assumes one more thing about a block: a block that gets a raw pointer can free the
 memory behind it. So a function that says `ensures !frees(p)` (see [Pointer

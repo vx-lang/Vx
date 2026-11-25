@@ -1,0 +1,172 @@
+//===- lane_matmul_sums_in_memory_reg_that_need_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor in `Memory::REG` that the code of a block makes is a tile of sums with a row for each
+// subgroup, which must stay in registers. Each function below breaks one rule, and the compiler
+// refuses it. It does not put the tile in memory.
+//
+// The last run uses a copy of the A100 machine file with `chip: sm_75`, a GPU without `mma.sync`.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=W1037
+// RUN: sed 's/chip: sm_80/chip: sm_75/' fleet/a100-40.vx > %t.sm75.vx
+// RUN: sed -n '/^pub fn no_tensor_cores/,/^}/p' %s > %t.no_tensor_cores.vx
+// RUN: not vxc %t.no_tensor_cores.vx --host default --machine %t.sm75.vx --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SM75 --implicit-check-not=Error
+
+// The lanes read an element of `acc`.
+pub fn read_by_the_lanes(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [4, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [4, 16, 64], Memory::REG>::uninit() };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..4 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 16, 0]);
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        for l in 0..32 across lanes {
+          // CHECK: Error[E6033] at {{.*}}.vx:[[@LINE+1]]:28: this use of `acc` needs it in memory, but it is a tile in registers. Each use must take the row of its subgroup, `acc[w]`: a `lanes::fill`, a `lanes::scale_rows`, a lane matmul that adds to it, or a `lanes::copy` out of it into a tensor that is not in shared memory
+          out[s * 16][l] = acc[s][0][l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// A copy into `acc` from HBM.
+pub fn copy_into_registers(out : &mut Tensor<f32, [?, ?], Memory::HBM>, c : &Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 64], Memory::SMEM>::uninit() };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 64], Memory::REG>::uninit() };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..2 across subgroups {
+        // CHECK: Error[E6033] at {{.*}}.vx:[[@LINE+1]]:26: this use of `acc` needs it in memory
+        lanes::copy(&mut acc[s], c, [s * 16, 0]);
+        lanes::copy(&mut sa[s], a, [s * 16, 0]);
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// `acc` has one row, not a row for each subgroup.
+pub fn not_a_tile_of_sums(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      // CHECK: Error[E6033] at {{.*}}.vx:[[@LINE+1]]:7: `_acc` is a tensor in registers that the code of a block makes, so it must be a tile of `f32` sums with a row for each subgroup. Its sizes must be numbers, as in `Tensor<f32, [4, 16, 64], Memory::REG>`
+      let mut _acc = unsafe { Tensor<f32, [64], Memory::REG>::uninit() };
+      for s in 0..2 across subgroups {
+        for l in 0..32 across lanes {
+          out[s][l] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// No lane matmul adds to `acc`.
+pub fn no_matmul(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      // CHECK: Error[E6033] at {{.*}}.vx:[[@LINE+1]]:7: no lane matmul adds to `acc`, so it cannot stay in registers. A tile in registers holds the sums of a lane matmul
+      let mut acc = unsafe { Tensor<f32, [2, 16, 64], Memory::REG>::uninit() };
+      for s in 0..2 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(out, &acc[s], [s * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// Each row of `acc` is 64 x 128, 1024 bytes of each of the 32 lanes. A lane has 1020.
+pub fn too_large_for_a_lane(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 64, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 128], Memory::SMEM>::uninit() };
+      // CHECK: Error[E6009] at {{.*}}.vx:[[@LINE+1]]:7: each lane holds 1024 bytes of `acc`, but memory space 'REG' has capacity 1020 bytes
+      let mut acc = unsafe {
+        Tensor<f32, [2, 64, 128], Memory::REG>::uninit()
+      };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..2 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 64, 0]);
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 64, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// Each row of `acc` is 64 x 96, 192 sums of each lane. That fits in the registers of a lane, but
+// the compiler keeps at most 128.
+pub fn more_than_the_compiler_keeps(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 64, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 96], Memory::SMEM>::uninit() };
+      // CHECK: Error[E6033] at {{.*}}.vx:[[@LINE+1]]:7: each lane holds 192 sums of `acc`, and the compiler keeps at most 128 sums of a lane in registers: a 64 x 64 tile for each subgroup
+      let mut acc = unsafe { Tensor<f32, [2, 64, 96], Memory::REG>::uninit() };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..2 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 64, 0]);
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 64, 0]);
+      }
+    }
+  }
+  return;
+}
+
+// A tensor of a lane in registers, with the index of the lane loop.
+pub fn a_lane_index(out : &mut Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      for l in 0..32 across lanes {
+        let mut own = Tensor<f32, [32], Memory::REG>::fill(0.0);
+        // CHECK: Error[E6033] at {{.*}}.vx:[[@LINE+1]]:12: the register tensor 'own' needs an index that is known when compiling: 'l' is the variable of an `across` loop, which the compiler does not unroll. A tensor in a `scope: thread` space stays in registers, which have no address
+        own[l] = 1.0;
+        out[0][l] = own[0];
+      }
+    }
+  }
+  return;
+}
+
+// The function of lane_matmul_sums_in_memory_reg_stay_in_registers.vx, for the GPU of the last run.
+pub fn no_tensor_cores(out : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f16, [?, ?], Memory::HBM>, b : &Tensor<f16, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut sa = unsafe { Tensor<f16, [2, 16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f16, [16, 64], Memory::SMEM>::uninit() };
+      // SM75: Error[E6033] at {{.*}}.vx:7:7: the GPU of this kernel cannot keep `acc` in registers. That needs the `mma.sync` of an NVIDIA GPU, `sm_80` or later, or the simdgroup matrices of the Apple GPU
+      let mut acc = unsafe { Tensor<f32, [2, 16, 64], Memory::REG>::uninit() };
+      lanes::copy(&mut sb, b, [0, 0]);
+      for s in 0..2 across subgroups {
+        lanes::fill(&mut acc[s], 0.0);
+        lanes::copy(&mut sa[s], a, [s * 16, 0]);
+        acc[s] = acc[s] + (sa[s] as f32) @ (sb as f32);
+        lanes::copy(out, &acc[s], [s * 16, 0]);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

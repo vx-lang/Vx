@@ -15,10 +15,10 @@ import std::alloc;
 
 /// The address in a pointer, which Vx cannot cast to an integer.
 fn address(p : *mut i8) -> i64 {
-  return mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
-    %a = llvm.ptrtoint %p : !llvm.ptr to i64
-    macro.yield %a : i64
-  };
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %a = llvm.ptrtoint %p : !llvm.ptr to i64
+      macro.yield %a : i64
+    } };
 }
 
 /// Whether 8 blocks of 40 bytes each have the alignment. One block could have it by chance.
@@ -30,7 +30,7 @@ fn eight_aligned(align : i64) -> bool {
     if address(b) % align != 0 {
       all = false;
     }
-    dealloc(b, align);
+    unsafe { dealloc(b, align) };
     k = k + 1;
   }
   return all;
@@ -47,7 +47,7 @@ fn check(align : i64) -> i32 {
   }
   let before : *mut i8 = p;
   let first_aligned = address(before) % align == 0;
-  let q : *mut i32 = grow(before, 40, 400, align);
+  let q : *mut i32 = unsafe { grow(before, 40, 400, align) };
   let mut kept : bool = true;
   let mut j : i64 = 0;
   while j < 10 {
@@ -59,7 +59,7 @@ fn check(align : i64) -> i32 {
   unsafe { q[99] = 1; }
   let after : *mut i8 = q;
   let second_aligned = address(after) % align == 0;
-  dealloc(after, align);
+  unsafe { dealloc(after, align) };
   if first_aligned && second_aligned && kept && eight_aligned(align) {
     return 1;
   }
@@ -71,12 +71,12 @@ fn main() -> i32 {
   print!(" ");
   print(check(64));
   print!(" ");
-  let fresh : *mut i64 = grow(null_mut<i8>(), 0, 32, 16);
+  let fresh : *mut i64 = unsafe { grow(null_mut<i8>(), 0, 32, 16) };
   unsafe { fresh[3] = 42; }
   print(unsafe { fresh[3] });
   let fresh_i8 : *mut i8 = fresh;
-  dealloc(fresh_i8, 16);
-  dealloc(null_mut<i8>(), 16);
+  unsafe { dealloc(fresh_i8, 16) };
+  unsafe { dealloc(null_mut<i8>(), 16) };
   return 0;
 }
 

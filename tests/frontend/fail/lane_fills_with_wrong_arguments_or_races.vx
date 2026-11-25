@@ -11,7 +11,7 @@
 //
 // RUN: not vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: Error[E6032] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:25:{{.*}}each pass writes `tile`, which is declared outside the loop, so the passes race.
-// CHECK: Error[E3003] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:36:{{.*}}the first argument of `lanes::fill` must borrow a tile in shared memory as `&mut`, with a size that is a number,
+// CHECK: Error[E3003] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:36:{{.*}}the first argument of `lanes::fill` must borrow a tile in shared memory or in registers as `&mut`, with a size that is a number,
 // CHECK: Error[E3003] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:47:{{.*}}the second argument of `lanes::fill` is the value of each element, so its type is the element type of the tile, `f32`, but it is `i32`
 // CHECK: Error[E6032] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:60:{{.*}}each pass writes `tile`, which is declared outside the loop, so the passes race.
 // CHECK: Error[E6032] at {{.*}}lane_fills_with_wrong_arguments_or_races.vx:60:{{.*}}`lanes::fill` must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane loops.

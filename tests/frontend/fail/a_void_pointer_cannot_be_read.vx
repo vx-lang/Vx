@@ -1,0 +1,33 @@
+//===- a_void_pointer_cannot_be_read.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Any pointer can be cast to `*const void` in the same memory, to give its address to a C
+// function. A `void` pointer has no element type, so a read or a write through it gets E3067.
+// The cast cannot move a pointer into another memory.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=E3067
+// CHECK-DAG: E3067] at {{.*}}.vx:[[@LINE+15]]:{{[0-9]+}}: Dereferencing a raw pointer needs an element type, and a `void` pointer has none
+// CHECK-DAG: E3067] at {{.*}}.vx:[[@LINE+15]]:{{[0-9]+}}: Indexing a raw pointer needs an element type, and a `void` pointer has none
+// CHECK-DAG: E3067] at {{.*}}.vx:[[@LINE+15]]:{{[0-9]+}}: Writing through a raw pointer needs an element type, and a `void` pointer has none
+// CHECK-DAG: .vx:[[@LINE+15]]:{{[0-9]+}}: Unsupported cast: cannot cast from `*const f32 in Memory::GPU_HBM` to `*const void`
+
+extern "C" {
+  fn c_takes_an_address(at : *const void) -> void;
+}
+
+fn main() -> i32 {
+  let numbers = Tensor<f32, [4]>::fill(1.0);
+  let on_gpu = transfer(Tensor<f32, [4]>::fill(2.0), Memory::GPU_HBM);
+  let p = numbers.as_ptr() as *const void;
+  let q = numbers.as_ptr() as *mut void;
+  unsafe { c_takes_an_address(p); }
+  let _a = unsafe { *p };
+  let _b = unsafe { p[0] };
+  unsafe { *q = 1.0; }
+  let _c = on_gpu.as_ptr() as *const void;
+  return 0;
+}

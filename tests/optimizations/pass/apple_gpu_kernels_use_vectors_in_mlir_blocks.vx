@@ -29,42 +29,42 @@ pub fn mix(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memor
   spawn on(Topology::Device) {
     for b in 0..4 across blocks {
       for l in 0..32 across lanes(32) {
-        let _v = mlir!( inputs : (%o = out : memref<?xf32>, %x = x : memref<?xf32>, %h = h : memref<?xf16>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "vector"], ensures : [reads_only(x), reads_only(h), writes_only(out[(b * 32 + l) * 4..(b * 32 + l) * 4 + 4])]) {
-          %c32 = arith.constant 32 : i32
-          %c4 = arith.constant 4 : i32
-          %r = arith.muli %b, %c32 : i32
-          %g = arith.addi %r, %l : i32
-          %e = arith.muli %g, %c4 : i32
-          %k = arith.index_cast %e : i32 to index
-          %xv = vector.load %x[%k] {
-            alignment = 16
-          } : memref<?xf32>, vector<4xf32>
-          %hv = vector.load %h[%k] : memref<?xf16>, vector<4xf16>
-          %xbits = vector.bitcast %xv : vector<4xf32> to vector<4xi32>
-          %xmask = arith.constant dense<2147483647> : vector<4xi32>
-          %xpos = arith.andi %xbits, %xmask : vector<4xi32>
-          %xa = vector.bitcast %xpos : vector<4xi32> to vector<4xf32>
-          %hbits = vector.bitcast %hv : vector<4xf16> to vector<2xi32>
-          %hmask = arith.constant dense<2147450879> : vector<2xi32>
-          %hpos = arith.andi %hbits, %hmask : vector<2xi32>
-          %back = vector.bitcast %hpos : vector<2xi32> to vector<4xf16>
-          %hf = arith.extf %back : vector<4xf16> to vector<4xf32>
-          %w = arith.constant dense<[1.0, 2.0, 3.0, 4.0]> : vector<4xf32>
-          %m = vector.fma %xa, %w, %hf : vector<4xf32>
-          %z = arith.constant 0.0 : f32
-          %s = vector.reduction <add>, %m, %z : vector<4xf32> into f32
-          %with = vector.insert %s, %m[0] : f32 into vector<4xf32>
-          %ten = arith.constant 10.0 : f32
-          %tens = vector.broadcast %ten : f32 to vector<4xf32>
-          %big = arith.cmpf ogt, %with, %tens : vector<4xf32>
-          %lo = arith.select %big, %tens, %with : vector<4xi1>, vector<4xf32>
-          %third = vector.extract %m[2] : f32 from vector<4xf32>
-          %low = arith.truncf %third : f32 to f16
-          %lowf = arith.extf %low : f16 to f32
-          %one = vector.insert %lowf, %lo[3] : f32 into vector<4xf32>
-          vector.store %one, %o[%k] : memref<?xf32>, vector<4xf32>
-          macro.yield %e : i32
-        };
+        let _v = unsafe { mlir!( inputs : (%o = out : memref<?xf32>, %x = x : memref<?xf32>, %h = h : memref<?xf16>, %b = b : i32, %l = l : i32), returns : i32, dialects : ["arith", "vector"], ensures : [reads_only(x), reads_only(h), writes_only(out[(b * 32 + l) * 4..(b * 32 + l) * 4 + 4])]) {
+            %c32 = arith.constant 32 : i32
+            %c4 = arith.constant 4 : i32
+            %r = arith.muli %b, %c32 : i32
+            %g = arith.addi %r, %l : i32
+            %e = arith.muli %g, %c4 : i32
+            %k = arith.index_cast %e : i32 to index
+            %xv = vector.load %x[%k] {
+              alignment = 16
+            } : memref<?xf32>, vector<4xf32>
+            %hv = vector.load %h[%k] : memref<?xf16>, vector<4xf16>
+            %xbits = vector.bitcast %xv : vector<4xf32> to vector<4xi32>
+            %xmask = arith.constant dense<2147483647> : vector<4xi32>
+            %xpos = arith.andi %xbits, %xmask : vector<4xi32>
+            %xa = vector.bitcast %xpos : vector<4xi32> to vector<4xf32>
+            %hbits = vector.bitcast %hv : vector<4xf16> to vector<2xi32>
+            %hmask = arith.constant dense<2147450879> : vector<2xi32>
+            %hpos = arith.andi %hbits, %hmask : vector<2xi32>
+            %back = vector.bitcast %hpos : vector<2xi32> to vector<4xf16>
+            %hf = arith.extf %back : vector<4xf16> to vector<4xf32>
+            %w = arith.constant dense<[1.0, 2.0, 3.0, 4.0]> : vector<4xf32>
+            %m = vector.fma %xa, %w, %hf : vector<4xf32>
+            %z = arith.constant 0.0 : f32
+            %s = vector.reduction <add>, %m, %z : vector<4xf32> into f32
+            %with = vector.insert %s, %m[0] : f32 into vector<4xf32>
+            %ten = arith.constant 10.0 : f32
+            %tens = vector.broadcast %ten : f32 to vector<4xf32>
+            %big = arith.cmpf ogt, %with, %tens : vector<4xf32>
+            %lo = arith.select %big, %tens, %with : vector<4xi1>, vector<4xf32>
+            %third = vector.extract %m[2] : f32 from vector<4xf32>
+            %low = arith.truncf %third : f32 to f16
+            %lowf = arith.extf %low : f16 to f32
+            %one = vector.insert %lowf, %lo[3] : f32 into vector<4xf32>
+            vector.store %one, %o[%k] : memref<?xf32>, vector<4xf32>
+            macro.yield %e : i32
+          } };
       }
     }
   }

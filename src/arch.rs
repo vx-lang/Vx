@@ -741,10 +741,10 @@ impl DeviceTarget {
             // spec: Metal Feature Set Tables: at most 1024 threads in a threadgroup, and a
             // SIMD-group of 32 threads on Apple GPUs.
             DeviceTarget::AppleGpu => Some((1024, 32)),
-            DeviceTarget::X86_64
-            | DeviceTarget::Aarch64
-            | DeviceTarget::AmdGcn
-            | DeviceTarget::Spirv64 => None,
+            // An Intel GPU has subgroups of 8, 16 or 32 lanes, and each SPIR-V kernel asks for
+            // 32 (`SubgroupSize 32`).
+            DeviceTarget::Spirv64 => Some((1024, 32)),
+            DeviceTarget::X86_64 | DeviceTarget::Aarch64 | DeviceTarget::AmdGcn => None,
             DeviceTarget::AppleAne => None,
         }
     }

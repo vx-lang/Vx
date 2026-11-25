@@ -2340,6 +2340,13 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.drops_return_type(&fc.name)
             }
+            // A `tasks` block that can fail gives its failure when it fails, also when nothing
+            // uses its value. So it is dropped as a call result is.
+            Expr::UnsafeBlock(u)
+                if u.task == Some(crate::syntax::TaskBlockKind::Tasks) && u.fails_as.is_some() =>
+            {
+                u.fails_as.clone()
+            }
             Expr::StructInit(si) => {
                 for (_, field) in si.fields.iter_mut() {
                     self.drops_scan_temps(field, false, scan);
@@ -2362,6 +2369,20 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::UnaryOp(u) => return self.drops_scan_temps(&mut u.expr, false, scan),
             Expr::Identifier(_) | Expr::Number(_) | Expr::StringLiteral(_) => return,
+            // A value that `println!` prints is not borrowed here, so it is dropped as before. A
+            // value borrowed inside one, as in `count(&make())`, is dropped after the statement.
+            Expr::Print(p) => {
+                for arg in p.args.iter_mut() {
+                    self.drops_scan_temps(arg, false, scan);
+                }
+                return;
+            }
+            Expr::Println(p) => {
+                for arg in p.args.iter_mut() {
+                    self.drops_scan_temps(arg, false, scan);
+                }
+                return;
+            }
             // The condition of an `if`, and so of a `while`, runs before either branch. Its
             // temporaries move out, and each branch drops them first, as in Rust.
             Expr::If(i) if !i.is_comptime => {

@@ -381,9 +381,12 @@ fn test_local_name_resolution() -> Result<(), String> {
         imports: Vec::new(),
         module_path: "core::math".into(),
         file: None,
+        package: None,
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),
+        macro_call_sites: Vec::new(),
+        no_trusted_code: None,
         externs: vec![],
         structs: vec![StructDecl {
             name: "Vector".into(),
@@ -399,7 +402,8 @@ fn test_local_name_resolution() -> Result<(), String> {
         macros: vec![],
         functions: vec![Function {
             is_unsafe: false,
-            is_pub: false,
+            visibility: vxc::gid::Visibility::Private,
+            exported: false,
             name: "get_vector".into(),
             generics: vec![],
             params: vec![],
@@ -413,6 +417,7 @@ fn test_local_name_resolution() -> Result<(), String> {
             doc_comment: None,
             span: Span::default(),
             file: None,
+            package: None,
         }],
         consts: vec![],
     };
@@ -456,9 +461,12 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
         imports: Vec::new(),
         module_path: "core::bad".into(),
         file: None,
+        package: None,
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),
+        macro_call_sites: Vec::new(),
+        no_trusted_code: None,
         externs: vec![],
         structs: vec![], // Empty structs, "Vector" does not exist!
         enums: vec![],
@@ -467,7 +475,8 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
         macros: vec![],
         functions: vec![Function {
             is_unsafe: false,
-            is_pub: false,
+            visibility: vxc::gid::Visibility::Private,
+            exported: false,
             name: "get_vector".into(),
             generics: vec![],
             params: vec![],
@@ -481,6 +490,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
             doc_comment: None,
             span: Span::default(),
             file: None,
+            package: None,
         }],
         consts: vec![],
     };
@@ -509,9 +519,12 @@ fn test_nested_type_resolution() -> Result<(), String> {
         imports: Vec::new(),
         module_path: "core::math".into(),
         file: None,
+        package: None,
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),
+        macro_call_sites: Vec::new(),
+        no_trusted_code: None,
         externs: vec![],
         structs: vec![StructDecl {
             name: "Matrix".into(),
@@ -527,7 +540,8 @@ fn test_nested_type_resolution() -> Result<(), String> {
         macros: vec![],
         functions: vec![Function {
             is_unsafe: false,
-            is_pub: false,
+            visibility: vxc::gid::Visibility::Private,
+            exported: false,
             name: "compute".into(),
             generics: vec![],
             topology: vxc::syntax::Topology::CPU,
@@ -550,6 +564,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
             doc_comment: None,
             span: Span::default(),
             file: None,
+            package: None,
         }],
         consts: vec![],
     };
@@ -582,9 +597,12 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         imports: Vec::new(),
         module_path: "core::app".into(),
         file: None,
+        package: None,
         topologies: vec![],
         memories: vec![],
         transfer_impls: Vec::new(),
+        macro_call_sites: Vec::new(),
+        no_trusted_code: None,
         externs: vec![],
         structs: vec![StructDecl {
             name: "Config".into(),
@@ -600,7 +618,8 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         macros: vec![],
         functions: vec![Function {
             is_unsafe: false,
-            is_pub: false,
+            visibility: vxc::gid::Visibility::Private,
+            exported: false,
             name: "setup".into(),
             generics: vec![],
             params: vec![],
@@ -625,6 +644,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             doc_comment: None,
             span: Span::default(),
             file: None,
+            package: None,
         }],
         consts: vec![],
     };

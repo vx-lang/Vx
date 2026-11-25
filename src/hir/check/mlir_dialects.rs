@@ -67,10 +67,18 @@ pub(crate) const KNOWN_DIALECTS: &[&str] = &[
     "vx",
 ];
 
+/// Each operation that a line of MLIR starts, and its dialect. A line can hold more than one
+/// operation, so each `%` of the line can start one.
+pub(crate) fn line_ops(line: &str) -> impl Iterator<Item = (&str, &str)> {
+    let line = line.split("//").next().unwrap_or("");
+    let starts = std::iter::once(0).chain(line.match_indices('%').map(|(at, _)| at));
+    starts.filter_map(|at| line_op(&line[at..]))
+}
+
 /// The operation that a line of MLIR starts, and its dialect: `math.ctpop` and `math` for
 /// `%r = math.ctpop %a : i64` and for `%r = "math.ctpop"(%a)`. `None` for a line that starts
 /// no operation, such as `}` or `^bb0(%x: f32):`.
-fn line_op(line: &str) -> Option<(&str, &str)> {
+pub(crate) fn line_op(line: &str) -> Option<(&str, &str)> {
     let mut rest = line.split("//").next()?.trim();
     // The results come first: `%r =`, `%a, %b =` or `%r:2 =`.
     if rest.starts_with('%') {
@@ -133,10 +141,11 @@ impl TypeChecker<'_> {
             }
         }
         let missing = m.block_str.lines().find_map(|line| {
-            let (op, dialect) = line_op(line)?;
-            let gives_the_value = op == "macro.yield" || op == "func.return";
-            (!gives_the_value && !m.dialects.iter().any(|d| d == dialect))
-                .then(|| (line.trim().to_string(), dialect.to_string()))
+            line_ops(line).find_map(|(op, dialect)| {
+                let gives_the_value = op == "macro.yield" || op == "func.return";
+                (!gives_the_value && !m.dialects.iter().any(|d| d == dialect))
+                    .then(|| (line.trim().to_string(), dialect.to_string()))
+            })
         });
         if let Some((line, dialect)) = missing {
             self.errors.error_with_code(
@@ -181,6 +190,20 @@ mod tests {
         assert_eq!(line_op("llvm.align = 16 : i64}"), None);
         assert_eq!(line_op("// math.ctpop in a comment"), None);
         assert_eq!(line_op("iterator_types = [\"parallel\"]"), None);
+    }
+
+    #[test]
+    fn a_line_with_two_operations_names_both() {
+        let two = "%z = arith.addi %a, %a : i64 %p = llvm.inttoptr %a : i64 to !llvm.ptr";
+        let ops: Vec<_> = line_ops(two).collect();
+        assert!(ops.contains(&("arith.addi", "arith")), "{ops:?}");
+        assert!(ops.contains(&("llvm.inttoptr", "llvm")), "{ops:?}");
+        // The `%` of an operand, of a block argument or of a PTX register starts no operation.
+        let one = "scf.for %i = %c0 to %n step %c1 iter_args(%acc = %zero) -> (f32) {";
+        assert!(line_ops(one).all(|op| op == ("scf.for", "scf")));
+        assert_eq!(line_ops("^bb0(%in: f32, %out: f32):").count(), 0);
+        let asm = "%r = llvm.inline_asm \"mov.u32 $0, %tid.x;\", \"=r\" : () -> i32";
+        assert!(line_ops(asm).all(|op| op == ("llvm.inline_asm", "llvm")));
     }
 
     /// The list is what the MLIR that vxc links registers: each name loads, and the count

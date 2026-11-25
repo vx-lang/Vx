@@ -199,6 +199,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/across_loops_run_in_parallel_on_both_code_generators.vx", // needs --machine
         "optimizations/pass/lane_routines_run_in_parallel_on_both_code_generators.vx", // needs --machine
         "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
+        "optimizations/pass/lane_prefetch_into_the_l2_cache.vx",              // needs --machine
         "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
         "optimizations/pass/values_at_the_start_of_block_code_reach_every_lane.vx", // needs --machine
         "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
@@ -269,8 +270,6 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
         "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
-        // needs -fauto-schedule-levels
-        "optimizations/pass/an_across_loop_on_a_spirv64_topology_has_no_launch_shape.vx",
         "frontend/pass/packages/import_from_a_package.vx", // needs --package
         // needs --machine
         "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
@@ -298,7 +297,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/a_library_for_the_apple_gpu_waits_before_it_returns.vx",
         // needs --machine
-        "optimizations/pass/pub_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
+        "optimizations/pass/extern_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
         "optimizations/pass/book_gpu_blocks_and_lanes.vx", // needs --machine
         "optimizations/pass/book_gpu_histogram_with_atomics.vx", // needs --machine
         "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
@@ -307,6 +306,9 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/std_nn_fp8_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_moe_kernels_match_loops_on_the_cpu.vx", // needs --machine
         "optimizations/pass/std_nn_q4_kernels_match_loops_on_the_cpu.vx", // needs --machine
+        "optimizations/pass/std_nn_top_k_long_matches_a_loop_on_the_cpu.vx", // needs --machine
+        // needs --machine
+        "optimizations/pass/a_lane_loop_in_a_loop_of_the_block_can_change_its_own_variable.vx",
         // needs --machine
         "optimizations/pass/methods_that_return_a_reference_to_a_tensor_field.vx",
         // needs --machine
@@ -335,6 +337,14 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_matmuls_of_a_tile_in_hbm_give_the_sums.vx",
         // needs --machine
         "optimizations/pass/lane_matmuls_load_16_bytes_of_a_row_at_once.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx",
+        // needs --machine
+        "optimizations/pass/lane_matmul_sums_that_stay_in_shared_memory.vx",
+        // needs --machine
+        "optimizations/pass/a_gpu_kernel_the_cpu_cannot_run_names_its_function_and_line.vx",
+        // needs --machine
+        "optimizations/pass/a_parallel_loop_that_reads_the_extent_of_a_tensor_that_it_writes_runs_in_parallel.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

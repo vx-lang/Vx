@@ -1828,8 +1828,8 @@ impl<'c> MeliorGenerator<'c> {
             }
         }
 
-        // A `pub fn` stays exported: `vx-hide-program-symbols` skips a function with `vx.pub`.
-        if func.is_pub {
+        // An `extern fn` stays exported: `vx-hide-program-symbols` skips a function with `vx.pub`.
+        if func.exported {
             func_attributes.push((
                 melior::ir::Identifier::new(self.context, "vx.pub"),
                 melior::ir::Attribute::unit(self.context),
@@ -3193,7 +3193,7 @@ impl<'c> MeliorGenerator<'c> {
             }
             // `transfer(x, space)` relocates x but preserves its shape, so a slice of a
             // transferred tensor (`q[i]` inside a spawn) can still recover its static dims.
-            // The transfer of a borrowed tensor is a new tensor in `space`, not a borrow.
+            // The transfer of a tensor, owned or borrowed, is a new tensor in `space`.
             Expr::Transfer(e) => match self.infer_ast_type(&e.expr)? {
                 syntax::Type::Borrow { inner, .. } => match *inner {
                     syntax::Type::Tensor(el, dims, _) => Some(syntax::Type::Tensor(
@@ -3203,6 +3203,11 @@ impl<'c> MeliorGenerator<'c> {
                     )),
                     _ => None,
                 },
+                syntax::Type::Tensor(el, dims, _) => Some(syntax::Type::Tensor(
+                    el,
+                    dims,
+                    Some(syntax::Placement::at(e.space.clone())),
+                )),
                 other => Some(other),
             },
             Expr::Dereference(d) => match self.infer_ast_type(&d.expr)? {

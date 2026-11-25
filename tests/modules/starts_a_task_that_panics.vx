@@ -8,7 +8,7 @@
 // A module that starts a task that panics, for
 // tests/backend/fail/a_panic_in_a_task_from_a_module_names_the_file_of_its_spawn.vx.
 
-fn start_a_task_that_panics(n : i32) -> i32 {
+pub fn start_a_task_that_panics(n : i32) -> i32 {
   let r = tasks {
     let a = spawn {
       if n > 1 {

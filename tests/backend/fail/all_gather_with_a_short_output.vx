@@ -14,8 +14,8 @@
 
 import std::collective;
 
-fn main() -> i32 {
-  join_job(0, 1);
+fn main(root : Root) -> i32 {
+  join_job(&root.files, &root.network, 0, 1);
   let input = Tensor<f32, [4]>::fill(1.0);
   let mut output = Tensor<f32, [2]>::fill(0.0);
   all_gather_f32(&input, &mut output);

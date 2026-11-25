@@ -17,6 +17,7 @@
 // rows of the second tile take the same order of K: in `f16_tiles`, rows 0 to 3 of a lane go to the first
 // `mma.sync`, and rows 4 to 7 to the second. In `e4m3_from_hbm_by_f16`, `ldmatrix` loads the second
 // tile, and each lane gives it a row in the same order, so each `mma.sync` has an `ldmatrix` of its own.
+// The `cvt.rn.f16x2` from fp8 is a call of an LLVM intrinsic, so these two kernels have no inline PTX.
 //
 // RUN: vxc %s --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen --host default --machine fleet/h200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -36,39 +37,49 @@
 // PTX-DAG: mov.b32 {%rs[[P1:[0-9]+]], %rs[[P3:[0-9]+]]}, %r[[V0]];
 // PTX-DAG: mov.b32 {%rs[[P4:[0-9]+]], %rs[[P6:[0-9]+]]}, %r[[W1]];
 // PTX-DAG: mov.b32 {%rs[[P5:[0-9]+]], %rs[[P7:[0-9]+]]}, %r[[V1]];
-// PTX: cvt.rn.f16x2.e4m3x2 %r[[H0:[0-9]+]], %rs[[P0]];
-// PTX: cvt.rn.f16x2.e4m3x2 %r[[H1:[0-9]+]], %rs[[P1]];
-// PTX: cvt.rn.f16x2.e4m3x2 %r[[H2:[0-9]+]], %rs[[P2]];
-// PTX: cvt.rn.f16x2.e4m3x2 %r[[H3:[0-9]+]], %rs[[P3]];
+// PTX-NOT: begin inline asm
+// PTX-DAG: cvt.rn.f16x2.e4m3x2 %r[[H0:[0-9]+]], %rs[[P0]];
+// PTX-DAG: cvt.rn.f16x2.e4m3x2 %r[[H1:[0-9]+]], %rs[[P1]];
+// PTX-DAG: cvt.rn.f16x2.e4m3x2 %r[[H2:[0-9]+]], %rs[[P2]];
+// PTX-DAG: cvt.rn.f16x2.e4m3x2 %r[[H3:[0-9]+]], %rs[[P3]];
+// PTX-DAG: cvt.rn.f16x2.e4m3x2 %r[[H4:[0-9]+]], %rs[[P4]];
+// PTX-DAG: cvt.rn.f16x2.e4m3x2 %r[[H5:[0-9]+]], %rs[[P5]];
+// PTX-DAG: cvt.rn.f16x2.e4m3x2 %r[[H6:[0-9]+]], %rs[[P6]];
+// PTX-DAG: cvt.rn.f16x2.e4m3x2 %r[[H7:[0-9]+]], %rs[[P7]];
 // PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // PTX-NEXT: {{{.*}}},
 // PTX-NEXT: {%r[[H0]], %r[[H1]], %r[[H2]], %r[[H3]]},
-// PTX: cvt.rn.f16x2.e4m3x2 %r[[H4:[0-9]+]], %rs[[P4]];
-// PTX: cvt.rn.f16x2.e4m3x2 %r[[H5:[0-9]+]], %rs[[P5]];
-// PTX: cvt.rn.f16x2.e4m3x2 %r[[H6:[0-9]+]], %rs[[P6]];
-// PTX: cvt.rn.f16x2.e4m3x2 %r[[H7:[0-9]+]], %rs[[P7]];
 // PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // PTX-NEXT: {{{.*}}},
 // PTX-NEXT: {%r[[H4]], %r[[H5]], %r[[H6]], %r[[H7]]},
 // PTX-LABEL: .entry e4m3_from_hbm_by_f16(
 // PTX: ld.global.nc.v4.b32 {%r{{[0-9]+}}, %r{{[0-9]+}}, %r{{[0-9]+}}, %r{{[0-9]+}}}, [%rd[[GROW:[0-9]+]]];
 // PTX-NOT: mma.sync
+// PTX-NOT: begin inline asm
 // PTX: ld.global.nc.v4.b32 {%r{{[0-9]+}}, %r{{[0-9]+}}, %r{{[0-9]+}}, %r{{[0-9]+}}}, [%rd[[GROW]]+512];
 // PTX-NOT: mma.sync
+// PTX-NOT: begin inline asm
 // PTX: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
 // PTX-NOT: ldmatrix
+// PTX-NOT: begin inline asm
 // PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // PTX-NOT: mma.sync
+// PTX-NOT: begin inline asm
 // PTX: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
 // PTX-NOT: ldmatrix
+// PTX-NOT: begin inline asm
 // PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // PTX-NOT: mma.sync
+// PTX-NOT: begin inline asm
 // PTX: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
 // PTX-NOT: ldmatrix
+// PTX-NOT: begin inline asm
 // PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // PTX-NOT: mma.sync
+// PTX-NOT: begin inline asm
 // PTX: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16
 // PTX-NOT: ldmatrix
+// PTX-NOT: begin inline asm
 // PTX: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 // PTX-LABEL: .entry f16_tiles(
 // PTX: ld.global.nc.v4.b32 {%r[[F0:[0-9]+]], %r[[F2:[0-9]+]], %r[[F4:[0-9]+]], %r[[F6:[0-9]+]]}, [%rd[[FROW:[0-9]+]]];
@@ -91,16 +102,24 @@
 // PTX: ld.global.nc.v4.b32 {%r[[A0:[0-9]+]], %r[[A2:[0-9]+]], %r[[A4:[0-9]+]], %r[[A6:[0-9]+]]}, [%rd[[ROW:[0-9]+]]];
 // PTX-NEXT: ld.global.nc.v4.b32 {%r[[A1:[0-9]+]], %r[[A3:[0-9]+]], %r[[A5:[0-9]+]], %r[[A7:[0-9]+]]}, [%rd[[ROW]]+512];
 // PTX-NOT: mma.sync
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[A0]], %r[[A1]], %r[[A2]], %r[[A3]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[A0]], %r[[A1]], %r[[A2]], %r[[A3]]},
 // PTX-NOT: mma.sync
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[A4]], %r[[A5]], %r[[A6]], %r[[A7]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[A4]], %r[[A5]], %r[[A6]], %r[[A7]]},
 // PTX-LABEL: .entry from_smem(
 // PTX: ld.shared.v4.b32 {%r[[S0:[0-9]+]], %r[[S2:[0-9]+]], %r[[S4:[0-9]+]], %r[[S6:[0-9]+]]}, [%rd[[SROW:[0-9]+]]];
 // PTX-NEXT: ld.shared.v4.b32 {%r[[S1:[0-9]+]], %r[[S3:[0-9]+]], %r[[S5:[0-9]+]], %r[[S7:[0-9]+]]}, [%rd[[SROW]]+512];
 // PTX-NOT: mma.sync
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[S0]], %r[[S1]], %r[[S2]], %r[[S3]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[S0]], %r[[S1]], %r[[S2]], %r[[S3]]},
 // PTX-NOT: mma.sync
-// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {{{.*}}}, {%r[[S4]], %r[[S5]], %r[[S6]], %r[[S7]]}
+// PTX: mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32{{ *$}}
+// PTX-NEXT: {{{.*}}},
+// PTX-NEXT: {%r[[S4]], %r[[S5]], %r[[S6]], %r[[S7]]},
 
 fn from_hbm(c : &mut Tensor<f32, [2, 32, 16], Memory::HBM>, a : &Tensor<f8e4m3, [2, 32, 64], Memory::HBM>) -> void {
   spawn on(Topology::Device) {

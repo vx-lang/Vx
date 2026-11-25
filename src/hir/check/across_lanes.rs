@@ -17,7 +17,7 @@ use crate::syntax::{Expr, Span};
 use std::collections::HashSet;
 
 /// The `mlir!` block with `threads : N` that `s` is, as `let x = mlir!(..)` or a statement of its
-/// own. Every thread of the threadgroup runs it.
+/// own, alone or in an `unsafe` block. Every thread of the threadgroup runs it.
 pub(crate) fn threadgroup_block(s: &Statement) -> Option<&crate::syntax::expr::InlineMlirExpr> {
     let e = match s {
         Statement::LetDecl(l) => &l.expr,
@@ -26,6 +26,11 @@ pub(crate) fn threadgroup_block(s: &Statement) -> Option<&crate::syntax::expr::I
     };
     match e {
         Expr::InlineMlir(m) if m.threads.is_some() => Some(m),
+        Expr::UnsafeBlock(b) => match (b.stmts.as_slice(), b.ret.as_deref()) {
+            ([], Some(Expr::InlineMlir(m))) if m.threads.is_some() => Some(m),
+            ([only], None) => threadgroup_block(only),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -67,8 +72,25 @@ pub(crate) fn visit_stmts(stmts: &[Statement], f: &mut dyn FnMut(&Statement)) {
 }
 
 /// The blocks of the `if`, `match` and `unsafe` expressions in `s`, a `let` or an expression
-/// statement, at any depth.
+/// statement. When `s` is one of these, they are its own blocks, and a walk of each block finds
+/// the blocks inside it. A block inside a lane loop is then not one of the blocks of `s`.
 fn expr_blocks(s: &Statement) -> Vec<Vec<Statement>> {
+    let e = match s {
+        Statement::LetDecl(l) => &l.expr,
+        Statement::ExprStmt(e) => &e.expr,
+        _ => return Vec::new(),
+    };
+    match e {
+        Expr::If(i) => {
+            return std::iter::once(i.then_block.clone())
+                .chain(i.else_block.clone())
+                .collect()
+        }
+        Expr::Match(m) => return m.arms.iter().map(|a| a.body.clone()).collect(),
+        Expr::UnsafeBlock(b) => return vec![b.stmts.clone()],
+        _ => {}
+    }
+    // A block deeper in an expression, as in `let x = 1 + if c { .. } else { .. };`.
     let mut blocks: Vec<Vec<Statement>> = Vec::new();
     let mut each = |e: &Expr| match e {
         Expr::If(i) => {
@@ -81,11 +103,7 @@ fn expr_blocks(s: &Statement) -> Vec<Vec<Statement>> {
         Expr::UnsafeBlock(b) => blocks.push(b.stmts.clone()),
         _ => {}
     };
-    match s {
-        Statement::LetDecl(l) => crate::syntax::visit_expr(&l.expr, &mut each),
-        Statement::ExprStmt(e) => crate::syntax::visit_expr(&e.expr, &mut each),
-        _ => {}
-    }
+    crate::syntax::visit_expr(e, &mut each);
     blocks
 }
 
@@ -307,8 +325,7 @@ pub(crate) fn lane0_after_holder(s: &Statement, lane0: &mut HashSet<String>) {
         Statement::ForLoop(f) => *lane0 = lane0_in_loop(&f.body, lane0),
         Statement::Loop(l) => *lane0 = lane0_in_loop(&l.body, lane0),
         _ => {
-            // Any one of the blocks may run. `expr_blocks` also gives each block inside another
-            // one, and its walk from `before` can only add names.
+            // Any one of the blocks may run.
             let before = lane0.clone();
             for b in &expr_blocks(s) {
                 let mut after = before.clone();
