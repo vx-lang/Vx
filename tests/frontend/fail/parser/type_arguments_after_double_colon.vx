@@ -1,0 +1,9 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// Rust writes `Vec::<i32>::new()`. Vx writes `Vec<i32>::new()`. The error says so.
+// CHECK: Vx writes type arguments without '::', as in `Vec<i32>::new()`
+import std::vec;
+
+fn main() -> i32 {
+  let v = Vec::<i32>::new();
+  return 0;
+}

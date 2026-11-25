@@ -820,6 +820,12 @@ impl<'a> Parser<'a> {
         call_name: &mut String,
         parsed_type_args: Option<Vec<Type>>,
     ) -> ParseResult<'a, Expr> {
+        if self.check(&TokenType::LeftAngle) {
+            return Err(self.error(
+                "Vx writes type arguments without '::', as in `Vec<i32>::new()` \
+                 and not `Vec::<i32>::new()`",
+            ));
+        }
         let variant_line = self.peek().line;
         let variant_column = self.peek().column;
         let variant = match self.advance().kind.clone() {
