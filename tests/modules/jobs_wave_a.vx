@@ -12,6 +12,6 @@
 
 import tests::modules::jobs_wave_b;
 
-fn wave_a(x: i32) -> i32 {
+pub fn wave_a(x: i32) -> i32 {
   return wave_b(x) + 1;
 }

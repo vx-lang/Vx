@@ -21,7 +21,7 @@ import core::num;
 import core::sync::atomic;
 
 /// y[r] = (row r of w) . x, for r below `rows`.
-fn nn_matvec<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_matvec<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_matrix(y.len(), w.len(), x.len(), rows, cols);
   spawn on(Topology::Device) {
     for r in 0..rows across blocks {
@@ -51,7 +51,7 @@ fn nn_matvec<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16,
 }
 
 /// y[r] = y[r] + (row r of w) . x: a matrix-vector product and a residual add.
-fn nn_matvec_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_matvec_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_matrix(y.len(), w.len(), x.len(), rows, cols);
   spawn on(Topology::Device) {
     for r in 0..rows across blocks {
@@ -83,7 +83,7 @@ fn nn_matvec_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<b
 /// y[r] = y[r] + (row r of w) . x, where x is a tensor of heads: value c of the row multiplies
 /// x[c / head_dim][c % head_dim]. This is the output projection of attention, with its residual
 /// add.
-fn nn_matvec_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
+pub fn nn_matvec_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
   let cols = heads * head_dim;
   nn_check_heads(x.extent(0), x.extent(1), heads, head_dim);
   nn_check_matrix(y.len(), w.len(), cols, rows, cols);
@@ -121,7 +121,7 @@ fn nn_matvec_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Te
 /// each head: first the q_heads heads of Q, then the kv_heads heads of K, then those of V. Row
 /// d of head h is row h * head_dim + d, and `b` has its bias at the same place. So `w` has
 /// (q_heads + 2 * kv_heads) * head_dim rows of `cols` values.
-fn nn_qkv<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+pub fn nn_qkv<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
   let heads = q_heads + 2 * kv_heads;
   nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
   nn_check_heads(k.extent(0), k.extent(1), kv_heads, head_dim);
@@ -166,7 +166,7 @@ fn nn_qkv<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f
 /// The SwiGLU input of the MLP of one token: out[r] = silu(g) * u, where g is the product of row
 /// r of `w` with x, u is the product of row rows + r, and silu(g) = g / (1 + e^-g). So `w` has
 /// the `rows` rows of the gate projection, and then the `rows` rows of the up projection.
-fn nn_swiglu<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_swiglu<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_matrix(out.len(), w.len() / 2, x.len(), rows, cols);
   spawn on(Topology::Device) {
     for r in 0..rows across blocks {
@@ -209,7 +209,7 @@ fn nn_swiglu<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf1
 }
 
 /// y = x / sqrt(mean(x^2) + eps) * w, for the first n values.
-fn nn_rms_norm<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, n : i32, eps : f32) -> void {
+pub fn nn_rms_norm<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, n : i32, eps : f32) -> void {
   assert(n > 0 && y.len() >= n && x.len() >= n && w.len() >= n, "nn_rms_norm: a tensor has fewer than n values");
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
@@ -242,7 +242,7 @@ fn nn_rms_norm<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, x : &Tensor<f32
 /// q, turned, to `q_out`, and each head of k, turned, and of v to row `pos` of the cache. Value i
 /// of a head pairs with value i + head_dim / 2, as in the Llama and Qwen models of Hugging Face.
 /// Both turn by the angle whose cosine and sine are cos[pos][i] and sin[pos][i].
-fn nn_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M>, k_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k : &Tensor<f32, [?, ?], Memory::M>, v : &Tensor<f32, [?, ?], Memory::M>, cos : &Tensor<f32, [?, ?], Memory::M>, sin : &Tensor<f32, [?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+pub fn nn_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M>, k_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k : &Tensor<f32, [?, ?], Memory::M>, v : &Tensor<f32, [?, ?], Memory::M>, cos : &Tensor<f32, [?, ?], Memory::M>, sin : &Tensor<f32, [?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
   let half = head_dim / 2;
   nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
   nn_check_heads(q_out.extent(0), q_out.extent(1), q_heads, head_dim);
@@ -282,7 +282,7 @@ fn nn_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M>, k_
 /// As `nn_rope_and_store`, after an RMSNorm over each head of q and of k: value i of a head x
 /// becomes x[i] / sqrt(mean(x^2) + eps) * norm[i], where `norm` is `q_norm` for q and `k_norm`
 /// for k. Qwen3 has these norms.
-fn nn_norm_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M>, k_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k : &Tensor<f32, [?, ?], Memory::M>, v : &Tensor<f32, [?, ?], Memory::M>, q_norm : &Tensor<bf16, [?], Memory::M>, k_norm : &Tensor<bf16, [?], Memory::M>, cos : &Tensor<f32, [?, ?], Memory::M>, sin : &Tensor<f32, [?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32, eps : f32) -> void {
+pub fn nn_norm_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M>, k_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &mut Tensor<f32, [?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k : &Tensor<f32, [?, ?], Memory::M>, v : &Tensor<f32, [?, ?], Memory::M>, q_norm : &Tensor<bf16, [?], Memory::M>, k_norm : &Tensor<bf16, [?], Memory::M>, cos : &Tensor<f32, [?, ?], Memory::M>, sin : &Tensor<f32, [?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32, eps : f32) -> void {
   let half = head_dim / 2;
   nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
   nn_check_heads(q_out.extent(0), q_out.extent(1), q_heads, head_dim);
@@ -346,7 +346,7 @@ fn nn_norm_rope_and_store<M : Memory>(q_out : &mut Tensor<f32, [?, ?], Memory::M
 /// The blocks of the first kernel split the positions, 32 to a block below position 640 and 64 from
 /// there on. A block serves the 8 heads of Q that share a head of K and V, so it reads each row of
 /// the cache once for all 8. A second kernel merges the parts of the blocks for each head.
-fn nn_attention<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+pub fn nn_attention<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
   nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
   nn_check_heads(out.extent(0), out.extent(1), q_heads, head_dim);
   nn_check_cache(k_cache.extent(0), k_cache.extent(1), k_cache.extent(2), pos, kv_heads, head_dim);
@@ -370,7 +370,7 @@ fn nn_attention<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, part : &m
 /// The scratch space of `nn_attention` for positions below `max_seq`, on the CPU. Transfer it to the
 /// memory of the other tensors. Each block of positions writes the weighted sum of V for each of its
 /// heads, then the largest score and the sum of the weights.
-fn nn_attention_scratch(max_seq : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> Tensor<f32, [?, ?, ?, ?]> {
+pub fn nn_attention_scratch(max_seq : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> Tensor<f32, [?, ?, ?, ?]> {
   // 20 blocks of 32 positions below position 640, and blocks of 64 positions from there on.
   let mut splits = (max_seq + 63) / 64;
   if splits < 20 {
@@ -380,7 +380,7 @@ fn nn_attention_scratch(max_seq : i32, q_heads : i32, kv_heads : i32, head_dim :
 }
 
 /// The parts of `nn_attention` for blocks of 32 positions: 4 SIMD groups of 2 heads of Q.
-fn nn_attention_parts_32<M : Memory>(part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+pub fn nn_attention_parts_32<M : Memory>(part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
   let group = q_heads / kv_heads;
   let tiles = (group + 7) / 8;
   let scale = 1.0 / (head_dim as f32).sqrt();
@@ -535,7 +535,7 @@ fn nn_attention_parts_32<M : Memory>(part : &mut Tensor<f32, [?, ?, ?, ?], Memor
 }
 
 /// The parts of `nn_attention` for blocks of 64 positions: 2 SIMD groups of 4 heads of Q.
-fn nn_attention_parts_64<M : Memory>(part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+pub fn nn_attention_parts_64<M : Memory>(part : &mut Tensor<f32, [?, ?, ?, ?], Memory::M>, q : &Tensor<f32, [?, ?], Memory::M>, k_cache : &Tensor<f32, [?, ?, ?], Memory::M>, v_cache : &Tensor<f32, [?, ?, ?], Memory::M>, pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
   let group = q_heads / kv_heads;
   let tiles = (group + 7) / 8;
   let scale = 1.0 / (head_dim as f32).sqrt();
@@ -822,7 +822,7 @@ fn nn_attention_parts_64<M : Memory>(part : &mut Tensor<f32, [?, ?, ?, ?], Memor
 
 /// Merges the parts of `nn_attention` of blocks of `n_pos` positions. A block does 32 values of one
 /// head of Q, a value for each lane.
-fn nn_attention_merge<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, part : &Tensor<f32, [?, ?, ?, ?], Memory::M>, pos : i32, n_pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
+pub fn nn_attention_merge<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, part : &Tensor<f32, [?, ?, ?, ?], Memory::M>, pos : i32, n_pos : i32, q_heads : i32, kv_heads : i32, head_dim : i32) -> void {
   let group = q_heads / kv_heads;
   let tiles = (group + 7) / 8;
   let splits = (pos + n_pos) / n_pos;
@@ -867,7 +867,7 @@ fn nn_attention_merge<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, par
 
 /// out[0] = the index of the largest of the first n values of `logits`. The lowest index wins a
 /// tie. So the next token stays on the device, and the host reads only `out[0]`.
-fn nn_argmax<M : Memory>(out : &mut Tensor<i32, [?], Memory::M>, logits : &Tensor<f32, [?], Memory::M>, n : i32) -> void {
+pub fn nn_argmax<M : Memory>(out : &mut Tensor<i32, [?], Memory::M>, logits : &Tensor<f32, [?], Memory::M>, n : i32) -> void {
   assert(n > 0 && logits.len() >= n && out.len() >= 1, "nn_argmax: `logits` has fewer than n values, or `out` is empty");
   let chunk = (n + 1023) / 1024;
   spawn on(Topology::Device) {
@@ -901,7 +901,7 @@ fn nn_argmax<M : Memory>(out : &mut Tensor<i32, [?], Memory::M>, logits : &Tenso
 /// with the lower index comes first. weights[j] is the softmax of the k values:
 /// e^(logits[ids[j]]) over the sum of e^(logits[ids[i]]) for i below k. This is the softmax of
 /// all n values, with its k largest weights scaled to sum to 1, as in Qwen3. `n` is at most 256.
-fn nn_top_k<M : Memory>(ids : &mut Tensor<i32, [?], Memory::M>, weights : &mut Tensor<f32, [?], Memory::M>, logits : &Tensor<f32, [?], Memory::M>, n : i32, k : i32) -> void {
+pub fn nn_top_k<M : Memory>(ids : &mut Tensor<i32, [?], Memory::M>, weights : &mut Tensor<f32, [?], Memory::M>, logits : &Tensor<f32, [?], Memory::M>, n : i32, k : i32) -> void {
   assert(n > 0 && n <= 256 && k > 0 && k <= n, "nn_top_k: n must be 1 to 256, and k must be 1 to n");
   assert(logits.len() >= n && ids.len() >= k && weights.len() >= k, "nn_top_k: a tensor has too few values");
   spawn on(Topology::Device) {
@@ -939,7 +939,7 @@ fn nn_top_k<M : Memory>(ids : &mut Tensor<i32, [?], Memory::M>, weights : &mut T
 
 /// x = row token[0] of `table`, which has `dim` values in each row. The token can come from
 /// `nn_argmax` on the device.
-fn nn_embed<M : Memory>(x : &mut Tensor<f32, [?], Memory::M>, table : &Tensor<bf16, [?], Memory::M>, token : &Tensor<i32, [?], Memory::M>, dim : i32) -> void {
+pub fn nn_embed<M : Memory>(x : &mut Tensor<f32, [?], Memory::M>, table : &Tensor<bf16, [?], Memory::M>, token : &Tensor<i32, [?], Memory::M>, dim : i32) -> void {
   assert(x.len() >= dim && token.len() >= 1, "nn_embed: `x` has fewer than dim values, or `token` is empty");
   let rows = table.len() / dim;
   spawn on(Topology::Device) {
@@ -965,7 +965,7 @@ fn nn_embed<M : Memory>(x : &mut Tensor<f32, [?], Memory::M>, table : &Tensor<bf
 /// out[e][r] = silu(g) * u, where g and u are the products of rows r and rows + r of expert
 /// ids[e] with x. `w` holds the `experts` experts one after another, each with 2 * rows rows of
 /// `cols` values.
-fn nn_moe_swiglu<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+pub fn nn_moe_swiglu<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
   assert(k > 0 && ids.len() >= k && out.extent(0) >= k && out.extent(1) >= rows, "nn_moe_swiglu: `ids` needs k values, and `out` a row of rows values for each");
   assert(cols % 8 == 0 && x.len() >= cols && w.len() / 2 / rows / cols >= experts, "nn_moe_swiglu: `w` needs 2 * rows rows of cols values for each expert");
   spawn on(Topology::Device) {
@@ -1016,7 +1016,7 @@ fn nn_moe_swiglu<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Ten
 /// is the down projection of the k experts that a token uses, weighted by the router, with the
 /// residual add. `w` holds the `experts` experts one after another, each with `rows` rows of
 /// `cols` values.
-fn nn_moe_down_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, weights : &Tensor<f32, [?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+pub fn nn_moe_down_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, weights : &Tensor<f32, [?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
   assert(k > 0 && ids.len() >= k && weights.len() >= k && h.extent(0) >= k && h.extent(1) >= cols, "nn_moe_down_add: `ids` and `weights` need k values, and `h` a row of cols values for each");
   assert(cols % 8 == 0 && y.len() >= rows && w.len() / rows / cols >= experts, "nn_moe_down_add: `w` needs rows rows of cols values for each expert");
   spawn on(Topology::Device) {
@@ -1067,7 +1067,7 @@ fn nn_moe_down_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor
 
 /// counts[b][e] = the number of pairs of expert e among the pairs 256 * b to 256 * b + 255, of
 /// the first n pairs of `ids`.
-fn nn_moe_group_count<M : Memory>(counts : &mut Tensor<i32, [?, ?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, n : i32, experts : i32) -> void {
+pub fn nn_moe_group_count<M : Memory>(counts : &mut Tensor<i32, [?, ?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, n : i32, experts : i32) -> void {
   assert(experts > 0 && experts <= 1024 && n >= 0 && n <= ids.len(), "nn_moe_group_count: `experts` must be 1 to 1024, and `ids` needs n values");
   assert(counts.extent(0) * 256 >= n && counts.extent(1) >= experts, "nn_moe_group_count: `counts` needs a row for each 256 pairs, and a column for each expert");
   spawn on(Topology::Device) {
@@ -1107,7 +1107,7 @@ fn nn_moe_group_count<M : Memory>(counts : &mut Tensor<i32, [?, ?], Memory::M>, 
 /// the last group. It also writes n + i at each position i of `order` that holds no pair.
 /// `order` needs n + experts * (align - 1) positions, and `tile_expert` one for each `align` of
 /// them.
-fn nn_moe_group_offsets<M : Memory>(base : &mut Tensor<i32, [?, ?], Memory::M>, starts : &mut Tensor<i32, [?], Memory::M>, tile_expert : &Tensor<i32, [?], Memory::M>, order : &Tensor<i32, [?], Memory::M>, counts : &Tensor<i32, [?, ?], Memory::M>, n : i32, experts : i32, align : i32) -> void {
+pub fn nn_moe_group_offsets<M : Memory>(base : &mut Tensor<i32, [?, ?], Memory::M>, starts : &mut Tensor<i32, [?], Memory::M>, tile_expert : &Tensor<i32, [?], Memory::M>, order : &Tensor<i32, [?], Memory::M>, counts : &Tensor<i32, [?, ?], Memory::M>, n : i32, experts : i32, align : i32) -> void {
   assert(experts > 0 && experts <= 1024 && align > 0, "nn_moe_group_offsets: `experts` must be 1 to 1024, and `align` above 0");
   assert(starts.len() > experts && counts.extent(0) * 256 >= n && counts.extent(1) >= experts && base.extent(0) * 256 >= n && base.extent(1) >= experts, "nn_moe_group_offsets: `starts` needs experts + 1 values, and `counts` and `base` a row for each 256 pairs");
   assert(order.len() >= n + experts * (align - 1) && tile_expert.len() * align >= order.len(), "nn_moe_group_offsets: `order` needs n + experts * (align - 1) positions, and `tile_expert` one for each align of them");
@@ -1249,7 +1249,7 @@ fn nn_moe_group_offsets<M : Memory>(base : &mut Tensor<i32, [?, ?], Memory::M>, 
 /// before its own, and after those in its own block with a smaller p. `base` is from
 /// `nn_moe_group_offsets`. An atomic store writes it, because the checker cannot see that no two
 /// pairs get the same position.
-fn nn_moe_group_place<M : Memory>(order : &Tensor<i32, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, base : &Tensor<i32, [?, ?], Memory::M>, n : i32) -> void {
+pub fn nn_moe_group_place<M : Memory>(order : &Tensor<i32, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, base : &Tensor<i32, [?, ?], Memory::M>, n : i32) -> void {
   assert(n >= 0 && n <= ids.len() && base.extent(0) * 256 >= n, "nn_moe_group_place: `ids` needs n values, and `base` a row for each 256 pairs");
   spawn on(Topology::Device) {
     for b in 0..(n + 255) / 256 across blocks {
@@ -1284,7 +1284,7 @@ fn nn_moe_group_place<M : Memory>(order : &Tensor<i32, [?], Memory::M>, ids : &T
 /// kernels above make them, in `order`. `counts`, `base`, `starts` and `tile_expert` are as for
 /// those kernels. The result is `order` as a `Distinct` tensor, so a kernel can write at the rows
 /// that it names.
-fn nn_moe_group<M : Memory>(order : Tensor<i32, [?], Memory::M>, counts : &mut Tensor<i32, [?, ?], Memory::M>, base : &mut Tensor<i32, [?, ?], Memory::M>, starts : &mut Tensor<i32, [?], Memory::M>, tile_expert : &Tensor<i32, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, experts : i32, align : i32) -> Distinct<Tensor<i32, [?], Memory::M>> {
+pub fn nn_moe_group<M : Memory>(order : Tensor<i32, [?], Memory::M>, counts : &mut Tensor<i32, [?, ?], Memory::M>, base : &mut Tensor<i32, [?, ?], Memory::M>, starts : &mut Tensor<i32, [?], Memory::M>, tile_expert : &Tensor<i32, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, experts : i32, align : i32) -> Distinct<Tensor<i32, [?], Memory::M>> {
   let n = ids.len();
   nn_moe_group_count(counts, ids, n, experts);
   nn_moe_group_offsets(base, starts, tile_expert, &order, counts, n, experts, align);
@@ -1303,7 +1303,7 @@ fn nn_moe_group<M : Memory>(order : Tensor<i32, [?], Memory::M>, counts : &mut T
 // are in shared memory, which is faster here than decoding each code with bit operations.
 
 /// y[r] = (row r of the fp8 matrix w) . x, for r below `rows`.
-fn nn_matvec_fp8<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_matvec_fp8<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_fp8(w.len(), scales.len(), x.len(), rows, cols);
   assert(y.len() >= rows, "nn fp8: the output has fewer values than rows");
   let tiles = cols / 128;
@@ -1364,7 +1364,7 @@ fn nn_matvec_fp8<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u
 }
 
 /// y[r] = y[r] + (row r of the fp8 matrix w) . x: a matrix-vector product and a residual add.
-fn nn_matvec_fp8_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_matvec_fp8_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_fp8(w.len(), scales.len(), x.len(), rows, cols);
   assert(y.len() >= rows, "nn fp8: the output has fewer values than rows");
   let tiles = cols / 128;
@@ -1424,7 +1424,7 @@ fn nn_matvec_fp8_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tens
 
 /// y[r] = y[r] + (row r of the fp8 matrix w) . x, where x is a tensor of heads, as in
 /// `nn_matvec_heads_add`. This is the output projection of attention, with its residual add.
-fn nn_matvec_fp8_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
+pub fn nn_matvec_fp8_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
   let cols = heads * head_dim;
   nn_check_heads(x.extent(0), x.extent(1), heads, head_dim);
   nn_check_fp8(w.len(), scales.len(), cols, rows, cols);
@@ -1489,7 +1489,7 @@ fn nn_matvec_fp8_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w :
 
 /// The Q, K and V projections of one token with fp8 weights, and their bias in bf16. The rows are
 /// in the order of `nn_qkv`.
-fn nn_qkv_fp8<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+pub fn nn_qkv_fp8<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
   let heads = q_heads + 2 * kv_heads;
   nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
   nn_check_heads(k.extent(0), k.extent(1), kv_heads, head_dim);
@@ -1574,7 +1574,7 @@ fn nn_qkv_fp8<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tens
 
 /// The SwiGLU input of the MLP of one token with fp8 weights, as `nn_swiglu`: `w` has the `rows`
 /// rows of the gate projection, and then the `rows` rows of the up projection.
-fn nn_swiglu_fp8<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_swiglu_fp8<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_fp8(w.len(), scales.len(), x.len(), 2 * rows, cols);
   assert(out.len() >= rows, "nn_swiglu_fp8: the output has fewer values than rows");
   let tiles = cols / 128;
@@ -1663,7 +1663,7 @@ fn nn_swiglu_fp8<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor
 // of all k experts. So 8 experts with rows of 768 weights have 384 pairs, and each lane takes 12.
 
 /// y[r] = (row r of the Q4_0 matrix w) . x, for r below `rows`.
-fn nn_matvec_q4<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_matvec_q4<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_q4(w.len(), scales.len(), x.len(), rows, cols);
   assert(rows % 8 == 0 && y.len() >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
   let words = cols / 8;
@@ -1745,7 +1745,7 @@ fn nn_matvec_q4<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u3
 }
 
 /// y[r] = y[r] + (row r of the Q4_0 matrix w) . x: a matrix-vector product and a residual add.
-fn nn_matvec_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_matvec_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_q4(w.len(), scales.len(), x.len(), rows, cols);
   assert(rows % 8 == 0 && y.len() >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
   let words = cols / 8;
@@ -1828,7 +1828,7 @@ fn nn_matvec_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tenso
 
 /// y[r] = y[r] + (row r of the Q4_0 matrix w) . x, where x is a tensor of heads, as in
 /// `nn_matvec_heads_add`. This is the output projection of attention, with its residual add.
-fn nn_matvec_q4_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
+pub fn nn_matvec_q4_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, rows : i32, heads : i32, head_dim : i32) -> void {
   let cols = heads * head_dim;
   nn_check_heads(x.extent(0), x.extent(1), heads, head_dim);
   nn_check_q4(w.len(), scales.len(), cols, rows, cols);
@@ -1909,7 +1909,7 @@ fn nn_matvec_q4_heads_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : 
 
 /// The Q, K and V projections of one token with Q4_0 weights, and their bias in bf16. The rows
 /// are in the order of `nn_qkv`. A model with no bias, such as Qwen3, passes a bias of zeros.
-fn nn_qkv_q4<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+pub fn nn_qkv_q4<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
   let heads = q_heads + 2 * kv_heads;
   nn_check_heads(q.extent(0), q.extent(1), q_heads, head_dim);
   nn_check_heads(k.extent(0), k.extent(1), kv_heads, head_dim);
@@ -2002,7 +2002,7 @@ fn nn_qkv_q4<M : Memory>(q : &mut Tensor<f32, [?, ?], Memory::M>, k : &mut Tenso
 
 /// The SwiGLU input of the MLP of one token with Q4_0 weights, as `nn_swiglu`: `w` has the
 /// `rows` rows of the gate projection, and then the `rows` rows of the up projection.
-fn nn_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
+pub fn nn_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, rows : i32, cols : i32) -> void {
   nn_check_q4(w.len(), scales.len(), x.len(), 2 * rows, cols);
   assert(out.len() >= rows, "nn_swiglu_q4: the output has fewer values than rows");
   assert(rows % 8 == 0, "nn_swiglu_q4: rows must be a multiple of 8");
@@ -2102,7 +2102,7 @@ fn nn_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<
 }
 
 /// The SwiGLU input of the k experts that a token uses, with Q4_0 weights, as `nn_moe_swiglu`.
-fn nn_moe_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+pub fn nn_moe_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, x : &Tensor<f32, [?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
   assert(k > 0 && ids.len() >= k && out.extent(0) >= k && out.extent(1) >= rows, "nn_moe_swiglu_q4: `ids` needs k values, and `out` a row of rows values for each");
   assert(rows % 8 == 0, "nn_moe_swiglu_q4: rows must be a multiple of 8");
   nn_check_q4(w.len(), scales.len(), x.len(), experts * 2 * rows, cols);
@@ -2187,7 +2187,7 @@ fn nn_moe_swiglu_q4<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &
 
 /// The down projection of the k experts that a token uses, with Q4_0 weights, weighted by the
 /// router and with the residual add, as `nn_moe_down_add`.
-fn nn_moe_down_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, weights : &Tensor<f32, [?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+pub fn nn_moe_down_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?], Memory::M>, weights : &Tensor<f32, [?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, k : i32, rows : i32, cols : i32, experts : i32) -> void {
   assert(k > 0 && ids.len() >= k && weights.len() >= k && h.extent(0) >= k && h.extent(1) >= cols, "nn_moe_down_q4_add: `ids` and `weights` need k values, and `h` a row of cols values for each");
   nn_check_q4(w.len(), scales.len(), cols, experts * rows, cols);
   assert(rows % 8 == 0 && y.len() >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
@@ -2266,7 +2266,7 @@ fn nn_moe_down_q4_add<M : Memory>(y : &mut Tensor<f32, [?], Memory::M>, w : &Ten
 
 /// Asserts that a Q4_0 matrix of rows x cols, its scales and its input hold the values that a
 /// product reads.
-fn nn_check_q4(w_len : i32, s_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
+pub fn nn_check_q4(w_len : i32, s_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
   assert(rows > 0 && rows % 4 == 0 && cols > 0 && cols % 32 == 0, "nn q4: rows must be a multiple of 4, and cols a multiple of 32");
   assert(x_len >= cols, "nn q4: the input has fewer values than cols");
   assert(rows <= w_len / (cols / 8) && rows <= s_len / (cols / 32), "nn q4: the codes or the scales are too few for rows x cols");
@@ -2275,7 +2275,7 @@ fn nn_check_q4(w_len : i32, s_len : i32, x_len : i32, rows : i32, cols : i32) ->
 
 /// Asserts that an fp8 matrix of rows x cols, its scales and its input hold the values that a
 /// product reads.
-fn nn_check_fp8(w_len : i32, s_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
+pub fn nn_check_fp8(w_len : i32, s_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
   assert(rows > 0 && rows % 4 == 0 && cols > 0 && cols % 128 == 0, "nn fp8: rows must be a multiple of 4, and cols a multiple of 128");
   assert(x_len >= cols, "nn fp8: the input has fewer values than cols");
   assert(rows <= w_len / (cols / 4) && s_len >= ((rows + 127) / 128) * (cols / 128), "nn fp8: the codes or the scales are too few for rows x cols");
@@ -2284,7 +2284,7 @@ fn nn_check_fp8(w_len : i32, s_len : i32, x_len : i32, rows : i32, cols : i32) -
 
 /// Asserts that a matrix-vector product with these sizes reads and writes only values that the
 /// tensors hold.
-fn nn_check_matrix(y_len : i32, w_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
+pub fn nn_check_matrix(y_len : i32, w_len : i32, x_len : i32, rows : i32, cols : i32) -> void {
   assert(cols > 0 && cols % 8 == 0, "nn: the number of columns must be a multiple of 8");
   assert(rows >= 0 && y_len >= rows && x_len >= cols, "nn: the output has fewer values than rows, or the input fewer than cols");
   assert(rows <= w_len / cols, "nn: the matrix has fewer than rows x cols values");
@@ -2292,14 +2292,14 @@ fn nn_check_matrix(y_len : i32, w_len : i32, x_len : i32, rows : i32, cols : i32
 }
 
 /// Asserts that a tensor [a, b] holds `heads` heads of `head_dim` values.
-fn nn_check_heads(a : i32, b : i32, heads : i32, head_dim : i32) -> void {
+pub fn nn_check_heads(a : i32, b : i32, heads : i32, head_dim : i32) -> void {
   assert(head_dim > 0 && head_dim <= 128 && head_dim % 8 == 0, "nn: head_dim must be a multiple of 8, at most 128");
   assert(heads > 0 && a >= heads && b >= head_dim, "nn: a tensor of heads is smaller than [heads, head_dim]");
   return;
 }
 
 /// Asserts that a KV cache [a, b, c] has a row for `pos`, with `heads` heads of `head_dim` values.
-fn nn_check_cache(a : i32, b : i32, c : i32, pos : i32, heads : i32, head_dim : i32) -> void {
+pub fn nn_check_cache(a : i32, b : i32, c : i32, pos : i32, heads : i32, head_dim : i32) -> void {
   assert(pos >= 0 && pos < a, "nn: the position is past the end of the KV cache");
   assert(heads > 0 && b >= heads && c >= head_dim, "nn: the KV cache is smaller than [max_seq, kv_heads, head_dim]");
   return;
@@ -2314,7 +2314,7 @@ fn nn_check_cache(a : i32, b : i32, c : i32, pos : i32, heads : i32, head_dim : 
 // each weight once for both.
 
 /// y[t][r] = (row r of the Q4_0 matrix w) . x[t], for t below n and r below `rows`.
-fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, rows : i32, cols : i32) -> void {
+pub fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, rows : i32, cols : i32) -> void {
   nn_check_q4(w.len(), scales.len(), x.extent(1), rows, cols);
   assert(n > 0 && x.extent(0) >= n && y.extent(0) >= n, "nn rows: `x` and `y` need n rows");
   assert(rows % 8 == 0 && y.extent(1) >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
@@ -2456,7 +2456,7 @@ fn nn_matvec_q4_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &T
 
 /// y[t][r] = y[t][r] + (row r of the Q4_0 matrix w) . x[t], where x[t] is [heads, head_dim], for t
 /// below n.
-fn nn_matvec_q4_heads_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?, ?, ?], Memory::M>, n : i32, rows : i32, heads : i32, head_dim : i32) -> void {
+pub fn nn_matvec_q4_heads_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, x : &Tensor<f32, [?, ?, ?], Memory::M>, n : i32, rows : i32, heads : i32, head_dim : i32) -> void {
   let cols = heads * head_dim;
   nn_check_heads(x.extent(1), x.extent(2), heads, head_dim);
   nn_check_q4(w.len(), scales.len(), cols, rows, cols);
@@ -2611,7 +2611,7 @@ fn nn_matvec_q4_heads_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::
 
 /// The Q, K and V projections of n positions, as `nn_qkv_q4` for each: q[t] is [q_heads,
 /// head_dim], and k[t] and v[t] are [kv_heads, head_dim].
-fn nn_qkv_q4_rows<M : Memory>(q : &mut Tensor<f32, [?, ?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
+pub fn nn_qkv_q4_rows<M : Memory>(q : &mut Tensor<f32, [?, ?, ?], Memory::M>, k : &mut Tensor<f32, [?, ?, ?], Memory::M>, v : &mut Tensor<f32, [?, ?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, b : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, q_heads : i32, kv_heads : i32, head_dim : i32, cols : i32) -> void {
   let heads = q_heads + 2 * kv_heads;
   nn_check_heads(q.extent(1), q.extent(2), q_heads, head_dim);
   nn_check_heads(k.extent(1), k.extent(2), kv_heads, head_dim);
@@ -2799,7 +2799,7 @@ fn nn_qkv_q4_rows<M : Memory>(q : &mut Tensor<f32, [?, ?, ?], Memory::M>, k : &m
 }
 
 /// y[t][r] = (row r of w) . x[t], with bf16 weights, for t below n.
-fn nn_matvec_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, rows : i32, cols : i32) -> void {
+pub fn nn_matvec_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, rows : i32, cols : i32) -> void {
   nn_check_matrix(y.extent(1), w.len(), x.extent(1), rows, cols);
   assert(n > 0 && x.extent(0) >= n && y.extent(0) >= n, "nn rows: `x` and `y` need n rows");
   spawn on(Topology::Device) {
@@ -2832,7 +2832,7 @@ fn nn_matvec_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tens
 }
 
 /// y[t] = x[t] / sqrt(mean(x[t]^2) + eps) * w, for the first `dim` values of each of n rows.
-fn nn_rms_norm_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, n : i32, dim : i32, eps : f32) -> void {
+pub fn nn_rms_norm_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, w : &Tensor<bf16, [?], Memory::M>, n : i32, dim : i32, eps : f32) -> void {
   assert(dim > 0 && y.extent(1) >= dim && x.extent(1) >= dim && w.len() >= dim, "nn_rms_norm_rows: a row has fewer than dim values");
   assert(n > 0 && x.extent(0) >= n && y.extent(0) >= n, "nn rows: `x` and `y` need n rows");
   spawn on(Topology::Device) {
@@ -2863,7 +2863,7 @@ fn nn_rms_norm_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, x : &Te
 }
 
 /// out[t] = the index of the largest of the first `count` values of logits[t], as `nn_argmax`.
-fn nn_argmax_rows<M : Memory>(out : &mut Tensor<i32, [?], Memory::M>, logits : &Tensor<f32, [?, ?], Memory::M>, n : i32, count : i32) -> void {
+pub fn nn_argmax_rows<M : Memory>(out : &mut Tensor<i32, [?], Memory::M>, logits : &Tensor<f32, [?, ?], Memory::M>, n : i32, count : i32) -> void {
   assert(count > 0 && logits.extent(1) >= count, "nn_argmax_rows: a row of `logits` has fewer than count values");
   assert(n > 0 && logits.extent(0) >= n && out.len() >= n, "nn rows: `logits` needs n rows, and `out` n values");
   let chunk = (count + 1023) / 1024;
@@ -2894,7 +2894,7 @@ fn nn_argmax_rows<M : Memory>(out : &mut Tensor<i32, [?], Memory::M>, logits : &
 
 /// The router of n positions, as `nn_top_k` for each: ids[t] and weights[t] get the k experts of
 /// logits[t].
-fn nn_top_k_rows<M : Memory>(ids : &mut Tensor<i32, [?, ?], Memory::M>, weights : &mut Tensor<f32, [?, ?], Memory::M>, logits : &Tensor<f32, [?, ?], Memory::M>, n : i32, count : i32, k : i32) -> void {
+pub fn nn_top_k_rows<M : Memory>(ids : &mut Tensor<i32, [?, ?], Memory::M>, weights : &mut Tensor<f32, [?, ?], Memory::M>, logits : &Tensor<f32, [?, ?], Memory::M>, n : i32, count : i32, k : i32) -> void {
   assert(count > 0 && count <= 256 && k > 0 && k <= count, "nn_top_k_rows: count must be 1 to 256, and k must be 1 to count");
   assert(logits.extent(1) >= count && ids.extent(1) >= k && weights.extent(1) >= k, "nn_top_k_rows: a row has too few values");
   assert(n > 0 && logits.extent(0) >= n && ids.extent(0) >= n && weights.extent(0) >= n, "nn rows: each tensor needs n rows");
@@ -2933,7 +2933,7 @@ fn nn_top_k_rows<M : Memory>(ids : &mut Tensor<i32, [?, ?], Memory::M>, weights 
 /// `nn_top_k_long`. A larger score gives a larger key. Of two equal scores, the lower position
 /// gives the larger key, so no two keys of a row are equal. A NaN is below every number, and -0.0
 /// is equal to 0.0.
-fn nn_top_k_key(bits : u32, i : i32) on Topology::Any -> u64
+pub fn nn_top_k_key(bits : u32, i : i32) on Topology::Any -> u64
 ensures writes_only()
 {
   // The bits of a number at or above zero, with the top bit set, are in the order of the
@@ -2953,7 +2953,7 @@ ensures writes_only()
 }
 
 /// The top `bits` bits of `key`, or 0 when `bits` is 0 or less.
-fn nn_top_k_high(key : u64, bits : i32) on Topology::Any -> u64
+pub fn nn_top_k_high(key : u64, bits : i32) on Topology::Any -> u64
 ensures writes_only()
 {
   if bits <= 0 {
@@ -2976,7 +2976,7 @@ ensures writes_only()
 /// The keys of nn_top_k_key are 8 bytes, so the block makes at most 9 passes. A pass reads the
 /// scores from the row in memory until at most 2048 keys agree with the bytes found. Then it
 /// keeps their positions in shared memory, and the later passes read only those.
-fn nn_top_k_long<M : Memory>(ids : &mut Tensor<i32, [?, ?], Memory::M>, scores : &Tensor<f32, [?, ?], Memory::M>, starts : &Tensor<i32, [?], Memory::M>, lengths : &Tensor<i32, [?], Memory::M>, rows : i32, k : i32) -> void {
+pub fn nn_top_k_long<M : Memory>(ids : &mut Tensor<i32, [?, ?], Memory::M>, scores : &Tensor<f32, [?, ?], Memory::M>, starts : &Tensor<i32, [?], Memory::M>, lengths : &Tensor<i32, [?], Memory::M>, rows : i32, k : i32) -> void {
   assert(k > 0 && k <= 2048, "nn_top_k_long: k must be 1 to 2048");
   assert(rows >= 0 && starts.len() >= rows && lengths.len() >= rows && scores.extent(0) >= rows && ids.extent(0) >= rows && ids.extent(1) >= k, "nn_top_k_long: a tensor has too few rows, or a row of `ids` has fewer than k values");
   spawn on(Topology::Device) {
@@ -3118,7 +3118,7 @@ fn nn_top_k_long<M : Memory>(ids : &mut Tensor<i32, [?, ?], Memory::M>, scores :
 }
 
 /// x[t] = row tokens[t] of `table`, for t below n.
-fn nn_embed_rows<M : Memory>(x : &mut Tensor<f32, [?, ?], Memory::M>, table : &Tensor<bf16, [?], Memory::M>, tokens : &Tensor<i32, [?], Memory::M>, n : i32, dim : i32) -> void {
+pub fn nn_embed_rows<M : Memory>(x : &mut Tensor<f32, [?, ?], Memory::M>, table : &Tensor<bf16, [?], Memory::M>, tokens : &Tensor<i32, [?], Memory::M>, n : i32, dim : i32) -> void {
   assert(n > 0 && x.extent(0) >= n && x.extent(1) >= dim && tokens.len() >= n, "nn_embed_rows: `x` needs n rows of dim values, and `tokens` n values");
   let rows = table.len() / dim;
   spawn on(Topology::Device) {
@@ -3143,7 +3143,7 @@ fn nn_embed_rows<M : Memory>(x : &mut Tensor<f32, [?, ?], Memory::M>, table : &T
 /// `nn_moe_swiglu_q4` for one position and expert. The row-block loop is outside, so the blocks
 /// that read the same rows of an expert run close together, and the union of the experts comes
 /// from memory about once.
-fn nn_moe_swiglu_q4_rows<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?, ?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+pub fn nn_moe_swiglu_q4_rows<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?, ?], Memory::M>, x : &Tensor<f32, [?, ?], Memory::M>, n : i32, k : i32, rows : i32, cols : i32, experts : i32) -> void {
   assert(k > 0 && n > 0 && ids.extent(0) >= n && ids.extent(1) >= k && x.extent(0) >= n && out.extent(0) >= n * k && out.extent(1) >= rows, "nn_moe_swiglu_q4_rows: `ids` needs n rows of k values, `x` n rows, and `out` a row of rows values for each of the n * k");
   assert(rows % 8 == 0, "nn_moe_swiglu_q4: rows must be a multiple of 8");
   nn_check_q4(w.len(), scales.len(), x.extent(1), experts * 2 * rows, cols);
@@ -3251,7 +3251,7 @@ fn nn_moe_swiglu_q4_rows<M : Memory>(out : &mut Tensor<f32, [?, ?], Memory::M>, 
 /// The down projection of the experts of n positions, as `nn_moe_down_q4_add` for each, with the
 /// SwiGLU outputs that `nn_moe_swiglu_q4_rows` wrote: the input of expert ids[t][e] for position
 /// t is h[t * k + e]. A block runs the body of `nn_moe_down_q4_add` for one position.
-fn nn_moe_down_q4_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?, ?], Memory::M>, weights : &Tensor<f32, [?, ?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, n : i32, k : i32, rows : i32, cols : i32, experts : i32) -> void {
+pub fn nn_moe_down_q4_add_rows<M : Memory>(y : &mut Tensor<f32, [?, ?], Memory::M>, w : &Tensor<u32, [?], Memory::M>, scales : &Tensor<f16, [?], Memory::M>, ids : &Tensor<i32, [?, ?], Memory::M>, weights : &Tensor<f32, [?, ?], Memory::M>, h : &Tensor<f32, [?, ?], Memory::M>, n : i32, k : i32, rows : i32, cols : i32, experts : i32) -> void {
   assert(k > 0 && n > 0 && ids.extent(0) >= n && ids.extent(1) >= k && weights.extent(0) >= n && weights.extent(1) >= k && h.extent(0) >= n * k && h.extent(1) >= cols && y.extent(0) >= n, "nn_moe_down_q4_add_rows: `ids` and `weights` need n rows of k values, `h` a row of cols values for each of the n * k, and `y` n rows");
   nn_check_q4(w.len(), scales.len(), cols, experts * rows, cols);
   assert(rows % 8 == 0 && y.extent(1) >= rows, "nn q4: rows must be a multiple of 8, and the output needs rows values");
