@@ -1,0 +1,12 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `pub` comes before `unsafe`, as in Rust: `pub unsafe fn`.
+
+unsafe pub fn read_one(p : *const i32) -> i32 {
+  return unsafe { *p };
+}
+// CHECK: Error at {{.*}}unsafe_before_pub.vx:[[@LINE-3]]:1: write `pub unsafe fn`: `pub` comes before `unsafe`
+
+fn main() -> i32 {
+  return 0;
+}

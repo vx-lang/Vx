@@ -9,6 +9,6 @@
 // reached only through `jobs_wave_a`, never named by a test file directly.
 //===----------------------------------------------------------------------===//
 
-fn wave_b(x: i32) -> i32 {
+pub fn wave_b(x: i32) -> i32 {
   return x * 2;
 }
