@@ -1,0 +1,62 @@
+//===- assigned_call_result_keeps_its_bounds.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `index = f(..)` keeps the `ensures` bounds of `f`, as `let index = f(..)` does. The pointer
+// argument matters: the compiler cannot keep `index == f(p, k)` for a call that takes one.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn bounded_from_buffer(_data : *const i32, k : i32) -> i32
+requires k > 0
+ensures return >= 0 && return < k {
+  return k - 1;
+}
+
+fn write_buffer(p : *mut i32) -> void
+requires valid(p, 1) {
+  unsafe { p[0] = 0; }
+}
+
+fn consume_index(k : i32, index : i32) -> i32
+requires k > 0 && index >= 0 && index < k {
+  return index;
+}
+
+fn assignment_keeps_the_bounds(p : *mut i32, k : i32) -> i32
+requires valid(p, 1)
+requires k > 0 {
+  let mut index = 0;
+  index = bounded_from_buffer(p as *const i32, k);
+  return consume_index(k, index);
+}
+
+fn bounds_survive_a_buffer_write(p : *mut i32, k : i32) -> i32
+requires valid(p, 1)
+requires k > 0 {
+  let mut index = 0;
+  index = bounded_from_buffer(p as *const i32, k);
+  write_buffer(p);
+  return consume_index(k, index);
+}
+
+// The `index` in the argument is the old value, which is below `k`. So the new value is too.
+fn argument_is_the_old_value(p : *mut i32, k : i32) -> i32
+requires valid(p, 1)
+requires k > 1 {
+  let mut index = k - 1;
+  index = bounded_from_buffer(p as *const i32, index);
+  return consume_index(k, index);
+}
+
+fn main() -> i32 {
+  let mut cell = 0;
+  let p : *mut i32 = &mut cell;
+  return assignment_keeps_the_bounds(p, 4) + bounds_survive_a_buffer_write(p, 4)
+  + argument_is_the_old_value(p, 4);
+}
+
+// CHECK: func.func @main
