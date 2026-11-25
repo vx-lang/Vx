@@ -81,7 +81,18 @@ fn two_arguments_change_the_variable() -> i32 {
   return consume_index(read(&c), index);
 }
 
+// `c` is a `&mut` reference here. `read(c)` only reads through it, and `halve(c)` changes it.
+fn later_argument_changes_through_a_mut_reference(c : &mut Counter) -> i32 {
+  let index = first_of_two(read(c), halve(c));
+  // CHECK: Error[E8006]{{.*}}:[[@LINE+1]]:{{.*}}this call to 'consume_index' may not meet its precondition
+  return consume_index(read(c), index);
+}
+
 fn main() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
   return first_argument_calls_read() + first_argument_reads_the_field()
-  + outer_call_has_no_mut_argument() + two_arguments_change_the_variable();
+  + outer_call_has_no_mut_argument() + two_arguments_change_the_variable()
+  + later_argument_changes_through_a_mut_reference(&mut c);
 }
