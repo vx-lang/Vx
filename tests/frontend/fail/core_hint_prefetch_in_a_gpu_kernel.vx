@@ -1,0 +1,40 @@
+//===- core_hint_prefetch_in_a_gpu_kernel.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `prefetch_read` and `prefetch_write` are for CPU code only. A GPU kernel that calls one is
+// an error. The error comes from the rule that a function with no `on` clause runs on the CPU
+// only. The same call on the host compiles: see tests/backend/pass/core_hint_prefetch.vx.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6001] at {{.*}}core_hint_prefetch_in_a_gpu_kernel.vx:[[@LINE+21]]:5: Type error: Function 'prefetch_read' requires topology 'CPU', but is called from 'Dev'
+// CHECK: E6001] at {{.*}}core_hint_prefetch_in_a_gpu_kernel.vx:[[@LINE+21]]:5: Type error: Function 'prefetch_write' requires topology 'CPU', but is called from 'Dev'
+import core::hint;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let a = Tensor<i32, [2]>::new();
+  let ad = transfer(a, Memory::GPU_HBM);
+  let v = spawn on(Topology::Dev) {
+    let x : i32 = 4;
+    let mut y : i32 = 5;
+    prefetch_read(&x as *const i32);
+    prefetch_write(&mut y as *mut i32);
+    ad[0] + x + y
+  };
+  print(transfer(v, Memory::CPU_DRAM));
+  return 0;
+}
