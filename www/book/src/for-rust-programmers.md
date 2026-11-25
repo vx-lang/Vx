@@ -7,8 +7,9 @@ lists what to change. Each item shows the Rust form and the Vx form.
 
 - **`import`, not `use`.** `use core::option;` is `import core::option;`. An import brings in
   everything the module declares.
-- **`pub` exports a symbol.** Every top-level item is visible to a module that imports it, with or
-  without `pub`. A `pub fn` is also exported from the object file, so C can call it.
+- **`extern fn` exports a symbol.** An `extern fn` is exported from the object file, so C can call
+  it. Every top-level item is visible to a module that imports it, with or without `pub`. For now a
+  `pub fn` that is not generic is exported too.
 - **No attributes.** There is no `#[derive(..)]`, `#[test]` or `#[inline]`.
 
 ## Functions and methods

@@ -79,9 +79,9 @@ const VERIFIED_OPERATIONS: &[&str] = &[
     "func.return",
 ];
 
-/// The reason for a block that does not parse. Its dialects are only `arith` and `math`, so the
-/// MLIR is not valid, and code generation reports the error of MLIR, which says more than E8016.
-const NOT_VALID_MLIR: &str = "is not valid MLIR";
+/// The reason for a block that does not parse with only the `arith` and `math` dialects. Code
+/// generation can still parse it, with an operation of another dialect, so it is not verified.
+const NOT_VALID_MLIR: &str = "does not parse as MLIR of the `arith` and `math` dialects";
 
 thread_local! {
     /// A context with only the dialects of the list, so that an operation of any other dialect
@@ -123,8 +123,8 @@ pub(crate) fn unverified(m: &InlineMlirExpr) -> Option<String> {
         .find(|d| !["arith", "math"].contains(&d.as_str()))
     {
         let op = m.block_str.lines().find_map(|line| {
-            let (op, dialect) = crate::hir::check::mlir_dialects::line_op(line)?;
-            (dialect == d).then(|| op.to_string())
+            crate::hir::check::mlir_dialects::line_ops(line)
+                .find_map(|(op, dialect)| (dialect == d).then(|| op.to_string()))
         });
         return Some(match op {
             Some(op) => format!("uses `{op}`"),
@@ -162,8 +162,18 @@ pub(crate) fn unverified(m: &InlineMlirExpr) -> Option<String> {
 
 /// Why the function in `text` is not one that the compiler verifies, or `None`.
 fn verify(context: &melior::Context, text: &str) -> Option<String> {
-    let Some(module) = melior::ir::Module::parse(context, text) else {
-        return Some(NOT_VALID_MLIR.into());
+    let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = errors.clone();
+    let id = context.attach_diagnostic_handler(move |d| {
+        seen.borrow_mut().push(d.to_string());
+        true
+    });
+    let parsed = melior::ir::Module::parse(context, text);
+    context.detach_diagnostic_handler(id);
+    let Some(module) = parsed else {
+        let message = errors.borrow().first().map(|m| m.trim().to_string());
+        let message = message.unwrap_or_default();
+        return Some(format!("{NOT_VALID_MLIR}: {message}"));
     };
     let mut why = None;
     module.as_operation().walk(WalkOrder::PreOrder, |op| {
@@ -233,9 +243,6 @@ impl TypeChecker<'_> {
         };
         if self.in_unsafe_block || self.in_unsafe_fn {
             self.unsafe_op_seen = true;
-            return;
-        }
-        if why == NOT_VALID_MLIR {
             return;
         }
         self.errors.error_with_code(

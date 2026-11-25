@@ -19,9 +19,9 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1038` (29 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3066` (65 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3067` (66 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
-- [Safety Errors](#safety-errors) — `E5001`–`E5003` (3 codes)
+- [Safety Errors](#safety-errors) — `E5001`–`E5004` (4 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8016` (16 codes)
@@ -132,7 +132,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3028`](/errors/E3028/) | A function with a non-void return type whose body can complete without returning. Reported here rather than left to codegen, where it surfaced as an MLIR verifier message naming an operation, with no source location. |
 | [`E3029`](/errors/E3029/) | A type name in a signature that names no declaration. An unknown name in type position parses as a user nominal, so without this a typo -- or a type constructor removed from the language -- compiled silently and did nothing. |
 | [`E3030`](/errors/E3030/) | An operator applied to operand types it is not defined on -- `%` on a shaped tensor, `+`, `-`, `*`, `/` or `%` on a `bool`, or `-` on an unsigned integer or a `bool`. For `%`, the flat emitter would decline and fall back to a path that cannot lower it either, and an `i1` operand would reach `arith.remsi` and verify. `-` on an unsigned integer would wrap with no error, and `true + true` would be `false`. |
-| [`E3031`](/errors/E3031/) | `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a value survives being assigned elsewhere, and a field that does not survive it breaks that promise for the whole type -- which would be a way to duplicate a tensor, or any other placed value, without saying so. |
+| [`E3031`](/errors/E3031/) | `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a value survives being assigned elsewhere, and a field that does not survive it breaks that promise for the whole type -- which would be a way to duplicate a tensor, or any other placed value, without saying so. In `impl<T> Copy for Twice<T>`, a field of type `T` needs the bound `T : Copy`. A type with a `Drop` impl cannot be `Copy` either, because the drop of a `Copy` value does not run. |
 | [`E3032`](/errors/E3032/) | A chain of generic instantiations that does not end -- `f<N - 1>()` whose base case is never reached. Reported here rather than left to run out of stack, which gave no file, no line and no message. |
 | [`E3033`](/errors/E3033/) | A `comptime` block the evaluator could not finish. The block runs during compilation and leaves nothing behind, so one that cannot be run has no meaning -- and used to be emitted as ordinary run-time code, which hid the fact entirely. |
 | [`E3034`](/errors/E3034/) | A `comptime` block inside another one. The outer block already runs at compile time, so the inner one asks for nothing extra, and nesting them is what made a block's value depend on evaluating a closure defined inside another block. |
@@ -167,6 +167,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3064`](/errors/E3064/) | A `break` or `continue` with no loop around it in its own function or closure. A closure body is not inside a loop around the closure, because the closure can run after the loop ends. |
 | [`E3065`](/errors/E3065/) | A range index `q[a..b]` with ends that are not literal numbers, or with no rows (`q[2..2]`, `q[3..1]`). The number of rows, `b - a`, is part of the type of the range, so it must be known while compiling. A range past the last row is E8003. |
 | [`E3066`](/errors/E3066/) | An `impl` in the wrong file, or with the wrong `extern`. Only the file that declares a struct or an enum writes a plain `impl` of it. `core` and `std` declare the built-in types, such as `i32` and `Tensor`. An impl in another file, for example to break an import cycle, is `extern impl`, so that a review finds each one. An `extern impl` in the file of the type is an error too. A macro cannot write `extern impl`: write it in the file. |
+| [`E3067`](/errors/E3067/) | A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an address, for example one that `p as *const void` made to give to a C function. It has no element type, so the compiler does not know what to read. |
 
 ## Borrow/Ownership Errors
 
@@ -201,6 +202,7 @@ Raised where an operation needs an `unsafe` context and does not have one.
 | [`E5001`](/errors/E5001/) | Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements hold whatever the memory held, so the program says with `unsafe` that it writes each one before reading it. |
 | [`E5002`](/errors/E5002/) | An operation that only an `unsafe` block allows, outside one. An access through a raw pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot know that the value is still at the address. So is `assume`. |
 | [`E5003`](/errors/E5003/) | Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`. The program that uses the package gives the flag, so a new version of the package cannot add trusted code without an error. `vxc --audit` lists the trusted code of a program. |
+| [`E5004`](/errors/E5004/) | A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that takes a `Root` makes the capabilities of the program, so a second start would give them to code that did not get them. |
 
 ## Topology/Hardware Errors
 
@@ -287,4 +289,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-195 diagnostics.
+198 diagnostics.

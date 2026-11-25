@@ -33,6 +33,8 @@ struct Arc<T> {
   // The count, at the start of the block. The value is 16 bytes after it.
   count : *mut AtomicI64,
   value : PhantomData<T>,
+
+  invariant true,
 }
 
 // Each clone gives `&T` to the task that holds it, and the last drop can be in any task. So an

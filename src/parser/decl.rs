@@ -12,6 +12,35 @@
 
 use super::*;
 
+/// Turn the trailing expression of a function body, written without `;`, into `return <expr>`.
+/// A trait default method needs this as much as a normal function does.
+fn return_the_trailing_expression(body: &mut [Statement]) {
+    let Some(last) = body.last_mut() else {
+        return;
+    };
+    let Statement::ExprStmt(ExprStmtStmt {
+        expr,
+        has_semi,
+        span,
+    }) = last
+    else {
+        return;
+    };
+    // Two reasons a trailing expression is not the block's value: it produces nothing
+    // (an else-less `if`, an `unsafe` block with no trailing expression), or every path
+    // through it already returned.
+    if *has_semi
+        || crate::syntax::expr::yields_no_value(expr)
+        || crate::syntax::expr::diverges_on_every_path(expr)
+    {
+        return;
+    }
+    *last = Statement::Return(ReturnStmt {
+        expr: Some(expr.clone()),
+        span: *span,
+    });
+}
+
 impl<'a> Parser<'a> {
     pub(crate) fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
         let token = self.advance();
@@ -148,6 +177,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Whether a function declaration starts here: `fn`, or `unsafe fn`.
+    /// `extern fn`: a function with a body that the object file exports to C.
+    pub(crate) fn at_extern_fn(&self) -> bool {
+        self.check(&TokenType::Extern) && matches!(self.peek_n(1).kind, TokenType::Fn)
+    }
+
     pub(crate) fn at_fn_start(&self) -> bool {
         self.check(&TokenType::Fn)
             || (self.check(&TokenType::Unsafe) && matches!(self.peek_n(1).kind, TokenType::Fn))
@@ -156,7 +190,7 @@ impl<'a> Parser<'a> {
     pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
         // A top-level `pub fn` has its `pub` read before this, so one here is on a method.
         if self.check(&TokenType::Pub) {
-            return Err(self.error("`pub` on a method is not supported yet"));
+            return Err(self.error("`pub` is not allowed here"));
         }
         let is_unsafe = self.match_token(&TokenType::Unsafe);
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
@@ -256,27 +290,7 @@ impl<'a> Parser<'a> {
             self.parse_statement_into(&mut body)?;
         }
 
-        // Transform implicit return
-        if let Some(Statement::ExprStmt(ExprStmtStmt {
-            expr,
-            has_semi,
-            span,
-        })) = body.last().cloned()
-        {
-            // Two reasons a trailing expression is not the block's value: it produces nothing
-            // (an else-less `if`, an `unsafe` block with no trailing expression), or every path
-            // through it already returned.
-            if !has_semi
-                && !crate::syntax::expr::yields_no_value(&expr)
-                && !crate::syntax::expr::diverges_on_every_path(&expr)
-            {
-                let lsyntax_idx = body.len() - 1;
-                body[lsyntax_idx] = Statement::Return(ReturnStmt {
-                    expr: Some(expr),
-                    span,
-                });
-            }
-        }
+        return_the_trailing_expression(&mut body);
 
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
@@ -288,6 +302,7 @@ impl<'a> Parser<'a> {
         Ok(Function {
             is_unsafe,
             is_pub: false,
+            exported: false,
             name: name.into(),
             generics,
             params,
@@ -1306,6 +1321,7 @@ impl<'a> Parser<'a> {
             }
             let decl_line = self.peek().line;
             let decl_column = self.peek().column;
+            let is_pub = self.match_token(&TokenType::Pub);
             let is_safe = self.match_token(&TokenType::Safe);
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = self.expect_identifier("Expected function name")?;
@@ -1345,6 +1361,7 @@ impl<'a> Parser<'a> {
             }
 
             externs.push(ExternDecl {
+                is_pub,
                 name: name.into(),
                 is_safe,
                 memories,
@@ -1410,7 +1427,7 @@ impl<'a> Parser<'a> {
                 return Err(self.error("`unsafe fn` on a trait method is not supported yet"));
             }
             if self.check(&TokenType::Pub) {
-                return Err(self.error("`pub` on a method is not supported yet"));
+                return Err(self.error("a method of a trait needs no `pub`: each one is public"));
             }
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
             let method_name = self.expect_identifier("Expected method name")?;
@@ -1439,6 +1456,7 @@ impl<'a> Parser<'a> {
                     &TokenType::RightBrace,
                     "Expected '}' after trait method body",
                 )?;
+                return_the_trailing_expression(&mut body);
                 Some(body)
             } else {
                 self.consume(
@@ -1581,7 +1599,16 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            let pub_token = self.peek().clone();
+            let is_pub = self.match_token(&TokenType::Pub);
+            if is_pub && trait_name.is_some() {
+                return Err(self.error_at(
+                    &pub_token,
+                    "a method of a trait impl needs no `pub`: the trait makes it public",
+                ));
+            }
             let mut method = self.parse_function()?;
+            method.is_pub = is_pub;
             method.doc_comment = doc_comment;
             // A method of a generic impl block has the block's parameters in scope, so the
             // method is generic too even when it declares none of its own. Saying so here is
@@ -1823,7 +1850,7 @@ impl<'a> Parser<'a> {
                 let mut ib = self.parse_impl_block()?;
                 ib.is_extern = true;
                 impls.push(ib);
-            } else if self.check(&TokenType::Extern) {
+            } else if self.check(&TokenType::Extern) && !self.at_extern_fn() {
                 let mut at = self.peek().clone();
                 let block = self.parse_extern_block()?;
                 // A C function keeps its name, so a Vx function cannot share it.
@@ -1894,19 +1921,23 @@ impl<'a> Parser<'a> {
                 let mut c = self.parse_const_item()?;
                 c.doc_comment = doc_comment;
                 consts.push(c);
-            } else if self.at_fn_start() || self.check(&TokenType::Pub) {
+            } else if self.at_fn_start() || self.check(&TokenType::Pub) || self.at_extern_fn() {
                 let start = self.peek().clone();
                 let is_pub = self.match_token(&TokenType::Pub);
-                if is_pub && !self.at_fn_start() {
-                    return Err(self.error("Expected 'fn' after 'pub'"));
+                let exported = self.at_extern_fn() && self.match_token(&TokenType::Extern);
+                if (is_pub || exported) && !self.at_fn_start() {
+                    return Err(self.error("Expected 'fn' after 'pub' or 'extern'"));
                 }
                 let mut f = self.parse_function()?;
                 // A generic function becomes one copy per type, each with its own name, so
                 // there is no single name to export.
-                if is_pub && !f.generics.is_empty() {
-                    return Err(self.error_at(&start, "a generic function cannot be `pub` yet"));
+                if exported && !f.generics.is_empty() {
+                    return Err(self.error_at(&start, "a generic function cannot be `extern`"));
                 }
                 f.is_pub = is_pub;
+                // Until the tests that read a C name say `extern fn`, a `pub fn` that is not
+                // generic is exported too.
+                f.exported = exported || (is_pub && f.generics.is_empty());
                 f.doc_comment = doc_comment;
                 // Vx has no overloading: a second `fn foo` replaced the first without a word.
                 let earlier = defined_at.get(&f.name).copied().or_else(|| {
@@ -1983,6 +2014,15 @@ impl<'a> Parser<'a> {
         {
             imports.push(ImportDecl {
                 path: vec!["core".into(), "c_str".into()],
+            });
+        }
+        if give_main_its_root(&mut functions)
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "std" && &*i.path[1] == "root"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["std".into(), "root".into()],
             });
         }
         Ok(Program {
@@ -2109,6 +2149,54 @@ impl<'a> Parser<'a> {
         })
     }
 }
+/// `fn main(root : Root) -> i32` gets the capabilities of the program. Its body becomes the
+/// function `main_with_root`, and a generated `main` passes it the `Root` of `std::root`. The
+/// generated `unsafe` block is not trusted code that a program wrote, so `vxc --audit` leaves it
+/// out. Returns whether `main` takes a `Root`.
+fn give_main_its_root(functions: &mut Vec<Function>) -> bool {
+    let takes_a_root = |f: &Function| {
+        f.name.as_ref() == "main"
+            && matches!(&f.params[..], [(_, Type::Struct(t, _))] if t.as_ref() == "Root")
+    };
+    let Some(user) = functions.iter_mut().find(|f| takes_a_root(f)) else {
+        return false;
+    };
+    user.name = "main_with_root".into();
+    let span = user.span;
+    let mut main = Parser::parse_fn_from_str(
+        "fn main() -> i32 { return main_with_root(unsafe { root_of_the_program() }); }",
+    );
+    main.span = span;
+    let Some(Statement::Return(ReturnStmt {
+        expr: Some(Expr::FunctionCall(call)),
+        ..
+    })) = main.body.first_mut()
+    else {
+        unreachable!("the generated `main` is one `return` of a call");
+    };
+    let Some(Expr::UnsafeBlock(block)) = call.args.first_mut() else {
+        unreachable!("the argument of the generated call is an `unsafe` block");
+    };
+    block.generated = true;
+    functions.push(main);
+    true
+}
+
+/// Whether `f` is the `main` that `give_main_its_root` writes, which makes the `Root` of the
+/// program.
+pub(crate) fn makes_the_root(f: &Function) -> bool {
+    let [Statement::Return(ReturnStmt {
+        expr: Some(Expr::FunctionCall(call)),
+        ..
+    })] = f.body.as_slice()
+    else {
+        return false;
+    };
+    f.name.as_ref() == "main"
+        && call.name.as_ref() == "main_with_root"
+        && matches!(call.args.as_slice(), [Expr::UnsafeBlock(block)] if block.generated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -44,6 +44,11 @@ A raw pointer can name a memory, as in `*mut f32 in Memory::GPU_HBM`. The functi
 that move a pointer keep its memory: `offset`, `add` and `sub` and their `_mut` forms take a pointer
 in any memory `M` and give a pointer in `M`. `read` and `write` take only a host pointer.
 
+Any pointer can be cast to `*const void` or `*mut void` in the same memory, as in
+`p as *const void in Memory::GPU_HBM`. A `void` pointer is only an address, as C's `void *`, for
+example to give to a C function. It has no element type, so a read or a write through it is error
+E3067.
+
 ## unsafe functions
 
 A function whose *body* is not the dangerous part — but whose *contract* is — should be marked
@@ -243,7 +248,7 @@ result can be read. A clause that does not hold is undefined behavior, as a wron
 - each `assume`
 - each pointer clause that a call in `unsafe` code trusts, because the compiler cannot prove it
 - each `ensures` of an `extern` function
-- each pointer `requires` of a `pub fn`, because a call from C proves nothing
+- each pointer `requires` of an `extern fn`, because a call from C proves nothing
 
 It also lists each use of trusted code, which the compiler does not check: each `unsafe` block and
 `unsafe fn` that the program writes, each `mlir!` block that the compiler does not verify, each
@@ -284,11 +289,11 @@ Use `safe` sparingly. It is a promise the compiler cannot verify, and it is the 
 
 ## Calling Vx from C
 
-An object file exports only the functions marked `pub`. Every other function the program defines
-is hidden, so C cannot call it.
+An object file exports only the functions marked `extern`. Every other function the program
+defines is hidden, so C cannot call it.
 
 ```rust
-pub fn add_one(x : i32) -> i32 {
+extern fn add_one(x : i32) -> i32 {
     return x + 1;
 }
 ```

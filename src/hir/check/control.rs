@@ -1962,6 +1962,7 @@ impl<'a> TypeChecker<'a> {
                 let call_func = decl::Function {
                     is_unsafe: false,
                     is_pub: false,
+                    exported: false,
                     name: func_name.clone().into(),
                     generics: vec![],
                     params: env_params,
@@ -2030,6 +2031,7 @@ impl<'a> TypeChecker<'a> {
                     name: struct_name.clone().into(),
                     fields,
                     type_id: None,
+                    made_by_the_compiler: true,
                     span: e.span,
                 });
 

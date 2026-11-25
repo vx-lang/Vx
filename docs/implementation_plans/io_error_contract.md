@@ -30,7 +30,7 @@ Here `2` is only an example of a host's missing-file code. A real backend must u
 
 ## Current fallible bridge status encoding
 
-`vx_file_try_read` and `vx_file_try_write` return an `i32` status and write to `count : *mut u64`, `native_code : *mut i32`, and `has_native_code : *mut bool`. These integers are a private bridge ABI, not enum ordinals or native OS codes. Both calls use the same mapping:
+`vx_file_try_read` and `vx_file_try_write` return an `i32` status and write to `count : *mut u64`, `native_code : *mut i32`, and `has_native_code : *mut bool`. These integers are a private bridge ABI, not enum ordinals or native OS codes. `vx_file_try_open` gives the same statuses, and stores the native code alone, with 0 when there is none. All three calls use the same mapping:
 
 | Status | Meaning | Rust source |
 | ---: | --- | --- |
@@ -48,6 +48,7 @@ Here `2` is only an example of a host's missing-file code. A real backend must u
 | `10` | `LimitExceeded` | Rust's `StorageFull`, `QuotaExceeded`, or `FileTooLarge` |
 | `11` | `Unsupported` | `Unsupported` |
 | `12` | `Other` | Every remaining or unknown Rust error kind |
+| `13` | Not in the folder | `vx_folder_open_file` only: the name is empty or absolute, has a `..` part, or goes through a symbolic link |
 
 The Rust entry points are `unsafe extern "C"`. A non-null handle must remain a live, exclusively accessed bridge-owned `File` for the call. A non-null read buffer used with a valid positive length must hold that many writable bytes; they need not be initialized. A write buffer must hold that many initialized, readable bytes. Every non-null output pointer must be aligned and writable, including on an invalid-argument path; the file, buffer, and outputs must not overlap. Null handle and buffer pointers are accepted as invalid arguments, but null checks cannot validate other pointer properties. The future Vx wrapper must keep these requirements inside its unsafe boundary.
 
@@ -57,4 +58,4 @@ On status `0`, `count` is the transferred byte count, from zero through the requ
 
 On `-1`, `count` and `native_code` are zero and `has_native_code` is false. Every non-null output is initialized this way even if another output pointer is null; a null output itself has no value. Callers must supply valid, writable, non-overlapping output storage for every non-null pointer. No OS error is implied by `-1`. When the Vx error type is implemented, a wrapper should translate `-1` to `Error::new(ErrorKind::InvalidInput(), Operation::Read())` or `Operation::Write()` with no native code. Status `4`, by contrast, is an `InvalidInput` result from an actual read or write and retains any native code it carried. A Vx wrapper should reject any status outside `-1..=12` as a bridge contract violation rather than silently treating it as `Other`.
 
-The old raw file calls still return zero for both EOF and I/O failure. New bridge calls distinguish success from failure, capture the native code immediately from Rust's `std::io::Error`, and map its kind to a portable category. A successful short transfer returns its count; an empty request returns zero; failure returns zero bytes and a separate error status. `File` does not expose those calls yet because Vx cannot currently generate code for `Result<u64, Error>` with its differently sized variants. A file-specific fallible read can use the proposed error type without a `Read` trait; a reusable trait can be added when another byte source needs the same operations. The public read signature needs a bounded byte buffer before it can be called safe. The remaining compiler and file API work is described in [File I/O usability](file_io_usability.md).
+The old raw file calls still return zero for both EOF and I/O failure. New bridge calls distinguish success from failure, capture the native code immediately from Rust's `std::io::Error`, and map its kind to a portable category. A successful short transfer returns its count; an empty request returns zero; failure returns zero bytes and a separate error status. `File::open`, `File::read` and `File::write` use those calls, and give a `Result` with a `FileError`: `NotFound` for status `1`, `PermissionDenied` for `2`, and `Os` with the native code for any other status. `read` and `write` take a `Vec<u8>`, whose length bounds the transfer, so they need no `unsafe`. The raw methods `open_c_str`, `read_raw` and `write_raw` keep the old calls. The remaining compiler and file API work is described in [File I/O usability](file_io_usability.md).

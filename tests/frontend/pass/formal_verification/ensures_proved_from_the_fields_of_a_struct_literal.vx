@@ -1,0 +1,91 @@
+//===- ensures_proved_from_the_fields_of_a_struct_literal.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not='Warning' --implicit-check-not='Error'
+// CHECK: 0 0 7 3 1 3
+//
+// A struct literal gives the prover one fact for each field of an integer type, such as
+// `return.n == 0`, at a `return` and at a `let`. A field that is a struct literal gives the facts
+// of its own fields. A field of another type, such as `bool` or `f32`, gives no fact and no
+// warning.
+
+struct Counter {
+  n : i32,
+  cap : i32,
+}
+
+struct Outer {
+  inner : Counter,
+  k : i64,
+}
+
+struct Mixed {
+  enabled : bool,
+  scale : f32,
+  count : i64,
+}
+
+struct Pair<T> {
+  first : T,
+  second : T,
+}
+
+fn make(cap : i32) -> Counter
+requires 0i32 <= cap
+ensures return.n <= return.cap {
+  return Counter {
+    n : 0i32, cap : cap
+  };
+}
+
+fn local(cap : i32) -> i32
+requires 0i32 <= cap
+ensures return <= cap {
+  let c = Counter {
+    n : 0i32, cap : cap
+  };
+  return c.n;
+}
+
+fn nested() -> Outer
+ensures return.inner.n < return.inner.cap && return.k == 7i64 {
+  return Outer {
+    inner : Counter {
+      n : 0i32, cap : 1i32
+    }, k : 7i64
+  };
+}
+
+fn mixed() -> i64
+ensures return == 3i64 {
+  let m = Mixed {
+    enabled : true, scale : 1.5, count : 3i64
+  };
+  return m.count;
+}
+
+fn pair() -> Pair<i64>
+ensures return.first < return.second {
+  return Pair<i64> {
+    first : 1i64, second : 2i64
+  };
+}
+
+fn local_pair() -> i64
+ensures return == 3i64 {
+  let p = Pair<i64> {
+    first : 1i64, second : 2i64
+  };
+  return p.first + p.second;
+}
+
+fn main() -> i32 {
+  let c = make(4i32);
+  let o = nested();
+  println!("{} {} {} {} {} {}", c.n, local(5i32), o.k, mixed(), pair().first, local_pair());
+  return 0;
+}

@@ -103,14 +103,14 @@ pub fn plan(programs: &[Program], roots: &[Symbol]) -> Result<Plan, String> {
                 .any(|p| p.functions.iter().any(|f| &f.name == *name))
         })
         .collect();
-    // A C program calls a `pub fn` by its name, so the compiler cannot rename it.
+    // A C program calls an exported function by its name, so the compiler cannot rename it.
     for p in programs {
         for f in &p.functions {
-            if f.is_pub && c_functions.contains(&f.name) {
+            if f.exported && c_functions.contains(&f.name) {
                 let file = f.file.as_ref().unwrap_or(&p.module_path);
                 return Err(format!(
-                    "{file}:{}: `pub fn {name}` cannot keep its name, because the C function \
-                     `{name}` has that name. Choose another name",
+                    "{file}:{}: the exported function `{name}` cannot keep its name, because the C \
+                     function `{name}` has that name. Choose another name",
                     f.span.line,
                     name = f.name
                 ));

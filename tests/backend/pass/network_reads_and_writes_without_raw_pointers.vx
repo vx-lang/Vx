@@ -113,8 +113,8 @@ fn report(who : *const i8, result : Result<u64, NetError>) -> void {
   }
 }
 
-fn lines_client() -> Result<u64, NetError> {
-  let stream = TcpStream::connect(&address("127.0.0.1:41761"))?;
+fn lines_client(network : &Network) -> Result<u64, NetError> {
+  let stream = TcpStream::connect(network, &address("127.0.0.1:41761"))?;
   let mut writer = TcpBufWriter::new(stream);
   let _first = writer.write(&bytes("ping\n"))?;
   let _second = writer.write(&bytes("two words\n"))?;
@@ -149,8 +149,8 @@ fn lines_server(listener : TcpListener) -> Result<u64, NetError> {
   return Result<u64, NetError>::Ok(0);
 }
 
-fn short_client() -> Result<u64, NetError> {
-  let mut stream = TcpStream::connect(&address("127.0.0.1:41762"))?;
+fn short_client(network : &Network) -> Result<u64, NetError> {
+  let mut stream = TcpStream::connect(network, &address("127.0.0.1:41762"))?;
   let mut two = Vec<u8>::new();
   two.push(7u8);
   two.push(8u8);
@@ -175,8 +175,8 @@ fn short_server(listener : TcpListener) -> Result<u64, NetError> {
   return Result<u64, NetError>::Ok(0);
 }
 
-fn udp_send() -> Result<u64, NetError> {
-  let mut socket = UdpSocket::bind(&address("127.0.0.1:41764"))?;
+fn udp_send(network : &Network) -> Result<u64, NetError> {
+  let mut socket = UdpSocket::bind(network, &address("127.0.0.1:41764"))?;
   return socket.send_to(&bytes("hello"), &address("127.0.0.1:41763"));
 }
 
@@ -192,13 +192,14 @@ fn udp_recv(socket : UdpSocket) -> Result<u64, NetError> {
   return Result<u64, NetError>::Ok(n);
 }
 
-fn main() -> i32 {
-  let lines = TcpListener::bind(&address("127.0.0.1:41761"));
+fn main(root : Root) -> i32 {
+  let network = &root.network;
+  let lines = TcpListener::bind(network, &address("127.0.0.1:41761"));
   match lines {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
-          report("client", lines_client());
+          report("client", lines_client(network));
         };
         report("server", lines_server(listener));
       }
@@ -207,11 +208,11 @@ fn main() -> i32 {
       println!("bind: Error {}", name(e));
     }
   }
-  match TcpListener::bind(&address("127.0.0.1:41762")) {
+  match TcpListener::bind(network, &address("127.0.0.1:41762")) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
-          report("client", short_client());
+          report("client", short_client(network));
         };
         report("server", short_server(listener));
       }
@@ -220,13 +221,13 @@ fn main() -> i32 {
       println!("bind: Error {}", name(e));
     }
   }
-  match UdpSocket::bind(&address("127.0.0.1:41763")) {
+  match UdpSocket::bind(network, &address("127.0.0.1:41763")) {
     Result<UdpSocket, NetError>::Ok(socket) => {
       tasks {
         spawn {
           report("udp", udp_recv(socket));
         };
-        report("udp", udp_send());
+        report("udp", udp_send(network));
       }
     }
     Result<UdpSocket, NetError>::Err(e) => {

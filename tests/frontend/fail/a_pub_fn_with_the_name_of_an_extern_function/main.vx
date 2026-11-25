@@ -9,7 +9,7 @@
 // program calls a `pub fn` by its name, so a `pub fn puts` is an error.
 //
 // RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s
-// CHECK: main.vx:[[@LINE+3]]: `pub fn puts` cannot keep its name, because the C function `puts` has that name. Choose another name
+// CHECK: main.vx:[[@LINE+3]]: the exported function `puts` cannot keep its name, because the C function `puts` has that name. Choose another name
 import tests::frontend::fail::a_pub_fn_with_the_name_of_an_extern_function::c_puts;
 
 pub fn puts(_s : *const i8) -> i32 {

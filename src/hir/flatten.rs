@@ -3237,6 +3237,13 @@ impl<'r> Lowerer<'r> {
             .agg_layout_indices
             .get(&gid)
             .expect("a generated enum layout exists after successful layout resolution");
+        // Maps the enum's generic names to this instance's types, to find each payload's type.
+        let generic_args: HashMap<_, _> = data
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
         let merge = self.new_block();
         // Each arm is a block: its pattern's names and its `let`s end with it.
         let depth = self.block_frames.len();
@@ -3282,9 +3289,32 @@ impl<'r> Lowerer<'r> {
                         pack_targets(body_b, next_b),
                     );
                     self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
-                    // Bind each payload pattern to its field (`Some(v)` -> `v = <payload>`).
+                    // Void payloads have names but occupy no storage fields.
                     if let Some(pats) = payload_pats {
+                        let mut field = 0;
                         for (i, pat) in pats.iter().enumerate() {
+                            let payload_type = data.variants[ordinal as usize]
+                                .1
+                                .get(i)
+                                .expect("the pattern has more names than the variant has payloads")
+                                .substitute(&generic_args);
+                            if crate::syntax::is_void_ty(&payload_type) {
+                                if let crate::syntax::Pattern::Identifier(pname) = pat {
+                                    let placeholder = self.emit_value(
+                                        Opcode::Const,
+                                        Register(0),
+                                        Register(0),
+                                        ElementType::I32,
+                                        0,
+                                    );
+                                    self.note_shadow(pname);
+                                    self.ast_types.insert(pname.clone(), payload_type);
+                                    self.bind_local(pname.clone(), placeholder, false, false);
+                                }
+                                continue;
+                            }
+                            let payload_field = field;
+                            field += 1;
                             if let crate::syntax::Pattern::Identifier(pname) = pat {
                                 let payloads = self.agg_layouts[layout_index]
                                     .variant_payloads
@@ -3292,14 +3322,8 @@ impl<'r> Lowerer<'r> {
                                     .ok_or(Decline::TypeNotModelled {
                                         what: "an enum payload type that is not laid out",
                                     })?;
-                                // A `void` payload (`Ok(v)` of a `Result<void, E>`) has no
-                                // storage, so there is nothing to bind. A later read of the name
-                                // finds it unbound and declines.
-                                if i >= payloads.len() {
-                                    continue;
-                                }
                                 // This variant's payload type, not the slot's.
-                                let payload_type = payloads[i].ty.clone();
+                                let payload_type = payloads[payload_field].ty.clone();
                                 let lty = self.payload_lowered_ty(&payload_type).ok_or(
                                     Decline::TypeNotModelled {
                                         what: "an enum payload type that is not modelled",
@@ -3313,7 +3337,7 @@ impl<'r> Lowerer<'r> {
                                     EnumPayloadIndex {
                                         variant: u32::try_from(ordinal)
                                             .expect("enum variant fits in u32"),
-                                        field: u32::try_from(i)
+                                        field: u32::try_from(payload_field)
                                             .expect("enum payload field fits in u32"),
                                     }
                                     .encode(),
@@ -4697,6 +4721,12 @@ impl<'r> Lowerer<'r> {
         })?;
         let (_, args) =
             nominal_name_and_args(&ty).expect("an enum construction has a nominal type");
+        // The declared payload types, as the `match` side and the layout see them.
+        let payload_types: Vec<Type> = data.variants[ordinal as usize]
+            .1
+            .iter()
+            .map(|t| substitute_generics(t, &data.generics, &args))
+            .collect();
         let gid = self
             .enum_instance_layout_of(base, &args)
             .ok_or(Decline::TypeNotModelled {
@@ -4720,16 +4750,20 @@ impl<'r> Lowerer<'r> {
             self.enum_field_index(gid, 0)?,
         );
         if let Some(payload) = &ev.payload {
+            // The layout leaves out `void` payloads, so a payload's field counts only the
+            // non-void payloads before it.
+            let mut field = 0;
             for (i, pexpr) in payload.iter().enumerate() {
                 let mut v = self.lower_expr(pexpr)?;
                 // A `void` payload (`Ok(nothing())`) has no storage. The call still runs, and
                 // its placeholder result is not stored.
-                if self
-                    .infer_ast_type(pexpr)
-                    .is_some_and(|t| crate::syntax::is_void_ty(&t))
-                {
+                let payload_type = payload_types
+                    .get(i)
+                    .expect("the construction has more payloads than the variant declares");
+                if crate::syntax::is_void_ty(payload_type) {
                     continue;
                 }
+                field += 1;
                 // A struct built in place is its slot's address; the payload takes its value,
                 // as a struct literal's field does.
                 if construction_tail(pexpr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
@@ -4739,9 +4773,17 @@ impl<'r> Lowerer<'r> {
                     Opcode::FieldStore,
                     slot.reg,
                     v.reg,
-                    self.enum_field_index(gid, i + 1)?,
+                    self.enum_field_index(gid, field)?,
                 );
             }
+            let stored_payloads = payload_types
+                .iter()
+                .filter(|t| !crate::syntax::is_void_ty(t))
+                .count();
+            assert_eq!(
+                field, stored_payloads,
+                "an enum construction stored a different number of payloads than the layout has"
+            );
         }
         Ok(slot)
     }

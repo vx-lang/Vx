@@ -10,13 +10,11 @@
 // CHECK: Error[E3003]{{.*}}'TcpStream::read_raw'. Expected u64, got i64
 import std::net;
 
+fn read_with_an_i64(stream : &mut TcpStream) -> void {
+  let length : i64 = 1;
+  unsafe { let _count = (*stream).read_raw(0 as *mut u8, length); }
+}
+
 fn main() -> i32 {
-  unsafe {
-    let mut stream = TcpStream {
-      ptr: 0 as *mut i8
-    };
-    let length : i64 = 1;
-    let _count = stream.read_raw(0 as *mut u8, length);
-  }
   return 0;
 }

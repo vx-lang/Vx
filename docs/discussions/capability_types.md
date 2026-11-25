@@ -10,7 +10,7 @@ two questions:
 1. Can a Vx type be a capability that other code cannot make or copy?
 1. What else does Vx need, so that a bug cannot become remote code execution?
 
-The short answers: yes, Vx has the rules for it today, with four gaps that small checker rules
+The short answers: yes, Vx has the rules for it today, with five gaps that small changes
 close. And no, it is not enough yet, because any module can open files and sockets with no
 capability (section 5).
 
@@ -69,7 +69,7 @@ without `login`, or to use one value twice:
 | An `AdminCap` moved into a task | Compiles, and the value moves. A second use, or a move into two tasks, gets E4001 |
 | A generic function that uses its `T` parameter twice | E4001 |
 
-## 3. Close the four gaps
+## 3. Close the gaps
 
 - **#3746 and #3754.** Only the file that declares a struct or an enum can write a plain `impl` of
   it, with or without a trait. An impl that must be in another file, because of an import cycle or
@@ -84,6 +84,9 @@ without `login`, or to use one value twice:
   cannot be `safe`. Each call then needs `unsafe`.
 - **#3751.** A closure whose body moves a captured value runs once. A second call is E4001. This
   is a memory bug as well as a capability bug.
+- **#3848.** Each type of `core` and `std` that holds a raw pointer, such as `File`, `TcpStream`,
+  `String` or `Location`, has `invariant true`. Before, safe code could build a `TcpStream` from
+  the pointer of a `File`. The compiler still writes the `Location` of a `Caller` argument.
 
 ## 4. Trusted code
 
@@ -104,29 +107,32 @@ Two tools keep the trusted code small and easy to find:
 
 ## 5. No ambient authority
 
-The rules above stop forged capabilities. They do not stop code that needs no capability. Today any
-module can `import std::fs` and open any file, or `import std::net` and open any socket. A
-capability protects something only when each way to the operating system needs one:
+The rules above stop forged capabilities. They do not stop code that needs no capability. Before
+the `Network` capability, any module could `import std::net` and open any socket with no
+`unsafe`. A file needed `unsafe` to open, which is trusted code (section 4). Now a safe
+`File::open` takes a `&Files`. A capability protects something only when each way to the
+operating system needs one:
 
 - `std::fs`, `std::net`, `std::mmap`, the start of a process and the loading of native code each
   take a capability parameter.
 - Only `main` gets the root capabilities. A library gets only the capabilities that its caller
   passes to it.
 - A module narrows a capability, for example from the right to open any file to the right to read
-  one folder. The narrow type keeps its folder in a field, and its invariant keeps the field fixed.
-  Each open checks at run time that the name stays in the folder: no `..`, no absolute path, and no
-  link that leads out. On Linux, `openat2` with `RESOLVE_BENEATH` does this check.
+  one folder. The narrow type keeps its open folder in a field, and its invariant keeps the field
+  fixed. Each open checks at run time that the name stays in the folder: no `..`, no absolute path,
+  and no symbolic link. Each part of the name opens with `openat` and `O_NOFOLLOW`, so the check is
+  the same on Linux and macOS. It refuses a link that stays inside the folder too.
 
-<!-- vx-doctest: skip (proposed std API) -->
+<!-- vx-doctest: skip (a sketch: `serve` and the path are not declared) -->
 
 ```vx
 // `Files` is the right to open any file. `Folder` is the right to read the files of one folder.
 // Only `std::fs` can build either one.
-fn open_folder(files : &Files, path : String) -> Folder { .. }
-fn read_file(folder : &Folder, name : &String) -> Result<Vec<u8>, IoError> { .. }
+fn Folder::open(files : &Files, path : &String) -> Result<Folder, FileError> { .. }
+fn Folder::open_file(self : &Folder, name : &String) -> Result<File, FileError> { .. }
 
 fn main(root : Root) -> i32 {
-  let adapters = open_folder(&root.files, "adapters/");
+  let adapters = Folder::open(&root.files, &adapters_path)?;
   serve(&adapters);
   return 0;
 }
@@ -134,6 +140,10 @@ fn main(root : Root) -> i32 {
 
 A type cannot take back a capability: a value that a function holds stays valid while it holds it.
 To revoke a right, the program needs a run-time handle that its owner can clear.
+
+`std` has no function that starts a process. Native code runs only through `extern`, which is
+trusted code (section 4). `std::collective::join_job` takes `&Files` and `&Network`, because rank 0
+writes the NCCL id to a file and NCCL connects the ranks over the network.
 
 ## 6. Effect on a model server
 
@@ -163,11 +173,14 @@ no global fact depend on a function body. Each new check reads one declaration:
 ## 8. Open questions
 
 1. How does `main` get the root capabilities: as a parameter, as in Austral, or from a call that
-   only the module of `main` can make?
+   only the module of `main` can make? **Decided (2026-11-23): as a parameter,
+   `fn main(root : Root) -> i32`.** A program that needs no capability keeps `fn main() -> i32`.
+   A program cannot call `main` or use it as a value (E5004), so no code gets a second `Root`.
 1. The package setting is a flag of `vxc`, because Vx has no manifest yet. Does it move into a
    manifest when Vx gets one?
 1. What is the type of a parameter that takes a closure that runs once (#3751)?
-1. Does a test get root capabilities, and which ones?
+1. Does a test get root capabilities, and which ones? **Decided (2026-11-23): a test is a program,
+   so it gets `Root` in the same way.**
 
 ## 9. Steps
 
@@ -175,4 +188,9 @@ no global fact depend on a function body. Each new check reads one declaration:
 1. #3754, which also closes #3746. Then #3747 and #3748.
 1. `vxc --audit` lists each use of `unsafe`, `mlir!` and `extern`.
 1. The package setting.
-1. Capability types in `std`: files first, then sockets, processes and native code.
+1. Capability types in `std`. Safe code could open sockets with no `unsafe`, but not files:
+   `File::open` was an `unsafe fn` already. So the network came first: `TcpStream::connect`,
+   `TcpListener::bind` and `UdpSocket::bind` take a `&Network`, which a program gets as
+   `root.network`. Then `File::open` became safe, and takes a `&Files`, which a program gets as
+   `root.files`. The raw open, `File::open_c_str`, stays `unsafe`. Then `Folder`, which narrows
+   `Files` to one folder. Next come processes and native code.

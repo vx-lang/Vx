@@ -1,0 +1,41 @@
+//===- an_enum_variant_with_a_void_payload_before_a_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum variant can hold a `void` payload before an `i32` payload. A `void` payload has no
+// storage, so the `i32` must be stored and read back in the same place.
+// Only the default code generator runs this: the legacy one fails MLIR verification on it.
+// REQUIRES: flat-codegen
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}both 7{{$}}
+// CHECK-NEXT: {{^}}neither{{$}}
+
+enum Pair<T> {
+  Both(T, i32),
+  Neither,
+}
+
+fn nothing() -> void {
+}
+
+fn show(p : Pair<void>) -> void {
+  match p {
+    Pair<void>::Both(empty, n) => {
+      let _same = empty;
+      println!("both {}", n);
+    }
+    Pair<void>::Neither => {
+      println!("neither");
+    }
+  }
+}
+
+fn main() -> i32 {
+  show(Pair<void>::Both(nothing(), 7));
+  show(Pair<void>::Neither);
+  return 0;
+}

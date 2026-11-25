@@ -336,7 +336,9 @@ pub enum DiagnosticCode {
     /// `impl Copy for X` where one of `X`'s fields is a type that moves. `Copy` promises a
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
     /// that promise for the whole type -- which would be a way to duplicate a tensor, or any
-    /// other placed value, without saying so.
+    /// other placed value, without saying so. In `impl<T> Copy for Twice<T>`, a field of type
+    /// `T` needs the bound `T : Copy`. A type with a `Drop` impl cannot be `Copy` either,
+    /// because the drop of a `Copy` value does not run.
     E3031,
     /// A chain of generic instantiations that does not end -- `f<N - 1>()` whose base case
     /// is never reached. Reported here rather than left to run out of stack, which gave no
@@ -486,6 +488,10 @@ pub enum DiagnosticCode {
     /// is `extern impl`, so that a review finds each one. An `extern impl` in the file of the
     /// type is an error too. A macro cannot write `extern impl`: write it in the file.
     E3066,
+    /// A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an
+    /// address, for example one that `p as *const void` made to give to a C function. It has no
+    /// element type, so the compiler does not know what to read.
+    E3067,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -588,6 +594,10 @@ pub enum DiagnosticCode {
     /// The program that uses the package gives the flag, so a new version of the package cannot
     /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
     E5003,
+    /// A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that
+    /// takes a `Root` makes the capabilities of the program, so a second start would give them to
+    /// code that did not get them.
+    E5004,
 
     // --- Topology/Hardware Errors (E6xxx) ---
     /// Topology mismatch in function call

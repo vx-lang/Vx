@@ -1,0 +1,46 @@
+//===- a_lane_loop_in_a_loop_of_the_block_can_change_its_own_variable.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The lane loop is in an `if` in a plain loop of the block code. Each lane counts its values
+// below n with its own `i`, which it changes in a `while`. The other lanes do not read that `i`,
+// so the compiler accepts the program. The function counts the values below n in two turns.
+//
+// The first run uses the Apple GPU on a Mac, and the CPU copy of each kernel elsewhere.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s
+//
+// CHECK: {{^}}counted: 200{{$}}
+
+import core::sync::atomic;
+
+pub fn count_twice(count : &mut Tensor<i32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for t in 0..2 {
+        if n > 0 {
+          for l in 0..32 across lanes {
+            let mut i = l;
+            while i < n {
+              let _o = atomic_fetch_add_i32(count, 0, 1, AtomicOrdering::Relaxed);
+              i = i + 32;
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut count = transfer(Tensor<i32>([1]), Memory::HBM);
+  count_twice(&mut count, 100);
+  let h = transfer(&count, Memory::CPU_DRAM);
+  println!("counted: {}", h[0]);
+  return 0;
+}
