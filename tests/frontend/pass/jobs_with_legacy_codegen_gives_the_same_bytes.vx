@@ -1,0 +1,119 @@
+//===- jobs_with_legacy_codegen_gives_the_same_bytes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `-j N --legacy-codegen` checks the program in parallel, then the AST code generator makes the
+// MLIR. At 1, 2 and 8 threads, the MLIR is the same bytes as a normal `--legacy-codegen`
+// compile. The program has generic instances made by two functions, a comptime function, `Vec`
+// from std and two imported modules, because a parallel check can change their order. The
+// comptime function `eleven` folds, so it is not in the MLIR. Two functions use `?` and one
+// uses `vec!`. The checker names their values with a counter, but the names stay in one
+// function, so the compile takes the parallel path.
+//
+// RUN: vxc --package tests=tests --legacy-codegen --emit-mlir %s > %t.seq
+// RUN: vxc --package tests=tests -j 1 --legacy-codegen --emit-mlir %s > %t.j1 2> %t.err1
+// RUN: vxc --package tests=tests -j 2 --legacy-codegen --emit-mlir %s > %t.j2 2> %t.err2
+// RUN: vxc --package tests=tests -j 8 --legacy-codegen --emit-mlir %s > %t.j8 2> %t.err8
+// RUN: cat %t.err1 %t.err2 %t.err8 | FileCheck --check-prefix=PATH %s
+// RUN: FileCheck --check-prefix=MLIR %s --implicit-check-not=@eleven < %t.seq
+// RUN: (cmp %t.seq %t.j1 && echo "same bytes at -j 1") | FileCheck --check-prefix=J1 %s
+// RUN: (cmp %t.seq %t.j2 && echo "same bytes at -j 2") | FileCheck --check-prefix=J2 %s
+// RUN: (cmp %t.seq %t.j8 && echo "same bytes at -j 8") | FileCheck --check-prefix=J8 %s
+// RUN: vxc --package tests=tests -j 2 --legacy-codegen %s 2>&1 | FileCheck --check-prefix=OUT %s --implicit-check-not=Error
+
+import core::result;
+import std::vec;
+import tests::modules::jobs_wave_a;
+
+struct Holder<T> {
+  value: T,
+}
+
+fn wrap<T>(x: T) -> Holder<T> {
+  return Holder {
+    value: x
+  };
+}
+
+fn second<T>(a: T, b: T) -> T {
+  let _first = a;
+  return b;
+}
+
+fn zeta() -> i64 {
+  let h = wrap(7 as i64);
+  return second(h.value, 8 as i64);
+}
+
+fn alpha() -> i32 {
+  let mut v: Vec<i32> = Vec::new();
+  v.push(3);
+  return second(1, v.get(0));
+}
+
+fn plus_one(r: Result<i64, i32>) -> Result<i64, i32> {
+  let v = r?;
+  return Result<i64, i32>::Ok(v + 1);
+}
+
+fn plus_two(r: Result<i64, i32>) -> Result<i64, i32> {
+  let v = r?;
+  return Result<i64, i32>::Ok(v + 2);
+}
+
+fn value(r: Result<i64, i32>) -> i64 {
+  match r {
+    Result<i64, i32>::Ok(v) => {
+      return v;
+    }
+    Result<i64, i32>::Err(e) => {
+      return 0 - (e as i64);
+    }
+  }
+}
+
+fn first_of_three() -> i32 {
+  let v = vec![4, 5, 6];
+  return v.get(0);
+}
+
+fn eleven() -> i32 {
+  return comptime {
+    5 + 6
+  };
+}
+
+fn main() -> i32 {
+  println!("{}", zeta());
+  println!("{}", alpha());
+  println!("{}", eleven());
+  println!("{}", wave_a(1));
+  println!("{}", value(plus_one(Result<i64, i32>::Ok(1))));
+  println!("{}", value(plus_two(Result<i64, i32>::Err(5))));
+  println!("{}", first_of_three());
+  return 0;
+}
+
+// MLIR: func.func @wave_b
+// MLIR: func.func @main
+// MLIR: func.func @zeta
+// MLIR: func.func @wrap$i64
+// MLIR: func.func @second$i64
+// MLIR: func.func @alpha
+// MLIR: func.func @second$i32
+// PATH: [parallel-frontend] emitted module with -j 1
+// PATH: [parallel-frontend] emitted module with -j 2
+// PATH: [parallel-frontend] emitted module with -j 8
+// J1: same bytes at -j 1
+// J2: same bytes at -j 2
+// J8: same bytes at -j 8
+// OUT: {{^}}8{{$}}
+// OUT-NEXT: {{^}}3{{$}}
+// OUT-NEXT: {{^}}11{{$}}
+// OUT-NEXT: {{^}}3{{$}}
+// OUT-NEXT: {{^}}2{{$}}
+// OUT-NEXT: {{^}}-5{{$}}
+// OUT-NEXT: {{^}}4{{$}}

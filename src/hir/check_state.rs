@@ -735,7 +735,7 @@ impl Default for ConstEvalState {
 pub struct MonoState {
     /// Concrete instantiations produced during checking, with the hash of the arguments.
     pub functions: Vec<(Function, u64)>,
-    /// Structs synthesized during checking (closure environments, instantiated generics).
+    /// The environment structs of the closures made during checking.
     pub generated_structs: Vec<StructDecl>,
     /// Topology generic parameters (`<D: Topology>`) of the function being instantiated. Set
     /// around the deduction unify at a generic call so `unify_types` can bind a `Pinned<_, D>`

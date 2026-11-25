@@ -1,0 +1,37 @@
+//===- jobs_with_legacy_codegen_and_closures.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The checker names each closure with a counter, as in `Closure_1`. A parallel check starts the
+// counter again in each function, so two functions would both make `Closure_1`. So
+// `-j 2 --legacy-codegen` compiles a program with closures on the sequential driver, and each
+// closure keeps its own body.
+//
+// RUN: vxc -j 2 --legacy-codegen %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn add_ten(x: i32) -> i32 {
+  let f = |y: i32| -> i32 {
+    return y + 10;
+  };
+  return f(x);
+}
+
+fn times_three(x: i32) -> i32 {
+  let g = |y: i32| -> i32 {
+    return y * 3;
+  };
+  return g(x);
+}
+
+fn main() -> i32 {
+  println!("{}", add_ten(1));
+  println!("{}", times_three(2));
+  return 0;
+}
+
+// CHECK: [parallel-frontend] the program has a closure. The name of a closure
+// CHECK: {{^}}11{{$}}
+// CHECK-NEXT: {{^}}6{{$}}
