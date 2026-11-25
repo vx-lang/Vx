@@ -15,7 +15,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// The target triple of the machine running the compiler, from `llvm-config --host-target`.
 fn host_target_triple() -> Result<String, String> {
@@ -362,7 +362,8 @@ pub struct ProgramOutput {
 /// Run a program and return its streams concatenated, stdout first.
 ///
 /// Kept for callers that only want "what did it print" and do not care which stream it came from,
-/// notably the fixture harnesses whose EXPECT lines match against either.
+/// notably the fixture harnesses whose EXPECT lines match against either. The program reads its
+/// standard input from `/dev/null`, so a test never waits for input.
 pub fn execute_mlir(
     mlir_src: &str,
     program_args: Vec<String>,
@@ -375,6 +376,7 @@ pub fn execute_mlir(
         opt_level,
         disable_llvm_optimizations,
         false,
+        Stdio::null(),
     )?;
     Ok(format!("{}{}", out.stdout, out.stderr))
 }
@@ -518,12 +520,14 @@ pub fn compile_mlir_to_object_with_codegen_level(
     Ok(temp_obj)
 }
 
+/// Compile and run a program. The program reads its standard input from `stdin`.
 pub fn execute_mlir_streams(
     mlir_src: &str,
     program_args: Vec<String>,
     opt_level: u8,
     disable_llvm_optimizations: bool,
     thread_sanitizer: bool,
+    stdin: Stdio,
 ) -> Result<ProgramOutput, String> {
     let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
 
@@ -719,6 +723,8 @@ pub fn execute_mlir_streams(
         );
     }
 
+    // Without this, `output()` gives the program `/dev/null` as its standard input.
+    exe_cmd.stdin(stdin);
     let exe_out = exe_cmd.output().map_err(|e| e.to_string())?;
 
     if !exe_out.status.success() {
