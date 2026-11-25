@@ -25,13 +25,13 @@ fn to_host<D : Topology>() on Topology::D -> i32 where Reachable<D, Topology::CP
   return 1;
 }
 
-// CHECK: Error at {{.*}}.vx:[[@LINE+1]]:4: unsatisfied `where Reachable<Acme, CPU>` on 'acme_to_host': no transfer path from Acme to CPU
+// CHECK: Error at {{.*}}.vx:[[@LINE+1]]:4: unsatisfied `where Reachable<Topology::Acme, Topology::CPU>` on 'acme_to_host': no transfer path from Acme to CPU
 fn acme_to_host() -> i32 where Reachable<Topology::Acme, Topology::CPU> {
   return 1;
 }
 
 fn main() -> i32 {
-  // CHECK: Error at {{.*}}.vx:[[@LINE+1]]:3: unsatisfied `where Reachable<D, CPU>` in call to 'to_host': no transfer path from Acme to CPU
+  // CHECK: Error at {{.*}}.vx:[[@LINE+1]]:3: unsatisfied `where Reachable<D, Topology::CPU>` in call to 'to_host': no transfer path from Acme to CPU
   let a = spawn on(Topology::Acme) {
     to_host()
   };

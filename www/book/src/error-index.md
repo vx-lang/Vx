@@ -252,7 +252,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6040`](/errors/E6040/) | A channel of tensors in a memory with a capacity, with a room that is not known at compile time. The channel can hold that many tensors at once, so the working set has no bound. Downgraded to W1028 when the space is declared `overcommit`. |
 | [`E6041`](/errors/E6041/) | A function that makes a channel of tensors in a memory with a capacity, and returns an end of that channel. The room of the channel is counted in the function that calls `channel`, only until that function returns. |
 | [`E6042`](/errors/E6042/) | Code on device 1 or a later device of a declared GPU (`arch: nvptx64` with `count:`). The CUDA runtime gets only device 0 of a declared GPU, and the memory of every device is on GPU 0, so the code has no GPU to run on yet. Run it on device 0. |
-| [`E6045`](/errors/E6045/) | A `where Reachable<A, B>` clause names something that is not a topology parameter of the function and not a declared or built-in topology. Write a parameter (`<D : Topology>`) or a topology such as `Topology::CPU`. |
+| [`E6045`](/errors/E6045/) | A `where Reachable<A, B>` clause that the compiler cannot check. A side is a bare name that is not a topology parameter of the function, a `Topology::X` that is not a parameter and not a declared or built-in topology, or `Topology::Current`. Or the clause is on a method, and a call of a method does not check it. Write a parameter (`<D : Topology>`) or a topology such as `Topology::CPU`, on a function that is not a method. |
 
 ## Tensor/Math Errors
 

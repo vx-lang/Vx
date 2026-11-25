@@ -73,6 +73,26 @@ impl GenericParam {
     }
 }
 
+/// One side of a `where Reachable<A, B>` clause, as the program wrote it.
+#[derive(Debug, PartialEq, Clone)]
+pub struct ReachableSide {
+    pub topology: Topology,
+    /// The side is a bare name (`D`), not a `Topology::D` reference. A bare name must be a
+    /// topology parameter of the function.
+    pub bare: bool,
+}
+
+impl std::fmt::Display for ReachableSide {
+    /// The side as the program wrote it: `D` or `Topology::CPU`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.bare {
+            f.write_str(&self.topology.display_name())
+        } else {
+            write!(f, "{}", self.topology)
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function {
     pub name: Symbol,
@@ -89,7 +109,7 @@ pub struct Function {
     /// in the cost graph. A side is a topology parameter (`D`) or a fixed topology
     /// (`Topology::CPU`). A clause with a parameter is checked at each call, and a clause with
     /// two fixed topologies is checked once, at the declaration.
-    pub where_transfers: Vec<(Topology, Topology)>,
+    pub where_transfers: Vec<(ReachableSide, ReachableSide)>,
     /// `unsafe fn`: the function states a contract its caller must discharge, so a call needs an
     /// unsafe context. The body is not itself one (Rust 2024): an unsafe operation inside still
     /// needs its own `unsafe` block.
