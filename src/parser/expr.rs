@@ -1007,7 +1007,22 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::RightBrace, "Expected '}'")?;
                     self.match_token(&TokenType::Comma); // optional comma
                 } else {
-                    self.parse_statement_into(&mut body)?;
+                    let body_start = self.peek().clone();
+                    if let Err(error) = self.parse_statement_into(&mut body) {
+                        // A Rust programmer writes `0 => 7,`. The statement stops at the comma
+                        // because it wants a ';', which hides that the body should be a block.
+                        return Err(match error {
+                            ParserError::UnexpectedToken { found, .. }
+                                if found.kind == TokenType::Comma =>
+                            {
+                                self.error_at(
+                                    &body_start,
+                                    "The body of a match arm is a block in braces, as in `0 => { 7 }`",
+                                )
+                            }
+                            other => other,
+                        });
+                    }
                     self.match_token(&TokenType::Comma); // optional comma
                 }
                 tuple_arms.push((pattern, body, arm_token));
