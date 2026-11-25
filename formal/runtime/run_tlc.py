@@ -48,8 +48,16 @@ WATCH_A_TIMED_TASK = {**WATCH_A_DEADLOCK, "Timed": '{"f2"}'}
 # must report a deadlock after the wait of f2 ended, and not before.
 WATCH_A_SOCKET = {**WATCH, "Fibers": '{"f2"}', "OnIo": '{"f2"}', "OnC": '{"t1"}',
                   "SetWords": "FALSE", "Cancel": "FALSE"}
+# The waker of word "a" calls `vx_wake_one` once for each waiter of the word. The other waker
+# and the cancel wake the bucket, and that can hide a lost wake of `vx_wake_one`. So one check
+# has no cancel, and each waiter there waits on word "a".
+ONE_BY_ONE = {"OneByOne": "TRUE"}
+ONLY_ONE_BY_ONE = {**ONE_BY_ONE, "OnB": "{}", "Cancel": "FALSE"}
 MODELS = [
     ("as in WaitWake.cfg", {}),
+    ("with calls of vx_wake_one", ONE_BY_ONE),
+    ("with only calls of vx_wake_one", ONLY_ONE_BY_ONE),
+    ("with the watcher and calls of vx_wake_one", {**WATCH, **ONE_BY_ONE}),
     ("with no cancel", NO_CANCEL),
     ("with only a cancel", ONLY_A_CANCEL),
     ("with a deadlock", A_DEADLOCK),
@@ -90,6 +98,8 @@ BUGS = [
     ("the_io_thread_looks_idle_before_its_wake", WATCH_A_SOCKET, "NoFalseDeadlock"),
     ("the_waiter_returns_before_it_unlists", A_SOCKET, "NoFailedCheck"),
     ("a_push_does_not_wake_the_main_thread", {**A_SEED, **NO_CANCEL}, "EachWaitEnds"),
+    ("vx_wake_one_takes_a_waiter_of_any_word", {**ONE_BY_ONE, **NO_CANCEL}, "EachWaitEnds"),
+    ("vx_wake_one_does_not_wake_its_waiter", ONLY_ONE_BY_ONE, "EachWaitEnds"),
 ]
 
 # The checks of Rendezvous. With an old id file, rank 0 stops at its check. With faults, rank 0

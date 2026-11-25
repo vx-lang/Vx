@@ -4,7 +4,8 @@ TLA+ models of the protocols in `stdlib/rust_core/src/ffi` and `runtime`. The TL
 model at a small size, and CI runs it (`.github/workflows/formal.yml`).
 
 - `WaitWake.tla`: a task or a thread waits on a word, and a waker or a cancel ends the wait
-  (`wait.rs`, and the park of a fiber in `sched.rs`). It also models the deadlock watcher. It
+  (`wait.rs`, and the park of a fiber in `sched.rs`). A waker wakes each waiter, or one waiter for
+  each call of `vx_wake_one`. It also models the deadlock watcher. It
   checks that the watcher reports a deadlock only when there is one, and that it reports each
   deadlock that stays. Other models turn on a task under a callback, waits with a time limit, the
   main thread that runs the tasks with a seed, and waits for a socket or a helper call (`io.rs`). The watcher makes a model about ten times
