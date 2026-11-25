@@ -453,8 +453,7 @@ fn main() -> i32 {
 }
 ```
 
-- **Each `?n` of a function is one extent.** The compiler refuses a call of `fn dot(a :
-  &Tensor<f32, [?n]>, b : &Tensor<f32, [?n]>)` with the extents 6 and 8 (E3068). When the
+- **Each `?n` of a function is one extent.** The compiler refuses a call of `fn dot(a : &Tensor<f32, [?n]>, b : &Tensor<f32, [?n]>)` with the extents 6 and 8 (E3068). When the
   compiler does not know an extent, it does not check it.
 - **A call shows the `requires`.** At the call, the prover knows that `n` is the extent of the
   argument (E8006). So the compiler refuses `quarter(&t)` with `t : Tensor<f32, [6]>`.
