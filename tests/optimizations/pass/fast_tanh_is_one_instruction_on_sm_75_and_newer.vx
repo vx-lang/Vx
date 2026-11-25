@@ -1,0 +1,75 @@
+//===- fast_tanh_is_one_instruction_on_sm_75_and_newer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On an NVIDIA GPU of `sm_75` or newer, `fast_tanh` on `f32` is the one PTX instruction
+// `tanh.approx.f32`. An `sm_72` GPU has no such instruction, so there it calls libdevice's
+// `__nv_tanhf`, which linking libdevice replaces with `ex2.approx` and more. The exact `tanh` and
+// `fast_tanh` on `f64` do not change on any chip.
+//
+// RUN: env VX_GPU_CHIP=sm_75 vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t75.ptx
+// RUN: FileCheck %s --check-prefix=NEW --implicit-check-not=tanh.approx --implicit-check-not=__nv_tanhf < %t75.ptx
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t90.ptx
+// RUN: FileCheck %s --check-prefix=NEW --implicit-check-not=tanh.approx --implicit-check-not=__nv_tanhf < %t90.ptx
+// RUN: env VX_GPU_CHIP=sm_72 vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t72.ptx
+// RUN: FileCheck %s --check-prefix=OLD --implicit-check-not=tanh.approx < %t72.ptx
+//
+// NEW-LABEL: .entry fast_tanh_f32(
+// NEW: tanh.approx.f32
+// NEW: ret;
+// NEW-LABEL: .entry exact_tanh_f32(
+// NEW: .f64
+// NEW: ret;
+// NEW-LABEL: .entry fast_tanh_f64(
+// NEW: {{__nv_tanh,|(add|mul|fma)\.rn\.f64}}
+//
+// OLD-LABEL: .entry fast_tanh_f32(
+// OLD: {{__nv_tanhf|ex2.approx}}
+// OLD: ret;
+// OLD-LABEL: .entry exact_tanh_f32(
+// OLD: .f64
+// OLD: ret;
+// OLD-LABEL: .entry fast_tanh_f64(
+// OLD: {{__nv_tanh,|(add|mul|fma)\.rn\.f64}}
+
+import core::num;
+
+pub fn fast_tanh_f32(out : &mut Tensor<f32, [256], Memory::HBM>, x : &Tensor<f32, [256], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..256 across lanes {
+        out[l] = x[l].fast_tanh();
+      }
+    }
+  }
+  return;
+}
+
+pub fn exact_tanh_f32(out : &mut Tensor<f32, [256], Memory::HBM>, x : &Tensor<f32, [256], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..256 across lanes {
+        out[l] = x[l].tanh();
+      }
+    }
+  }
+  return;
+}
+
+pub fn fast_tanh_f64(out : &mut Tensor<f64, [256], Memory::HBM>, x : &Tensor<f64, [256], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..256 across lanes {
+        out[l] = x[l].fast_tanh();
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
