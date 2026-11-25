@@ -10,7 +10,8 @@
 // `i64` as an `i32`. `gpu` is an unknown op in a function that a GPU kernel calls. `input` takes
 // a tensor of 8 values as a memref of 4. `op` is also compiled with `-j`. Each block is in
 // `unsafe`, because outside `unsafe` the check of safe blocks refuses a block that does not parse
-// (E8016).
+// (E8016). `no_yield` and `no_yield_value` end without `macro.yield`, with and without `returns`.
+// The error says what to add.
 //
 // REQUIRES: flat-codegen
 // RUN: split-file %s %t
@@ -19,10 +20,15 @@
 // RUN: not vxc %t/types.vx 2>&1 | FileCheck %s --check-prefix=TYPES --implicit-check-not='Internal Error'
 // RUN: not vxc %t/input.vx 2>&1 | FileCheck %s --check-prefix=INPUT --implicit-check-not='Internal Error'
 // RUN: not vxc %t/gpu.vx --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=GPU --implicit-check-not='Internal Error'
+// RUN: not vxc %t/no_yield.vx 2>&1 | FileCheck %s --check-prefix=NO-YIELD --implicit-check-not='no terminator'
+// RUN: not vxc %t/no_yield_value.vx 2>&1 | FileCheck %s --check-prefix=NO-YIELD-VALUE --implicit-check-not='no terminator'
 // OP: The `mlir!` block at line 2, column 26 is not valid MLIR: custom op 'arith.no_such_op' is unknown
 // TYPES: The `mlir!` block at line 3, column 26 is not valid MLIR: use of value '%a' expects different type than prior uses: 'i32' vs 'i64'
 // INPUT: The `mlir!` block at line 2, column 26 takes its input `%t` as `memref<4xf32>`, but the value is a `memref<8xf32>`: 'memref.cast' op operand type 'memref<8xf32>' and result type 'memref<4xf32>' are cast incompatible
 // GPU: The `mlir!` block at line 2, column 26 is not valid MLIR: custom op 'nvvm.no.such.op' is unknown
+
+// NO-YIELD: The `mlir!` block at line 2, column 19 does not end with `macro.yield`. A block with no `returns` ends with a bare `macro.yield`. A block with `returns` ends with `macro.yield` and the value to return, such as `macro.yield %r : i32`.
+// NO-YIELD-VALUE: The `mlir!` block at line 2, column 26 does not end with `macro.yield`. A block with no `returns` ends with a bare `macro.yield`. A block with `returns` ends with `macro.yield` and the value to return, such as `macro.yield %r : i32`.
 
 //--- op.vx
 fn f() -> i32 {
@@ -82,4 +88,28 @@ pub fn run(o : &mut Tensor<i32, [?], Memory::HBM>) -> void {
 
 fn main() -> i32 {
   return 0;
+}
+
+//--- no_yield.vx
+fn double(x : i32) -> void {
+  unsafe { mlir!( inputs : (%a = x : i32), dialects : ["arith"]) {
+      %b = arith.addi %a, %a : i32
+    } };
+  return;
+}
+
+fn main() -> i32 {
+  double(1);
+  return 0;
+}
+
+//--- no_yield_value.vx
+fn f() -> i32 {
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["arith"]) {
+      %b = arith.constant 0 : i32
+    } };
+}
+
+fn main() -> i32 {
+  return f();
 }

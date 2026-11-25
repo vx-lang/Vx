@@ -1694,6 +1694,15 @@ fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String>
         let (column, input) = rest.split_once(' ').unwrap_or((rest, ""));
         let block = format!("The `mlir!` block at line {line}, column {column}");
         let Some(input) = input.strip_prefix("input ") else {
+            // MLIR only says that the block has no terminator. The wrapper ends the block with
+            // a `return` in place of the `macro.yield`, so the missing line is `macro.yield`.
+            if message.starts_with("block with no terminator") {
+                return Some(format!(
+                    "{block} does not end with `macro.yield`. A block with no `returns` ends \
+                     with a bare `macro.yield`. A block with `returns` ends with `macro.yield` \
+                     and the value to return, such as `macro.yield %r : i32`."
+                ));
+            }
             return Some(format!("{block} is not valid MLIR: {message}"));
         };
         let mut fields = input.split(" | ");
