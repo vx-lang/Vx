@@ -8,9 +8,9 @@
 // A branch of an `if` that is only a number with no suffix takes the type of the other branch.
 // This is true when the `if` is the operand of `as`, which suggests its own type to a literal.
 // So `(if c { a } else { 0.0 }) as bf16` is an `f32` `if`, and `as` then converts it.
-// The `-0.1` prints as -0.1 only if it is an `f64`. As an `f32`, it prints as -0.10000000149011612.
+// Each `-0.1` prints as -0.1 only if it is an `f64`. As an `f32`, it prints as -0.10000000149011612.
 //
-// EXPECT: 1.5 1.5 1.5 1.5 -0.1 7 2.25 0 3000000000
+// EXPECT: 1.5 1.5 1.5 1.5 -0.1 7 2.25 0 5 -0.1
 
 fn cast_to_bf16(c : bool, a : f32) -> f32 {
   let y = (if c {
@@ -61,7 +61,18 @@ fn integer_number(c : bool, n : i64) -> i64 {
   let r = if c {
     n
   } else {
-    3000000000
+    5
+  };
+  return r;
+}
+
+fn else_if_chain(c : bool, d : bool, a : f64) -> f64 {
+  let r = if c {
+    a
+  } else if d {
+    a + 1.0
+  } else {
+    -0.1
   };
   return r;
 }
@@ -85,5 +96,7 @@ fn main() -> i32 {
   print(cast_to_bf16(false, a));
   print!(" ");
   print(integer_number(false, 7));
+  print!(" ");
+  print(else_if_chain(false, false, 2.25));
   return 0;
 }
