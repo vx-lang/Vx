@@ -13,31 +13,31 @@
 //===----------------------------------------------------------------------===//
 
 // A bare name that is not a parameter. `G` names no topology.
-// CHECK: Error[E6043] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, G>` on 'to_g': 'G' is not a topology parameter of 'to_g' and not a declared topology
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, G>` on 'to_g': 'G' is not a topology parameter of 'to_g' and not a declared topology
 fn to_g<D : Topology>() on Topology::D -> i32 where Reachable<D, G> {
   return 1;
 }
 
 // A bare `CPU` is a name, not the topology `Topology::CPU`.
-// CHECK: Error[E6043] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, CPU>` on 'to_bare_cpu': 'CPU' is not a topology parameter of 'to_bare_cpu'
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, CPU>` on 'to_bare_cpu': 'CPU' is not a topology parameter of 'to_bare_cpu'
 fn to_bare_cpu<D : Topology>() on Topology::D -> i32 where Reachable<D, CPU> {
   return 1;
 }
 
 // A topology that the program does not declare.
-// CHECK: Error[E6043] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, Nowhere>` on 'to_nowhere': 'Nowhere' is not a topology parameter of 'to_nowhere' and not a declared topology
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<D, Nowhere>` on 'to_nowhere': 'Nowhere' is not a topology parameter of 'to_nowhere' and not a declared topology
 fn to_nowhere<D : Topology>() on Topology::D -> i32 where Reachable<D, Topology::Nowhere> {
   return 1;
 }
 
 // A type parameter is not a topology parameter.
-// CHECK: Error[E6043] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<T, CPU>` on 'from_type': 'T' is not a topology parameter of 'from_type'
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<T, CPU>` on 'from_type': 'T' is not a topology parameter of 'from_type'
 fn from_type<T>(x : T) -> i32 where Reachable<T, Topology::CPU> {
   return 1;
 }
 
 // `Current` changes with the caller, so it is not a fixed topology.
-// CHECK: Error[E6043] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<Current, D>` on 'from_current': `Current` is not a fixed topology
+// CHECK: Error[E6045] at {{.*}}.vx:[[@LINE+1]]:4: `where Reachable<Current, D>` on 'from_current': `Current` is not a fixed topology
 fn from_current<D : Topology>() on Topology::D -> i32 where Reachable<Topology::Current, D> {
   return 1;
 }

@@ -200,7 +200,7 @@ host. If `x` is in `Acme` memory, the call fails with
 
 Each side of a clause is a topology parameter, such as `D`, or a fixed topology, such as
 `Topology::CPU`. `where Reachable<D, Topology::CPU>` asks for a route from the caller back to the
-host. Any other name is error E6043.
+host. Any other name is error E6045.
 
 ## What gets rejected
 

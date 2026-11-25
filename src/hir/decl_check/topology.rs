@@ -539,7 +539,7 @@ impl TypeChecker<'_> {
         self.errors.point_back(outside);
     }
 
-    /// Check every `where Reachable<A, B>` clause at its declaration (E6043).
+    /// Check every `where Reachable<A, B>` clause at its declaration (E6045).
     ///
     /// Each side must be a topology parameter of the function or a topology that the program
     /// declares or that is built in. A call checks only the clauses with a parameter, so a
@@ -582,7 +582,7 @@ impl TypeChecker<'_> {
                     if let Some(problem) = self.where_reachable_problem(f, side) {
                         known = false;
                         self.errors.error_with_code(
-                            crate::diagnostic::DiagnosticCode::E6043,
+                            crate::diagnostic::DiagnosticCode::E6045,
                             format!("`{clause}` on '{}': {problem}", f.name),
                             None,
                         );
