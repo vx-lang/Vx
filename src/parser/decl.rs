@@ -2520,6 +2520,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 ))
             );
             if let Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name: func_name,
                 args,
                 ..
@@ -2970,7 +2971,13 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
         // stdout_write should have a Return statement (implicit return converted)
         let func1 = &program.functions[0];
         if let Statement::Return(ReturnStmt { expr, span: _ }) = &func1.body[0] {
-            if let Some(Expr::FunctionCall(FunctionCallExpr { name, args, .. })) = expr {
+            if let Some(Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
+                name,
+                args,
+                ..
+            })) = expr
+            {
                 assert_eq!(name.as_ref(), "vx_stdout_write");
                 assert_eq!(args.len(), 2);
             } else {
@@ -2989,7 +2996,13 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
         }) = &func2.body[0]
         {
             assert!(*has_semicolon);
-            if let Expr::FunctionCall(FunctionCallExpr { name, args, .. }) = expr {
+            if let Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
+                name,
+                args,
+                ..
+            }) = expr
+            {
                 assert_eq!(name.as_ref(), "vx_stderr_write");
                 assert_eq!(args.len(), 2);
             } else {

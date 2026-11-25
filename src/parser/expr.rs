@@ -1863,7 +1863,13 @@ mod tests {
         let expr = parse_expr(input);
         // Enum variants with payloads are parsed as FunctionCall in the parser phase.
         // They are later rewritten to EnumVariant by Sema.
-        if let Expr::FunctionCall(FunctionCallExpr { name, args, .. }) = expr {
+        if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
+            name,
+            args,
+            ..
+        }) = expr
+        {
             assert_eq!(name.as_ref(), "Option::Some");
             assert_eq!(args.len(), 1);
             if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &args[0] {
@@ -1908,7 +1914,13 @@ mod tests {
         let input = "Option<i32>::Some(x)";
         let expr = parse_expr(input);
         // Similarly, generic enum variants with payloads are FunctionCalls initially.
-        if let Expr::FunctionCall(FunctionCallExpr { name, args, .. }) = expr {
+        if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
+            name,
+            args,
+            ..
+        }) = expr
+        {
             assert_eq!(name.as_ref(), "Option<i32>::Some");
             assert_eq!(args.len(), 1);
         } else {
@@ -1920,7 +1932,13 @@ mod tests {
     fn test_parse_generic_vector() {
         let input = "Vec<i32>::new()";
         let expr = parse_expr(input);
-        if let Expr::FunctionCall(FunctionCallExpr { name, args, .. }) = expr {
+        if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
+            name,
+            args,
+            ..
+        }) = expr
+        {
             assert_eq!(name.as_ref(), "Vec<i32>::new");
             assert_eq!(args.len(), 0);
         } else {
