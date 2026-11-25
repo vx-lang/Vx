@@ -27,7 +27,7 @@ unsafe impl<T : Sync> Sync for Box<T> {}
 impl<T>
 Box<T> {
   /// Move a value to the heap. Stops the program when there is no memory.
-  fn new (val : T)->Box<T> {
+  pub fn new (val : T)->Box<T> {
     let p : *mut T = alloc(sizeof<T>(), 16);
     if is_null_mut(p) {
       panic("Box: out of memory");

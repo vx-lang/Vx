@@ -262,8 +262,8 @@ that can run on the GPU. Its PTX entry has the name of the function that holds
 the region:
 
 ```vx
-pub fn add(out: &mut Tensor<f32, [?], Memory::HBM>, a: &Tensor<f32, [?], Memory::HBM>,
-           b: &Tensor<f32, [?], Memory::HBM>, n: i32) -> void {
+extern fn add(out: &mut Tensor<f32, [?], Memory::HBM>, a: &Tensor<f32, [?], Memory::HBM>,
+              b: &Tensor<f32, [?], Memory::HBM>, n: i32) -> void {
   spawn on(Topology::Device) { ... }   // .entry add
   return;
 }
@@ -335,17 +335,17 @@ new zeroing. Two launches that run at the same time need two buffers.
 
 ### 3.6 Calling a Vx function that launches GPU kernels
 
-A host program that is not Vx, for example Python with `ctypes`, can call a `pub fn` from a
+A host program that is not Vx, for example Python with `ctypes`, can call an `extern fn` from a
 library that `vxc --action emit-obj` builds. The function launches its GPU regions through the
 CUDA backend (`runtime/cuda_dispatch.cpp`). These rules hold for such a call:
 
-- **Parameters.** A `pub fn` takes the C signature of its MLIR function. A tensor parameter of
+- **Parameters.** An `extern fn` takes the C signature of its MLIR function. A tensor parameter of
   rank r is 3 + 2r values: the allocated pointer, the aligned pointer, the offset, r sizes and r
   strides (the `words` of §3.5). A scalar is one value. For example,
   `glm_vx_spawn_scale(out, x, alpha, n)` with two rank-1 tensors is
   `(ptr, ptr, i64, i64, i64, ptr, ptr, i64, i64, i64, f32, i32)`.
 - **Packed tensors.** Vx reads a tensor with no gaps: the last stride is 1, and each other
-  stride is the product of the sizes after it. A `pub fn` checks the strides of each tensor
+  stride is the product of the sizes after it. An `extern fn` checks the strides of each tensor
   parameter at its start, and stops the program with a message when one has a gap. The stride
   of an axis of size 1 can be any value, and so can every stride of an empty tensor.
 - **Device memory.** A tensor in a GPU space, such as `&Tensor<f32, [?], Memory::HBM>`, can
@@ -420,7 +420,7 @@ right of the program, because it uses the id file and NCCL connects the ranks.
 
 ### 3.8 Calling a Vx function that launches Apple GPU kernels
 
-A Swift, C or Rust program can call a `pub fn` from an object that
+A Swift, C or Rust program can call an `extern fn` from an object that
 `vxc --host default --machine fleet/m4-uma.vx --action emit-obj` builds. Its `spawn on` regions
 run on the Apple GPU through Metal (`runtime/metal_dispatch.mm`).
 
@@ -457,17 +457,19 @@ message, `%`, `\` and each control character are `%` and two hex digits, so a ne
   below). It is `hidden` and `dso_local`.
   The executable does not export it, so a program's `fn write` does not replace
   libc's `write` for the runtime library.
-- A `pub fn` keeps its name and is exported, so a shared library built from the
-  program gives it to C. Only a top-level function that is not generic can be
-  `pub`. A `pub fn write` replaces libc's `write`, as any exported C function does.
-- Apart from `main` and `pub` functions, every symbol Vx exports starts with
+- An `extern fn` keeps its name and is exported, so a shared library built from
+  the program gives it to C. Only a top-level function that is not generic can be
+  `extern`. An `extern fn write` replaces libc's `write`, as any exported C
+  function does. A `pub fn` is not exported: `pub` says only which Vx files can
+  call it.
+- Apart from `main` and exported functions, every symbol Vx exports starts with
   `_vx_`. The kernel entry
   points `_vx_ciface_<kernel>` are the only ones today. The dispatch runtime
   finds them with `dlsym`.
 - A function with the name of a C function gets the name `<file>__<name>`, so that
   each call of the C function still reaches it. The C functions are the ones that an
   `extern` block declares, and `malloc`, `realloc`, `aligned_alloc` and `free`, which
-  the compiler calls. A `pub fn` with such a name is an error.
+  the compiler calls. An exported function with such a name is an error.
 - `main` keeps its C name, because the C runtime calls it.
 - A function in an `extern` block keeps its C name and C linkage.
 

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::*;
+use crate::gid::Visibility;
 
 /// Turn the trailing expression of a function body, written without `;`, into `return <expr>`.
 /// A trait default method needs this as much as a normal function does.
@@ -176,6 +177,46 @@ impl<'a> Parser<'a> {
         Ok(bound)
     }
 
+    /// `extern fn`: a function with a body that the object file exports to C.
+    pub(crate) fn at_extern_fn(&self) -> bool {
+        self.check(&TokenType::Extern) && matches!(self.peek_n(1).kind, TokenType::Fn)
+    }
+
+    /// `pub`, `pkg` or neither, before an item. `pkg` and `ws` are levels only before `fn`,
+    /// `unsafe`, `extern` or `safe`. So a call of a macro with either name can still start an
+    /// item, and a variable in a function body can have either name.
+    pub(crate) fn parse_visibility(&mut self) -> ParseResult<'a, Visibility> {
+        if self.match_token(&TokenType::Pub) {
+            if self.check(&TokenType::LeftParen) {
+                return Err(self.error(
+                    "Vx has no `pub(..)`. Write `pkg fn` for a function that each file of its \
+                     package can call",
+                ));
+            }
+            return Ok(Visibility::Public);
+        }
+        if self.at_level_word("pkg") {
+            self.advance();
+            return Ok(Visibility::Package);
+        }
+        if self.at_level_word("ws") {
+            return Err(self.error(
+                "`ws` needs a workspace group, and Vx has no manifest to declare one yet. Write \
+                 `pkg` or `pub`",
+            ));
+        }
+        Ok(Visibility::Private)
+    }
+
+    /// Whether the level `word`, such as `pkg`, starts an item here.
+    pub(crate) fn at_level_word(&self, word: &str) -> bool {
+        self.peek().kind == TokenType::Identifier(word)
+            && matches!(
+                self.peek_n(1).kind,
+                TokenType::Fn | TokenType::Unsafe | TokenType::Extern | TokenType::Safe
+            )
+    }
+
     /// Whether a function declaration starts here: `fn`, or `unsafe fn`.
     pub(crate) fn at_fn_start(&self) -> bool {
         self.check(&TokenType::Fn)
@@ -185,7 +226,19 @@ impl<'a> Parser<'a> {
     pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
         // A top-level `pub fn` has its `pub` read before this, so one here is on a method.
         if self.check(&TokenType::Pub) {
-            return Err(self.error("`pub` on a method is not supported yet"));
+            return Err(self.error("`pub` is not allowed here"));
+        }
+        if self.check(&TokenType::Unsafe) {
+            let level = match &self.peek_n(1).kind {
+                TokenType::Pub => Some("pub"),
+                TokenType::Identifier("pkg") => Some("pkg"),
+                _ => None,
+            };
+            if let Some(level) = level {
+                return Err(self.error(&format!(
+                    "write `{level} unsafe fn`: `{level}` comes before `unsafe`"
+                )));
+            }
         }
         let is_unsafe = self.match_token(&TokenType::Unsafe);
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
@@ -296,7 +349,8 @@ impl<'a> Parser<'a> {
 
         Ok(Function {
             is_unsafe,
-            is_pub: false,
+            visibility: crate::gid::Visibility::Private,
+            exported: false,
             name: name.into(),
             generics,
             params,
@@ -310,6 +364,7 @@ impl<'a> Parser<'a> {
             doc_comment: None,
             span,
             file: None,
+            package: None,
         })
     }
 
@@ -1315,6 +1370,7 @@ impl<'a> Parser<'a> {
             }
             let decl_line = self.peek().line;
             let decl_column = self.peek().column;
+            let visibility = self.parse_visibility()?;
             let is_safe = self.match_token(&TokenType::Safe);
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = self.expect_identifier("Expected function name")?;
@@ -1354,6 +1410,7 @@ impl<'a> Parser<'a> {
             }
 
             externs.push(ExternDecl {
+                visibility,
                 name: name.into(),
                 is_safe,
                 memories,
@@ -1367,6 +1424,7 @@ impl<'a> Parser<'a> {
                     expansion: self.expansion(),
                 },
                 file: None,
+                package: None,
                 doc_comment,
             });
         }
@@ -1419,7 +1477,7 @@ impl<'a> Parser<'a> {
                 return Err(self.error("`unsafe fn` on a trait method is not supported yet"));
             }
             if self.check(&TokenType::Pub) {
-                return Err(self.error("`pub` on a method is not supported yet"));
+                return Err(self.error("a method of a trait needs no `pub`: each one is public"));
             }
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
             let method_name = self.expect_identifier("Expected method name")?;
@@ -1591,7 +1649,16 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            let pub_token = self.peek().clone();
+            let visibility = self.parse_visibility()?;
+            if visibility != Visibility::Private && trait_name.is_some() {
+                return Err(self.error_at(
+                    &pub_token,
+                    "a method of a trait impl needs no `pub`: the trait makes it public",
+                ));
+            }
             let mut method = self.parse_function()?;
+            method.visibility = visibility;
             method.doc_comment = doc_comment;
             // A method of a generic impl block has the block's parameters in scope, so the
             // method is generic too even when it declares none of its own. Saying so here is
@@ -1833,7 +1900,7 @@ impl<'a> Parser<'a> {
                 let mut ib = self.parse_impl_block()?;
                 ib.is_extern = true;
                 impls.push(ib);
-            } else if self.check(&TokenType::Extern) {
+            } else if self.check(&TokenType::Extern) && !self.at_extern_fn() {
                 let mut at = self.peek().clone();
                 let block = self.parse_extern_block()?;
                 // A C function keeps its name, so a Vx function cannot share it.
@@ -1904,19 +1971,32 @@ impl<'a> Parser<'a> {
                 let mut c = self.parse_const_item()?;
                 c.doc_comment = doc_comment;
                 consts.push(c);
-            } else if self.at_fn_start() || self.check(&TokenType::Pub) {
+            } else if self.at_fn_start()
+                || self.check(&TokenType::Pub)
+                || self.at_level_word("pkg")
+                || self.at_level_word("ws")
+                || self.at_extern_fn()
+                || (self.check(&TokenType::Unsafe)
+                    && matches!(
+                        self.peek_n(1).kind,
+                        TokenType::Pub | TokenType::Identifier("pkg")
+                    ))
+            {
                 let start = self.peek().clone();
-                let is_pub = self.match_token(&TokenType::Pub);
-                if is_pub && !self.at_fn_start() {
-                    return Err(self.error("Expected 'fn' after 'pub'"));
+                let visibility = self.parse_visibility()?;
+                let has_level = visibility != Visibility::Private;
+                let exported = self.at_extern_fn() && self.match_token(&TokenType::Extern);
+                if (has_level || exported) && !self.at_fn_start() {
+                    return Err(self.error("Expected 'fn' after 'pub', 'pkg' or 'extern'"));
                 }
                 let mut f = self.parse_function()?;
                 // A generic function becomes one copy per type, each with its own name, so
                 // there is no single name to export.
-                if is_pub && !f.generics.is_empty() {
-                    return Err(self.error_at(&start, "a generic function cannot be `pub` yet"));
+                if exported && !f.generics.is_empty() {
+                    return Err(self.error_at(&start, "a generic function cannot be `extern`"));
                 }
-                f.is_pub = is_pub;
+                f.visibility = visibility;
+                f.exported = exported;
                 f.doc_comment = doc_comment;
                 // Vx has no overloading: a second `fn foo` replaced the first without a word.
                 let earlier = defined_at.get(&f.name).copied().or_else(|| {
@@ -2007,6 +2087,7 @@ impl<'a> Parser<'a> {
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             file: None,
+            package: None,
             item_macros,
             imports,
             macros,
@@ -2444,6 +2525,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 args,
                 span: _,
                 type_args: _,
+                ..
             }) = expr
             {
                 assert_eq!(func_name.as_ref(), "Tensor");
@@ -2897,6 +2979,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 args,
                 span: _,
                 type_args: _,
+                ..
             })) = expr
             {
                 assert_eq!(name.as_ref(), "vx_stdout_write");
@@ -2923,6 +3006,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 args,
                 span: _,
                 type_args: _,
+                ..
             }) = expr
             {
                 assert_eq!(name.as_ref(), "vx_stderr_write");

@@ -1,4 +1,4 @@
-// In a library for the Apple GPU, a `pub fn` waits for the GPU before it returns, because its C
+// In a library for the Apple GPU, an `extern fn` waits for the GPU before it returns, because its C
 // caller reads the tensors right away (a_library_for_the_apple_gpu_waits_before_it_returns.vx).
 // A program with `main` has no C caller, so `add_one` returns with no wait. The runtime waits
 // for the GPU where `main` reads the result.
@@ -10,7 +10,7 @@
 // CHECK: llvm.call @vx_plugin_dispatch_async(
 // CHECK-NEXT: llvm.return
 
-pub fn add_one(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+extern fn add_one(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
   spawn on(Topology::Device) {
     for y in 0..h across blocks {
       for x in 0..w across lanes(256) {

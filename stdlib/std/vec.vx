@@ -15,7 +15,7 @@ import std::alloc;
 
 /// The size in bytes of `cap` elements of `elem_size` bytes. Stops the program when the
 /// product does not fit in an `i64`.
-fn vec_bytes(cap : i64, elem_size : i64) -> i64 {
+pub fn vec_bytes(cap : i64, elem_size : i64) -> i64 {
   if cap < 0 || elem_size < 0 {
     panic("Vec: negative capacity or element size");
   }
@@ -27,13 +27,13 @@ fn vec_bytes(cap : i64, elem_size : i64) -> i64 {
 
 /// The alignment of a buffer: 16 bytes, the most any Vx scalar type needs, until Vx has
 /// `alignof<T>()`.
-fn vec_align() -> i64 {
+pub fn vec_align() -> i64 {
   return 16;
 }
 
 /// A buffer for `cap` elements of `elem_size` bytes. For zero bytes it allocates nothing and
 /// gives the address `vec_align()`, which is aligned and not null.
-fn vec_alloc(elem_size : i64, cap : i64) -> *mut i8 {
+pub fn vec_alloc(elem_size : i64, cap : i64) -> *mut i8 {
   let bytes = vec_bytes(cap, elem_size);
   if bytes == 0 {
     return unsafe { vec_align() as *mut i8 };
@@ -64,7 +64,7 @@ fn vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mu
 }
 
 /// Stops the program when `index` is outside `0..len`, and prints both to standard error first.
-fn vec_check_index(index : i64, len : i64) -> i32 {
+pub fn vec_check_index(index : i64, len : i64) -> i32 {
   if index < 0 || index >= len {
     eprintln!("Vec: index {} is out of bounds for length {}", index, len);
     panic("Vec: index out of bounds");
@@ -74,7 +74,7 @@ fn vec_check_index(index : i64, len : i64) -> i32 {
 
 /// Moves the element at `index` out of the buffer. The caller makes sure the buffer does not
 /// drop it again.
-unsafe fn vec_take<T>(data : *mut T, index : i32) -> T {
+pub unsafe fn vec_take<T>(data : *mut T, index : i32) -> T {
   return unsafe { data[index] };
 }
 
@@ -102,12 +102,12 @@ unsafe impl<T : Sync> Sync for Vec<T> {}
 impl<T>
 Vec<T> {
   /// An empty vector with room for two elements.
-  fn new ()->Vec<T> {
+  pub fn new ()->Vec<T> {
     return Vec<T>::with_capacity(2);
   }
 
   /// An empty vector with room for `capacity` elements before it has to grow.
-  fn with_capacity(capacity : i32) -> Vec<T> {
+  pub fn with_capacity(capacity : i32) -> Vec<T> {
     let ptr : *mut T = vec_alloc(sizeof<T>(), capacity as i64);
     return Vec<T> {
       data : ptr, len : 0, capacity : capacity
@@ -116,7 +116,7 @@ Vec<T> {
 
   /// A raw pointer to the first element. Invalidated by anything that grows the vector, so a
   /// call that can free memory through the vector ends the facts of its `ensures`.
-  fn as_mut_ptr(self : &Vec<T>) -> *mut T
+  pub fn as_mut_ptr(self : &Vec<T>) -> *mut T
   ensures valid(return, self.len)
   ensures initialized(return, self.len)
   ensures !frees(self)
@@ -133,7 +133,7 @@ Vec<T> {
   /// Named for what it will return once slices exist (Vx#534); today it hands back the first
   /// element rather than a `(pointer, length)` pair, so the length has to be carried
   /// separately by whoever reads it.
-  fn as_mut_slice(self : &mut Vec<T>) -> &mut T
+  pub fn as_mut_slice(self : &mut Vec<T>) -> &mut T
   ensures !frees(self)
   {
     let ptr : *mut T = self.data;
@@ -142,14 +142,14 @@ Vec<T> {
 
   /// Gives up the vector without freeing its buffer, and returns its first element as
   /// `as_mut_slice` does. Nothing frees the buffer, so the reference stays valid.
-  fn leak(self : Vec<T>) -> &mut T {
+  pub fn leak(self : Vec<T>) -> &mut T {
     let ptr : *mut T = self.data;
     forget(self);
     return unsafe { &mut *ptr };
   }
 
   /// A reference to the first element, with the caveat `as_mut_slice` describes.
-  fn as_slice(self : &Vec<T>) -> &T
+  pub fn as_slice(self : &Vec<T>) -> &T
   ensures !frees(self)
   {
     let ptr : *mut T = self.data;
@@ -160,7 +160,7 @@ Vec<T> {
   ///
   /// Capacity doubles, from four upwards, so appending n values reallocates about log2(n)
   /// times. Any raw pointer or reference taken from this vector is invalidated by a growth.
-  fn push(self : &mut Vec<T>, val : T) -> i32 {
+  pub fn push(self : &mut Vec<T>, val : T) -> i32 {
     if self
     .len == self.capacity {
       let mut new_cap : i32 = 4;
@@ -181,7 +181,7 @@ Vec<T> {
   ///
   /// Unsafe because all-zero bytes must be a valid `T`. They are for a number, but not for a type
   /// that holds a reference.
-  unsafe fn zeroed(len : i32) -> Vec<T> {
+  pub unsafe fn zeroed(len : i32) -> Vec<T> {
     let mut v = Vec<T>::with_capacity(len);
     unsafe { write_bytes(v.data, 0u8, len as usize); }
     v.len = len;
@@ -194,7 +194,7 @@ Vec<T> {
   /// Unsafe because `src` must have `count` values to read, outside this vector. The vector gets
   /// copies of their bits, so for a type that is not `Copy`, the caller must not drop the
   /// originals.
-  unsafe fn extend_from_raw(self : &mut Vec<T>, src : *const T, count : i32) -> i32 {
+  pub unsafe fn extend_from_raw(self : &mut Vec<T>, src : *const T, count : i32) -> i32 {
     let needed = (self.len as i64) + (count as i64);
     if count < 0 || needed > 2147483647i64 {
       panic("Vec: extend_from_raw got a negative count, or a length that does not fit in an i32");
@@ -223,7 +223,7 @@ Vec<T> {
   ///
   /// When `index` is negative or not below `len`. It prints the index and the length, and stops
   /// the program.
-  fn get_ref(self : &Vec<T>, index: i32) -> &T
+  pub fn get_ref(self : &Vec<T>, index: i32) -> &T
   ensures !frees(self)
   {
     vec_check_index(index as i64, self.len as i64);
@@ -236,7 +236,7 @@ Vec<T> {
   ///
   /// As `get_ref` does, and for the same reason. Setting past the end does not extend the
   /// vector; `push` is what grows it.
-  fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
+  pub fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
     vec_check_index(index as i64, self.len as i64);
     let old : T = unsafe { vec_take(self.data, index) };
     drop(old);
@@ -245,7 +245,7 @@ Vec<T> {
   }
 
   /// How many elements are in the vector, which is not its capacity.
-  fn len(self : &Vec<T>) -> i32
+  pub fn len(self : &Vec<T>) -> i32
   ensures return == self.len
   ensures !frees(self)
   {
@@ -253,7 +253,7 @@ Vec<T> {
   }
 
   /// Whether the vector has no elements.
-  fn is_empty(self : &Vec<T>) -> bool
+  pub fn is_empty(self : &Vec<T>) -> bool
   ensures !frees(self)
   {
     return self.len == 0;
@@ -261,7 +261,7 @@ Vec<T> {
 
   /// Removes the last element and returns it, or `None` when the vector is empty. The
   /// capacity stays, so a later `push` reuses the slot.
-  fn pop(self : &mut Vec<T>) -> Option<T> {
+  pub fn pop(self : &mut Vec<T>) -> Option<T> {
     if self.len == 0 {
       return Option<T>::None();
     }
@@ -271,7 +271,7 @@ Vec<T> {
 
   /// An iterator over references to the elements, borrowing the vector rather than
   /// consuming it. `.copied()` turns it into one over copies.
-  fn iter(self : &Vec<T>) -> VecIter<T> {
+  pub fn iter(self : &Vec<T>) -> VecIter<T> {
     return VecIter<T> {
       vec : self, current : 0, back : self.len
     };
@@ -279,7 +279,7 @@ Vec<T> {
 
   /// An iterator over mutable references to the elements, through which each can be changed
   /// in place.
-  fn iter_mut(self : &mut Vec<T>) -> VecIterMut<T> {
+  pub fn iter_mut(self : &mut Vec<T>) -> VecIterMut<T> {
     let n = self.len;
     return VecIterMut<T> {
       vec : self, current : 0, back : n
@@ -294,7 +294,7 @@ impl<T : Copy> Vec<T> {
   /// # Panics
   ///
   /// As `get_ref` does.
-  fn get(self : &Vec<T>, index: i32) -> T
+  pub fn get(self : &Vec<T>, index: i32) -> T
   ensures !frees(self)
   {
     vec_check_index(index as i64, self.len as i64);
@@ -528,7 +528,7 @@ impl<T> ExactSizeIterator for VecIterMut<T> {
 impl<T>
 VecIter<T> {
   /// An iterator over these elements with `f` applied to a reference to each.
-  fn map<NewItem>(self : VecIter<T>, f : Closure1<&T, NewItem>)
+  pub fn map<NewItem>(self : VecIter<T>, f : Closure1<&T, NewItem>)
   -> VecMap<T, NewItem> {
     return VecMap<T, NewItem> {
       iter : self, f : f
@@ -575,7 +575,7 @@ impl<T, NewItem> ExactSizeIterator for VecMap<T, NewItem> {
 impl<T, NewItem>
 VecMap<T, NewItem> {
   /// Drain the iterator into a fresh `Vec`, which the caller owns.
-  fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem> {
+  pub fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem> {
     let mut result = Vec<NewItem>::new ();
     loop {
       let mut opt = self.next();

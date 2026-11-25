@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // `vxc --audit`: the facts that the compiler trusts without a proof. Each `assume`, each pointer
-// clause that a call in `unsafe` code trusts, each `ensures` of an `extern` function, and each
-// pointer `requires` of a `pub fn`, which C code can call with no proof. A1 in
+// clause that a call in `unsafe` code trusts, each `ensures` of a function in an `extern` block,
+// and each pointer `requires` of an `extern fn`, which C code can call with no proof. A1 in
 // docs/discussions/contracts_for_extern_and_unsafe_code.md has the design.
 //
 //===----------------------------------------------------------------------===//
@@ -52,8 +52,8 @@ pub(crate) fn clause_text(e: &Expr) -> String {
 }
 
 /// The facts that the declarations of `program` state and the compiler trusts: each `ensures`
-/// of an `extern` function, whose body the compiler cannot read, and each pointer `requires` of
-/// a `pub fn`, because a call from C proves nothing.
+/// of a function in an `extern` block, whose body the compiler cannot read, and each pointer
+/// `requires` of an `extern fn`, because a call from C proves nothing.
 pub fn trusted_declarations(program: &Program) -> Vec<Trusted> {
     let file = program
         .file
@@ -77,10 +77,10 @@ pub fn trusted_declarations(program: &Program) -> Vec<Trusted> {
         }
     }
     let pointer_clause = |e: &&Expr| crate::hir::check::pointer_facts::read_clause(e).is_some();
-    for f in program.functions.iter().filter(|f| f.is_pub) {
+    for f in program.functions.iter().filter(|f| f.exported) {
         for clause in f.requires.iter().filter(pointer_clause) {
             let what = format!(
-                "`pub fn {}` requires `{}`, and a call from C proves nothing",
+                "the exported function `{}` requires `{}`, and a call from C proves nothing",
                 f.name,
                 clause_text(clause)
             );

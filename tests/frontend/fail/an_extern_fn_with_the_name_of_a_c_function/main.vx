@@ -6,13 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 // The imported module declares C's `puts`, so a Vx function named `puts` gets another name. A C
-// program calls a `pub fn` by its name, so a `pub fn puts` is an error.
+// program calls an `extern fn` by its name, so a `extern fn puts` is an error.
 //
 // RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s
-// CHECK: main.vx:[[@LINE+3]]: `pub fn puts` cannot keep its name, because the C function `puts` has that name. Choose another name
-import tests::frontend::fail::a_pub_fn_with_the_name_of_an_extern_function::c_puts;
+// CHECK: main.vx:[[@LINE+3]]: the exported function `puts` cannot keep its name, because the C function `puts` has that name. Choose another name
+import tests::frontend::fail::an_extern_fn_with_the_name_of_a_c_function::c_puts;
 
-pub fn puts(_s : *const i8) -> i32 {
+extern fn puts(_s : *const i8) -> i32 {
   return 0;
 }
 

@@ -3072,6 +3072,67 @@ impl TypeChecker<'_> {
         Some(token_inner(&ty).cloned().unwrap_or(Type::Unknown))
     }
 
+    /// `t.copy_end()` on a token of `transfer_async`: a source of `select` that is ready when the
+    /// copy ended. It is `copy_end_at(t.as_ptr() as *const void in M)` from `std::sync::select`,
+    /// so it borrows the token, and `t.wait()` still comes after it.
+    pub(crate) fn check_token_copy_end(&mut self, expr: &mut Expr) -> Option<Type> {
+        let Expr::MethodCall(m) = &*expr else {
+            return None;
+        };
+        if m.method_name.as_ref() != "copy_end" || !m.args.is_empty() {
+            return None;
+        }
+        let probe = self.check_expr_type_probe(&m.base);
+        let Some(Type::Tensor(_, _, place)) = token_inner(&probe) else {
+            return None;
+        };
+        let known = self.env.generic_functions.contains_key("copy_end_at")
+            || (self.worker.global.registry.fn_sigs)
+                .contains_key(&crate::symbol::Symbol::from("copy_end_at"));
+        if !known {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E2002,
+                "`copy_end` on a token needs `import std::sync::select`".to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&m.span)),
+            );
+            return Some(Type::Unknown);
+        }
+        let address = Type::Pointer(
+            Box::new(Type::Struct("void".into(), None)),
+            place.clone(),
+            false,
+        );
+        let Expr::MethodCall(m) = std::mem::replace(
+            expr,
+            Expr::Number(crate::syntax::NumberExpr::new(
+                "0".to_string(),
+                None,
+                Span::default(),
+            )),
+        ) else {
+            unreachable!("matched above")
+        };
+        let pointer = Expr::MethodCall(crate::syntax::expr::MethodCallExpr::new(
+            m.base,
+            "as_ptr".into(),
+            None,
+            Vec::new(),
+            m.span,
+        ));
+        let cast = Expr::AsCast(crate::syntax::expr::AsCastExpr {
+            expr: Box::new(pointer),
+            target_ty: address,
+            source_ty: None,
+            span: m.span,
+        });
+        *expr = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr::by_the_compiler(
+            "copy_end_at".into(),
+            vec![cast],
+            m.span,
+        ));
+        Some(self.check_expr_type_flag(expr, true))
+    }
+
     /// A `let` of `name` that holds a token: it must be waited before its scope ends.
     pub(crate) fn note_token_let(&mut self, name: &crate::symbol::Symbol, span: Span) {
         if self.speculating {

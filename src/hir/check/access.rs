@@ -551,6 +551,10 @@ impl<'a> TypeChecker<'a> {
                         self.refuse_a_use_of_main(&span);
                         return Type::Unknown;
                     }
+                    if let Some(place) = self.place_of_function(name.as_ref()) {
+                        let shown = name.to_string();
+                        self.refuse_a_private_function(&shown, &shown, &place, &span);
+                    }
                     self.check_function_value(name.as_ref(), span);
                     if let Some((ret_ty, is_unsafe, params, _, _, _)) =
                         self.env.functions.get(name.as_ref())
@@ -825,6 +829,18 @@ impl<'a> TypeChecker<'a> {
                  owner still drops it; clone it, or use `core::ptr::read` and make sure only one \
                  of the two is dropped"
             ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
+    /// A `void` pointer has no element type, so `*p` and `p[i]` on it have nothing to read.
+    fn refuse_void_pointer_access(&mut self, inner: &Type, what: &str, span: &Span) {
+        if !matches!(inner, Type::Struct(n, None) if n.as_ref() == "void") {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3067,
+            format!("{what} needs an element type, and a `void` pointer has none"),
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
     }
@@ -1886,6 +1902,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Type::Pointer(inner, _, _) = &base {
                     self.require_unsafe_raw_access("Indexing a raw pointer", &ix_span);
+                    self.refuse_void_pointer_access(inner, "Indexing a raw pointer", &ix_span);
                     self.check_pointer_target_is_visible(&base, "Indexing a raw pointer", &ix_span);
                     self.refuse_move_through_raw_pointer(inner, consume, &ix_span);
                 }
@@ -2022,7 +2039,9 @@ impl<'a> TypeChecker<'a> {
                 if let Expr::Identifier(id) = &**inner {
                     self.borrowed_name = Some(id.span);
                 }
-                let inner_ty = self.check_expr_type_flag(inner, false);
+                // `&r.unwrap()` borrows the value that the call gives, and the call moves `r`.
+                let inner_is_a_call = matches!(&**inner, Expr::MethodCall(_));
+                let inner_ty = self.check_expr_type_flag(inner, inner_is_a_call);
                 self.borrowed_name = old_borrowed;
                 self.allow_cross_topology = old_allow;
                 // Quiet when a reference to a reference is what was asked for, as in
@@ -2890,6 +2909,7 @@ impl<'a> TypeChecker<'a> {
                             "Dereferencing a raw pointer"
                         };
                         self.require_unsafe_raw_access(verb, &e.span);
+                        self.refuse_void_pointer_access(&t, verb, &e.span);
                         self.check_pointer_target_is_visible(&inner_ty, verb, &e.span);
                         *t
                     }

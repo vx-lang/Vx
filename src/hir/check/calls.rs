@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::gid::Visibility;
 use crate::hir::check_state::ComptimeCheckProblemKind;
 use crate::hir::expr::{expected_numeric_elem, int_dim_expr};
 use std::collections::HashMap;
@@ -166,6 +167,7 @@ impl<'a> TypeChecker<'a> {
                         type_args: None,
                         args: new_args,
                         span: Span::default(),
+                        by_the_compiler: false,
                     });
 
                     return closure_ret;
@@ -1005,6 +1007,7 @@ impl<'a> TypeChecker<'a> {
                 type_args,
                 args,
                 span,
+                by_the_compiler,
             }) => {
                 let resolved_name = name.clone();
                 // Calling a local, `p(env, x)` with `p` a closure's function, uses it.
@@ -1013,6 +1016,8 @@ impl<'a> TypeChecker<'a> {
                 } else if resolved_name.as_ref() == "main" {
                     self.refuse_a_use_of_main(span);
                     return Type::Unknown;
+                } else if !*by_the_compiler {
+                    self.refuse_a_call_of_a_private_function(resolved_name.as_ref(), span);
                 }
                 let mut base_name = resolved_name.clone();
                 let mut explicit_generic_args = type_args.clone().unwrap_or_default();
@@ -1308,6 +1313,7 @@ impl<'a> TypeChecker<'a> {
                                 type_args: None,
                                 args: new_args,
                                 span: Span::default(),
+                                by_the_compiler: false,
                             });
 
                             func.0.return_type.clone()
@@ -1592,6 +1598,106 @@ impl<'a> TypeChecker<'a> {
                 .to_string(),
             Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
         );
+    }
+
+    /// E5005 when the current function may not call `place`, a function that it calls or
+    /// names. `shown` is the function as the program writes it, and `short` its own name.
+    pub(crate) fn refuse_a_private_function(
+        &mut self,
+        shown: &str,
+        short: &str,
+        place: &FunctionPlace,
+        at: &crate::syntax::Span,
+    ) {
+        if place.visibility == Visibility::Public || self.speculating {
+            return;
+        }
+        let (Some(theirs), Some(ours)) = (&place.file, &self.errors.file) else {
+            return;
+        };
+        if theirs == ours {
+            return;
+        }
+        let our_package = self.env.file_packages.get(ours);
+        let package = place.package.as_ref();
+        if place.visibility == Visibility::Package && package.is_some() && package == our_package {
+            return;
+        }
+        let file = std::path::Path::new(theirs.as_ref())
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| theirs.to_string());
+        let message = match (place.visibility, package) {
+            (Visibility::Package, Some(package)) => {
+                format!(
+                    "`{shown}` is `pkg` in `{file}`, so only the package `{}` can call it. \
+                 Write `pub fn {short}` there, so that other packages can call it",
+                    if package.is_empty() {
+                        "of the program"
+                    } else {
+                        package.as_ref()
+                    }
+                )
+            }
+            _ => format!(
+                "`{shown}` is private to `{file}`. Write `pub fn {short}` there, so that other \
+                 files can call it"
+            ),
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E5005,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
+        );
+    }
+
+    /// E5005 for a call of `name`, a function or `Type::method`, that the current function may
+    /// not call. A method of a trait impl is public, because the trait is.
+    pub(crate) fn refuse_a_call_of_a_private_function(
+        &mut self,
+        name: &str,
+        at: &crate::syntax::Span,
+    ) {
+        let found = match top_level_path_sep(name) {
+            Some(idx) => {
+                let ty = name[..idx].split('<').next().unwrap_or_default();
+                let method = name[idx + 2..].split('<').next().unwrap_or_default();
+                let place = self
+                    .env
+                    .impls
+                    .values()
+                    .flatten()
+                    .filter(|ib| ib.trait_name.is_none() && impl_type_name(&ib.target_type) == ty)
+                    .flat_map(|ib| ib.methods.iter())
+                    .find(|m| m.name.as_ref() == method)
+                    .map(FunctionPlace::of);
+                place.map(|p| (format!("{ty}::{method}"), method.to_string(), p))
+            }
+            None => {
+                let base = name.split('<').next().unwrap_or_default();
+                self.place_of_function(base)
+                    .map(|p| (base.to_string(), base.to_string(), p))
+            }
+        };
+        if let Some((shown, short, place)) = found {
+            self.refuse_a_private_function(&shown, &short, &place, at);
+        }
+    }
+
+    /// The file, package and visibility of the function, generic function or C function `name`.
+    pub(crate) fn place_of_function(&self, name: &str) -> Option<FunctionPlace> {
+        if let Some(f) = self.env.syntax_functions.get(name) {
+            return Some(FunctionPlace::of(f));
+        }
+        if let Some((f, _)) = self.env.generic_functions.get(name) {
+            return Some(FunctionPlace::of(f));
+        }
+        let e = self.env.externs.iter().find(|e| e.name.as_ref() == name)?;
+        Some(FunctionPlace {
+            file: e.file.clone(),
+            package: e.package.clone(),
+            visibility: e.visibility,
+        })
     }
 
     pub(crate) fn file_name(&self) -> String {
@@ -3683,6 +3789,7 @@ impl<'a> TypeChecker<'a> {
             type_args: None,
             args: call_args,
             span,
+            by_the_compiler: false,
         });
         // Probe the synthesized call *speculatively* to recover its return type without
         // emitting diagnostics or committing borrow/move side effects: the method-call
@@ -3760,7 +3867,10 @@ impl<'a> TypeChecker<'a> {
                 // Found before the check rewrites `v[i]` into a call: the variable that
                 // changes if the method changes its receiver.
                 let receiver_root = self.changed_root(obj);
-                let mut base_ty = self.check_expr_type_flag(obj, false);
+                // A call that gives the receiver runs as in a `let`, so it moves what it takes:
+                // `r.unwrap().len()` moves `r`.
+                let receiver_is_a_call = matches!(&**obj, Expr::MethodCall(_));
+                let mut base_ty = self.check_expr_type_flag(obj, receiver_is_a_call);
                 self.allow_cross_topology = prev_allow;
                 self.warn_wait_in_drop(&base_ty, _method, &method_span);
 
@@ -3839,6 +3949,7 @@ impl<'a> TypeChecker<'a> {
                             type_args: None,
                             args: args.clone(),
                             span: Span::default(),
+                            by_the_compiler: false,
                         });
                         *expr = func_call;
                         return exported_ty.clone();
@@ -3969,6 +4080,15 @@ impl<'a> TypeChecker<'a> {
                 let mut mapping = HashMap::new();
                 let found_method = self.resolve_method_in_impls(&base_ty, _method, &mut mapping);
                 if let Some((generic_method, ib)) = found_method {
+                    if ib.trait_name.is_none() {
+                        let shown = format!("{}::{}", impl_type_name(&ib.target_type), _method);
+                        self.refuse_a_private_function(
+                            &shown,
+                            _method.as_ref(),
+                            &FunctionPlace::of(&generic_method),
+                            &method_span,
+                        );
+                    }
                     let after_self: Vec<Type> = generic_method
                         .params
                         .iter()
@@ -4292,9 +4412,27 @@ impl<'a> TypeChecker<'a> {
                         Type::Pointer(_, _, _) => {
                             self.errors.push("Already a pointer".to_string());
                         }
+                        // The token of a `transfer_async`: the address that its copy fills. The
+                        // copy may still run, so the token gives no `as_mut_ptr`.
+                        token
+                            if !is_mut
+                                && matches!(
+                                    crate::syntax::types::transfer_token_inner(token),
+                                    Some(Type::Tensor(..))
+                                ) =>
+                        {
+                            let Some(Type::Tensor(el, _, place)) =
+                                crate::syntax::types::transfer_token_inner(token)
+                            else {
+                                unreachable!("matched above")
+                            };
+                            base_ty = element_pointer(false, el, place);
+                        }
                         _ => {
                             self.errors
                                 .push(format!("Cannot call {} on {}", _method, base_ty));
+                            // The call gives no pointer, and no value of the type of its base.
+                            base_ty = Type::Unknown;
                         }
                     }
                 } else if _method.as_ref() == "len" {
@@ -4856,5 +4994,31 @@ impl<'a> TypeChecker<'a> {
             }
         }
         None
+    }
+}
+
+/// The file and package of a function, and which files can call it.
+pub(crate) struct FunctionPlace {
+    pub file: Option<crate::symbol::Symbol>,
+    pub package: Option<crate::symbol::Symbol>,
+    pub visibility: Visibility,
+}
+
+impl FunctionPlace {
+    fn of(f: &crate::syntax::Function) -> Self {
+        Self {
+            file: f.file.clone(),
+            package: f.package.clone(),
+            visibility: f.visibility,
+        }
+    }
+}
+
+/// The name of the type of an impl block, with no type arguments: `Vec` for `impl<T> Vec<T>`.
+fn impl_type_name(ty: &Type) -> String {
+    match ty {
+        Type::Struct(name, _) | Type::Enum(name, _) => name.to_string(),
+        Type::GenericInstance(base, _) => impl_type_name(base),
+        other => other.to_string(),
     }
 }
