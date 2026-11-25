@@ -9,16 +9,16 @@
 import core::panic;
 
 /// Prints a place in the program.
-fn show(what : i32, l : Location) -> void {
+pub fn show(what : i32, l : Location) -> void {
   println!("{} at {}:{}:{}", what, l.file, l.line, l.column);
 }
 
 /// Prints the place of its call.
-fn show_caller(what : i32, at : Caller) -> void {
+pub fn show_caller(what : i32, at : Caller) -> void {
   show(what, at.location);
 }
 
 /// Calls `show_caller` from this module.
-fn from_the_module() -> void {
+pub fn from_the_module() -> void {
   show_caller(6);
 }

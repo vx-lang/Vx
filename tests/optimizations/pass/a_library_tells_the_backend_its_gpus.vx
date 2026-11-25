@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // The id of a GPU topology in a machine file is a hash of its name. So the program tells the CUDA
 // backend which local GPU each id is, with `vx_plugin_control`. A program does that at the start
-// of `main`. A library from `--action emit-obj` has no `main`, so each `pub fn` does it at its
+// of `main`. A library from `--action emit-obj` has no `main`, so each `extern fn` does it at its
 // start. Without it, the backend gives host memory for the count that `merge` makes, and the
 // kernel faults on the GPU.
 //
@@ -18,7 +18,7 @@
 // CHECK-NOT: llvm.func
 // CHECK: llvm.call @vx_plugin_arrivals_take(
 
-pub fn merge(partial : &mut Tensor<i32, [?, ?], Memory::HBM>, merged : &mut Tensor<i32, [?, ?], Memory::HBM>, heads : i32) -> void {
+extern fn merge(partial : &mut Tensor<i32, [?, ?], Memory::HBM>, merged : &mut Tensor<i32, [?, ?], Memory::HBM>, heads : i32) -> void {
   spawn on(Topology::Device) {
     for h in 0..heads across blocks {
       for s in 0..8 across blocks {
