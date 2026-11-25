@@ -148,12 +148,77 @@ impl FnEmit<'_> {
     // block) go in the region's entry block, so open a label for it. The low half of `imm` is the
     // topology dispatch id (the AST path's `topology` attribute), the high half its name's index.
     pub(crate) fn op_spawn(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let topo = ins.imm as u32 as i64;
         self.spawn_stack
-            .push((ins.imm as u32 as i64, self.body.len(), ins.imm >> 32));
+            .push((topo, self.body.len(), ins.imm >> 32));
         self.region_slots.push(None);
         self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
+        // A device region states the multiple-of facts of the tensor parameters it can reach
+        // as `llvm.intr.assume`s at its entry (#3668, Vx#3874), so the backend folds on them.
+        // An assume for a parameter the body never reads is pruned at `SpawnEnd`: it would
+        // make the kernel take an operand it did not need.
+        let marks = if crate::arch::is_device_dispatch_id(topo) {
+            self.emit_mult_of_assumes(idx)?
+        } else {
+            Vec::new()
+        };
+        self.mult_of_marks.push(marks);
         self.terminated = false;
         Ok(())
+    }
+
+    /// One `llvm.intr.assume` per multiple-of fact of each tensor parameter, read from the
+    /// function's `requires` and the `?n` of the parameter's type (#3668, Vx#3874). N a
+    /// power of two, so `(extent & (N - 1)) == 0` says what the caller proved at the call.
+    /// Returns `(start, end, arg)` marks into `body` for the caller to prune when the region
+    /// turns out not to read the parameter. A parameter with no fact, and one whose MLIR
+    /// spelling is not a plain memref (a slot), adds nothing. A kernel from a `.vxlib` has
+    /// no `requires` (#3950), so it gets no facts and no assume.
+    fn emit_mult_of_assumes(&mut self, idx: usize) -> Lowered<Vec<(usize, usize, String)>> {
+        let mut marks = Vec::new();
+        for (i, (_, ty)) in self.func.params.iter().enumerate() {
+            let Some(dims) = crate::codegen::lower::tensor_dims_of(ty) else {
+                continue;
+            };
+            let mults: Vec<(usize, u64)> = dims
+                .iter()
+                .enumerate()
+                .filter_map(|(k, d)| match d {
+                    crate::syntax::Dim::Dyn(Some(name)) => self
+                        .func
+                        .requires
+                        .iter()
+                        .find_map(|req| crate::codegen::lower::requires_mult_of(req, name.as_ref()))
+                        .map(|n| (k, n)),
+                    _ => None,
+                })
+                .collect();
+            if mults.is_empty() {
+                continue;
+            }
+            let Ok(memty) = ty_mlir(ty, self.ctx) else {
+                continue;
+            };
+            if !memty.starts_with("memref<") || memty.contains("memref<memref<") {
+                continue;
+            }
+            let arg = format!("%arg{}", i as u32 + self.arg_offset);
+            let start = self.body.len();
+            for (k, n) in mults {
+                let tag = format!("{idx}m{i}k{k}");
+                self.body += &format!("  %c{tag} = arith.constant {k} : index\n");
+                self.body += &format!("  %sz{tag} = memref.dim {arg}, %c{tag} : {memty}\n");
+                self.body += &format!("  %cm{tag} = arith.constant {} : index\n", n - 1);
+                self.body += &format!("  %lo{tag} = arith.andi %sz{tag}, %cm{tag} : index\n");
+                self.body += &format!("  %cz{tag} = arith.constant 0 : index\n");
+                self.body += &format!("  %eq{tag} = arith.cmpi eq, %lo{tag}, %cz{tag} : index\n");
+                self.body += &format!(
+                    "  \"llvm.intr.assume\"(%eq{tag}) {{op_bundle_sizes = array<i32>}} : (i1) -> ()\n"
+                );
+            }
+            marks.push((start, self.body.len(), arg));
+        }
+        Ok(marks)
     }
 
     // Close the `vx.spawn` region: terminate its last block with `vx.yield` (unless a body
@@ -216,6 +281,23 @@ impl FnEmit<'_> {
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
         let across = matches!(self.region_slots.pop(), Some(Some(_)));
+        // The region's body is what was emitted since the spawn opened. An assume whose
+        // parameter no body instruction reads would make the kernel take an operand it did
+        // not need, so prune it. Searching after the assume text, not in it: the text
+        // itself names the argument. A false "read" (a same-named use elsewhere) only keeps
+        // a sound assume, so the separators below cover MLIR's operand spellings and let a
+        // miss, never a hit, be the wrong answer.
+        if let Some(marks) = self.mult_of_marks.pop() {
+            for (start, end, arg) in marks.into_iter().rev() {
+                let rest = &self.body[end.min(self.body.len())..];
+                let read = [" ", ",", ")", ":"]
+                    .iter()
+                    .any(|sep| rest.contains(&format!("{arg}{sep}")));
+                if !read {
+                    self.body.replace_range(start..end, "");
+                }
+            }
+        }
         // The topology's name as the program wrote it, from the function's string table, and the
         // line of the `spawn` from the string after it. A task has no name: its high half is the
         // line of its `spawn`.
