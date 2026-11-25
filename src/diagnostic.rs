@@ -525,7 +525,8 @@ pub enum DiagnosticCode {
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a
     /// `*const T` pointer and for a view of memory made from one: a write, a `&mut` borrow or a
-    /// `&mut self` call through it. Writing needs a `*mut T`.
+    /// `&mut self` call through it. Writing needs a `*mut T`. A call through `f : &F` of a
+    /// closure that changes a value it captures is one too. Pass the closure by value or as `&mut`.
     E4006,
     /// A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;`
     /// followed by a use of `r`. The borrow would point at a value that has moved away.
@@ -533,7 +534,8 @@ pub enum DiagnosticCode {
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
     /// away. Copy or clone it instead. A method that takes `self` by value, called as `r.f()`,
-    /// takes `*r` the same way. A `match` on a reference names parts of the value behind
+    /// takes `*r` the same way, and so does a call through `f : &F` of a closure that moves a value
+    /// it captures. A `match` on a reference names parts of the value behind
     /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
     /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
     /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take

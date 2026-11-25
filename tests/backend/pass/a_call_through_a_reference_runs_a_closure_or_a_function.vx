@@ -1,0 +1,102 @@
+//===- a_call_through_a_reference_runs_a_closure_or_a_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A generic function can take a closure or a function as `f : &F` and call it as `f(x)` or
+// `(*f)(x)`. A function of each signature gets its own copy of `show`, so `half` gives `0.5`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}closure 11{{$}}
+// CHECK-NEXT: {{^}}function 12{{$}}
+// CHECK-NEXT: {{^}}fn variable 13{{$}}
+// CHECK-NEXT: {{^}}changed 3 7{{$}}
+// CHECK-NEXT: {{^}}say 5{{$}}
+// CHECK-NEXT: {{^}}pair 7 70{{$}}
+// CHECK-NEXT: {{^}}show 2{{$}}
+// CHECK-NEXT: {{^}}show 0.5{{$}}
+// CHECK-NEXT: {{^}}field 42{{$}}
+
+struct Pair {
+  a : i64,
+  b : i64,
+}
+
+struct Ops {
+  op : fn(i64) -> i64,
+}
+
+fn apply<F>(f : &F, x : i64) -> i64 {
+  return (*f)(x);
+}
+
+fn apply_by_name<F>(f : &F, x : i64) -> i64 {
+  return f(x);
+}
+
+fn apply_mut<F>(f : &mut F, x : i64) -> i64 {
+  return f(x);
+}
+
+fn run_void<F>(f : &F) -> void {
+  (*f)(5);
+}
+
+fn make<F>(f : &F, x : i64) -> Pair {
+  return (*f)(x);
+}
+
+fn show<F>(f : &F) -> void {
+  println!("show {}", (*f)(1));
+}
+
+fn add_one(x : i64) -> i64 {
+  return x + 1;
+}
+
+fn say(x : i64) -> void {
+  println!("say {}", x);
+}
+
+fn pair_of(x : i64) -> Pair {
+  return Pair {
+    a: x, b: x * 10
+  };
+}
+
+fn twice(x : i64) -> i64 {
+  return x * 2;
+}
+
+fn half(x : i64) -> f64 {
+  return (x as f64) / 2.0;
+}
+
+fn main() -> i32 {
+  let k : i64 = 10;
+  let c = |x : i64| x + k;
+  println!("closure {}", apply(&c, 1));
+  println!("function {}", apply_by_name(&add_one, 11));
+  let g = add_one;
+  println!("fn variable {}", apply(&g, 12));
+  let mut total : i64 = 0;
+  let mut add = |x : i64| -> i64 {
+    total = total + x;
+    return total;
+  };
+  let first = apply_mut(&mut add, 3);
+  println!("changed {} {}", first, apply_mut(&mut add, 4));
+  run_void(&say);
+  let p = make(&pair_of, 7);
+  println!("pair {} {}", p.a, p.b);
+  show(&twice);
+  show(&half);
+  let s = Ops {
+    op: twice
+  };
+  println!("field {}", (s.op)(21));
+  return 0;
+}

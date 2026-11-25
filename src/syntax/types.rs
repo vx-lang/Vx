@@ -1769,8 +1769,22 @@ impl Mangle for Type {
                 }
                 Ok(())
             }
-            Type::Function(..) => write!(w, "fn"),
-            Type::Closure(_, _) => write!(w, "closure"),
+            // The signature is part of the identity: a generic called with `fn(i64) -> i64` and
+            // with `fn(i64) -> f64` needs two symbols. The count keeps the parameters apart from
+            // the return type.
+            Type::Function(params, ret, _) | Type::Closure(params, ret) => {
+                let kind = if matches!(self, Type::Function(..)) {
+                    "fn"
+                } else {
+                    "closure"
+                };
+                write!(w, "{kind}{}", params.len())?;
+                for p in params.iter().chain(std::iter::once(&**ret)) {
+                    write!(w, "$")?;
+                    p.mangle_to(w)?;
+                }
+                Ok(())
+            }
             Type::Verified(inner) => {
                 write!(w, "Verified$")?;
                 inner.mangle_to(w)
