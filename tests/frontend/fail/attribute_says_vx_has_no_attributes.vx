@@ -9,6 +9,7 @@
 //
 // An attribute that is not `derive` gets the same first sentence, with no `impl` to suggest.
 
+// CHECK: Error at {{.*}}attribute_says_vx_has_no_attributes.vx:[[@LINE+1]]:1: Vx has no attributes yet, so `#[...]` does not work.
 #[inline]
 fn one() -> i32 {
   return 1;
@@ -17,5 +18,3 @@ fn one() -> i32 {
 fn main() -> i32 {
   return one();
 }
-
-// CHECK: Vx has no attributes yet, so `#[...]` does not work.
