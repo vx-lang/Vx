@@ -1,0 +1,33 @@
+//===- a_call_of_a_private_function_from_another_file.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A function with no `pub` is private to its file, as in Rust. Only code in that file can call
+// it or use it as a value. The imported module has a private function, method, associated
+// function, generic function and C function. This file can call its `pub` functions and the
+// methods of its trait impl, and nothing else.
+import tests::modules::a_module_with_private_functions;
+
+fn main() -> i32 {
+  let mut c = Counter::new();
+  let total = c.get() + c.describe() + twice_of(1) + first_of(1i64, 2i64);
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:11: `twice` is private to `a_module_with_private_functions.vx`. Write `pub fn twice` there, so that other files can call it
+  let a = twice(1);
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:5: `Counter::bump` is private to `a_module_with_private_functions.vx`. Write `pub fn bump` there, so that other files can call it
+  c.bump();
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:11: `Counter::zero` is private to `a_module_with_private_functions.vx`. Write `pub fn zero` there, so that other files can call it
+  let z = Counter::zero();
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:20: `labs` is private to `a_module_with_private_functions.vx`. Write `pub fn labs` there, so that other files can call it
+  let b = unsafe { labs(-1) };
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:11: `twice` is private to `a_module_with_private_functions.vx`. Write `pub fn twice` there, so that other files can call it
+  let f = twice;
+  // CHECK: Error[E5005] at {{.*}}.vx:[[@LINE+1]]:11: `same` is private to `a_module_with_private_functions.vx`. Write `pub fn same` there, so that other files can call it
+  let g = same(3i64);
+  return (total + a + z.n + b + f(1i64) + g) as i32;
+}
+// CHECK: 6 error(s) emitted

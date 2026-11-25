@@ -598,6 +598,11 @@ pub enum DiagnosticCode {
     /// takes a `Root` makes the capabilities of the program, so a second start would give them to
     /// code that did not get them.
     E5004,
+    /// A call of a private function from another file, or such a function used as a value. A
+    /// function, an associated function or a method with no `pub` is private to its file, as
+    /// in Rust. So a library can keep a helper that only its own file may call, such as one
+    /// that reads through a raw pointer.
+    E5005,
 
     // --- Topology/Hardware Errors (E6xxx) ---
     /// Topology mismatch in function call

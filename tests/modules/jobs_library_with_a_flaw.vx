@@ -9,7 +9,7 @@
 // not type check. Nothing imports the generic, so a compile of the importer must not report it.
 //===----------------------------------------------------------------------===//
 
-fn library_good(x: i32) -> i32 {
+pub fn library_good(x: i32) -> i32 {
   return x + 1;
 }
 
