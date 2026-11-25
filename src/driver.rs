@@ -2340,6 +2340,7 @@ extern "C" {
     fn run_vx_opt(
         argc: std::os::raw::c_int,
         argv: *const *const std::os::raw::c_char,
+        version: *const std::os::raw::c_char,
     ) -> std::os::raw::c_int;
 }
 
@@ -2381,7 +2382,14 @@ pub fn apply_mlir_opt(
         .collect();
     let c_ptrs: Vec<*const std::os::raw::c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
 
-    let status = unsafe { run_vx_opt(c_ptrs.len() as std::os::raw::c_int, c_ptrs.as_ptr()) };
+    let version = std::ffi::CString::new(VERSION).unwrap();
+    let status = unsafe {
+        run_vx_opt(
+            c_ptrs.len() as std::os::raw::c_int,
+            c_ptrs.as_ptr(),
+            version.as_ptr(),
+        )
+    };
 
     if status != 0 {
         return Err("vx-opt failed. Check stderr for details.".to_string());
