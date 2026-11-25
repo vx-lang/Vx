@@ -1386,7 +1386,6 @@ impl<'a> TypeChecker<'a> {
                 // Arms that are only a number with no suffix, such as `_ => { 0 }`. Their number
                 // takes the type of the other arms once those are known.
                 let mut literal_arms = Vec::new();
-                let mut literal_ty = None;
                 // A `match` on an integer that the prover models: each arm knows which pattern
                 // matched, and which literal patterns above it did not.
                 let integer = matches!(&expr_ty, Type::Scalar(e)
@@ -1509,37 +1508,43 @@ impl<'a> TypeChecker<'a> {
                     // either.
                     let yields_value = crate::syntax::expr::block_gives_a_value(&arm.body);
                     if literal_arm {
-                        literal_arms.push(i);
-                        literal_ty.get_or_insert(arm_ty);
-                    } else if yields_value && match_ty.is_none() {
+                        literal_arms.push((i, arm_ty));
+                    } else if yields_value
+                        && match_ty.as_ref().is_none_or(crate::syntax::is_never_ty)
+                    {
+                        // An arm of type `!`, such as `todo()`, gives no value, so a later arm
+                        // decides the type.
                         match_ty = Some(arm_ty);
                     } else if yields_value && !unused && !crate::syntax::is_never_ty(&arm_ty) {
                         // The value of the `match` has one type, so every arm must give it.
                         let first = match_ty.as_ref().expect("an earlier arm gave a value");
-                        if !crate::syntax::is_never_ty(first) && *first != arm_ty {
-                            self.errors.error_with_code(
-                                crate::diagnostic::DiagnosticCode::E3069,
-                                format!(
-                                    "this `match` arm gives a value of type {arm_ty}, but an \
-                                     earlier arm gives a value of type {first}. Make every arm \
-                                     give the same type."
-                                ),
-                                Some(crate::diagnostic::SourceSpan::from_ast_span(&arm.span)),
-                            );
+                        if *first != arm_ty {
+                            let first = first.clone();
+                            self.report_match_arm_type(&arm.span, &arm_ty, &first);
                         }
                     }
                 }
-                match &match_ty {
-                    Some(ty) => {
-                        for i in literal_arms {
-                            let n = unsuffixed_number_tail(&mut arms[i].body)
-                                .expect("a literal arm ends in a number");
-                            if let Some(e) = crate::hir::expr::expected_numeric_elem(ty, &n.value) {
-                                n.ty = Some(e);
+                // With no other arm that gives a value, the numbers take the type of the first.
+                let from_numbers = match_ty.as_ref().is_none_or(crate::syntax::is_never_ty);
+                if from_numbers {
+                    if let Some((_, ty)) = literal_arms.first() {
+                        match_ty = Some(ty.clone());
+                    }
+                }
+                if let Some(ty) = match_ty.clone() {
+                    for (i, arm_ty) in literal_arms {
+                        let span = arms[i].span.clone();
+                        let n = unsuffixed_number_tail(&mut arms[i].body)
+                            .expect("a literal arm ends in a number");
+                        match crate::hir::expr::expected_numeric_elem(&ty, &n.value) {
+                            // `0` cannot be a `bool`, and `1.5` cannot be an `i64`.
+                            None if !unused && arm_ty != ty => {
+                                self.report_match_arm_type(&span, &arm_ty, &ty)
                             }
+                            Some(e) if !from_numbers => n.ty = Some(e),
+                            _ => {}
                         }
                     }
-                    None => match_ty = literal_ty,
                 }
                 self.restore_moved(joined.unwrap_or(marks_before));
                 self.borrow.add_back(arm_borrows);
@@ -1633,6 +1638,18 @@ impl<'a> TypeChecker<'a> {
 
     /// The end of a closure with a block body, whose `return` or written type gives `returned`:
     /// its last value, of type `ty`, must have that type, and it must not end with no value.
+    /// E3069: the arm at `span` gives a `got`, but the `match` gives a `want`.
+    fn report_match_arm_type(&mut self, span: &Span, got: &Type, want: &Type) {
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3069,
+            format!(
+                "this `match` arm gives a value of type {got}, but another arm gives a value of \
+                 type {want}. Make every arm give the same type."
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     fn check_closure_end(&mut self, body: &Expr, ty: &Type, returned: &Type, span: &Span) {
         if *ty == Type::Unknown || crate::syntax::is_never_ty(ty) {
             return;
