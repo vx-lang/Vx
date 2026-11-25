@@ -6,7 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @pick() -> i32
+// CHECK: [[VALUE:%.+]] = arith.constant 1 : i32
+// CHECK-NEXT: return [[VALUE]] : i32
 //
 // The write to `outside` comes after a `return` that always runs, so it never happens, and the
 // block does not write outside itself. The block is the value of a `return`, so the inner
