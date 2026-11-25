@@ -333,6 +333,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/lanes_write_rows_in_two_loops_one_after_another.vx",
         // needs --machine
+        "optimizations/pass/across_loops_over_usize_and_i64_ranges.vx",
+        // needs --machine
         "optimizations/pass/lane_matmuls_of_a_tile_in_hbm_give_the_sums.vx",
         // needs --machine
         "optimizations/pass/lane_matmuls_load_16_bytes_of_a_row_at_once.vx",
