@@ -53,6 +53,7 @@ fn test_ak_module_add_function() -> Result<(), String> {
         imports: Vec::new(),
         module_path: "core::test".into(),
         file: None,
+        package: None,
         externs: vec![],
         structs: vec![],
         enums: vec![],
