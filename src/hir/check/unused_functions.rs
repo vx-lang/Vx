@@ -40,7 +40,7 @@ pub fn warn_functions_nothing_calls(program: &Program, errors: &mut DiagnosticsV
         program
             .functions
             .iter()
-            .filter(|f| f.is_pub || f.exported)
+            .filter(|f| f.visibility != crate::gid::Visibility::Private || f.exported)
             .map(|f| f.name.to_string()),
     );
     for i in &program.impls {

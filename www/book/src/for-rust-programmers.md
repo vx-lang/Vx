@@ -11,6 +11,8 @@ lists what to change. Each item shows the Rust form and the Vx form.
   it. `pub` does not export.
 - **A function without `pub` is private to its file**, as in Rust. Write `pub fn` for a function
   or method that another file calls. A method of a trait impl is public and takes no `pub`.
+  `pkg fn` is visible to each file of the same package, such as `std`, as `pub(crate)` is in
+  Rust. Vx has no `pub(..)`.
   Structs, enums and traits take no `pub`: a module that imports them sees them all.
 - **No attributes.** There is no `#[derive(..)]`, `#[test]` or `#[inline]`.
 
