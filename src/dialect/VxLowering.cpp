@@ -13763,9 +13763,52 @@ struct FuseAndTileLoopsPass
       else if (auto store = dyn_cast<memref::StoreOp>(op);
                store && isMemRef(store.getValueToStore().getType()))
         reason = "a buffer is stored into memory";
+      else if (isa<memref::AllocOp, memref::AllocaOp>(op) &&
+               usedByLoopAndByAnotherBlock(op->getResult(0)))
+        reason = "a buffer that a loop uses has a user in another block";
       return reason ? WalkResult::interrupt() : WalkResult::advance();
     });
     return reason;
+  }
+
+  // True if an `affine.for` in one block uses `buffer`, and another block of
+  // the same region has a user of it too.
+  //
+  // Fusion works on one block at a time, and ignores each user of a buffer
+  // that is in another block of the region. It then takes the buffer to be
+  // private to the loops of its block: it gives the fused loop a copy of its
+  // own and deletes the loop that filled the real buffer.
+  static bool usedByLoopAndByAnotherBlock(Value buffer) {
+    Region *home = buffer.getParentRegion();
+    // Calls `visit` on each op from `user` out to the op in the region that
+    // defines the buffer. Stops when `visit` returns true.
+    auto anyEnclosingOp = [&](Operation *user, auto visit) {
+      for (Operation *op = user; op; op = op->getParentOp()) {
+        if (visit(op))
+          return true;
+        if (op->getParentRegion() == home)
+          break;
+      }
+      return false;
+    };
+    // The regions that have users of the buffer in more than one block.
+    llvm::SmallDenseMap<Region *, Block *> blockWithUser;
+    llvm::SmallPtrSet<Region *, 4> usedInTwoBlocks;
+    for (Operation *user : buffer.getUsers())
+      anyEnclosingOp(user, [&](Operation *op) {
+        Block *block = op->getBlock();
+        if (blockWithUser.try_emplace(block->getParent(), block)
+                .first->second != block)
+          usedInTwoBlocks.insert(block->getParent());
+        return false;
+      });
+    return llvm::any_of(buffer.getUsers(), [&](Operation *user) {
+      bool inLoop = false;
+      return anyEnclosingOp(user, [&](Operation *op) {
+        inLoop |= isa<affine::AffineForOp>(op);
+        return inLoop && usedInTwoBlocks.contains(op->getParentRegion());
+      });
+    });
   }
 
   void runOnOperation() override {
