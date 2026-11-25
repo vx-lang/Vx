@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 //
-// A number has no index. Each function below indexes a number, and each gets one type error
-// at that index.
+// A number has no index, and a rank-0 tensor has none either. Each function below indexes one
+// of them, and each gets one type error at that index.
 
 fn index_of_an_f32() -> f32 {
   let x : f32 = 1.0;
@@ -27,6 +27,26 @@ fn index_of_an_element() -> f32 {
   return e[0];
 }
 
+fn make() -> Tensor<f32, [4, 3]> {
+  return Tensor<f32, [4, 3]>::fill(1.0);
+}
+
+// The tensor has no name. A call returns it.
+fn one_index_too_many_on_a_call() -> f32 {
+  return make()[0][0][0];
+}
+
+// A rank-0 tensor holds one number, so even `z[0]` is wrong. `z[0][0]` gets one error.
+fn index_of_a_rank_0_tensor() -> f32 {
+  let z = Tensor<f32, []>::fill(1.0);
+  return z[0][0];
+}
+
+// `r` is a number in device memory, not a buffer.
+fn index_of_a_number_in_device_memory(r : Ref<f32, Memory::DEV_HBM>) -> f32 {
+  return r[1];
+}
+
 fn main() -> i32 {
   return 0;
 }
@@ -34,3 +54,6 @@ fn main() -> i32 {
 // CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:15:11: Cannot index a value of type f32
 // CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:21:17: Cannot index a value of type f32
 // CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:27:11: Cannot index a value of type f32
+// CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:36:22: Cannot index a value of type f32
+// CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:42:11: Cannot index a value of type Tensor<f32, []>
+// CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:47:11: Cannot index a value of type f32
