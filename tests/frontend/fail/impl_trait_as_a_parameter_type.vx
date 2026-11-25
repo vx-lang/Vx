@@ -1,0 +1,24 @@
+//===- impl_trait_as_a_parameter_type.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Vx has no `impl Trait` type yet. The error points at `impl` and says to write a generic
+// parameter instead.
+
+trait Get {
+  fn get(self : &Self) -> i32;
+}
+
+// CHECK: Error at {{.*}}impl_trait_as_a_parameter_type.vx:[[@LINE+1]]:14: Vx has no `impl Trait` type yet: write a generic parameter instead, as in `fn show<T : Get>(g : &T)`
+fn show(g : &impl Get) -> i32 {
+  return g.get();
+}
+
+fn main() -> i32 {
+  return 0;
+}
