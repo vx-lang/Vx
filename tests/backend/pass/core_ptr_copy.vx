@@ -1,0 +1,100 @@
+//===- core_ptr_copy.vx - Vx Compiler -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `copy`, `copy_nonoverlapping` and `write_bytes` of `core::ptr`. They count values, not bytes.
+//
+// The `i32` array starts as 0 1 2 3 4 5 6 7. `copy` moves 4 values with the ranges overlapping, once
+// to a higher address and once to a lower one. A copy that reads values it already overwrote gives
+// a different array. A copy of 0 values changes nothing.
+//
+// `copy_nonoverlapping` copies 2 values of a 12 byte struct. A copy that counts bytes, or that
+// uses the wrong size, leaves a field of the second value wrong, or changes the next value.
+//
+// `write_bytes` sets 2 `i32` values to 0x01010101. The values next to them must stay as they were.
+//
+// The C library `memcpy` often handles an overlap too, so the output alone cannot tell `copy` from
+// `copy_nonoverlapping`. The third `RUN` line checks that the generated code uses `memmove`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=INTRINSIC
+// CHECK: {{^}}copy to a higher address: 0 1 0 1 2 3 6 7{{$}}
+// CHECK-NEXT: {{^}}copy to a lower address: 2 3 4 5 4 5 6 7{{$}}
+// CHECK-NEXT: {{^}}copy of 0 values: 0 1 2 3 4 5 6 7{{$}}
+// CHECK-NEXT: {{^}}copy_nonoverlapping: 1 10 100 | 2 20 200 | 7 7 7{{$}}
+// CHECK-NEXT: {{^}}write_bytes: 0 16843009 16843009 3 4 5 6 7{{$}}
+// INTRINSIC-DAG: "llvm.intr.memmove"
+// INTRINSIC-DAG: "llvm.intr.memcpy"
+// INTRINSIC-DAG: "llvm.intr.memset"
+
+import core::ptr;
+import std::alloc;
+
+struct Triple {
+  a : i32,
+  b : i32,
+  c : i32,
+}
+
+fn reset(p : *mut i32) -> void {
+  let mut i : i64 = 0;
+  while i < 8 {
+    unsafe { p[i] = i as i32; }
+    i = i + 1;
+  }
+}
+
+fn show(label : *const i8, p : *mut i32) -> void {
+  println!("{}: {} {} {} {} {} {} {} {}", label, unsafe { p[0] }, unsafe {
+    p[1]
+  }, unsafe { p[2] }, unsafe { p[3] }, unsafe { p[4] }, unsafe { p[5] }, unsafe {
+    p[6]
+  }, unsafe { p[7] });
+}
+
+fn main() -> i32 {
+  let p : *mut i32 = alloc(32, 16);
+
+  reset(p);
+  unsafe { copy(p as *const i32, add_mut(p, 2usize), 4usize); }
+  show("copy to a higher address", p);
+
+  reset(p);
+  unsafe { copy(add(p as *const i32, 2usize), p, 4usize); }
+  show("copy to a lower address", p);
+
+  reset(p);
+  unsafe { copy(p as *const i32, add_mut(p, 3usize), 0usize); }
+  show("copy of 0 values", p);
+
+  // Slots 0 and 1 are copied to slots 2 and 3. Slot 4 is next to them and must stay as it was.
+  let t : *mut Triple = alloc(80, 16);
+  unsafe {
+    write(t, Triple {
+      a : 1, b : 10, c : 100
+    });
+    write(add_mut(t, 1usize), Triple {
+      a : 2, b : 20, c : 200
+    });
+    write(add_mut(t, 2usize), Triple {
+      a : 9, b : 9, c : 9
+    });
+    write(add_mut(t, 3usize), Triple {
+      a : 9, b : 9, c : 9
+    });
+    write(add_mut(t, 4usize), Triple {
+      a : 7, b : 7, c : 7
+    });
+    copy_nonoverlapping(t as *const Triple, add_mut(t, 2usize), 2usize);
+    println!("copy_nonoverlapping: {} {} {} | {} {} {} | {} {} {}", t[2].a, t[2].b, t[2].c, t[3].a, t[3].b, t[3].c, t[4].a, t[4].b, t[4].c);
+  }
+
+  reset(p);
+  unsafe { write_bytes(add_mut(p, 1usize), 1u8, 2usize); }
+  show("write_bytes", p);
+  return 0;
+}
