@@ -47,7 +47,7 @@ pub fn vec_alloc(elem_size : i64, cap : i64) -> *mut i8 {
 
 /// The buffer of `old_cap` elements resized to `new_cap`, keeping its contents. A buffer of zero
 /// bytes is not allocated, so it gets a new one. `ptr` is invalid afterwards.
-pub fn vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mut i8 {
+fn vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mut i8 {
   let bytes = vec_bytes(new_cap, elem_size);
   if bytes == 0 {
     return ptr;

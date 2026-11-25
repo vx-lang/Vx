@@ -101,17 +101,17 @@ pub fn broadcast<T : Send + Owned + Clone>(n : i64, at : Caller) -> (BroadcastSe
 }
 
 /// The number of slot `i`.
-pub fn broadcast_turn(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
+fn broadcast_turn(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
   return word(words, BROADCAST_SLOTS + 2 * i);
 }
 
 /// The receivers that did not read the value in slot `i` yet.
-pub fn broadcast_readers(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
+fn broadcast_readers(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
   return word(words, BROADCAST_SLOTS + 2 * i + 1);
 }
 
 /// The value `k` was read for the last time. Drop it, and free its slot for the next `send`.
-pub fn broadcast_free<T>(words : *mut AtomicI64, data : *mut T, cap : i64, k : i64) -> void {
+fn broadcast_free<T>(words : *mut AtomicI64, data : *mut T, cap : i64, k : i64) -> void {
   let old : T = unsafe { take_slot(data, k % cap) };
   drop(old);
   broadcast_turn(words, k % cap).store(2 * (k + cap), AtomicOrdering::Release);
@@ -120,7 +120,7 @@ pub fn broadcast_free<T>(words : *mut AtomicI64, data : *mut T, cap : i64, k : i
 
 /// One end is dropped. The last one drops the values that a receiver did not read, and frees the
 /// channel.
-pub fn broadcast_release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
+fn broadcast_release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
   if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
     return;
   }

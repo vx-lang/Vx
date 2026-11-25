@@ -1097,9 +1097,8 @@ impl<'a> TypeChecker<'a> {
             Some(ElementType::I64),
             *span,
         ));
-        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::new(
+        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::by_the_compiler(
             "c_str_equals".into(),
-            None,
             vec![(**lhs).clone(), (**rhs).clone(), bound],
             *span,
         ));
@@ -1220,6 +1219,7 @@ impl<'a> TypeChecker<'a> {
                     type_args: None,
                     args: vec![lhs_ref, rhs_ref],
                     span,
+                    by_the_compiler: false,
                 });
                 let ty = self.check_expr_type_flag(&mut call, false);
                 *expr = call;

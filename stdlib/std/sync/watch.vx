@@ -87,7 +87,7 @@ pub fn watch<T : Send + Owned + Clone>(v : T, at : Caller) -> (WatchSender<T>, W
 }
 
 /// A clone of the value, and its version.
-pub fn watch_read<T : Clone>(words : *mut AtomicI64, data : *mut T) -> (T, i64) {
+fn watch_read<T : Clone>(words : *mut AtomicI64, data : *mut T) -> (T, i64) {
   lock_channel(words, WATCH_LOCK);
   let shared : &T = unsafe { &data[0] };
   let value = shared.clone();
@@ -97,7 +97,7 @@ pub fn watch_read<T : Clone>(words : *mut AtomicI64, data : *mut T) -> (T, i64) 
 }
 
 /// One end is dropped. The last one drops the value, and frees the channel.
-pub fn watch_release<T>(words : *mut AtomicI64, data : *mut T) -> void {
+fn watch_release<T>(words : *mut AtomicI64, data : *mut T) -> void {
   if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
     return;
   }
