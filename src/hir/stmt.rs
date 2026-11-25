@@ -3781,7 +3781,6 @@ impl<'a> TypeChecker<'a> {
                 name,
                 type_args,
                 args,
-                span: _,
                 ..
             }) => {
                 // Ignored on purpose: the checker has already instantiated the call and
@@ -3937,7 +3936,6 @@ impl<'a> TypeChecker<'a> {
             name,
             type_args: None,
             args,
-            span: _,
             ..
         } = call
         else {

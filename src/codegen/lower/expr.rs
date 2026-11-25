@@ -4067,7 +4067,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             name,
             args,
             type_args,
-            span: _,
             ..
         } = self;
         if matches!(name.as_ref(), "Verified" | "Distinct" | "DisjointRanges") {
