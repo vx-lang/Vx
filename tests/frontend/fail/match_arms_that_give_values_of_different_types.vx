@@ -24,7 +24,7 @@ fn wrong_second_arm(s : Size) -> i64 {
     Size::Circle(r) => {
       r
     }
-    // CHECK: Error[E3069] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type i32, but another arm gives a value of type i64. Make every arm give the same type.
+    // CHECK: Error[E3071] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type i32, but another arm gives a value of type i64. Make every arm give the same type.
     Size::Square(w) => {
       0i32
     }
@@ -43,7 +43,7 @@ fn wrong_last_arm(s : Size) -> i64 {
     Size::Square(w) => {
       w * w
     }
-    // CHECK: Error[E3069] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type bool, but another arm gives a value of type i64.
+    // CHECK: Error[E3071] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type bool, but another arm gives a value of type i64.
     Size::Triangle(t) => {
       t > 0
     }
@@ -56,7 +56,7 @@ fn zero_where_a_bool_is_given(s : Size) -> bool {
     Size::Circle(r) => {
       r > 0
     }
-    // CHECK: Error[E3069] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type i32, but another arm gives a value of type bool.
+    // CHECK: Error[E3071] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type i32, but another arm gives a value of type bool.
     _ => {
       0
     }
@@ -69,7 +69,7 @@ fn float_where_an_i64_is_given(s : Size) -> i64 {
     Size::Circle(r) => {
       r
     }
-    // CHECK: Error[E3069] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type f{{[0-9]+}}, but another arm gives a value of type i64.
+    // CHECK: Error[E3071] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type f{{[0-9]+}}, but another arm gives a value of type i64.
     _ => {
       1.5
     }
@@ -82,7 +82,7 @@ fn only_numbers_of_different_kinds(s : Size) -> i32 {
     Size::Circle(r) => {
       0
     }
-    // CHECK: Error[E3069] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type f{{[0-9]+}}, but another arm gives a value of type i32.
+    // CHECK: Error[E3071] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type f{{[0-9]+}}, but another arm gives a value of type i32.
     _ => {
       1.5
     }
@@ -98,7 +98,7 @@ fn first_arm_never_finishes(s : Size) -> i64 {
     Size::Square(w) => {
       w
     }
-    // CHECK: Error[E3069] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type bool, but another arm gives a value of type i64.
+    // CHECK: Error[E3071] at {{.*}}match_arms_that_give_values_of_different_types.vx:[[@LINE+1]]:5: this `match` arm gives a value of type bool, but another arm gives a value of type i64.
     Size::Triangle(t) => {
       t > 0
     }
@@ -106,7 +106,7 @@ fn first_arm_never_finishes(s : Size) -> i64 {
   return a;
 }
 
-// CHECK-NOT: Error[E3069]
+// CHECK-NOT: Error[E3071]
 fn arms_that_agree(s : Size) -> i64 {
   let a = match s {
     Size::Circle(r) => {
