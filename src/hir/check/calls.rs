@@ -1780,6 +1780,7 @@ impl<'a> TypeChecker<'a> {
 
     /// E3003: a closure literal with a parameter that has no type cannot match a closure
     /// parameter, so say that the closure needs the type. Gives `true` when it reported.
+    /// It stays silent when the parameter is not a closure with the same number of parameters.
     fn refuse_untyped_closure_parameter(
         &mut self,
         callee: &str,
@@ -1797,25 +1798,31 @@ impl<'a> TypeChecker<'a> {
         let Some(untyped) = closure_params.iter().position(|t| *t == Type::Unknown) else {
             return false;
         };
-        // The type that the callee wants for that closure parameter, when it says one.
+        // Only a parameter that takes a closure with as many parameters as this one is
+        // fixed by giving the closure parameter a type. Other mismatches keep the usual error.
         let wanted = match param_ty {
-            Type::Closure(args, _) => args.get(untyped),
-            Type::GenericInstance(_, args) if untyped + 1 < args.len() => args.get(untyped),
+            Type::Closure(args, _) if args.len() == closure_params.len() => args.get(untyped),
+            Type::GenericInstance(inner, args)
+                if matches!(&**inner, Type::Struct(n, _) if n.starts_with("Closure"))
+                    && args.len() == closure_params.len() + 1 =>
+            {
+                args.get(untyped)
+            }
             _ => None,
         };
-        let example = match wanted {
-            Some(ty) => format!(", as in `| x : {ty} | ...`"),
-            None => String::new(),
+        let Some(wanted) = wanted else {
+            return false;
         };
         self.errors.error_with_code(
             crate::diagnostic::DiagnosticCode::E3003,
             format!(
                 "argument {} of '{}' is a closure whose parameter {} has no type. A closure \
-                 parameter needs a type{}",
+                 parameter needs a type. Write parameter {} as `name : {}`",
                 i + 1,
                 callee,
                 untyped + 1,
-                example
+                untyped + 1,
+                wanted
             ),
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
