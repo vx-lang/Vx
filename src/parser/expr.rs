@@ -1864,11 +1864,8 @@ mod tests {
         // Enum variants with payloads are parsed as FunctionCall in the parser phase.
         // They are later rewritten to EnumVariant by Sema.
         if let Expr::FunctionCall(FunctionCallExpr {
-            owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
             ..
         }) = expr
         {
@@ -1917,11 +1914,8 @@ mod tests {
         let expr = parse_expr(input);
         // Similarly, generic enum variants with payloads are FunctionCalls initially.
         if let Expr::FunctionCall(FunctionCallExpr {
-            owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
             ..
         }) = expr
         {
@@ -1937,11 +1931,8 @@ mod tests {
         let input = "Vec<i32>::new()";
         let expr = parse_expr(input);
         if let Expr::FunctionCall(FunctionCallExpr {
-            owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
             ..
         }) = expr
         {

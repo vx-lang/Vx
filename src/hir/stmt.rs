@@ -3754,11 +3754,9 @@ impl<'a> TypeChecker<'a> {
                 Some(items[i].clone())
             }
             Expr::FunctionCall(FunctionCallExpr {
-                owner_type_args: _,
                 name,
                 type_args,
                 args,
-                span: _,
                 ..
             }) => {
                 // Ignored on purpose: the checker has already instantiated the call and
@@ -3910,11 +3908,9 @@ impl<'a> TypeChecker<'a> {
         env: &HashMap<crate::symbol::Symbol, Value>,
     ) -> Option<Vec<(crate::symbol::Symbol, Value)>> {
         let FunctionCallExpr {
-            owner_type_args: _,
             name,
             type_args: None,
             args,
-            span: _,
             ..
         } = call
         else {

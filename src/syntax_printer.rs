@@ -245,11 +245,8 @@ impl AstPrinter {
                 Self::print_expr(w, rhs, &new_indent, true)?;
             }
             Expr::FunctionCall(FunctionCallExpr {
-                owner_type_args: _,
                 name,
-                type_args: _,
                 args,
-                span: _,
                 ..
             }) => {
                 indent.print(w)?;
