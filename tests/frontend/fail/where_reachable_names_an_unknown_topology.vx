@@ -79,7 +79,9 @@ fn main() -> i32 {
   let f = spawn on(Topology::GPU) {
     to_bare_acme()
   };
-  let g = Box1 { v: 4 };
+  let g = Box1 {
+    v: 4
+  };
   let d = from_type(1);
   let e = spawn on(Topology::GPU) {
     from_current()
