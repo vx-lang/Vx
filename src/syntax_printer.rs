@@ -244,11 +244,7 @@ impl AstPrinter {
                 Self::print_expr(w, lhs, &new_indent, false)?;
                 Self::print_expr(w, rhs, &new_indent, true)?;
             }
-            Expr::FunctionCall(FunctionCallExpr {
-                name,
-                args,
-                ..
-            }) => {
+            Expr::FunctionCall(FunctionCallExpr { name, args, .. }) => {
                 indent.print(w)?;
                 writeln!(w, "{}Call({})", prefix, name)?;
                 let new_indent = indent.child(is_last);
