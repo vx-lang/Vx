@@ -1,0 +1,93 @@
+//===- assert_in_a_loop_after_the_loop_changes_a_variable.vx ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each assert below is in a loop that changes `count`, and each assert is true when it runs.
+// The compiler used to check each assert with the 0 that `count` had before the loop. It
+// stopped the build with E8002.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn in_a_while_loop(stop : i32) -> i32 {
+  let mut count = 0;
+  let mut i = 0;
+  while i < 10 {
+    if i == stop {
+      assert(count > 0, "the while loop counted nothing");
+      return count;
+    }
+    count = count + 1;
+    i = i + 1;
+  }
+  return count;
+}
+
+fn in_a_for_loop(stop : i32) -> i32 {
+  let mut count = 0;
+  for i in 0..10 {
+    if i == stop {
+      assert(count > 0, "the for loop counted nothing");
+      return count;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+fn in_a_loop(stop : i32) -> i32 {
+  let mut count = 0;
+  loop {
+    if count == stop {
+      assert(count > 0, "the loop counted nothing");
+      break;
+    }
+    count = count + 1;
+  }
+  return count;
+}
+
+fn add_one(x : &mut i32) -> void {
+  *x = *x + 1;
+}
+
+// The loop changes `count` through a mutable reference.
+fn in_a_loop_that_calls_add_one(stop : i32) -> i32 {
+  let mut count = 0;
+  for i in 0..10 {
+    if i == stop {
+      assert(count > 0, "add_one counted nothing");
+      return count;
+    }
+    add_one(&mut count);
+  }
+  return count;
+}
+
+// The inner `count` hides an outer `count` that is 5. The assert reads the inner one.
+fn in_a_loop_that_hides_a_variable(stop : i32) -> i32 {
+  let count = 5;
+  if stop > 0 {
+    let mut count = 0;
+    for i in 0..10 {
+      if i == stop {
+        assert(count != 5, "the assert read the outer count");
+        return count;
+      }
+      count = count + 1;
+    }
+  }
+  return count;
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}34567{{$}}
+  print(in_a_while_loop(3));
+  print(in_a_for_loop(4));
+  print(in_a_loop(5));
+  print(in_a_loop_that_calls_add_one(6));
+  print(in_a_loop_that_hides_a_variable(7));
+  return 0;
+}

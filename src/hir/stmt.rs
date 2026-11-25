@@ -1569,6 +1569,7 @@ impl<'a> TypeChecker<'a> {
         // environment, and settling that up requires the state it started from.
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
+        self.forget_values_a_loop_writes(body);
 
         let marks_before = self.moved_snapshot();
         let passes = self.pass_count(iterable);
@@ -1909,6 +1910,7 @@ impl<'a> TypeChecker<'a> {
         // what the program does, so what it folded is settled up once the loop has been run.
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
+        self.forget_values_a_loop_writes(body);
 
         let marks_before = self.moved_snapshot();
         self.borrow
@@ -2722,6 +2724,19 @@ impl<'a> TypeChecker<'a> {
             }
         }
         scopes
+    }
+
+    /// Drop the compile-time value of each variable that a loop body writes, before the body
+    /// is checked. The body is checked once, but it runs many times. On a later pass such a
+    /// variable does not hold the value that it had before the loop.
+    fn forget_values_a_loop_writes(&mut self, body: &[Statement]) {
+        for name in crate::hir::check::raw::names_a_body_writes(body) {
+            // Every scope: the value of an outer variable of the same name must not show in
+            // place of the dropped one.
+            for scope in &mut self.consteval.env {
+                scope.remove(name.as_str());
+            }
+        }
     }
 
     /// Settle what the constant environment knows about the variables a loop body writes.
