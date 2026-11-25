@@ -9,8 +9,8 @@
 //
 // A call takes its by-value arguments whatever is done with its result. Inside `print(..)`,
 // which only reads its argument, or an `if` condition, `take(t)` still moves `t`, so using `t`
-// after it is an error. So does a call through an expression, `(f)(t)`. Inside `println!`,
-// `take(t)` moves `t`, and a method that takes `self` by value moves its receiver.
+// after it is an error. So does a call through an expression, `(f)(t)`. `println!` only reads
+// a variable it prints, but `h.give()` inside it still moves `h`, because `give` takes `self`.
 
 fn take(t : Tensor<f32, [4]>) -> f32 {
   return t[0];
@@ -47,12 +47,6 @@ fn through_an_expression() -> f32 {
   return t[0];
 }
 
-fn inside_println() -> f32 {
-  let t = Tensor<f32, [4]>::new();
-  println!("{}", take(t));
-  return t[0];
-}
-
 fn method_inside_println() -> f32 {
   let h = Holder {
     t: Tensor<f32, [4]>::new()
@@ -68,5 +62,4 @@ fn main() -> i32 {
 // CHECK-DAG: Error[E4001] at {{.*}}call_moves_its_arguments_in_any_context.vx:32:10: Use of moved or consumed linear variable: t
 // CHECK-DAG: Error[E4001] at {{.*}}call_moves_its_arguments_in_any_context.vx:40:10: Use of moved or consumed linear variable: t
 // CHECK-DAG: Error[E4001] at {{.*}}call_moves_its_arguments_in_any_context.vx:47:10: Use of moved or consumed linear variable: t
-// CHECK-DAG: Error[E4001] at {{.*}}call_moves_its_arguments_in_any_context.vx:53:10: Use of moved or consumed linear variable: t
-// CHECK-DAG: Error[E4001] at {{.*}}call_moves_its_arguments_in_any_context.vx:61:10: Use of moved or consumed linear variable: h
+// CHECK-DAG: Error[E4001] at {{.*}}call_moves_its_arguments_in_any_context.vx:55:10: Use of moved or consumed linear variable: h

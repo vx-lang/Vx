@@ -450,11 +450,17 @@ impl<'a> TypeChecker<'a> {
                 ty
             }
             Expr::AsCast(e) => self.check_ascast_expr(e, consume),
-            // A printed variable or field is only read, so it can be printed again. Any other
-            // argument is checked as before, so `b.take()` still moves `b`.
+            // A printed place (a variable, a field, `*r` or `v[i]`) is only read, so it can be
+            // printed again. Any other argument is checked as before, so `b.take()` still moves `b`.
             Expr::Print(p) => {
                 for arg in &mut p.args {
-                    let read = matches!(arg, Expr::Identifier(_) | Expr::MemberAccess(_));
+                    let read = matches!(
+                        arg,
+                        Expr::Identifier(_)
+                            | Expr::MemberAccess(_)
+                            | Expr::Dereference(_)
+                            | Expr::IndexAccess(_)
+                    );
                     let ty = self.check_expr_type_flag(arg, consume && !read);
                     Self::prepare_print_operand(arg, &ty);
                 }
@@ -462,7 +468,13 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::Println(p) => {
                 for arg in &mut p.args {
-                    let read = matches!(arg, Expr::Identifier(_) | Expr::MemberAccess(_));
+                    let read = matches!(
+                        arg,
+                        Expr::Identifier(_)
+                            | Expr::MemberAccess(_)
+                            | Expr::Dereference(_)
+                            | Expr::IndexAccess(_)
+                    );
                     let ty = self.check_expr_type_flag(arg, consume && !read);
                     Self::prepare_print_operand(arg, &ty);
                 }
