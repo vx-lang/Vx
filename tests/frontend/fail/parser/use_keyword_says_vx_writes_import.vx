@@ -1,0 +1,17 @@
+//===- use_keyword_says_vx_writes_import.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A Rust programmer writes `use core::option;`. Vx has no `use`. The error says to write `import`.
+
+// CHECK: Vx has no `use`: write `import core::option;` to import a module
+use core::option;
+
+fn main() -> i32 {
+  return 0;
+}
