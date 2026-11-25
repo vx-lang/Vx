@@ -1,0 +1,225 @@
+//===- seam_assert_of_a_value_the_transfer_can_give.vx -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The seam check refuses a transfer when the buffer holds one number and the consumer
+// asserts another (see fail/seam_assert_of_a_value_the_transfer_does_not_give.vx). Each
+// function here is a valid program that looks like that. The seam check must accept each
+// one, because the assert holds or because the check does not know the value.
+//
+// VERIFY-SEAMS
+// RUN: vxc %s --verify-seams --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=E6004
+
+Memory Local_SRAM {
+  managed: cached
+}
+
+const limit : i32 = 42;
+
+fn make42() -> Tensor<i32, []> {
+  let r : Tensor<i32, []> = 42;
+  return r;
+}
+
+fn answer(x : Tensor<i32, [], Memory::NPU_HBM>) -> i32 {
+  return 42;
+}
+
+// A generic function. The compiler checks its body at the call, in the middle of the caller.
+fn same<T>(x : T) -> T {
+  let a : Tensor<i32, []> = 0;
+  let s = a.to_device();
+  return x;
+}
+
+// The buffer holds the number that the consumer asserts.
+fn right_value() -> i32 {
+  let a : Tensor<i32, []> = 42;
+  let local_a = a.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(local_a == 42);
+  }
+  return 0;
+}
+
+// The same, through a relaxed transfer into a `managed: cached` memory.
+fn right_value_into_a_cached_memory() -> i32 {
+  let a : Tensor<i32, []> = 42;
+  let local_a = a.to_sram_relaxed();
+  spawn on(Topology::AccCore[0]) {
+    assert(local_a == 42);
+  }
+  return 0;
+}
+
+// A call gives the buffer its value, so the check does not know the value.
+fn value_from_a_call() -> i32 {
+  let a = make42();
+  let local_a = a.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(local_a == 42);
+  }
+  return 0;
+}
+
+// The assert is about the second `s`. The first `s` holds 0, and no assert reads it.
+fn target_declared_two_times() -> i32 {
+  let a : Tensor<i32, []> = 0;
+  let s = a.to_device();
+  let b = make42();
+  let s = b.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(s == 42);
+  }
+  return 0;
+}
+
+// The assert is about the `s` that the caller gives. The `s` of the transfer comes later.
+fn target_with_the_name_of_a_parameter(s : i32) -> i32 {
+  assert(s == 42);
+  let a : Tensor<i32, []> = 0;
+  let s = a.to_device();
+  return 0;
+}
+
+// `s` gets a new value before the assert reads it.
+fn target_with_mut() -> i32 {
+  let a : Tensor<i32, []> = 0;
+  let mut s = a.to_device();
+  s = make42().to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(s == 42);
+  }
+  return 0;
+}
+
+// The transfer is an argument of the call. `n` is the result of the call, not of the transfer.
+fn transfer_inside_a_call() -> i32 {
+  let a : Tensor<i32, []> = 0;
+  let n = answer(a.to_device());
+  assert(n == 42);
+  return 0;
+}
+
+// The transfer reads the first `a`. The `a` that holds 0 is in another block.
+fn buffer_declared_two_times(flag : i32) -> i32 {
+  let a = make42();
+  let s = a.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(s == 42);
+  }
+  if flag > 0 {
+    let a : Tensor<i32, []> = 0;
+    let unused = a.to_device();
+  }
+  return 0;
+}
+
+// `a` gets a new value before the transfer.
+fn buffer_with_mut() -> i32 {
+  let mut a : Tensor<i32, []> = 0;
+  a = make42();
+  let s = a.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(s == 42);
+  }
+  return 0;
+}
+
+// The transferred value is the result of a call. It is not the variable with the name `buffer`.
+fn operand_that_is_not_a_variable() -> i32 {
+  let buffer : Tensor<i32, []> = 0;
+  let s = make42().to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(s == 42);
+  }
+  let unused = buffer.to_device();
+  return 0;
+}
+
+// The same, with a float tensor.
+fn right_float_value() -> i32 {
+  let a : Tensor<f32, []> = 42.0;
+  let local_a = a.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(local_a == 42.0);
+  }
+  return 0;
+}
+
+// The function returns before the assert when `flag` is 0, and `main` gives 0.
+fn assert_after_a_return(flag : i32) -> i32 {
+  let a : Tensor<i32, []> = 0;
+  let local_a = a.to_device();
+  if flag == 0 {
+    return 0;
+  }
+  spawn on(Topology::NPU[0]) {
+    assert(local_a == 42);
+  }
+  return 1;
+}
+
+// The loop returns in its first pass, so no run reaches the assert.
+fn assert_after_a_loop_that_returns() -> i32 {
+  let a : Tensor<i32, []> = 0;
+  let local_a = a.to_device();
+  for i in 0..1 {
+    return 0;
+  }
+  spawn on(Topology::NPU[0]) {
+    assert(local_a == 42);
+  }
+  return 1;
+}
+
+// The assert is about the top-level constant `limit`. The `limit` of the transfer comes later.
+fn target_with_the_name_of_a_constant() -> i32 {
+  assert(limit == 42);
+  let a : Tensor<i32, []> = 0;
+  let limit = a.to_device();
+  return 0;
+}
+
+// `same` has an `a` that holds 0 and an `s`. They are not the `a` and the `s` of this function.
+fn generic_call_between_the_let_and_the_transfer() -> i32 {
+  let a = make42();
+  let one = same(1);
+  let s = a.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(s == 42);
+  }
+  return one - 1;
+}
+
+// A name can have a letter that is not ASCII.
+fn name_that_is_not_ascii() -> i32 {
+  let données = make42();
+  let s = données.to_device();
+  return 0;
+}
+
+// An f32 cannot hold 16777217, so `a` holds 16777216.
+fn float_that_rounds_its_digits() -> i32 {
+  let a : Tensor<f32, []> = 16777217f32;
+  let s = a.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(s == 16777216f32);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return right_value() + right_value_into_a_cached_memory() + value_from_a_call()
+  + target_declared_two_times() + target_with_the_name_of_a_parameter(42) + target_with_mut()
+  + transfer_inside_a_call() + buffer_declared_two_times(1) + buffer_with_mut()
+  + operand_that_is_not_a_variable() + right_float_value() + assert_after_a_return(0)
+  + assert_after_a_loop_that_returns() + target_with_the_name_of_a_constant()
+  + generic_call_between_the_let_and_the_transfer() + name_that_is_not_ascii()
+  + float_that_rounds_its_digits();
+}
+
+// CHECK: func.func @main

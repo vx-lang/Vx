@@ -2349,8 +2349,16 @@ impl<'a> TypeChecker<'a> {
         // transfer seam (checked before the consumer's spawn body) can consult them.
         // Only when seam verification is enabled (otherwise we pay nothing for it).
         let prev_contracts = std::mem::take(&mut self.seam.contracts);
+        let prev_single_lets = std::mem::take(&mut self.seam.single_lets);
+        let prev_binding = self.seam.binding.take();
         if self.seam.verify {
             Self::collect_assert_contracts(&func.body, &mut self.seam.contracts);
+            self.seam.single_lets = Self::collect_single_lets(func);
+            // A top-level constant is one more declaration of its name.
+            let consts = &self.env.consts;
+            self.seam
+                .single_lets
+                .retain(|name, _| !consts.contains_key(name.as_str()));
         }
 
         let owned_params = func
@@ -2386,6 +2394,8 @@ impl<'a> TypeChecker<'a> {
         self.speculating = speculating;
 
         self.seam.contracts = prev_contracts;
+        self.seam.single_lets = prev_single_lets;
+        self.seam.binding = prev_binding;
 
         // Each `return` checked the `ensures` where it stood. A body that can also reach its end
         // without one is checked here, from what is known at the end.

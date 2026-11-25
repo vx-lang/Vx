@@ -37,14 +37,24 @@ post-transfer state can violate the contract:
 
 Two contract forms are extracted automatically, in priority order:
 
-1. **Value contract** — when the buffer's required value is statically known, the
-   obligation *pins that value* (`buffer == v`), and a violation yields a
-   value-level counterexample. The value comes from either:
-   - a **consumer assertion** `assert(buf == N)` (see below), or
-   - the **producer's** own compile-time-known constant.
-1. **Visibility contract** — for an opaque buffer (e.g. a tensor whose contents
-   are unknown), the obligation falls back to the coarsest sound abstraction:
-   the buffer must be *definite* (not `TOP`) after the transfer.
+1. **Value contract** — when the compiler knows two numbers, the obligation compares
+   them, and a violation yields a value-level counterexample. The two numbers come
+   from two different places:
+   - the **producer's** number is the premise. It is the whole-number literal in the
+     `let` that declares the buffer, as in `let a : Tensor<i32, []> = 0;`. A float
+     literal such as `42.0` is a whole number too, when the element type holds it
+     with no rounding.
+   - the **consumer's** number is the conclusion. It is a **consumer assertion**
+     `assert(buf == N)` (see below).
+
+   A synchronizing transfer keeps the producer's number. The obligation holds only
+   when the two numbers are equal. A relaxed transfer can give the consumer any
+   number, so the obligation does not hold.
+1. **Visibility contract** — when the compiler does not know both numbers (e.g. a
+   call gives the buffer its value), the obligation falls back to the coarsest sound
+   abstraction: the buffer must be *definite* (not `TOP`) after the transfer. This
+   obligation does not compare a value. An assert the compiler cannot connect to a
+   producer's number stays a run-time check.
 
 ### Consumer assertions and ordering
 
@@ -71,7 +81,43 @@ fn f(a: Tensor<i32, [4]>) -> Pinned<Tensor<i32, [4]>, Topology::NPU[0]> {
 //   z3 counterexample: ((tag_a #b11) (val_a #x00))
 ```
 
-Using `.to_device()` (synchronizing) instead accepts.
+Using `.to_device()` (synchronizing) instead accepts: `a` is a parameter, so the
+compiler does not know its number.
+
+When the compiler knows the producer's number, a synchronizing transfer can also
+violate the contract:
+
+```vx
+fn g() -> i32 {
+    let a : Tensor<i32, []> = 0;           // the producer gives 0
+    let local_a = a.to_device();           // seam checked here
+    spawn on(Topology::NPU[0]) {
+        assert(local_a == 42);             // the consumer requires 42
+    }
+    return 0;
+}
+// vxc --verify-seams  =>  E6004: the transfer of 'a' across the CPU_DRAM -> NPU_HBM
+//   seam violates the boundary contract. 'a' is 0, so 'local_a' is 0 after the
+//   transfer. The program asserts 'local_a' == 42
+//   z3 counterexample: ((tag_a #b01) (val_a #x0000000000000000))
+```
+
+### Which names carry a number
+
+The pre-scans read names, not values. A name carries a number only when the function
+declares the name one time, with a `let` that has no `mut`. A second `let` of the
+name in any block, a parameter of the function or of a closure, a generic parameter,
+a loop variable, a `match` binding and a top-level `const` are all second
+declarations. Such a name can mean two values, so the compiler uses no number for it.
+
+The pre-scan for asserts stops at the first statement that is a `return` or has a
+`return` inside it. An assert after that statement is not a fact about every run. A
+call that never returns, such as `todo()`, does not stop the pre-scan.
+
+The consumer's number applies only to the transfer that is the whole initializer of
+the `let`. In `let n = f(a.to_device());` the name `n` is the result of `f`, so an
+assert on `n` says nothing about the transfer. A staged transfer checks the value
+contract one time, on its last hop.
 
 ## Enabling the check
 
@@ -92,13 +138,14 @@ rather than program size. With `--verify-seams`, the driver reports
 ## Diagnostic
 
 `E6004` (Topology/Hardware group) — *transfer violates the boundary contract at a
-seam*. The message names the buffer and the `src -> dst` seam, includes the
-expected value when a value contract was extracted, and attaches the solver's
-counterexample as a note.
+seam*. The message names the buffer and the `src -> dst` seam, and attaches the
+solver's counterexample as a note. For a relaxed transfer the message includes the
+number the contract requires, when the compiler knows one. For a synchronizing
+transfer the message gives the producer's number and the consumer's number.
 
 ## Implementation
 
 - Obligation engine: `src/hir/seam.rs` (QF_BV emission, persistent `z3` `Solver`).
-- Wiring: `src/hir/expr.rs` — `check_transfer_expr` (per-hop seam check),
-  `collect_assert_contracts` (pre-scan), `const_value_of`, `run_seam_hop`.
+- Wiring: `src/hir/check/transfer.rs` — `check_transfer_expr` (per-hop seam check),
+  `collect_assert_contracts` and `collect_single_lets` (pre-scans), `run_seam_hop`.
 - Flag: `--verify-seams` (`TypeChecker::verify_seams`).

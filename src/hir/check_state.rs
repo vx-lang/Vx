@@ -809,6 +809,15 @@ pub struct SeamState {
     /// `var`. Populated before statements are checked so a transfer seam (checked before the
     /// consumer's `spawn` body) can consult the downstream contract on the buffer it produces.
     pub contracts: HashMap<String, u64>,
+    /// Per-function pre-scan of the names that mean one value in the whole function: the
+    /// program declares the name one time, with a `let` that has no `mut`. The entry holds the
+    /// whole number that the `let` gives the name, when its initializer is a whole-number
+    /// literal. A fact about a name from one of the pre-scans is a fact about a value only
+    /// for these names.
+    pub single_lets: HashMap<String, Option<u64>>,
+    /// The `let` whose initializer the checker is in: the address of the initializer, and the
+    /// name. A transfer at that address is the one that gives the name its value.
+    pub binding: Option<(usize, String)>,
     /// Number of per-seam obligations discharged.
     pub checks: usize,
     /// Total marginal solving time across all seams, excluding the one-time solver startup.

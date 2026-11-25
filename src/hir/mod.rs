@@ -1545,6 +1545,130 @@ fn f(predicate: bool, value: i32) -> i32 {
     }
 
     #[test]
+    fn seam_assert_prescan_stops_at_a_return() {
+        // Each function has an assert that every run reaches, on `before`. Each other assert
+        // comes after a `return` that some run can take, or is in a statement with a `return`.
+        let cases = [
+            (
+                "a return in an if",
+                "assert(before == 1); if c == 0 { return 0; } assert(after == 2); return 1;",
+            ),
+            (
+                "a return in a loop",
+                "assert(before == 1); for i in 0..1 { return 0; } assert(after == 2); return 1;",
+            ),
+            (
+                "a return in a nested block",
+                "assert(before == 1); for i in 0..1 { if c == 0 { return 0; } } \
+                 assert(after == 2); return 1;",
+            ),
+            (
+                "a return in a let",
+                "assert(before == 1); let x = if c == 0 { return 0; } else { 1 }; \
+                 assert(after == 2); return x;",
+            ),
+            (
+                "a plain return",
+                "assert(before == 1); return 0; assert(after == 2);",
+            ),
+            (
+                "asserts next to a return",
+                "assert(before == 1); \
+                 if c == 0 { assert(after == 2); return 0; } else { assert(after == 2); } \
+                 return 1;",
+            ),
+        ];
+        for (case, body) in cases {
+            let source = format!("fn f(c: i32, before: i32, after: i32) -> i32 {{ {body} }}");
+            let mut lexer = Lexer::new(&source);
+            let tokens = lexer.tokenize();
+            let mut parser = Parser::new(&tokens, &source);
+            let program = parser.parse().expect("the return fixture parses");
+            let mut contracts = std::collections::HashMap::new();
+            TypeChecker::collect_assert_contracts(&program.functions[0].body, &mut contracts);
+            assert_eq!(
+                contracts.get("before"),
+                Some(&1),
+                "{case}: the assert before the return is a fact: {contracts:?}"
+            );
+            assert!(
+                !contracts.contains_key("after"),
+                "{case}: not every run reaches the second assert: {contracts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_single_lets_are_the_names_one_let_without_mut_declares() {
+        // Each name that must not be found has a second declaration of another kind, or `mut`.
+        // Each block that can hold a `let` has one name of its own, `in_...`.
+        let source = r#"
+fn f<const from_generic : i32>(from_param: i32) -> i32 {
+    let once = 7;
+    let from_a_call = g();
+    let float_digits = 16777217f32;
+    let whole_float = 42.0;
+    let fraction = 0.5;
+    let mut with_mut = 7;
+    let two_lets = 1;
+    let two_lets = 2;
+    let from_param = 3;
+    let from_generic = 4;
+    for from_for in 0..2 {
+        let in_for = 5;
+    }
+    let from_for = 6;
+    let from_match = match once {
+        from_match => { let in_match = 8; 8 }
+    };
+    let from_closure = |from_closure: i32| { let in_closure = 9; in_closure };
+    spawn on(Topology::CPU) { let in_spawn = 10; }
+    if once == 7 { let in_then = 11; } else { let in_else = 12; }
+    loop { let in_loop = 13; break; }
+    unsafe { let in_unsafe = 14; }
+    comptime { let in_comptime = 15; }
+    tasks { let in_tasks = 16; }
+    return 0;
+}
+        "#;
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, source);
+        let program = parser.parse().expect("the declarations fixture parses");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name.as_ref() == "f")
+            .expect("function f is present");
+
+        let found: std::collections::BTreeMap<String, Option<u64>> =
+            TypeChecker::collect_single_lets(function)
+                .into_iter()
+                .collect();
+        let expected: std::collections::BTreeMap<String, Option<u64>> = [
+            ("once", Some(7)),
+            ("from_a_call", None),
+            ("float_digits", Some(16777217)),
+            ("whole_float", Some(42)),
+            ("fraction", None),
+            ("in_for", Some(5)),
+            ("in_match", Some(8)),
+            ("in_closure", Some(9)),
+            ("in_spawn", Some(10)),
+            ("in_then", Some(11)),
+            ("in_else", Some(12)),
+            ("in_loop", Some(13)),
+            ("in_unsafe", Some(14)),
+            ("in_comptime", Some(15)),
+            ("in_tasks", Some(16)),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
     fn test_seam_check_off_by_default() {
         // With seam verification disabled (the default), a relaxed transfer raises no
         // E6004 -- the obligation (and its z3 dependency) is opt-in via --verify-seams.

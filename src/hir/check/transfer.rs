@@ -55,17 +55,199 @@ struct PlacedTensor {
     device: Option<Topology>,
 }
 
+/// What `collect_single_lets` gathers: how many times the function declares each name, and
+/// each `let` that has no `mut`.
+#[derive(Default)]
+struct SingleLets {
+    declarations: std::collections::HashMap<String, usize>,
+    lets: std::collections::HashMap<String, Option<u64>>,
+}
+
+impl SingleLets {
+    fn declare(&mut self, name: &str) {
+        *self.declarations.entry(name.to_string()).or_default() += 1;
+    }
+
+    /// Declare the names of one block of statements, and of the loops in it. This function
+    /// does not follow a block inside an expression. The caller finds each of those.
+    fn declare_block(&mut self, stmts: &[Statement]) {
+        for s in stmts {
+            match s {
+                Statement::LetDecl(l) => {
+                    self.declare(l.name.as_ref());
+                    if !l.is_mut {
+                        self.lets
+                            .insert(l.name.as_ref().to_string(), whole_number(&l.expr));
+                    }
+                }
+                Statement::ForLoop(f) => {
+                    self.declare(&f.iter);
+                    self.declare_block(&f.body);
+                }
+                Statement::Loop(l) => self.declare_block(&l.body),
+                // These hold no statements and declare no name.
+                Statement::Return(_)
+                | Statement::ExprStmt(_)
+                | Statement::Assign(_)
+                | Statement::CompoundAssign(_)
+                | Statement::Assert(_)
+                | Statement::Break(_)
+                | Statement::Continue(_)
+                | Statement::MacroCall(_)
+                | Statement::Drop(_)
+                | Statement::Error(_) => {}
+            }
+        }
+    }
+}
+
+/// The whole number that a literal such as `42` or `42.0` states. `largest_exact_whole_number`
+/// says if a tensor element holds this number as the literal states it.
+fn whole_number(e: &Expr) -> Option<u64> {
+    let Expr::Number(n) = e else { return None };
+    let text = n.value.as_ref();
+    if let Ok(whole) = text.parse::<u64>() {
+        return Some(whole);
+    }
+    if !crate::syntax::types::is_float_literal_spelling(text) {
+        return None;
+    }
+    // An f64 holds each whole number up to 2^53.
+    const F64_EXACT_WHOLE_MAX: f64 = (1u64 << 53) as f64;
+    let value = text.parse::<f64>().ok()?;
+    (value.fract() == 0.0 && (0.0..=F64_EXACT_WHOLE_MAX).contains(&value)).then_some(value as u64)
+}
+
+/// The largest whole number `n` for which an element of type `elem` holds each whole number
+/// from 0 to `n` with no rounding. A float literal above it can round to the value of another
+/// literal, so its digits do not say which value the element holds. `None` for a type that
+/// does not hold numbers.
+fn largest_exact_whole_number(elem: &ElementType) -> Option<u64> {
+    // For a float type, 2 to the power of the number of bits in its significand.
+    match elem {
+        ElementType::F64 => Some(1 << 53),
+        ElementType::F32 => Some(1 << 24),
+        ElementType::F16 => Some(1 << 11),
+        ElementType::BF16 => Some(1 << 8),
+        ElementType::F8E4M3 => Some(1 << 4),
+        ElementType::F8E5M2 => Some(1 << 3),
+        ElementType::F4E2M1 => Some(1 << 2),
+        // A power of two only: 3 is the first whole number it cannot hold.
+        ElementType::F8E8M0 => Some(2),
+        // The compiler refuses an integer literal that does not fit its type.
+        ElementType::I4
+        | ElementType::U4
+        | ElementType::I8
+        | ElementType::U8
+        | ElementType::I16
+        | ElementType::U16
+        | ElementType::I32
+        | ElementType::U32
+        | ElementType::I64
+        | ElementType::U64
+        | ElementType::I128
+        | ElementType::U128
+        | ElementType::USize => Some(u64::MAX),
+        ElementType::Bool | ElementType::Generic(_) => None,
+    }
+}
+
+/// The blocks of statements that `e` holds itself. The blocks inside its sub-expressions are
+/// not in the list: `visit_expr` reaches each of those expressions.
+fn own_blocks(e: &Expr) -> Vec<&[Statement]> {
+    match e {
+        Expr::If(i) => std::iter::once(i.then_block.as_slice())
+            .chain(i.else_block.as_deref())
+            .collect(),
+        Expr::Match(m) => m.arms.iter().map(|arm| arm.body.as_slice()).collect(),
+        Expr::UnsafeBlock(b) => vec![&b.stmts],
+        Expr::ComptimeBlock(b) => vec![&b.stmts],
+        Expr::SpawnOn(b) => vec![&b.stmts],
+        Expr::TaskBlock(b) => vec![&b.stmts],
+        // These hold no statements.
+        Expr::Identifier(_)
+        | Expr::EnumVariant(_)
+        | Expr::Number(_)
+        | Expr::StringLiteral(_)
+        | Expr::Transfer(_)
+        | Expr::TransferPredicate(_)
+        | Expr::FunctionCall(_)
+        | Expr::IndirectCall(_)
+        | Expr::Array(_)
+        | Expr::MemberAccess(_)
+        | Expr::IndexAccess(_)
+        | Expr::MethodCall(_)
+        | Expr::BinaryOp(_)
+        | Expr::RelationalOp(_)
+        | Expr::LogicalOp(_)
+        | Expr::UnaryOp(_)
+        | Expr::Borrow(_)
+        | Expr::Dereference(_)
+        | Expr::StructInit(_)
+        | Expr::MemorySpace(_)
+        | Expr::Topology(_)
+        | Expr::Range(_)
+        | Expr::Grad(_)
+        | Expr::Vjp(_)
+        | Expr::Jvp(_)
+        | Expr::VecMacro(_)
+        | Expr::Closure(_)
+        | Expr::MacroCall(_)
+        | Expr::AsCast(_)
+        | Expr::Print(_)
+        | Expr::Println(_)
+        | Expr::SizeOf(_)
+        | Expr::InlineMlir(_) => Vec::new(),
+    }
+}
+
+/// Whether one of `stmts` is a `return`, or is a loop with a `return` in its body.
+fn block_has_a_return(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|s| match s {
+        Statement::Return(_) => true,
+        Statement::ForLoop(l) => block_has_a_return(&l.body),
+        Statement::Loop(l) => block_has_a_return(&l.body),
+        _ => false,
+    })
+}
+
+/// Whether `s` has a `return` inside it, at any depth. For a `return` statement, the answer
+/// is about the value it returns. A `return` in the body of a closure counts too, although it
+/// leaves only the closure.
+fn has_a_return_inside(s: &Statement) -> bool {
+    let mut found = false;
+    let mut look = |e: &Expr| found |= own_blocks(e).into_iter().any(block_has_a_return);
+    match s {
+        Statement::Return(r) => {
+            if let Some(value) = &r.expr {
+                crate::syntax::visit_expr(value, &mut look);
+            }
+        }
+        _ => {
+            crate::syntax::visit_exprs(std::slice::from_ref(s), &mut look);
+            found |= block_has_a_return(std::slice::from_ref(s));
+        }
+    }
+    found
+}
+
 impl<'a> TypeChecker<'a> {
     /// Best-effort label for the buffer crossing a seam, taken from the transferred
     /// operand (an identifier, a borrow of one, or the base of a chained transfer).
     /// Used to instantiate the per-buffer obligation with the program's real name so
     /// distinct buffers produce distinct, localized diagnostics.
     pub(crate) fn buffer_label(e: &Expr) -> String {
+        Self::buffer_name(e).unwrap_or("buffer").to_string()
+    }
+
+    /// The variable that a transferred operand names, when it names one. An operand such as a
+    /// call has no variable, so the compiler does not know its value.
+    pub(crate) fn buffer_name(e: &Expr) -> Option<&str> {
         match e {
-            Expr::Identifier(id) => id.name.as_ref().to_string(),
-            Expr::Transfer(t) => Self::buffer_label(&t.expr),
-            Expr::Borrow(b) => Self::buffer_label(&b.expr),
-            _ => "buffer".to_string(),
+            Expr::Identifier(id) => Some(id.name.as_ref()),
+            Expr::Transfer(t) => Self::buffer_name(&t.expr),
+            Expr::Borrow(b) => Self::buffer_name(&b.expr),
+            _ => None,
         }
     }
 
@@ -89,6 +271,12 @@ impl<'a> TypeChecker<'a> {
         out: &mut std::collections::HashMap<String, u64>,
     ) {
         for s in stmts {
+            // A `return` can end the function before the statements after it. An assert that
+            // not every run reaches is not a fact about every run, so the scan stops. A
+            // statement with a `return` inside it gives no facts.
+            if has_a_return_inside(s) {
+                break;
+            }
             match s {
                 Statement::Assert(a) => Self::collect_assert_condition(&a.expr, out),
                 Statement::LetDecl(l) => Self::scan_expr_for_asserts(&l.expr, out),
@@ -124,6 +312,9 @@ impl<'a> TypeChecker<'a> {
                 | Statement::Error(_) => {}
                 // Macro expansion happens before type checking, so no macro body remains here.
                 Statement::MacroCall(_) => {}
+            }
+            if matches!(s, Statement::Return(_)) {
+                break;
             }
         }
     }
@@ -367,39 +558,57 @@ impl<'a> TypeChecker<'a> {
             _ => None,
         };
         let Some((i, n)) = pair else { return };
-        // Any non-negative integer that fits `u64` is a valid value-contract payload (the
-        // seam field is `VAL_BITS = 64` wide). Parsing as u64 rejects negatives and floats
-        // exactly, without the precision loss an f64 round-trip would introduce.
-        if let Ok(v) = n.value.as_ref().parse::<u64>() {
+        // Any whole number that fits `u64` is a valid value-contract payload (the seam field
+        // is `VAL_BITS = 64` wide).
+        if let Some(v) = whole_number(&Expr::Number(n.clone())) {
             out.insert(i.name.as_ref().to_string(), v);
         }
     }
 
-    /// If `name` holds a statically-known non-negative integer (tracked by the
-    /// constant evaluator) that fits the seam obligation's value field, return it.
-    /// This is what lets a seam be checked with a *value* contract rather than the
-    /// coarser visibility one when the producer's payload is known at compile time.
-    pub(crate) fn const_value_of(&self, name: &str) -> Option<u64> {
-        let sym = crate::symbol::Symbol::from(name);
-        for env in self.consteval.env.iter().rev() {
-            match env.get(&sym) {
-                // An integer is already exact, so it pins the value field directly.
-                Some(crate::hir::env::Value::Int(i)) => {
-                    return if *i >= 0 { Some(*i as u64) } else { None };
-                }
-                // A float has to be a whole number, and only up to 2^53, past which it may
-                // already be a rounded stand-in for the value the program wrote.
-                Some(crate::hir::env::Value::Number(n)) => {
-                    const F64_EXACT_INT_MAX: f64 = (1u64 << 53) as f64;
-                    if n.fract() == 0.0 && *n >= 0.0 && *n <= F64_EXACT_INT_MAX {
-                        return Some(*n as u64);
+    /// Pre-scan a function for the names that mean one value in all of it: the function
+    /// declares the name one time, with a `let` that has no `mut`. A `let` of the same name in
+    /// another block, a parameter of the function or of a closure, a generic parameter, a loop
+    /// variable and a `match` binding are all other declarations. Each name maps to the whole
+    /// number that its `let` gives it, when the initializer is a whole-number literal. This
+    /// number is what the producer of a seam establishes. The caller removes the names of the
+    /// top-level constants, which this scan does not see.
+    pub(crate) fn collect_single_lets(
+        func: &Function,
+    ) -> std::collections::HashMap<String, Option<u64>> {
+        let mut found = SingleLets::default();
+        for (name, _) in &func.params {
+            found.declare(name.as_ref());
+        }
+        for generic in &func.generics {
+            found.declare(generic.name());
+        }
+        found.declare_block(&func.body);
+        // `visit_exprs` reaches every expression at any depth. `declare_block` follows the
+        // loops of each block.
+        crate::syntax::visit_exprs(&func.body, &mut |e| {
+            match e {
+                Expr::Match(m) => {
+                    let mut names = Vec::new();
+                    for arm in &m.arms {
+                        crate::hir::check::control::pattern_names(&arm.pattern, &mut names);
                     }
-                    return None;
+                    for name in &names {
+                        found.declare(name.as_ref());
+                    }
+                }
+                Expr::Closure(c) => {
+                    for (name, _) in &c.params {
+                        found.declare(name.as_ref());
+                    }
                 }
                 _ => {}
             }
-        }
-        None
+            for block in own_blocks(e) {
+                found.declare_block(block);
+            }
+        });
+        found.lets.retain(|name, _| found.declarations[name] == 1);
+        found.lets
     }
 
     /// Whether `device` can represent `elem` at all, per its `dtypes:` list. E6026.
@@ -1563,22 +1772,29 @@ impl<'a> TypeChecker<'a> {
         dst: &MemorySpace,
         relaxed: bool,
         buffer: &str,
-        known_val: Option<u64>,
+        producer_val: Option<u64>,
+        required: Option<(&str, u64)>,
         span: Span,
     ) {
         use crate::hir::seam::{AbsState, Cell, Solver, Transfer, Verdict};
 
+        // The value contract needs both values: the value the producer establishes is the
+        // premise, and the value the consumer asserts is the conclusion.
+        let value_contract = producer_val.zip(required.map(|(_, value)| value));
+
         // A relaxed transfer into a `managed: cached` space is safe — hardware coherence
-        // keeps the buffer visible, so there is no seam obligation to discharge.
-        if relaxed && self.space_is_cached(dst) {
+        // keeps the buffer visible, so the transfer behaves like a synchronizing transfer.
+        // It has only a value contract to discharge.
+        let relaxed_into_cached = relaxed && self.space_is_cached(dst);
+        if relaxed_into_cached && value_contract.is_none() {
             return;
         }
+        let relaxed = relaxed && !relaxed_into_cached;
 
-        // Reached state at the producer side: the transferred buffer is established.
-        // If the producer value is statically known we pin it (a value contract);
-        // otherwise the concrete value is immaterial to the coarser visibility obligation.
-        let reached = AbsState {
-            cells: vec![(buffer.to_string(), Cell::constant(known_val.unwrap_or(1)))],
+        // Reached state at the producer side: the transferred buffer is established, with
+        // the given value.
+        let reached = |value: u64| AbsState {
+            cells: vec![(buffer.to_string(), Cell::constant(value))],
         };
         let transfer = if relaxed {
             // Relaxed escape hatch: the published buffer loses its visibility guarantee.
@@ -1600,11 +1816,13 @@ impl<'a> TypeChecker<'a> {
         let solver = self.seam.solver.as_mut().unwrap();
 
         let start = std::time::Instant::now();
-        // A buffer with a statically-known value gets the stronger value contract (pin
-        // the value); an opaque buffer falls back to the visibility obligation.
-        let verdict = match known_val {
-            Some(v) => solver.check_seam_value(&reached, &transfer, buffer, v),
-            None => solver.check_seam_buffers(&reached, &transfer, &consumed),
+        let verdict = match value_contract {
+            Some((produced, required)) => {
+                solver.check_seam_value(&reached(produced), &transfer, buffer, required)
+            }
+            // Without both values there is no value to reason about, so the check is only
+            // about visibility. That obligation does not read the value of the cell.
+            None => solver.check_seam_buffers(&reached(0), &transfer, &consumed),
         };
         self.seam.check_time += start.elapsed();
         self.seam.checks += 1;
@@ -1612,22 +1830,43 @@ impl<'a> TypeChecker<'a> {
         match verdict {
             Ok(Verdict::Accept) => {}
             Ok(Verdict::Reject { counterexample }) => {
+                let message = if relaxed {
+                    format!(
+                        "relaxed transfer of '{}' across the {:?} -> {:?} seam violates \
+                         the boundary contract{}: the buffer carries no synchronizing \
+                         release, so a consumer may read it stale",
+                        buffer,
+                        src,
+                        dst,
+                        match required.map(|(_, value)| value).or(producer_val) {
+                            Some(v) => format!(" ('{buffer}' == {v})"),
+                            None => String::new(),
+                        }
+                    )
+                } else {
+                    // A synchronizing transfer keeps the buffer visible, so the value contract
+                    // is the only obligation that can fail on it.
+                    let (Some(produced), Some((target, required))) = (producer_val, required)
+                    else {
+                        panic!(
+                            "the seam check refused a synchronizing transfer of '{buffer}' \
+                             that has no value contract"
+                        );
+                    };
+                    format!(
+                        "the transfer of '{buffer}' across the {} -> {} seam violates the \
+                         boundary contract. '{buffer}' is {produced}, so '{target}' is \
+                         {produced} after the transfer. The program asserts '{target}' == \
+                         {required}",
+                        src.name(),
+                        dst.name()
+                    )
+                };
                 if !self.speculating {
                     self.errors
                         .error_with_code(
                             crate::diagnostic::DiagnosticCode::E6004,
-                            format!(
-                                "relaxed transfer of '{}' across the {:?} -> {:?} seam violates \
-                                 the boundary contract{}: the buffer carries no synchronizing \
-                                 release, so a consumer may read it stale",
-                                buffer,
-                                src,
-                                dst,
-                                match known_val {
-                                    Some(v) => format!(" ('{buffer}' == {v})"),
-                                    None => String::new(),
-                                }
-                            ),
+                            message,
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         )
                         .notes
@@ -2391,20 +2630,38 @@ impl<'a> TypeChecker<'a> {
     /// (`sat` => REJECT, with a concrete counterexample naming the buffer). This is the
     /// per-buffer instance of the paper's `post /\ ~conclusion` schema; the value-contract
     /// form (`flag => data`) is the message-passing worked example (`seam::check_seam`).
-    fn discharge_seam_obligation(&mut self, t: &TransferExpr, edge: &ResolvedEdge, relaxed: bool) {
+    ///
+    /// `bound` is the name of the `let` that this transfer initializes, when it is the whole
+    /// initializer. When the pre-scans know the number the buffer holds and the number an
+    /// assert requires of `bound`, the obligation is the stronger value contract.
+    fn discharge_seam_obligation(
+        &mut self,
+        t: &TransferExpr,
+        edge: &ResolvedEdge,
+        relaxed: bool,
+        bound: Option<&str>,
+    ) {
         let source_mem = edge.source_mem.clone();
         let target_mem = edge.target_mem.clone();
         let span = Self::buffer_span(&t.expr).unwrap_or(t.span);
         let buffer = Self::buffer_label(&t.expr);
-        // Prefer the value the consumer asserts of the buffer this transfer
-        // produces (looked up by the let-binding target, e.g. `local_a`), which
-        // is the boundary contract's conclusion; fall back to the producer's
-        // own statically-known constant, else the coarse visibility check.
-        let asserted_val = self
-            .current_assignment_target
-            .as_ref()
-            .and_then(|tgt| self.seam.contracts.get(tgt).copied());
-        let known_val = asserted_val.or_else(|| self.const_value_of(&buffer));
+        // A literal says which value an element holds only up to this number.
+        let largest_exact = match &edge.inner_ty {
+            Type::Tensor(elem, ..) => largest_exact_whole_number(elem),
+            _ => None,
+        };
+        let exact = |value: &u64| largest_exact.is_some_and(|largest| *value <= largest);
+        // The premise: the number the producer gives the buffer.
+        let producer_val = Self::buffer_name(&t.expr)
+            .and_then(|name| self.seam.single_lets.get(name).copied().flatten())
+            .filter(exact);
+        // The conclusion: the number the consumer asserts of the name this transfer
+        // initializes. An assert on a name with a second declaration can be about another
+        // value, so it says nothing here.
+        let required = bound
+            .filter(|name| self.seam.single_lets.contains_key(*name))
+            .and_then(|name| Some((name, *self.seam.contracts.get(name)?)))
+            .filter(|(_, value)| exact(value));
         // A hop over a *declared* `relaxed` edge is relaxed too, not just the caller's
         // `*_relaxed` intrinsic escape hatch: route it through the same seam obligation so a
         // declared relaxed transfer gets the per-buffer E6004 at the use site, not only the
@@ -2418,7 +2675,8 @@ impl<'a> TypeChecker<'a> {
             &target_mem,
             relaxed || hop_relaxed,
             &buffer,
-            known_val,
+            producer_val,
+            required,
             span,
         );
     }
@@ -2482,6 +2740,15 @@ impl<'a> TypeChecker<'a> {
         // Whether this transfer is a relaxed escape hatch (set by the caller, e.g. the
         // `to_device_relaxed` method arm). Consumed here so it does not leak to siblings.
         let relaxed = std::mem::take(&mut self.seam.pending_relaxed);
+        // The name this transfer gives its value to: the transfer is the whole initializer of
+        // a `let`. A transfer inside the initializer, such as an argument of a call, is not.
+        let address = std::ptr::from_ref::<Expr>(expr) as usize;
+        let bound = self
+            .seam
+            .binding
+            .as_ref()
+            .filter(|(initializer, _)| *initializer == address)
+            .map(|(_, name)| name.clone());
 
         let Expr::Transfer(t) = expr else {
             unreachable!()
@@ -2517,7 +2784,7 @@ impl<'a> TypeChecker<'a> {
         t.cost = edge.derived_cost;
         self.record_staging_route(t, &edge);
         if single_hop && self.seam.verify {
-            self.discharge_seam_obligation(t, &edge, relaxed);
+            self.discharge_seam_obligation(t, &edge, relaxed, bound.as_deref());
         }
 
         self.transfer_result_type(expr, edge.inner_ty, &edge.target_mem, consume)

@@ -143,23 +143,32 @@ const PREAMBLE: &str = "(set-option :produce-models true)\n\
 (define-fun CONST () (_ BitVec 2) #b01)\n\
 (define-fun TOP () (_ BitVec 2) #b11)\n";
 
+/// The SMT-LIB symbol for the `tag` or the `val` of the location `name`. A Vx name can have a
+/// letter that SMT-LIB accepts only in a symbol between `|` bars, such as `é`.
+fn symbol(kind: &str, name: &str) -> String {
+    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        format!("{kind}_{name}")
+    } else {
+        format!("|{kind}_{name}|")
+    }
+}
+
 /// Emit the post-transfer abstract state (per-location declarations + constraints),
 /// without the preamble. The goal assertion is appended by the caller.
 fn state_smt(post: &AbsState) -> String {
     let mut s = String::new();
     for (name, cell) in &post.cells {
-        s.push_str(&format!("(declare-const tag_{name} (_ BitVec 2))\n"));
-        s.push_str(&format!(
-            "(declare-const val_{name} (_ BitVec {VAL_BITS}))\n"
-        ));
+        let (tag, val) = (symbol("tag", name), symbol("val", name));
+        s.push_str(&format!("(declare-const {tag} (_ BitVec 2))\n"));
+        s.push_str(&format!("(declare-const {val} (_ BitVec {VAL_BITS}))\n"));
         match cell.tag {
             Tag::Const => {
-                s.push_str(&format!("(assert (= tag_{name} CONST))\n"));
-                s.push_str(&format!("(assert (= val_{name} {}))\n", hex(cell.value)));
+                s.push_str(&format!("(assert (= {tag} CONST))\n"));
+                s.push_str(&format!("(assert (= {val} {}))\n", hex(cell.value)));
             }
             // TOP: tag fixed, value left free so z3 can exhibit the stale read.
-            Tag::Top => s.push_str(&format!("(assert (= tag_{name} TOP))\n")),
-            Tag::Bot => s.push_str(&format!("(assert (= tag_{name} BOT))\n")),
+            Tag::Top => s.push_str(&format!("(assert (= {tag} TOP))\n")),
+            Tag::Bot => s.push_str(&format!("(assert (= {tag} BOT))\n")),
         }
     }
     s
@@ -170,17 +179,19 @@ fn state_smt(post: &AbsState) -> String {
 fn value_goal_smt(c: &Contract) -> String {
     let (pn, pv) = &c.premise;
     let (cn, cv) = &c.conclusion;
+    let (premise_tag, premise_val) = (symbol("tag", pn), symbol("val", pn));
+    let (tag, val) = (symbol("tag", cn), symbol("val", cn));
     let mut s = String::new();
     s.push_str(&format!(
-        "(assert (and (= tag_{pn} CONST) (= val_{pn} {})))\n",
+        "(assert (and (= {premise_tag} CONST) (= {premise_val} {})))\n",
         hex(*pv)
     ));
     s.push_str(&format!(
-        "(assert (not (and (= tag_{cn} CONST) (= val_{cn} {}))))\n",
+        "(assert (not (and (= {tag} CONST) (= {val} {}))))\n",
         hex(*cv)
     ));
     s.push_str("(check-sat)\n");
-    s.push_str(&format!("(get-value (val_{cn} tag_{cn}))\n"));
+    s.push_str(&format!("(get-value ({val} {tag}))\n"));
     s
 }
 
@@ -189,25 +200,30 @@ fn value_goal_smt(c: &Contract) -> String {
 fn buffers_goal_smt(consumed: &[String]) -> String {
     let disj = consumed
         .iter()
-        .map(|b| format!("(= tag_{b} TOP)"))
+        .map(|b| format!("(= {} TOP)", symbol("tag", b)))
         .collect::<Vec<_>>()
         .join(" ");
     let mut s = format!("(assert (or {disj}))\n(check-sat)\n");
     for b in consumed {
-        s.push_str(&format!("(get-value (tag_{b} val_{b}))\n"));
+        s.push_str(&format!(
+            "(get-value ({} {}))\n",
+            symbol("tag", b),
+            symbol("val", b)
+        ));
     }
     s
 }
 
-/// Single-buffer *value* goal: after the transfer, can `buffer` fail to hold its
-/// statically-known producer value `expected`? Stronger than the visibility goal:
-/// it pins the value, not just definiteness. A synchronizing transfer keeps the
-/// state's `val == expected` (goal `unsat` => ACCEPT); a relaxed transfer sends the
-/// buffer to TOP, freeing its value, so z3 can exhibit a concrete stale value
-/// `!= expected` (`sat` => REJECT with a value-level counterexample).
+/// Single-buffer *value* goal: after the transfer, can `buffer` fail to hold the value
+/// `expected` that the consumer requires? Stronger than the visibility goal: it pins the
+/// value, not just definiteness. A synchronizing transfer keeps the value the producer
+/// gave the state, so the goal is `unsat` (ACCEPT) only when that value is `expected`.
+/// A relaxed transfer sends the buffer to TOP, freeing its value, so z3 can exhibit a
+/// concrete stale value `!= expected` (`sat` => REJECT with a value-level counterexample).
 fn value1_goal_smt(buffer: &str, expected: u64) -> String {
+    let (tag, val) = (symbol("tag", buffer), symbol("val", buffer));
     format!(
-        "(assert (not (= val_{buffer} {})))\n(check-sat)\n(get-value (tag_{buffer} val_{buffer}))\n",
+        "(assert (not (= {val} {})))\n(check-sat)\n(get-value ({tag} {val}))\n",
         hex(expected)
     )
 }
@@ -370,6 +386,7 @@ impl Solver {
 
         let mut sat: Option<bool> = None;
         let mut model = String::new();
+        let mut refused: Option<String> = None;
         loop {
             let mut line = String::new();
             let n = pipe.out.read_line(&mut line).map_err(|e| e.to_string())?;
@@ -384,7 +401,14 @@ impl Solver {
                 "sat" => sat = Some(true),
                 "unsat" => sat = Some(false),
                 "" => {}
-                _ if t.starts_with("(error") => {} // e.g. get-value after unsat
+                // After `unsat` there is no model, and `get-value` says so. An error before
+                // the answer means z3 did not read all of the obligation, so the answer is
+                // about some other question.
+                _ if t.starts_with("(error") => {
+                    if sat.is_none() {
+                        refused.get_or_insert_with(|| t.to_string());
+                    }
+                }
                 _ => {
                     if !model.is_empty() {
                         model.push(' ');
@@ -392,6 +416,9 @@ impl Solver {
                     model.push_str(t);
                 }
             }
+        }
+        if let Some(error) = refused {
+            return Err(format!("z3 did not accept the obligation: {error}"));
         }
         match sat {
             Some(v) => Ok((v, model)),
@@ -443,8 +470,10 @@ impl Solver {
         })
     }
 
-    /// Per-seam *value* obligation for a buffer whose producer value `expected` is
-    /// statically known: can the buffer fail to hold `expected` after the transfer?
+    /// Per-seam *value* obligation: `reached` holds the value the producer gave the buffer,
+    /// and `expected` is the value the consumer requires. Can the buffer fail to hold
+    /// `expected` after the transfer? The caller must take the two values from different
+    /// places. A state built from `expected` makes the obligation compare a value with itself.
     /// Stronger than [`check_seam_buffers`] (pins the value, not just definiteness).
     pub fn check_seam_value(
         &mut self,
@@ -573,6 +602,19 @@ mod tests {
             .check_seam_value(&buffer_state(), &Transfer::Sync, "x", 7)
             .unwrap();
         assert_eq!(sync, Verdict::Accept);
+        // The consumer requires 42 and the producer gave 7. No transfer makes that hold.
+        match s
+            .check_seam_value(&buffer_state(), &Transfer::Sync, "x", 42)
+            .unwrap()
+        {
+            Verdict::Reject { counterexample } => {
+                assert!(
+                    counterexample.contains("#x0000000000000007"),
+                    "the counterexample must show the value the producer gave: {counterexample}"
+                );
+            }
+            Verdict::Accept => panic!("a synchronizing transfer of 7 cannot satisfy x == 42"),
+        }
         let t = Transfer::Relaxed {
             published: vec!["x".into()],
         };
@@ -582,6 +624,45 @@ mod tests {
             }
             Verdict::Accept => panic!("relaxed transfer must violate the value contract for x"),
         }
+    }
+
+    #[test]
+    fn a_buffer_name_that_is_not_ascii_gets_a_real_verdict() {
+        // Vx accepts `données` as a name. SMT-LIB accepts it only between `|` bars.
+        let name = "données";
+        let state = AbsState {
+            cells: vec![(name.into(), Cell::constant(7))],
+        };
+        let mut s = Solver::new();
+        assert_eq!(
+            s.check_seam_buffers(&state, &Transfer::Sync, &[name.into()]),
+            Ok(Verdict::Accept)
+        );
+        assert_eq!(
+            s.check_seam_value(&state, &Transfer::Sync, name, 7),
+            Ok(Verdict::Accept)
+        );
+        assert!(matches!(
+            s.check_seam_value(&state, &Transfer::Sync, name, 8),
+            Ok(Verdict::Reject { .. })
+        ));
+    }
+
+    #[test]
+    fn an_obligation_that_z3_cannot_read_is_an_error_not_a_verdict() {
+        // z3 reports an error for the name it does not know. It still answers the
+        // `check-sat`, about the assertions that are left.
+        let mut s = Solver::new();
+        let verdict = s.query("(assert (= tag_unknown CONST))\n(check-sat)\n");
+        assert!(
+            matches!(&verdict, Err(e) if e.contains("z3 did not accept the obligation")),
+            "{verdict:?}"
+        );
+        // The solver stays usable for the next obligation.
+        assert_eq!(
+            s.check_seam_value(&buffer_state(), &Transfer::Sync, "x", 7),
+            Ok(Verdict::Accept)
+        );
     }
 
     #[test]
