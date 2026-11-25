@@ -1,8 +1,8 @@
 //===- logical_and_of_a_bool_and_an_i32.vx - Vx Compiler ------------*- Vx -*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
-// `&&` and `||` need a bool on both sides. A bool on one side and an i32 on the
-// other is error E3006. The error points at the start of the whole expression.
+// A bool on one side of `&&` or `||` and an i32 on the other is error E3006.
+// The error points at the `&&` or `||` operator, not at the start of the line.
 
 fn and_of_a_bool_and_an_i32() -> i32 {
   let a = true;
