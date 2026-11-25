@@ -15,7 +15,7 @@ trait Describe {
   fn describe(self : &Self) -> i32;
 }
 
-fn make() -> Point {
+pub fn make() -> Point {
   return Point {
     x: 1
   };

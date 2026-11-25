@@ -7,6 +7,6 @@
 //===----------------------------------------------------------------------===//
 // Imported as a package, under a name that is not this directory's.
 
-fn square_area(side : i64) -> i64 {
+pub fn square_area(side : i64) -> i64 {
   return side * side;
 }

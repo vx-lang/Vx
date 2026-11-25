@@ -65,7 +65,7 @@ struct Permit {
 
 impl Semaphore {
   /// A new `Semaphore` with `n` permits. `n` must not be negative.
-  fn new(n : i64, at : Caller) -> Semaphore {
+  pub fn new(n : i64, at : Caller) -> Semaphore {
     assert(n >= 0, "Semaphore::new: the number of permits must not be negative");
     return Semaphore {
       permits : AtomicI64::new(n), sleepers : AtomicI64::new(0), watchers : AtomicI64::new(0), made : at.location
@@ -75,17 +75,17 @@ impl Semaphore {
   /// Take a permit. Wait while no permit is free. When the `tasks` block of this task was
   /// cancelled, give `Cancelled`. The waiters are not served in order, so when many tasks
   /// compete, one waiter can wait without limit.
-  fn acquire(self : &Semaphore, at : Caller) -> Result<Permit, AcquireError> {
+  pub fn acquire(self : &Semaphore, at : Caller) -> Result<Permit, AcquireError> {
     return self.acquire_until(Instant::never(), at);
   }
 
   /// `acquire`, and give `TimedOut` when it waited `limit` for a permit.
-  fn acquire_for(self : &Semaphore, limit : Duration, at : Caller) -> Result<Permit, AcquireError> {
+  pub fn acquire_for(self : &Semaphore, limit : Duration, at : Caller) -> Result<Permit, AcquireError> {
     return self.acquire_until(deadline_after(limit), at);
   }
 
   /// `acquire` until the clock reaches `deadline`.
-  fn acquire_until(self : &Semaphore, deadline : Instant, at : Caller) -> Result<Permit, AcquireError> {
+  pub fn acquire_until(self : &Semaphore, deadline : Instant, at : Caller) -> Result<Permit, AcquireError> {
     let mut why = AcquireError::Cancelled;
     let mut now = self.permits.load(AtomicOrdering::SeqCst);
     while !cancelled_at(at) {
@@ -117,7 +117,7 @@ impl Semaphore {
   }
 
   /// A permit, if one is free now. It does not wait.
-  fn try_acquire(self : &Semaphore) -> Option<Permit> {
+  pub fn try_acquire(self : &Semaphore) -> Option<Permit> {
     let mut now = self.permits.load(AtomicOrdering::SeqCst);
     while now > 0 {
       match self.permits.compare_exchange(now, now - 1, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst) {
@@ -135,7 +135,7 @@ impl Semaphore {
   }
 
   /// The permits that are free now. Another task can take one at any time.
-  fn available_permits(self : &Semaphore) -> i64 {
+  pub fn available_permits(self : &Semaphore) -> i64 {
     return self.permits.load(AtomicOrdering::SeqCst);
   }
 }
