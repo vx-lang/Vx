@@ -4834,7 +4834,8 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
 
   // A byte past the end of k holds zero.
   Type elemInt = b.getIntegerType(elemBytes * 8);
-  Value elemZero = b.create<arith::ConstantOp>(loc, elem, b.getFloatAttr(elem, 0.0));
+  Value elemZero =
+      b.create<arith::ConstantOp>(loc, elem, b.getFloatAttr(elem, 0.0));
 
   // Copy one byte of the tile into the swizzled row of shared memory: byte b
   // of row r is byte `b % elemBytes` of the value of k `b / elemBytes`.
@@ -4851,24 +4852,22 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
               Value byte = nb.create<arith::RemUIOp>(l, rest, index(128));
               Value kk = nb.create<arith::AddIOp>(
                   l, nb.create<arith::MulIOp>(l, group, index(128 / elemBytes)),
-                  nb.create<arith::DivUIOp>(l, byte,
-                                            index(elemBytes)));
+                  nb.create<arith::DivUIOp>(l, byte, index(elemBytes)));
               Value inside = nb.create<arith::CmpIOp>(
                   l, arith::CmpIPredicate::ult, kk, index(k));
               Value safe = nb.create<arith::SelectOp>(l, inside, kk, index(0));
               Value v = nb.create<arith::SelectOp>(
                   l, inside, at(nb, l, r, safe), elemZero);
-              Value bits =
-                  nb.create<arith::BitcastOp>(l, elemInt, v);
+              Value bits = nb.create<arith::BitcastOp>(l, elemInt, v);
               Value out;
               if (elemBytes == 1) {
                 out = bits;
               } else {
                 Value low = nb.create<arith::TruncIOp>(
-                    l, i8, nb.create<arith::AndIOp>(
-                               l, bits,
-                               nb.create<arith::ConstantIntOp>(l, elemInt,
-                                                               0xFF)));
+                    l, i8,
+                    nb.create<arith::AndIOp>(
+                        l, bits,
+                        nb.create<arith::ConstantIntOp>(l, elemInt, 0xFF)));
                 Value high = nb.create<arith::TruncIOp>(
                     l, i8,
                     nb.create<arith::ShRUIOp>(
@@ -4941,13 +4940,20 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
   auto tie = [&](ArrayRef<Value> regs) {
     auto type = LLVM::LLVMStructType::getLiteral(
         ctx, SmallVector<Type>(regs.size(), f32));
+    // Each register is an output tied to its own input, as the `mma.sync`
+    // constraints do: the empty asm writes no register of its own, so a
+    // `=f` with no tie would be a new definition that LLVM may reorder.
     std::string constraints;
     for (size_t r = 0; r < regs.size(); ++r)
       constraints += (r ? ",=f" : "=f");
-    Value packed = b.create<LLVM::InlineAsmOp>(
-        loc, type, regs, "", constraints, /*has_side_effects=*/true,
-        /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
-        LLVM::AsmDialectAttr(), ArrayAttr()).getResult(0);
+    for (size_t r = 0; r < regs.size(); ++r)
+      constraints += "," + std::to_string(r);
+    Value packed =
+        b.create<LLVM::InlineAsmOp>(
+             loc, type, regs, "", constraints, /*has_side_effects=*/true,
+             /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
+             LLVM::AsmDialectAttr(), ArrayAttr())
+            .getResult(0);
     SmallVector<Value> out;
     for (size_t r = 0; r < regs.size(); ++r)
       out.push_back(b.create<LLVM::ExtractValueOp>(loc, packed, r));
@@ -4961,11 +4967,15 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
       Value descA =
           descriptor(lhsAt, (i / perRow) * m * 128 + tm * 64 * 128 + within);
       Value descB = descriptor(rhsAt, (i / perRow) * n * 128 + within);
+      // Each accumulator register is an output tied to its own input: a step
+      // after the first reads the sums of the steps before it.
       std::string regList, constraints;
       for (int64_t r = 0; r < regsPerTile; ++r) {
         regList += (r ? ", $" : "$") + std::to_string(r);
-        constraints += (r ? ",+f" : "+f");
+        constraints += (r ? ",=f" : "=f");
       }
+      for (int64_t r = 0; r < regsPerTile; ++r)
+        constraints += "," + std::to_string(r);
       constraints += ",l,l";
       SmallVector<Value> operands(accRegs.begin() + tm * regsPerTile,
                                   accRegs.begin() + (tm + 1) * regsPerTile);
@@ -4973,21 +4983,23 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
       operands.push_back(descB);
       // `scaleD` is 0 for the first step, so it computes D = A * B, and 1
       // after, so it accumulates. A and B are neither negated (1, 1) nor
-      // transposed (0, 0): the copy already laid them out row-major and
-      // column-major.
+      // transposed: the copy already laid them out row-major and column-major.
+      // A transpose operand exists only for f16 and bf16, where it says (0, 0)
+      // -- no transpose; the fp8 wgmma takes no transpose operands.
       std::string scaleD = (i == 0) ? "0" : "1";
+      bool fp8 = mma.kStep == 32;
       std::string text = "wgmma.mma_async.sync.aligned." + mma.kind + " {" +
                          regList + "}, $" + std::to_string(regsPerTile) +
                          ", $" + std::to_string(regsPerTile + 1) + ", " +
-                         scaleD + ", 1, 1;";
+                         scaleD + ", 1, 1" + (fp8 ? ";" : ", 0, 0;");
       auto type = LLVM::LLVMStructType::getLiteral(
           ctx, SmallVector<Type>(regsPerTile, f32));
       Value packed = b.create<LLVM::InlineAsmOp>(
-                         loc, type, operands, text, constraints,
-                         /*has_side_effects=*/true, /*is_align_stack=*/false,
-                         LLVM::tailcallkind::TailCallKind::None,
-                         LLVM::AsmDialectAttr(), ArrayAttr())
-                       .getResult(0);
+                          loc, type, operands, text, constraints,
+                          /*has_side_effects=*/true, /*is_align_stack=*/false,
+                          LLVM::tailcallkind::TailCallKind::None,
+                          LLVM::AsmDialectAttr(), ArrayAttr())
+                         .getResult(0);
       for (int64_t r = 0; r < regsPerTile; ++r)
         accRegs[tm * regsPerTile + r] =
             b.create<LLVM::ExtractValueOp>(loc, packed, r);
@@ -5023,8 +5035,8 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
       }};
 
       for (auto [row, col, sum] : coords) {
-        Value insideN =
-            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, col, index(n));
+        Value insideN = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult,
+                                                col, index(n));
         auto ifInBounds =
             b.create<scf::IfOp>(loc, insideN, /*withElseRegion=*/false);
         OpBuilder ib =
@@ -5035,12 +5047,12 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
         if (op.getAccumulate()) {
           toStore = ib.create<arith::AddFOp>(loc, old, sum);
         }
-        ib.create<memref::StoreOp>(loc, toStore, op.getAcc(), ValueRange{row, col});
+        ib.create<memref::StoreOp>(loc, toStore, op.getAcc(),
+                                   ValueRange{row, col});
       }
     }
   }
 }
-
 
 /// A scaled lane matmul on the tensor cores of the B200, with `tcgen05`. Every
 /// lane of the block of 128 runs this, and these are the rules that the B200
@@ -5535,14 +5547,10 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
   };
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
-  Value blockDimX =
-      b.create<gpu::BlockDimOp>(loc, b.getIndexType(), gpu::Dimension::x);
-  Value numWarps = b.create<arith::DivUIOp>(loc, blockDimX, index(32));
   Value lane = b.create<arith::RemUIOp>(loc, tid, index(32));
   Value group = b.create<arith::DivUIOp>(loc, lane, index(4));
   Value quad = b.create<arith::RemUIOp>(loc, lane, index(4));
   Value pair = b.create<arith::MulIOp>(loc, quad, index(2));
-  Value warpId = b.create<arith::DivUIOp>(loc, tid, index(32));
   bool lhsLdmatrix = ldmatrixFits(op.getLhs());
   bool rhsLdmatrix = ldmatrixFits(op.getRhs());
   auto lhsSpace = dyn_cast_or_null<IntegerAttr>(
@@ -5794,17 +5802,15 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                    ValueRange{ij.first, ij.second});
     }
   };
-  Value outerLb = zero;
-  Value outerStep = index(16);
-  if (!op.getSubgroup()) {
-    Value blockDimX =
-        b.create<gpu::BlockDimOp>(loc, b.getIndexType(), gpu::Dimension::x);
-    Value numWarps = b.create<arith::DivUIOp>(loc, blockDimX, index(32));
-    outerLb = b.create<arith::MulIOp>(loc, warpId, index(16));
-    outerStep = b.create<arith::MulIOp>(loc, numWarps, index(16));
+  if (fragments) {
+    // Each piece of the accumulator is one matrix of the lane: the unrolled
+    // loop gives it the slot that `moveLaneFragments` moves.
+    for (int64_t top = 0; top < m; top += 16)
+      for (int64_t left = 0; left < n; left += 8)
+        piece(b, loc, index(top), index(left), (top / 16) * (n / 8) + left / 8);
+    return;
   }
-
-  b.create<scf::ForOp>(loc, outerLb, index(m), outerStep, ValueRange{},
+  b.create<scf::ForOp>(loc, zero, index(m), index(16), ValueRange{},
                        [&](OpBuilder &nb, Location l, Value top, ValueRange) {
                          nb.create<scf::ForOp>(l, zero, index(n), index(8),
                                                ValueRange{},
@@ -6288,7 +6294,12 @@ static void expandLaneMatmul(OpBuilder &b, vx::LaneMatmulOp op, bool device,
       fitsSimdgroupMatrices(op))
     return;
   if (device && !op.getSerial()) {
-    if (Type elem = mmaElementFor(op, mmaChip))
+    // A matmul in the code of a subgroup loop runs on the lanes of one warp. A
+    // block matmul splits over whole warps, so the tensor cores take it only
+    // when the lanes make whole warps; any other lane count keeps the generic
+    // expansion, which every thread runs.
+    if (Type elem = mmaElementFor(op, mmaChip);
+        elem && (op.getSubgroup() || op.getLanes() % 32 == 0))
       expandLaneMatmulWithMma(b, op, elem);
     else
       expandLaneMatmulOnDevice(b, op);

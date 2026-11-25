@@ -755,6 +755,15 @@ bool Printer::op(Operation *o) {
 // value, and each 8 columns of the left tile add one product to it. The GPU
 // adds in an order of its own, so the last bits can differ from the CPU copy.
 bool Printer::laneMatmul(Operation *o) {
+  // A matmul in the code of a subgroup loop runs on the lanes of one
+  // SIMD-group. In the code of a loop of blocks, each SIMD-group of the block
+  // would compute the whole tile, and with `accumulate` two of them would read
+  // and write the same accumulator: a race. The id of the SIMD-group is not in
+  // the signature of the kernel, so no split over the SIMD-groups is
+  // available, and the code generator declines the kernel.
+  if (!o->hasAttr("subgroup"))
+    return fail(o, "a tile matmul in the code of a loop of blocks, which the "
+                   "SIMD-groups of an Apple GPU cannot split");
   View tiles[3];
   std::string matrix[3], stride[3];
   for (unsigned k = 0; k < 3; ++k) {

@@ -41,5 +41,10 @@ fn main() -> i32 {
   return 0;
 }
 
-// WGMMA: wgmma.mma_async
-// DEFAULT-NOT: Error[E6032]
+// The whole asm line: the kind, the four tied accumulator registers, the two
+// descriptors, `scaleD` 0, the scales 1, 1, and the transposes 0, 0 of bf16.
+// WGMMA: wgmma.mma_async.sync.aligned.m64n8k16.row.col.f32.bf16.bf16 {{\{%r[0-9]+, %r[0-9]+, %r[0-9]+, %r[0-9]+\}, %r[0-9]+, %r[0-9]+, 0, 1, 1, 0, 0;}}
+// WGMMA-NOT: mma.sync.aligned
+// The A100 keeps the `mma.sync` path, with its kind spelled out, and no wgmma.
+// DEFAULT: mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32
+// DEFAULT-NOT: wgmma.mma_async

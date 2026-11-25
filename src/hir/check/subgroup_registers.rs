@@ -592,7 +592,8 @@ impl Walk<'_> {
     ) {
         self.other(m.lhs, uses);
         self.other(m.rhs, uses);
-        // A block matmul keeps its accumulator in the registers of the warpgroup, which this
+        // A block matmul keeps its accumulator in the registers of the warpgroup
+        // when the `wgmma.mma_async` of `VX_WGMMA=1` takes it, which this
         // analysis does not model. Leave its tiles in the working set.
         if kind != Some(LevelKind::Subgroups) {
             self.other(m.acc, uses);

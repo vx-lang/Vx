@@ -3754,6 +3754,7 @@ impl<'a> TypeChecker<'a> {
                 Some(items[i].clone())
             }
             Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name,
                 type_args,
                 args,
@@ -3908,6 +3909,7 @@ impl<'a> TypeChecker<'a> {
         env: &HashMap<crate::symbol::Symbol, Value>,
     ) -> Option<Vec<(crate::symbol::Symbol, Value)>> {
         let FunctionCallExpr {
+            owner_type_args: _,
             name,
             type_args: None,
             args,
