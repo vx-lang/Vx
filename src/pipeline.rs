@@ -3114,7 +3114,7 @@ fn main() -> i32 { return 0; }
             .collect()
     }
 
-    /// A parse error names its file once, in the `Error at FILE:LINE:COL:` header.
+    /// A parse error names its file once, in the `Error[E1001] at FILE:LINE:COL:` header.
     #[test]
     fn a_parse_error_names_its_file_once() {
         let bad = scratch_modules(
@@ -3124,7 +3124,7 @@ fn main() -> i32 { return 0; }
         let err = compile_pipeline_mlir(&bad).expect_err("a missing `;` must be refused");
         let text = err.to_string();
         assert!(
-            text.contains("Error at ") && text.contains("bad.vx:1:"),
+            text.contains("Error[E1001] at ") && text.contains("bad.vx:1:"),
             "{text}"
         );
         assert_eq!(text.matches("bad.vx").count(), 1, "{text}");
