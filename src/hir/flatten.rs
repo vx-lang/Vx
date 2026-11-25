@@ -5503,8 +5503,9 @@ impl<'r> Lowerer<'r> {
                 self.aggregate_size_align(gid)
             }
             // A closure value is a pair of pointers, `{ env, func }`, but a struct field of a
-            // closure type has room for one pointer only. Decline until the two agree.
-            Type::Closure(..) => None,
+            // closure type has room for one pointer only. Decline until the two agree. Look
+            // through the wrappers that `structural_field_info` looks through.
+            _ if matches!(peel_storage_wrappers(ty), Type::Closure(..)) => None,
             _ => self
                 .undeclared_storage(ty)
                 .map(|(size, align, ..)| (size, align)),
@@ -8928,6 +8929,18 @@ fn parse_scalar_type_arg(s: &str) -> Type {
         other => return Type::Struct(other.to_string().into(), None),
     };
     Type::Scalar(e)
+}
+
+/// The type inside the wrappers that do not change how a value is stored: `Pinned`, `Verified`,
+/// `Distinct` and `DisjointRanges`. `structural_field_info` looks through the same wrappers.
+fn peel_storage_wrappers(ty: &Type) -> &Type {
+    match ty {
+        Type::Pinned(inner, _)
+        | Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner) => peel_storage_wrappers(inner),
+        other => other,
+    }
 }
 
 /// The MLIR scalar type string for an element type (`i32`, `f32`, `i1` for bool, …) — the flat-lowerer

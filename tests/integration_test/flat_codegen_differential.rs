@@ -1462,8 +1462,8 @@ fn flat_matches_ast_for_the_first_variant_of_an_enum_with_a_nested_payload() {
 
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_nested_payload() {
-    // A closure payload has no layout on the flat path. Lower the code but don't run it: a
-    // layout that let the store through would write past the end of `Outer`.
+    // A closure payload has no layout on the flat path. The enum declines even when the program
+    // builds only the number variant.
     assert_enum_layout_declines(
         "enum Outer { Number(i32), Nested(|i32| -> i32) }\n\
          fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
@@ -1536,6 +1536,15 @@ fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant
     assert_enum_layout_declines(
         "enum Outer { Nested(i32, |i32| -> i32), Numbers(i32, i32) }\n\
          fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
+    );
+}
+
+#[test]
+fn flat_declines_an_enum_with_a_closure_payload_inside_distinct() {
+    // `Distinct` does not change how a value is stored, so the closure inside still has no layout.
+    assert_enum_layout_declines(
+        "enum Outer { Number(i32), Nested(Distinct<|i32| -> i32>) }\n\
+         fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
     );
 }
 
@@ -3091,6 +3100,73 @@ fn driver_link_interface_runs_an_imported_enum() {
         "expected the imported enum to print 10 20 30, got:\n{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program's own enum holds, as a payload, an enum whose variants carry nothing and that a
+/// `.vxlib` declares. The payload is the imported enum's `i32` tag. A program that imports a
+/// `.vxlib` compiles only on the flat path, so it does not compile at all unless the flat path
+/// finds the size of that payload.
+#[test]
+fn driver_link_interface_runs_an_imported_enum_as_a_payload() {
+    use std::process::Command;
+    let dir = tempfile::tempdir().expect("create test directory");
+    let (lib, app, vxlib) = (
+        dir.path().join("colors.vx"),
+        dir.path().join("app.vx"),
+        dir.path().join("colors.vxlib"),
+    );
+    std::fs::write(
+        &lib,
+        "enum Color { Red, Green, Blue }\n\
+         fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
+           Color::Green => { return 20; } Color::Blue => { return 30; } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &app,
+        "enum Paint { Nothing(i32), Some(Color) }\n\
+         fn read(p : Paint) -> i32 { match p { Paint::Nothing(n) => { return n; } \
+           Paint::Some(c) => { return number(c); } } }\n\
+         fn main() -> i32 { print(read(Paint::Some(Color::Blue))); print!(\" \"); \
+           print(read(Paint::Nothing(7))); print!(\"\\n\"); return 0; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let emit = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit.status.success(),
+        "emit-interface failed:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+
+    let run = Command::new(vxc)
+        .args([
+            "--link-interface",
+            vxlib.to_str().unwrap(),
+            app.to_str().unwrap(),
+            "--run",
+        ])
+        .output()
+        .expect("run vxc --link-interface --run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.lines().any(|l| l == "30 7"),
+        "expected `Paint::Some(Color::Blue)` to read 30 and `Paint::Nothing(7)` to read 7, \
+         got:\n{out}"
+    );
 }
 
 /// A program can also build and match an enum it imports from a `.vxlib`, not only pass it
