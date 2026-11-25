@@ -1,3 +1,10 @@
+//===- across_loop_calls_the_math_methods_of_f16_and_bf16.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
 // An `across` loop calls the math methods of `f16` and `bf16`, as it can for `f32`. These
 // methods write nothing, so the race check must accept each call. `exp` and `tanh` call the
 // library code for the narrow type. `fast_exp` and `fast_tanh` use the target's own math.
