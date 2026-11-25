@@ -920,7 +920,12 @@ macro_rules! instantiate_stdio_ffi {
                 return 0;
             }
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
-            std::io::Write::write(&mut std::io::stdout(), buf_slice).unwrap_or(0) as u64
+            let mut out = std::io::stdout().lock();
+            let taken = std::io::Write::write(&mut out, buf_slice).unwrap_or(0) as u64;
+            // `print!` flushes after each write too. Nothing flushes this buffer when a Vx
+            // program ends, so the bytes after the last newline would be lost.
+            let _ = std::io::Write::flush(&mut out);
+            taken
         }
 
         #[no_mangle]
