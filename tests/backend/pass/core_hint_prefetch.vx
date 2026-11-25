@@ -1,0 +1,48 @@
+//===- core_hint_prefetch.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::hint::prefetch_read` and `prefetch_write` each become one `llvm.prefetch` call.
+// The arguments after the pointer are: read (0) or write (1), locality 3 (keep the line in the
+// cache closest to the processor), and 1 for the data cache. `opt -passes=inline` puts the `mlir!` block
+// into the function, so each check reads the call inside the function it names. Both code
+// generators run. A pointer placed in another memory also compiles. The program also prefetches a
+// null pointer, which must not fault.
+//
+// RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -S -passes=inline | FileCheck %s --check-prefix=READ
+// RUN: vxc %s --action emit-llvm 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -S -passes=inline | FileCheck %s --check-prefix=WRITE
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -S -passes=inline | FileCheck %s --check-prefix=READ
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | ${MLIR_TRANSLATE_PATH:-mlir-translate} --mlir-to-llvmir | ${OPT_PATH:-opt} -S -passes=inline | FileCheck %s --check-prefix=WRITE
+//
+// WRITE-LABEL: define {{.*}}@"prefetch_write$ptr${{[a-z]+}}$in$GPU_HBM${{.*}}$f32"(ptr %0)
+// WRITE-NEXT: call void @llvm.prefetch.p0(ptr %0, i32 1, i32 3, i32 1)
+// WRITE-LABEL: define {{.*}}@"prefetch_write$ptr${{[a-z]+}}$Unknown$i64"(ptr %0)
+// WRITE-NEXT: call void @llvm.prefetch.p0(ptr %0, i32 1, i32 3, i32 1)
+// READ-LABEL: define {{.*}}@"prefetch_read$ptr$const$in$GPU_HBM${{.*}}$f32"(ptr %0)
+// READ-NEXT: call void @llvm.prefetch.p0(ptr %0, i32 0, i32 3, i32 1)
+// READ-LABEL: define {{.*}}@"prefetch_read$ptr$const$Unknown$i64"(ptr %0)
+// READ-NEXT: call void @llvm.prefetch.p0(ptr %0, i32 0, i32 3, i32 1)
+// EXPECT: 11
+import core::hint;
+import core::ptr;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+
+fn main() -> i32 {
+  let x : i64 = 5;
+  prefetch_read(&x as *const i64);
+  let mut y : i64 = 6;
+  prefetch_write(&mut y as *mut i64);
+  // A prefetch of a null pointer is still only a hint, so the program continues.
+  prefetch_read(null<i64>());
+  prefetch_read(unsafe { 0 as *const f32 in Memory::GPU_HBM });
+  prefetch_write(unsafe { 0 as *mut f32 in Memory::GPU_HBM });
+  print(x + y);
+  return 0;
+}

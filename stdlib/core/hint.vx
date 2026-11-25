@@ -25,6 +25,31 @@ pub fn must_use<T>(value : T) -> T {
   return value;
 }
 
+/// Asks the processor to bring the cache line at `p` into the cache closest to it (locality 3),
+/// because the program will read it soon. It is only a hint: it does not load a value from `*p`,
+/// and it does not change what the program computes. A prefetch never faults, even when `p` is
+/// null or is not a valid address, so the function is safe.
+pub fn prefetch_read<T, M : Memory>(p : *const T in Memory::M) -> void {
+  let _p : *const T in Memory::M = unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : *const T in Memory::M, dialects : ["llvm"]) {
+      "llvm.intr.prefetch"(%p) < {
+        rw = 0 : i32, hint = 3 : i32, cache = 1 : i32
+      }> : (!llvm.ptr) -> ()
+      macro.yield %p : !llvm.ptr
+    } };
+}
+
+/// `prefetch_read` for a line that the program will write soon. When the target CPU has a write
+/// prefetch (`prefetchw` on x86), it fetches the line ready for a write. It is also safe: a
+/// prefetch never faults.
+pub fn prefetch_write<T, M : Memory>(p : *mut T in Memory::M) -> void {
+  let _p : *mut T in Memory::M = unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : *mut T in Memory::M, dialects : ["llvm"]) {
+      "llvm.intr.prefetch"(%p) < {
+        rw = 1 : i32, hint = 3 : i32, cache = 1 : i32
+      }> : (!llvm.ptr) -> ()
+      macro.yield %p : !llvm.ptr
+    } };
+}
+
 /// `true_val` if `condition` holds, otherwise `false_val`. Both are already computed, so
 /// the answer can be a select rather than a branch the processor must predict.
 pub fn select_unpredictable<T>(condition : bool, true_val : T, false_val : T) -> T {
