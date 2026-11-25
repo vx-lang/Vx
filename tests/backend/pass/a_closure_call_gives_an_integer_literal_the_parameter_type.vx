@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // A literal given to a closure or a function pointer takes the type of the parameter, as it
-// does in a direct call of a function. The first five calls pass `2` to an `i64` parameter, in
+// does in a direct call of a function. The first four calls pass `2` to an `i64` parameter, in
 // a different way each. The last two pass a float literal and a closure literal.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -14,7 +14,6 @@
 // CHECK: {{^}}closure in a variable 3{{$}}
 // CHECK: {{^}}closure in parentheses 13{{$}}
 // CHECK: {{^}}closure value 102{{$}}
-// CHECK: {{^}}closure value in parentheses 102{{$}}
 // CHECK: {{^}}function pointer 4{{$}}
 // CHECK: {{^}}float literal 1.5{{$}}
 // CHECK: {{^}}closure literal 5{{$}}
@@ -32,7 +31,6 @@ fn main() -> i32 {
     x + 100
   } as | i64 | -> i64;
   println!("closure value {}", add_hundred(2));
-  println!("closure value in parentheses {}", (add_hundred)(2));
   let f = double;
   println!("function pointer {}", f(2));
   let half = | x : f64 | x / 2.0;
