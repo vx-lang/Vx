@@ -2477,16 +2477,14 @@ impl<'r> Lowerer<'r> {
             Expr::UnaryOp(u) => self.infer_expr_ty(&u.expr),
             Expr::RelationalOp(_) => Some(LoweredTy::Scalar(ElementType::Bool)),
             Expr::LogicalOp(_) => Some(LoweredTy::Scalar(ElementType::Bool)),
-            Expr::StructInit(si) => {
-                lowered_ty(&Type::Struct(si.name.clone(), si.type_id), self.registry)
-            }
+            Expr::StructInit(si) => self.lower_ty_synth(&Type::Struct(si.name.clone(), si.type_id)),
             Expr::Topology(_) => Some(LoweredTy::Scalar(ElementType::I32)),
             Expr::AsCast(c) => Some(LoweredTy::Scalar(scalar_of(&c.target_ty)?)),
             Expr::FunctionCall(fc) => match crate::syntax::task_join_handle(e) {
                 Some(h) => self.infer_expr_ty(h),
                 None => {
-                    let sig = self.registry.fn_sigs.get(&fc.name)?;
-                    lowered_ty(&sig.ret_ty, self.registry)
+                    let ret_ty = self.registry.fn_sigs.get(&fc.name)?.ret_ty.clone();
+                    self.lower_ty_synth(&ret_ty)
                 }
             },
             // A name that the arm's pattern binds hides any outer local of that name, so the
@@ -2571,7 +2569,9 @@ impl<'r> Lowerer<'r> {
             .iter()
             .find(|(n, _)| n.as_ref() == variant.as_ref())?;
         let ty = substitute_generics(payload.get(index)?, &data.generics, &args);
-        lowered_ty(&ty, self.registry)
+        // A payload struct with an enum field (`Output { extra : Option<i32> }`) has no layout in
+        // the registry, so it needs the layout that this function makes for it.
+        self.lower_ty_synth(&ty)
     }
 
     /// The inferred type of a block's trailing semicolon-less value expression (a branch's value).
