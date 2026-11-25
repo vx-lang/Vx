@@ -2430,9 +2430,20 @@ impl<'a> TypeChecker<'a> {
                         "'{}' has no impl of '{}' with a method '{}'.",
                         struct_name, t, method_name
                     )),
-                    None => self
-                        .errors
-                        .push(format!("Undefined static method '{}'.", resolved_name)),
+                    None => {
+                        let mut message = format!("Undefined static method '{}'.", resolved_name);
+                        let defined = self.env.structs.contains_key(struct_name.as_str())
+                            || self.env.enums.contains_key(struct_name.as_str());
+                        if let (false, Some(module)) =
+                            (defined, standard_type_module(struct_name.as_str()))
+                        {
+                            message.push_str(&format!(
+                                " '{}' is in '{}'; add `import {};`.",
+                                struct_name, module, module
+                            ));
+                        }
+                        self.errors.push(message)
+                    }
                 }
             }
             Type::Unknown
@@ -4877,5 +4888,16 @@ impl<'a> TypeChecker<'a> {
             }
         }
         None
+    }
+}
+
+/// The module that defines a common standard type, for the error that asks for its import.
+fn standard_type_module(type_name: &str) -> Option<&'static str> {
+    match type_name {
+        "Option" => Some("core::option"),
+        "Result" => Some("core::result"),
+        "Vec" => Some("std::vec"),
+        "String" => Some("std::string"),
+        _ => None,
     }
 }
