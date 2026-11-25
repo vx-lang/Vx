@@ -1,0 +1,30 @@
+//===- logical_and_of_a_bool_and_an_i32.vx - Vx Compiler ------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `&&` and `||` need a bool on both sides. A bool on one side and an i32 on the
+// other is error E3006. The error points at the start of the whole expression.
+
+fn and_of_a_bool_and_an_i32() -> i32 {
+  let a = true;
+  let b = 1;
+  if a && b {
+    return 1;
+  }
+  return 0;
+}
+
+fn or_of_an_i32_and_a_bool() -> i32 {
+  let a = true;
+  let b = 1;
+  if b || a {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return and_of_a_bool_and_an_i32() + or_of_an_i32_and_a_bool();
+}
+
+// CHECK: Error[E3006] at {{.*}}logical_and_of_a_bool_and_an_i32.vx:10:8: Type mismatch in logical operation: bool vs i32
+// CHECK: Error[E3006] at {{.*}}logical_and_of_a_bool_and_an_i32.vx:19:8: Type mismatch in logical operation: i32 vs bool
