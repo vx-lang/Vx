@@ -2261,6 +2261,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `holder = h.r`, `holder.f = h.r` or `Holder { f : h.r }`: the value copies a reference
+    /// out of the variable `h`, so `holder` holds the borrows that `h` holds. `ty` is the type
+    /// of the value.
+    pub(crate) fn hold_borrows_of_a_field_read(&mut self, holder: &str, value: &Expr, ty: &Type) {
+        if self.speculating || !matches!(value, Expr::MemberAccess(_)) {
+            return;
+        }
+        let Some((root, _)) = Self::extract_base_and_path(value) else {
+            return;
+        };
+        if root != holder && self.type_can_hold_reference(ty) {
+            let depth = self.scope_depth_of(holder);
+            self.borrow.copy_borrows(&root, holder, depth);
+        }
+    }
+
     /// `name = &v` or `&mut v`: a use of `name` reaches what `v` borrows, so `name` holds
     /// those borrows too.
     fn reach_borrows_of(&mut self, name: &crate::symbol::Symbol, value: &Expr, depth: usize) {
@@ -2405,8 +2421,13 @@ impl<'a> TypeChecker<'a> {
         // Determine target name for NLL
         if let Expr::Identifier(id) = lhs {
             self.current_assignment_target = Some(id.name.to_string());
-        } else if let Expr::MemberAccess(ma) = lhs {
-            if let Expr::Identifier(id) = &*ma.base {
+        } else if let Expr::MemberAccess(_) = lhs {
+            // `o.inner.r = &b`: the variable `o` holds the borrow, at any depth of field.
+            let mut base: &Expr = lhs;
+            while let Expr::MemberAccess(ma) = base {
+                base = &ma.base;
+            }
+            if let Expr::Identifier(id) = base {
                 self.current_assignment_target = Some(id.name.to_string());
             }
         } else if let Some(var) = self.store_target_var_of(lhs) {
@@ -2506,11 +2527,20 @@ impl<'a> TypeChecker<'a> {
                             .copy_borrows(from.name.as_ref(), id.name.as_ref(), depth);
                     }
                 }
+                self.hold_borrows_of_a_field_read(id.name.as_ref(), rhs, &lhs_ty);
                 let depth = self.scope_depth_of(&id.name);
                 self.reach_borrows_of(&id.name, rhs, depth);
             } else {
                 if let Some((root, path)) = Self::extract_base_and_path(lhs) {
                     self.unconsume_field(&root, &path);
+                    // `p.r = rb` stores what `rb` holds in `p`, so `p` holds its borrows too.
+                    if let (Expr::Identifier(from), false) = (&*rhs, self.speculating) {
+                        if self.type_can_hold_reference(&lhs_ty) {
+                            let depth = self.scope_depth_of(&root);
+                            self.borrow.copy_borrows(from.name.as_ref(), &root, depth);
+                        }
+                    }
+                    self.hold_borrows_of_a_field_read(&root, rhs, &lhs_ty);
                 }
                 self.drops_note_place_assign(
                     lhs,
@@ -2916,6 +2946,7 @@ impl<'a> TypeChecker<'a> {
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
         self.prove_pointer_ensures(Some(expr), *span, "at this `return`");
+        self.check_frame_escape_of_a_return(expr);
         self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
 
         let mut expected_ty = return_type.clone();

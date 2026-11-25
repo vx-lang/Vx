@@ -1048,7 +1048,7 @@ impl<'a> TypeChecker<'a> {
                 .as_deref()
                 .is_some_and(|n| self.borrow.is_running_task(n))
             {
-                self.borrow.record(&base, record);
+                self.borrow.record_again(&base, record);
                 continue;
             }
             let Some(held_at) = record
@@ -1059,7 +1059,7 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
             record.scope_depth = record.scope_depth.min(held_at);
-            self.borrow.record(&base, record);
+            self.borrow.record_again(&base, record);
         }
     }
 

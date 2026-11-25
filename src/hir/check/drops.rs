@@ -21,6 +21,12 @@
 // old one first, unless it was moved, or `c = a @ b` writes the product into `c`'s buffer.
 // A tensor operator moves its operands, as in Rust, so it drops them once it has its result.
 //
+// A holder is an owner whose `drop` runs a `Drop` impl that can read a reference the value
+// holds. An owner of the same block that a holder borrows waits for the end of the block too,
+// and is dropped after the holder. When that owner is declared after the holder, it would be
+// dropped first: if it only frees memory, its drop moves to after the holder's, and if its
+// own drop runs a `Drop` impl, the borrow is an error (E4005).
+//
 // Written into the program, a drop never frees what is still to be read. A drop placed before
 // a `return`, a block's last expression or an assignment is marked `after_value`: it runs once
 // that statement has computed its value, which may read the tensor, and before it is returned
@@ -90,6 +96,31 @@ impl Owner {
     fn only_ends_lifetime(&self) -> bool {
         self.glue.is_empty()
     }
+
+    /// Whether dropping it runs a `Drop` impl. Its drop then keeps its place in the order of
+    /// the drops of its block, because the program can see when it runs.
+    fn runs_a_drop_impl(&self) -> bool {
+        self.glue.iter().any(GluePart::calls)
+    }
+}
+
+/// A holder is an owner whose `drop` can read a reference it holds (`drop_reads_borrows`).
+/// Here one borrows an owner of its block that is declared after it. A block drops its owners
+/// in the reverse of the order they are declared in, so that owner would be dropped first.
+#[derive(Clone)]
+struct LateBorrow {
+    /// The positions of the two in the `owners` of the block, and the names the program gave
+    /// them.
+    holder: usize,
+    borrowed: usize,
+    holder_name: String,
+    borrowed_name: String,
+    /// The holder is a parameter or a name of a `match` arm, so no `let` declares it.
+    holder_has_no_let: bool,
+    /// The statement that made the borrow.
+    at: Span,
+    /// The error for it was reported at an earlier exit of the block.
+    reported: bool,
 }
 
 /// A field's path, whether it was moved out, and the flag that says so when it may have been.
@@ -268,6 +299,8 @@ enum FrameKind {
         value_at: Option<usize>,
         /// The owners that a later `let` of the block hid, now under a name of their own.
         hidden: Vec<Hidden>,
+        /// The borrows that a holder has of an owner declared after it.
+        late_borrows: Vec<LateBorrow>,
     },
 }
 
@@ -332,6 +365,10 @@ pub(crate) struct DropFrames {
     /// For each open `tasks` block, the statement of its body that joins its tasks before the
     /// drops of what they use, if it has one.
     tasks_joins: Vec<Option<usize>>,
+    /// The borrows that the code being checked gave to a variable: the variable borrowed, and
+    /// the variable that holds the borrow. The end of the statement reads them, while the two
+    /// names still mean the same variables.
+    given: Vec<(String, String)>,
 }
 
 impl DropFrames {
@@ -350,6 +387,11 @@ impl DropFrames {
             }
         }
         false
+    }
+
+    /// `borrower` now holds a borrow of `base`.
+    pub(crate) fn note_given(&mut self, base: &str, borrower: &str) {
+        self.given.push((base.to_string(), borrower.to_string()));
     }
 
     /// The body being checked works with a raw pointer. A closure's pointer can point into
@@ -585,6 +627,66 @@ fn owner_drop(owner: &Owner, raw_pointers: bool) -> Vec<Statement> {
         out.push(lifetime_end(&owner.name));
     }
     out
+}
+
+/// Whether the `drop` of the holder of `late` runs when the block is left now, and can then
+/// read the owner that it borrows. `moved_now` are the names the exit itself moves.
+fn holder_drop_reads(late: &LateBorrow, owners: &[Owner], moved_now: &HashSet<String>) -> bool {
+    let live = |o: &Owner| o.moved != Moved::Yes && !moved_now.contains(&o.name);
+    live(&owners[late.holder]) && live(&owners[late.borrowed])
+}
+
+/// The order in which a block that is left drops its owners, as positions in `owners`: the
+/// reverse of the order they are declared in. An owner that only frees memory, and that a
+/// holder declared before it borrows, moves to just after that holder. The program cannot see
+/// when memory is freed, and the `drop` of the holder can still read the owner.
+fn drop_order(
+    owners: &[Owner],
+    late_borrows: &[LateBorrow],
+    moved_now: &HashSet<String>,
+) -> Vec<usize> {
+    // For each owner that moves, the first holder that borrows it.
+    let mut after: HashMap<usize, usize> = HashMap::new();
+    for late in late_borrows {
+        if holder_drop_reads(late, owners, moved_now) && !owners[late.borrowed].runs_a_drop_impl() {
+            let holder = after.entry(late.borrowed).or_insert(late.holder);
+            *holder = (*holder).min(late.holder);
+        }
+    }
+    if after.is_empty() {
+        return (0..owners.len()).rev().collect();
+    }
+    let mut order = Vec::with_capacity(owners.len());
+    for k in (0..owners.len()).rev() {
+        if after.contains_key(&k) {
+            continue;
+        }
+        order.push(k);
+        order.extend(
+            (k + 1..owners.len())
+                .rev()
+                .filter(|j| after.get(j) == Some(&k)),
+        );
+    }
+    order
+}
+
+/// The late borrows that are an error when the block is left now, as positions in
+/// `late_borrows`. The `drop` of the borrowed owner runs code, so it keeps its place before
+/// the `drop` of the holder, which could then read a value that is gone.
+fn late_borrows_dropped_too_soon(
+    owners: &[Owner],
+    late_borrows: &[LateBorrow],
+    moved_now: &HashSet<String>,
+) -> Vec<usize> {
+    (0..late_borrows.len())
+        .filter(|&k| {
+            let late = &late_borrows[k];
+            !late.reported
+                && holder_drop_reads(late, owners, moved_now)
+                && owners[late.borrowed].runs_a_drop_impl()
+        })
+        .collect()
 }
 
 /// Whether `owner` is dropped at the end of its block. In a function with raw pointers, a
@@ -1242,6 +1344,7 @@ impl<'a> TypeChecker<'a> {
             })
             .collect();
         d.frames.push(FrameKind::Block {
+            late_borrows: Vec::new(),
             owners,
             uses: BlockUseList::new(body, value),
             lines: body
@@ -1335,6 +1438,111 @@ impl<'a> TypeChecker<'a> {
                 ty: ty.clone(),
             });
         }
+    }
+
+    /// The owner that `name` means now: its frame, and its position in the `owners` of that
+    /// frame. `None` when a variable of an inner block has the name.
+    fn drops_owner_position(&self, name: &str) -> Option<(usize, usize)> {
+        let scope = self.scope_depth_of(name);
+        for (k, f) in self.borrow.drops.frames.iter().enumerate().rev() {
+            match f {
+                FrameKind::Function { .. } => return None,
+                FrameKind::Block { owners, .. } => {
+                    if let Some(i) = owners.iter().rposition(|o| o.name == name) {
+                        return (owners[i].scope == scope).then_some((k, i));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Run after each statement, and before the drops of a `return`. It reads the borrows
+    /// that the statement gave to a holder. The `drop` of a holder can read what the holder
+    /// borrows, so an owner of the same block that a holder borrows waits for the end of the
+    /// block. An owner declared after the holder would still be dropped first there. Such a
+    /// borrow is kept with `at`, the statement that made it, for `drop_order` and
+    /// `late_borrows_dropped_too_soon`.
+    pub(crate) fn drops_note_borrows_of_holders(&mut self, at: Span) {
+        let mut made = std::mem::take(&mut self.borrow.drops.given);
+        if self.speculating {
+            return;
+        }
+        // The order of the errors must not come from the order of a hash map.
+        made.sort();
+        made.dedup();
+        for (base, borrower) in made {
+            // A borrow that ended with its call is not held.
+            if !self.borrow.holds_borrow(&base, &borrower) {
+                continue;
+            }
+            let Some((k, h)) = self.drops_owner_position(&borrower) else {
+                continue;
+            };
+            // The holder reaches `base`, and what `base` borrows, and so on.
+            let mut reached = vec![base];
+            let mut next = 0;
+            while next < reached.len() {
+                for (behind, _) in self.borrow.borrowed_by(&reached[next]) {
+                    if !reached.contains(&behind) {
+                        reached.push(behind);
+                    }
+                }
+                next += 1;
+            }
+            for name in reached {
+                let Some((frame, j)) = self.drops_owner_position(&name) else {
+                    continue;
+                };
+                let FrameKind::Block {
+                    owners,
+                    late_borrows,
+                    ..
+                } = &mut self.borrow.drops.frames[k]
+                else {
+                    unreachable!("an owner is in a block frame");
+                };
+                if frame != k || j == h || !owners[h].drop_reads_borrows {
+                    continue;
+                }
+                owners[j].to_block_end = true;
+                let known = late_borrows
+                    .iter()
+                    .any(|l| l.holder == h && l.borrowed == j);
+                if j > h && !known {
+                    late_borrows.push(LateBorrow {
+                        holder: h,
+                        borrowed: j,
+                        holder_name: owners[h].name.clone(),
+                        borrowed_name: owners[j].name.clone(),
+                        holder_has_no_let: owners[h].given_by.is_some(),
+                        at,
+                        reported: false,
+                    });
+                }
+            }
+        }
+    }
+
+    /// `borrowed` is declared after `holder`, so it is dropped first, and its own `drop` runs
+    /// code, so the order of the two drops cannot change.
+    fn drops_report_late_borrow(&mut self, late: &LateBorrow) {
+        let (h, b) = (&late.holder_name, &late.borrowed_name);
+        let advice = if late.holder_has_no_let {
+            format!("Move `{h}` into a new variable, with a `let` after the `let` of `{b}`")
+        } else {
+            format!("Declare `{b}` before `{h}`")
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4005,
+            format!(
+                "`{h}` may hold a reference to `{b}` after this statement. The declaration of \
+                 `{b}` comes after `{h}`, so the block drops `{b}` first. The `drop` of `{h}` \
+                 can then read `{b}`. {advice}"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&late.at)),
+        );
     }
 
     /// A `let name` hides an owner of the same block. A drop of the owner after the `let` would
@@ -2117,6 +2325,7 @@ impl<'a> TypeChecker<'a> {
             mut edits,
             value_at,
             hidden,
+            late_borrows,
             ..
         }) = self.borrow.drops.frames.pop()
         else {
@@ -2124,6 +2333,13 @@ impl<'a> TypeChecker<'a> {
         };
         if self.speculating {
             return;
+        }
+        // After a `return`, `break` or `continue` nothing is dropped here: the exit dropped it.
+        let no_moves = HashSet::new();
+        if terminated_at.is_none() {
+            for k in late_borrows_dropped_too_soon(&owners, &late_borrows, &no_moves) {
+                self.drops_report_late_borrow(&late_borrows[k]);
+            }
         }
         let mut moves = Vec::new();
         if rewriting {
@@ -2141,7 +2357,8 @@ impl<'a> TypeChecker<'a> {
         // The body of a `tasks` block: a task that runs until the block ends can use its owners.
         let tasks_body = matches!(self.borrow.drops.frames.last(), Some(FrameKind::Tasks));
         let mut after_tasks = Vec::new();
-        for owner in owners.iter().rev() {
+        for k in drop_order(&owners, &late_borrows, &no_moves) {
+            let owner = &owners[k];
             if owner.moved == Moved::Yes {
                 continue;
             }
@@ -2603,9 +2820,13 @@ impl<'a> TypeChecker<'a> {
         // An owner outside the inner `tasks` block that the exit leaves.
         let mut outside_inner = None;
         let mut lifetime_ends = Vec::new();
+        // The `return` can make a borrow itself, as in `return keep(&mut p, &b);`.
+        self.drops_note_borrows_of_holders(self.errors.at);
+        // The frame of each late borrow that is an error at this exit, and its position.
+        let mut too_soon = Vec::new();
         let d = &self.borrow.drops;
         let raw_pointers = d.uses_raw_pointers();
-        'frames: for f in d.frames.iter().rev() {
+        'frames: for (at, f) in d.frames.iter().enumerate().rev() {
             match f {
                 // A `return` inside a region leaves the region, not the function.
                 FrameKind::Function { .. } | FrameKind::Spawn | FrameKind::Task { .. } => {
@@ -2619,9 +2840,16 @@ impl<'a> TypeChecker<'a> {
                 }
                 FrameKind::Tasks => tasks_blocks += 1,
                 FrameKind::Block {
-                    owners, uses, stmt, ..
+                    owners,
+                    uses,
+                    stmt,
+                    late_borrows,
+                    ..
                 } => {
-                    for owner in owners.iter().rev() {
+                    let late = late_borrows_dropped_too_soon(owners, late_borrows, &d.moved_now);
+                    too_soon.extend(late.into_iter().map(|k| (at, k)));
+                    for k in drop_order(owners, late_borrows, &d.moved_now) {
+                        let owner = &owners[k];
                         if owner.moved == Moved::Yes || d.moved_now.contains(&owner.name) {
                             continue;
                         }
@@ -2644,6 +2872,14 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+        }
+        for (at, k) in too_soon {
+            let FrameKind::Block { late_borrows, .. } = &mut self.borrow.drops.frames[at] else {
+                unreachable!("only a block frame has late borrows");
+            };
+            late_borrows[k].reported = true;
+            let late = late_borrows[k].clone();
+            self.drops_report_late_borrow(&late);
         }
         // The wait is for the inner block only. A task of an outer block can still run.
         if let (true, Some(name)) = (tasks_blocks > 1, outside_inner) {

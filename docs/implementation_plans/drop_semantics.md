@@ -117,7 +117,11 @@ the corpus will measure how often it fires (phase 1).
 
 For an owner that only holds memory, the drop point is after the last use of the owner or of any
 view of it, on each path. For a type with `Drop`, and for an owner a raw pointer was taken from,
-it is the end of its block. In both cases the checker computes the owners declared in a block
+it is the end of its block. An owner that a value of the same block borrows also waits for the
+end of the block, when the `drop` of that value can read its references. It is dropped after
+that value. An owner declared after the value would be dropped first. When it only holds
+memory, its drop moves to after the drop of the value. When its type has `Drop`, the borrow is
+an error (E4005). In all cases the checker computes the owners declared in a block
 that are not definitely moved:
 
 - **definitely live**: dropped unconditionally, at the drop point above;
