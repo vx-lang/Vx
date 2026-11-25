@@ -670,7 +670,8 @@ impl TwoLevelWalk {
 }
 
 /// The names that `body` gives a value to: by `let`, by assignment to them or to an element of
-/// them, or as a loop variable.
+/// them, as a loop variable, or as a name in a `match` pattern. This includes the blocks of an
+/// `if` or a `match` anywhere in an expression, such as `let v = match c { .. };`.
 fn names_set(body: &[Statement], out: &mut HashSet<String>) {
     use crate::syntax::stmt::Statement as S;
     fn base(e: &Expr) -> Option<&str> {
@@ -681,27 +682,41 @@ fn names_set(body: &[Statement], out: &mut HashSet<String>) {
             _ => None,
         }
     }
-    for s in body {
-        match s {
-            S::LetDecl(d) => {
-                out.insert(d.name.to_string());
-            }
-            S::Assign(a) => out.extend(base(&a.lhs).map(str::to_string)),
-            S::CompoundAssign(a) => out.extend(base(&a.lhs).map(str::to_string)),
-            S::ForLoop(f) => {
-                out.insert(f.iter.to_string());
-                names_set(&f.body, out);
-            }
-            S::Loop(l) => names_set(&l.body, out),
-            S::ExprStmt(e) => {
-                if let Expr::If(i) = &e.expr {
-                    names_set(&i.then_block, out);
-                    names_set(i.else_block.as_deref().unwrap_or_default(), out);
+    // The statements of `stmts` and of the loops in them. `visit_exprs` below reaches each
+    // block inside an expression once, so this does not go into those blocks.
+    fn statements(stmts: &[Statement], out: &mut HashSet<String>) {
+        for s in stmts {
+            match s {
+                S::LetDecl(d) => {
+                    out.insert(d.name.to_string());
                 }
+                S::Assign(a) => out.extend(base(&a.lhs).map(str::to_string)),
+                S::CompoundAssign(a) => out.extend(base(&a.lhs).map(str::to_string)),
+                S::ForLoop(f) => {
+                    out.insert(f.iter.to_string());
+                    statements(&f.body, out);
+                }
+                S::Loop(l) => statements(&l.body, out),
+                _ => {}
             }
-            _ => {}
         }
     }
+    statements(body, out);
+    crate::syntax::expr::visit_exprs(body, &mut |e| match e {
+        Expr::If(i) => {
+            statements(&i.then_block, out);
+            statements(i.else_block.as_deref().unwrap_or_default(), out);
+        }
+        Expr::Match(m) => {
+            for arm in &m.arms {
+                let mut bound = Vec::new();
+                crate::hir::check::control::pattern_names(&arm.pattern, &mut bound);
+                out.extend(bound.iter().map(|n| n.to_string()));
+                statements(&arm.body, out);
+            }
+        }
+        _ => {}
+    });
 }
 
 /// Whether each pass of a loop with this body sets `name` before it reads it: the first statement
@@ -1294,11 +1309,14 @@ impl ParallelScan {
                 }
                 self.expr(&e.expr)
             }
-            // Return, assert, macro calls, parse errors: none of these have stridable semantics.
+            // Return, macro calls, parse errors: none of these have stridable semantics.
             // Frees nothing yet; a drop in a parallel region is decided with phase 5.
             S::Drop(_) => true,
             S::Return(r) => self.refuse("it can `return`", r.span),
-            S::Assert(a) => self.refuse("it holds an `assert`", a.span),
+            // Each pass checks its own assert. A failed one stops the program on every target,
+            // also when several threads fail at once: the host aborts, an NVIDIA kernel traps, and
+            // a SPIR-V or Metal kernel sets a flag that the runtime reads after the launch.
+            S::Assert(a) => self.expr(&a.expr),
             S::MacroCall(_) | S::Error(_) => false,
         }
     }
@@ -1755,9 +1773,43 @@ impl ParallelScan {
                 self.barrier_ok = saved;
                 ok
             }
+            // Each arm is like a block of an `if`. An arm whose pattern binds a name stops the
+            // split: the name can be a reference to memory that other passes write, and a write
+            // through a local is taken as the pass's own.
+            Expr::Match(m) => {
+                let depth = self.depth;
+                let saved = self.barrier_ok;
+                self.barrier_ok = false;
+                self.branch_depth += 1;
+                let ok = self.expr(&m.expr)
+                    && m.arms.iter().all(|arm| {
+                        let mut bound = Vec::new();
+                        crate::hir::check::control::pattern_names(&arm.pattern, &mut bound);
+                        let at = if arm.span == Span::default() {
+                            m.span
+                        } else {
+                            arm.span
+                        };
+                        let binds = bound.first().is_some_and(|n| {
+                            !self.refuse(
+                                &format!(
+                                    "a `match` arm names a value `{n}`, and `{n}` may refer to \
+                                     memory that another pass writes"
+                                ),
+                                at,
+                            )
+                        });
+                        !binds && self.stmts(&arm.body, depth)
+                    });
+                self.branch_depth -= 1;
+                self.barrier_ok = saved;
+                ok
+            }
+            // A struct or a tuple value is a local of the pass. Its fields are reads.
+            Expr::StructInit(s) => s.fields.iter().all(|(_, e)| self.expr(e)),
             // Everything else — calls, prints, transfers, spawns, closures, borrows, raw pointers,
-            // inline MLIR, autodiff, matches, struct construction — is either a possible write or
-            // a construct with no sound striding story. Reject; the loop stays serial.
+            // inline MLIR, autodiff — is either a possible write or a construct with no sound
+            // striding story. Reject; the loop stays serial.
             other => self.refuse(&format!("it holds {}", construct(other)), other.span()),
         }
     }
@@ -1782,7 +1834,6 @@ fn construct(e: &Expr) -> &'static str {
         Expr::Transfer(_) => "a `transfer`",
         Expr::SpawnOn(_) => "a `spawn` of its own",
         Expr::Closure(_) => "a closure",
-        Expr::Match(_) => "a `match`",
         Expr::UnsafeBlock(_) => "an `unsafe` block",
         Expr::IndirectCall(_) => "a call through a function value",
         Expr::Dereference(_) => "a read through `*`",
