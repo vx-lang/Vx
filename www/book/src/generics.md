@@ -55,7 +55,15 @@ impl Pair<i32> {
 }
 ```
 
-When several impls could apply, the most specific one wins.
+When more than one impl defines a method and applies to a value, a method call `x.f()` uses the
+impl for the most specific type. `Pair<i32>` is more specific than `Pair<T>`, and a tensor shape
+with known sizes is more specific than `[?, ?]`. The order of the impls in the file does not
+matter.
+
+When no impl is for a more specific type than the others, the call is an error (E3035).
+`impl<T> Two<T, i32>` and `impl<T> Two<i32, T>` are such a pair for a `Two<i32, i32>`. A bound does
+not make a type more specific, so `impl<T : Short> Wrap<T>` and `impl<T> Wrap<T>` are such a pair
+too, for a `Wrap` of a type that is `Short`. Give the method a different name in each impl.
 
 ## Bounds
 

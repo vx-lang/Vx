@@ -1,0 +1,153 @@
+//===- method_call_that_two_impls_tie_for.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// More than one impl with no trait defines one method, the impls apply to one value, and no
+// impl is for a more specific type than the others. The compiler used to take the first impl
+// in the file, so the program did something else when two impls changed places. Now it
+// refuses the call.
+//
+// A call on a value that only one of the impls applies to has no error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=E3035
+// RUN: not vxc %s -j 2 2>&1 | FileCheck %s --implicit-check-not=E3035
+
+// Neither `Two<i32, T>` nor `Two<T, i32>` is more specific: each has one type that the other
+// leaves open.
+struct Two<A, B> {
+  a : A,
+  b : B,
+}
+
+impl<T> Two<i32, T> {
+  fn which(self : &Two<i32, T>) -> i32 {
+    return 1;
+  }
+}
+
+impl<T> Two<T, i32> {
+  fn which(self : &Two<T, i32>) -> i32 {
+    return 2;
+  }
+}
+
+// One type with the method written twice.
+struct Point {
+  x : i32,
+}
+
+impl Point {
+  fn get(self : &Point) -> i32 {
+    return 1;
+  }
+}
+
+impl Point {
+  fn get(self : &Point) -> i32 {
+    return 2;
+  }
+}
+
+// A bound does not make a type more specific. `Inch` is `Short`, so both impls apply to a
+// `Wrap<Inch>`. `Mile` is not `Short`, so only the second impl applies to a `Wrap<Mile>`.
+trait Short {}
+
+struct Inch {
+  n : i32,
+}
+
+struct Mile {
+  n : i32,
+}
+
+impl Short for Inch {}
+
+struct Wrap<T> {
+  inner : T,
+}
+
+impl<T : Short> Wrap<T> {
+  fn which(self : &Wrap<T>) -> i32 {
+    return 1;
+  }
+}
+
+impl<T> Wrap<T> {
+  fn which(self : &Wrap<T>) -> i32 {
+    return 2;
+  }
+}
+
+// Each of the first two impls is more specific than the third one, and neither is more
+// specific than the other.
+struct Three<A, B> {
+  a : A,
+  b : B,
+}
+
+impl<T> Three<T, T> {
+  fn which(self : &Three<T, T>) -> i32 {
+    return 1;
+  }
+}
+
+impl<T> Three<T, i32> {
+  fn which(self : &Three<T, i32>) -> i32 {
+    return 2;
+  }
+}
+
+impl<T, U> Three<T, U> {
+  fn which(self : &Three<T, U>) -> i32 {
+    return 3;
+  }
+}
+
+fn main() -> i32 {
+  let both = Two<i32, i32> {
+    a : 1, b : 2
+  };
+  // CHECK: Error[E3035] at {{.*}}.vx:[[@LINE+1]]:3: Method 'which' on 'Two<i32, i32>' is defined by more than one impl (`impl<T> Two<i32, T>` at method_call_that_two_impls_tie_for.vx:25, `impl<T> Two<T, i32>` at method_call_that_two_impls_tie_for.vx:31). No impl is for a more specific type than the others. Give the method a different name in each impl
+  print(both.which());
+  // Only one of the two impls applies to `left`, and only the other one to `right`.
+  let left = Two<i64, i32> {
+    a : 1i64, b : 2
+  };
+  let right = Two<i32, i64> {
+    a : 1, b : 2i64
+  };
+  print(left.which());
+  print(right.which());
+  let point = Point {
+    x : 1
+  };
+  // CHECK: Error[E3035] at {{.*}}.vx:[[@LINE+1]]:3: Method 'get' on 'Point' is defined by more than one impl (`impl Point` at method_call_that_two_impls_tie_for.vx:42, `impl Point` at method_call_that_two_impls_tie_for.vx:48). No impl is for a more specific type than the others. Give the method a different name in each impl
+  print(point.get());
+  let inches = Wrap<Inch> {
+    inner : Inch {
+      n : 1
+    }
+  };
+  // CHECK: Error[E3035] at {{.*}}.vx:[[@LINE+1]]:3: Method 'which' on 'Wrap<Inch>' is defined by more than one impl (`impl<T : Short> Wrap<T>` at method_call_that_two_impls_tie_for.vx:72, `impl<T> Wrap<T>` at method_call_that_two_impls_tie_for.vx:78). No impl is for a more specific type than the others. Give the method a different name in each impl
+  print(inches.which());
+  let miles = Wrap<Mile> {
+    inner : Mile {
+      n : 1
+    }
+  };
+  print(miles.which());
+  let same = Three<i32, i32> {
+    a : 1, b : 2
+  };
+  // CHECK: Error[E3035] at {{.*}}.vx:[[@LINE+1]]:3: Method 'which' on 'Three<i32, i32>' is defined by more than one impl (`impl<T> Three<T, T>` at method_call_that_two_impls_tie_for.vx:91, `impl<T> Three<T, i32>` at method_call_that_two_impls_tie_for.vx:97, `impl<T, U> Three<T, U>` at method_call_that_two_impls_tie_for.vx:103). No impl is for a more specific type than the others. Give the method a different name in each impl
+  print(same.which());
+  // Only the third impl applies to `open`.
+  let open = Three<i64, i8> {
+    a : 1i64, b : 2i8
+  };
+  print(open.which());
+  return 0;
+}

@@ -73,6 +73,46 @@ fn params_accept(m: &Function, arg_types: &[Type]) -> bool {
         .all(|((_, p), a)| matches!(p, Type::Generic(..)) || p == a)
 }
 
+/// Whether `a` and `b` are one impl block: the same place in the same file. A file that the
+/// program both compiles and imports is read twice, and the module loader gives the two copies
+/// one file name.
+fn same_impl(a: &decl::ImplBlock, b: &decl::ImplBlock) -> bool {
+    a.place.file.is_some() && a.place.file == b.place.file && a.place.span == b.place.span
+}
+
+/// An impl with no trait as its file writes it, and where: `impl<T : Short> Wrap<T>` at
+/// `wrap.vx:7`.
+fn impl_header_and_place(ib: &decl::ImplBlock) -> String {
+    let generics: Vec<String> = ib
+        .generics
+        .iter()
+        .map(|g| match g {
+            decl::GenericParam::Type { name, bounds } if bounds.is_empty() => name.to_string(),
+            decl::GenericParam::Type { name, bounds } => {
+                let bounds: Vec<String> = bounds.iter().map(|b| b.to_string()).collect();
+                format!("{name} : {}", bounds.join(" + "))
+            }
+            decl::GenericParam::Const { name, ty } => format!("const {name} : {ty}"),
+        })
+        .collect();
+    let generics = if generics.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", generics.join(", "))
+    };
+    let keyword = if ib.is_extern { "extern impl" } else { "impl" };
+    let line = ib.place.span.line;
+    let place = match &ib.place.file {
+        Some(file) => {
+            let name = std::path::Path::new(file.as_ref()).file_name();
+            let name = name.map_or(file.to_string(), |n| n.to_string_lossy().into_owned());
+            format!("{name}:{line}")
+        }
+        None => format!("line {line}"),
+    };
+    format!("`{keyword}{generics} {}` at {place}", ib.target_type)
+}
+
 fn impl_display(trait_name: &crate::symbol::Symbol, ib: &decl::ImplBlock) -> String {
     if ib.trait_args.is_empty() {
         return trait_name.to_string();
@@ -3398,6 +3438,28 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The index of the type in `types` that is more specific than each of the others. `Pair<i32>`
+    /// is more specific than `Pair<T>`: `Pair<T>` matches each `Pair<i32>`, and `Pair<i32>` does
+    /// not match each `Pair<T>`. `None` when no type is, as for `Two<T, i32>` and `Two<i32, T>`,
+    /// or for one type written twice. A bound does not make a type more specific.
+    fn most_specific_type(&mut self, types: &[&Type]) -> Option<usize> {
+        'candidates: for (i, candidate) in types.iter().enumerate() {
+            for (j, other) in types.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                // In a match, only a type parameter of the first type stands for a type.
+                let other_matches_it = self.unify_types(other, candidate, &mut HashMap::new());
+                let it_matches_other = self.unify_types(candidate, other, &mut HashMap::new());
+                if !other_matches_it || it_matches_other {
+                    continue 'candidates;
+                }
+            }
+            return Some(i);
+        }
+        None
+    }
+
     /// Resolve `base_ty`'s method `method` by walking every impl block (unifying the receiver,
     /// peeling references), filling `mapping` with the deduced impl-level generic bindings. Returns
     /// the matching method + its impl block, or `None`. In debug builds also asserts the frozen
@@ -3420,7 +3482,7 @@ impl<'a> TypeChecker<'a> {
         // that unification produced. An inherent method shadows a trait's, as in Rust; two
         // traits' is refused rather than chosen, because the blocks live in a hash map and
         // which body a call reached used to change from one run of the compiler to the next.
-        let mut inherent = None;
+        let mut inherent: Vec<(Function, &'a decl::ImplBlock, HashMap<_, _>)> = Vec::new();
         let mut from_traits: Vec<(
             crate::symbol::Symbol,
             Function,
@@ -3437,8 +3499,9 @@ impl<'a> TypeChecker<'a> {
                     continue;
                 };
                 if trait_key.as_ref() == "_inherent" {
-                    if inherent.is_none() {
-                        inherent = Some((m.clone(), (*ib).clone(), candidate_mapping));
+                    // A file that is read twice gives each of its impls twice.
+                    if !inherent.iter().any(|(_, seen, _)| same_impl(seen, ib)) {
+                        inherent.push((m.clone(), *ib, candidate_mapping));
                     }
                 } else {
                     from_traits.push((
@@ -3450,9 +3513,40 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        let found_method = if let Some((m, ib, chosen_mapping)) = inherent {
-            *mapping = chosen_mapping;
-            Some((m, ib))
+        let found_method = if !inherent.is_empty() {
+            // The call uses the impl for the most specific type, whatever the order of the
+            // impls. When no impl is for the most specific type, the call is an error.
+            let targets: Vec<&Type> = inherent.iter().map(|(_, ib, _)| &ib.target_type).collect();
+            if let Some(winner) = self.most_specific_type(&targets) {
+                let (m, ib, chosen_mapping) = inherent.swap_remove(winner);
+                *mapping = chosen_mapping;
+                Some((m, ib.clone()))
+            } else {
+                if !self.speculating {
+                    // The impl table is a hash map. Sorted, the message is the same each time.
+                    let mut tied: Vec<&decl::ImplBlock> =
+                        inherent.iter().map(|(_, ib, _)| *ib).collect();
+                    tied.sort_by_key(|ib| {
+                        let span = ib.place.span;
+                        (ib.place.file.clone(), span.line, span.column)
+                    });
+                    let tied: Vec<String> = tied.into_iter().map(impl_header_and_place).collect();
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3035,
+                        format!(
+                            "Method '{}' on '{}' is defined by more than one impl ({}). No impl \
+                             is for a more specific type than the others. Give the method a \
+                             different name in each impl",
+                            method,
+                            check_ty,
+                            tied.join(", ")
+                        ),
+                        None,
+                    );
+                }
+                mapping.clear();
+                None
+            }
         } else if from_traits.len() > 1 {
             if !self.speculating {
                 let mut names: Vec<String> = from_traits

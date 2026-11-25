@@ -1,0 +1,181 @@
+//===- method_call_uses_the_impl_for_the_most_specific_type.vx --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two impls with no trait can define one method, and both can apply to one value. The call
+// uses the impl for the more specific type: `Pair<i32>` is more specific than `Pair<T>`. The
+// order of the impls in the file does not choose.
+//
+// Each method returns a number that names its impl, so each printed line shows which impls
+// ran. The compiler used to take the first impl in the file that applied.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s -j 2 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+struct GenericFirst<T> {
+  a : T,
+}
+
+impl<T> GenericFirst<T> {
+  fn which(self : &GenericFirst<T>) -> i32 {
+    return 1;
+  }
+}
+
+impl GenericFirst<i32> {
+  fn which(self : &GenericFirst<i32>) -> i32 {
+    return 2;
+  }
+}
+
+struct SpecificFirst<T> {
+  a : T,
+}
+
+impl SpecificFirst<i32> {
+  fn which(self : &SpecificFirst<i32>) -> i32 {
+    return 2;
+  }
+}
+
+impl<T> SpecificFirst<T> {
+  fn which(self : &SpecificFirst<T>) -> i32 {
+    return 1;
+  }
+}
+
+// All three impls apply to a `Two<i32, i32>`. The last one is for the most specific type.
+struct Two<A, B> {
+  a : A,
+  b : B,
+}
+
+impl<T> Two<T, i32> {
+  fn which(self : &Two<T, i32>) -> i32 {
+    return 1;
+  }
+}
+
+impl<T> Two<i32, T> {
+  fn which(self : &Two<i32, T>) -> i32 {
+    return 2;
+  }
+}
+
+impl Two<i32, i32> {
+  fn which(self : &Two<i32, i32>) -> i32 {
+    return 3;
+  }
+}
+
+// `Nested<Inner<i32>>` is more specific than `Nested<Inner<T>>`, which is more specific than
+// `Nested<T>`.
+struct Inner<T> {
+  v : T,
+}
+
+struct Nested<T> {
+  a : T,
+}
+
+impl<T> Nested<T> {
+  fn which(self : &Nested<T>) -> i32 {
+    return 1;
+  }
+}
+
+impl Nested<Inner<i32>> {
+  fn which(self : &Nested<Inner<i32>>) -> i32 {
+    return 3;
+  }
+}
+
+impl<T> Nested<Inner<T>> {
+  fn which(self : &Nested<Inner<T>>) -> i32 {
+    return 2;
+  }
+}
+
+// `Float` as `std::tensor` declares it.
+trait Float {}
+
+extern impl Float for f32 {}
+
+// A shape with known sizes is more specific than `[?, ?]`.
+extern impl<T : Float> Tensor<T, [?, ?]> {
+  fn which(self : &Tensor<T, [?, ?]>) -> i32 {
+    return 1;
+  }
+}
+
+extern impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
+  fn which(self : &Tensor<T, [N, M]>) -> i32 {
+    return 2;
+  }
+}
+
+// The call in a generic function chooses for each type the function is used with.
+fn ask<T>(p : &GenericFirst<T>) -> i32 {
+  return p.which();
+}
+
+// `n` is a parameter, so the sizes of `unknown` are not known at compile time.
+fn shapes(n : i32) -> i32 {
+  let known = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let unknown = Tensor<f32>([n, n]);
+  return known.which() * 10 + unknown.which();
+}
+
+fn main() -> i32 {
+  // CHECK: generic impl first: 2 1
+  let p = GenericFirst<i32> {
+    a : 1
+  };
+  let q = GenericFirst<i64> {
+    a : 1i64
+  };
+  println!("generic impl first: {} {}", p.which(), q.which());
+  // CHECK: specific impl first: 2 1
+  let s = SpecificFirst<i32> {
+    a : 1
+  };
+  let t = SpecificFirst<i64> {
+    a : 1i64
+  };
+  println!("specific impl first: {} {}", s.which(), t.which());
+  // CHECK: three impls: 3 1 2
+  let both = Two<i32, i32> {
+    a : 1, b : 2
+  };
+  let left = Two<i64, i32> {
+    a : 1i64, b : 2
+  };
+  let right = Two<i32, i64> {
+    a : 1, b : 2i64
+  };
+  println!("three impls: {} {} {}", both.which(), left.which(), right.which());
+  // CHECK: nested types: 1 2 3
+  let plain = Nested<i64> {
+    a : 1i64
+  };
+  let inner = Nested<Inner<i64>> {
+    a : Inner<i64> {
+      v : 1i64
+    }
+  };
+  let inner_i32 = Nested<Inner<i32>> {
+    a : Inner<i32> {
+      v : 1
+    }
+  };
+  println!("nested types: {} {} {}", plain.which(), inner.which(), inner_i32.which());
+  // CHECK: tensor shapes: 21
+  println!("tensor shapes: {}", shapes(2));
+  // CHECK: in a generic function: 2 1
+  println!("in a generic function: {} {}", ask(&p), ask(&q));
+  return 0;
+}
