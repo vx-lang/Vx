@@ -1,0 +1,13 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Vx has no `pub(..)`. Rust's `pub(crate)` is `pkg` in Vx, and `pub(super)` has no meaning,
+// because a module of Vx is one file and has no parent module.
+
+pub(crate) fn helper() -> i32 {
+  return 1;
+}
+// CHECK: Error at {{.*}}pub_with_parentheses.vx:[[@LINE-3]]:4: Vx has no `pub(..)`. Write `pkg fn` for a function that each file of its package can call
+
+fn main() -> i32 {
+  return helper();
+}

@@ -1,0 +1,89 @@
+//===- a_parallel_loop_that_reads_the_extent_of_a_tensor_that_it_writes_runs_in_parallel.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t.len()` and `t.extent(i)` read the shape of `t`, not an element of it. So a loop that
+// writes `t` and reads its shape still runs in parallel. The first two `spawn` loops get a
+// launch size, and the `across` loop compiles and writes its rows. The last two `spawn` loops
+// stay on one thread: what picks the tensor is a read of an element that another pass writes,
+// or a call.
+//
+// RUN: VX_NO_AST_FALLBACK=1 vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm 2>/dev/null | grep -o 'launch=[0-9]*' | LC_ALL=C sort | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm 2>/dev/null | grep -o 'launch=[0-9]*' | LC_ALL=C sort | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm 2>&1 >/dev/null | FileCheck %s --check-prefix=WARN --implicit-check-not=W1033
+// RUN: env CUDA_VISIBLE_DEVICES= VX_HOST_THREADS=8 VX_NO_AST_FALLBACK=1 vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= VX_HOST_THREADS=8 vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+//
+// LAUNCH: launch=64
+// LAUNCH: launch=96
+//
+// OUT: 128 128 0 3 66 30 37 0 3 3 1 48
+
+fn reads_len(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..96 {
+      out[i] = out.len();
+    }
+  }
+}
+
+fn reads_extent(m : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..64 {
+      m[i][0] = m.extent(1) + i;
+    }
+  }
+}
+
+fn in_blocks(m : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      for r in 0..4 across lanes(32) {
+        let row = 4 * b + r;
+        m[row][1] = m.extent(1) * 10 + row;
+      }
+    }
+  }
+}
+
+// Pass 0 writes `m[0][2]`, and each pass reads it to pick a row.
+fn picks_a_row_by_a_written_element(m : &mut Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..32 {
+      // WARN: Warning[W1033] at {{.*}}:[[#@LINE+1]]:23: this `spawn` loop runs on one thread: a pass reads a row of `m` that another pass writes
+      m[i][2] = m[m[0][2]].len();
+    }
+  }
+}
+
+fn ones(k : i32) on Topology::Device -> Tensor<i32, [?], Memory::HBM> {
+  return Tensor<i32, [?], Memory::HBM>::new([k]);
+}
+
+fn reads_the_len_of_a_call(out : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..48 {
+      // WARN: Warning[W1033] at {{.*}}:[[#@LINE+1]]:16: this `spawn` loop runs on one thread: it calls `ones`, which the compiler cannot show writes nothing
+      out[i] = ones(i + 1).len();
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<i32, [?], Memory::HBM>::new([128]);
+  reads_len(&mut a);
+  let mut m = Tensor<i32, [?, ?], Memory::HBM>::new([64, 3]);
+  reads_extent(&mut m);
+  in_blocks(&mut m);
+  picks_a_row_by_a_written_element(&mut m);
+  let mut c = Tensor<i32, [?], Memory::HBM>::new([48]);
+  reads_the_len_of_a_call(&mut c);
+  let ha = transfer(a, Memory::CPU_DRAM);
+  let hm = transfer(m, Memory::CPU_DRAM);
+  let hc = transfer(c, Memory::CPU_DRAM);
+  println!("{} {} {} {} {} {} {} {} {} {} {} {}", ha[0], ha[95], ha[96], hm[0][0], hm[63][0], hm[0][1], hm[7][1], hm[8][1], hm[0][2], hm[31][2], hc[0], hc[47]);
+  return 0;
+}

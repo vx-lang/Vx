@@ -1,5 +1,5 @@
-// A C program reads the tensors of a `pub fn` as soon as the call returns. So in a library for
-// the Apple GPU, a `pub fn` waits for the GPU before each return. It calls `vx_plugin_control`
+// A C program reads the tensors of an `extern fn` as soon as the call returns. So in a library for
+// the Apple GPU, an `extern fn` waits for the GPU before each return. It calls `vx_plugin_control`
 // twice: with opcode 7, VX_CTRL_WAIT_FOR_THREAD, for the kernels of its thread, and with opcode
 // 6, VX_CTRL_WAIT_FOR_TENSORS, for the kernels of other threads that write its 2 tensors.
 // `add_one` returns in two places, so it waits in two places.
@@ -36,7 +36,7 @@
 // CUDA: llvm.call @vx_plugin_dispatch_async(
 // CUDA-NEXT: llvm.return
 
-pub fn add_one(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> i32 {
+extern fn add_one(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> i32 {
   if w > 1024 {
     return 1;
   }
