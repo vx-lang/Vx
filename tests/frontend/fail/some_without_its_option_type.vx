@@ -1,0 +1,23 @@
+//===- some_without_its_option_type.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A bare `Some(..)` does not know its type. The error tells the programmer to write the type
+// before `::Some`. An `Option` of the wrong type gets no advice.
+
+import core::option;
+
+fn main() -> i32 {
+  // CHECK: '_a' is declared Option<i64> but its initializer is Option; write `Option<i64>::Some(value)`
+  let _a : Option<i64> = Some(3);
+  // CHECK: '_b' is declared Option<bool> but its initializer is Option; write `Option<bool>::Some(value)`
+  let _b : Option<bool> = Some(true);
+  // CHECK: '_c' is declared Option<i64> but its initializer is Option<bool>{{$}}
+  let _c : Option<i64> = Option<bool>::None();
+  return 0;
+}

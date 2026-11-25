@@ -849,9 +849,21 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 } else {
+                    // `Some(..)` has no type arguments of its own, so it needs the type spelled.
+                    let bare_some = matches!(
+                        expr,
+                        Expr::FunctionCall(c)
+                            if (c.name.as_ref() == "Some" || c.name.as_ref() == "Option::Some")
+                                && c.owner_type_args.is_none()
+                    ) && ann.to_string().starts_with("Option<");
+                    let hint = if bare_some {
+                        format!("; write `{ann}::Some(value)`")
+                    } else {
+                        String::new()
+                    };
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3001,
-                        format!("'{name}' is declared {ann} but its initializer is {ty}"),
+                        format!("'{name}' is declared {ann} but its initializer is {ty}{hint}"),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
