@@ -249,7 +249,6 @@ impl AstPrinter {
                 name,
                 type_args: _,
                 args,
-                span: _,
                 ..
             }) => {
                 indent.print(w)?;
