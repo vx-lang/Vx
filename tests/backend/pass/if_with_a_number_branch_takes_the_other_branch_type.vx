@@ -1,0 +1,89 @@
+//===- if_with_a_number_branch_takes_the_other_branch_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A branch of an `if` that is only a number with no suffix takes the type of the other branch.
+// This is true when the `if` is the operand of `as`, which suggests its own type to a literal.
+// So `(if c { a } else { 0.0 }) as bf16` is an `f32` `if`, and `as` then converts it.
+// The `-0.1` prints as -0.1 only if it is an `f64`. As an `f32`, it prints as -0.10000000149011612.
+//
+// EXPECT: 1.5 1.5 1.5 1.5 -0.1 7 2.25 0 3000000000
+
+fn cast_to_bf16(c : bool, a : f32) -> f32 {
+  let y = (if c {
+    a
+  } else {
+    0.0
+  }) as bf16;
+  return y as f32;
+}
+
+fn typed_let_of_a_cast(c : bool, a : f32) -> f32 {
+  let y : bf16 = (if c {
+    a
+  } else {
+    0.0
+  }) as bf16;
+  return y as f32;
+}
+
+fn store_to_a_tensor(c : bool, a : f32) -> f32 {
+  let mut q = Tensor<bf16, [2]>::new();
+  q[1] = (if c {
+    a
+  } else {
+    0.0
+  }) as bf16;
+  return q[1] as f32;
+}
+
+fn cast_to_f64(c : bool, a : f32) -> f64 {
+  return (if c {
+    a
+  } else {
+    0.0
+  }) as f64;
+}
+
+fn negative_number_first(c : bool, a : f64) -> f64 {
+  let r = if c {
+    -0.1
+  } else {
+    a
+  };
+  return r;
+}
+
+fn integer_number(c : bool, n : i64) -> i64 {
+  let r = if c {
+    n
+  } else {
+    3000000000
+  };
+  return r;
+}
+
+fn main() -> i32 {
+  let a : f32 = 1.5;
+  print(cast_to_bf16(true, a));
+  print!(" ");
+  print(typed_let_of_a_cast(true, a));
+  print!(" ");
+  print(store_to_a_tensor(true, a));
+  print!(" ");
+  print(cast_to_f64(true, a));
+  print!(" ");
+  print(negative_number_first(true, 2.25));
+  print!(" ");
+  print(integer_number(true, 7));
+  print!(" ");
+  print(negative_number_first(false, 2.25));
+  print!(" ");
+  print(cast_to_bf16(false, a));
+  print!(" ");
+  print(integer_number(false, 7));
+  return 0;
+}
