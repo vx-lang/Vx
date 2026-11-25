@@ -229,6 +229,9 @@ pub struct FunctionCallExpr {
     pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
     pub span: Span,
+    /// The compiler wrote this call, as `c_str_equals` for `s == "hi"`. The program did not, so
+    /// the check of visibility skips it (docs/lang/visibility.md, section 4, rule 4).
+    pub by_the_compiler: bool,
 }
 impl FunctionCallExpr {
     pub fn new(name: Symbol, type_args: Option<Vec<Type>>, args: Vec<Expr>, span: Span) -> Self {
@@ -238,6 +241,15 @@ impl FunctionCallExpr {
             type_args,
             args,
             span,
+            by_the_compiler: false,
+        }
+    }
+
+    /// A call that the compiler writes, not the program.
+    pub fn by_the_compiler(name: Symbol, args: Vec<Expr>, span: Span) -> Self {
+        Self {
+            by_the_compiler: true,
+            ..Self::new(name, None, args, span)
         }
     }
 }
@@ -1841,6 +1853,7 @@ impl Expr {
                     type_args: substituted_type_args,
                     args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
                     span: e.span,
+                    by_the_compiler: e.by_the_compiler,
                 })
             }
             Expr::IndirectCall(e) => Expr::IndirectCall(IndirectCallExpr {

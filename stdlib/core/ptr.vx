@@ -34,29 +34,29 @@ import core::marker;
 import core::option;
 
 /// A pointer to nothing.
-fn null<T>() -> *const T {
+pub fn null<T>() -> *const T {
   return unsafe { 0 as *const T };
 }
 
 /// A mutable pointer to nothing.
-fn null_mut<T>() -> *mut T {
+pub fn null_mut<T>() -> *mut T {
   return unsafe { 0 as *mut T };
 }
 
 /// The value the pointer addresses. The caller promises there is one, and that only one of
 /// the two copies gets dropped. Safe code cannot move a value out of `*p` (E4008).
-unsafe fn read<T>(p : *const T) -> T {
+pub unsafe fn read<T>(p : *const T) -> T {
   return unsafe { *p };
 }
 
 /// Puts a value where the pointer addresses. The caller promises it may.
-unsafe fn write<T>(p : *mut T, v : T) -> void {
+pub unsafe fn write<T>(p : *mut T, v : T) -> void {
   unsafe { *p = v; }
 }
 
 /// The pointer `count` elements further on, or back for a negative `count`. Like Rust's
 /// `wrapping_offset`, it only computes the address.
-fn offset<T, M : Memory>(p : *const T in Memory::M, count : i64) -> *const T in Memory::M {
+pub fn offset<T, M : Memory>(p : *const T in Memory::M, count : i64) -> *const T in Memory::M {
   let bytes = count * sizeof<T>();
   return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *const T in Memory::M, dialects : ["llvm"]) {
       %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -65,7 +65,7 @@ fn offset<T, M : Memory>(p : *const T in Memory::M, count : i64) -> *const T in 
 }
 
 /// `offset` for a mutable pointer.
-fn offset_mut<T, M : Memory>(p : *mut T in Memory::M, count : i64) -> *mut T in Memory::M {
+pub fn offset_mut<T, M : Memory>(p : *mut T in Memory::M, count : i64) -> *mut T in Memory::M {
   let bytes = count * sizeof<T>();
   return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *mut T in Memory::M, dialects : ["llvm"]) {
       %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -76,7 +76,7 @@ fn offset_mut<T, M : Memory>(p : *mut T in Memory::M, count : i64) -> *mut T in 
 /// Copies `count` values from `src` to `dst`, as C's `memcpy` does. The two ranges must not
 /// overlap. The values are copied bit for bit, so for a type that is not `Copy`, only one of the
 /// two copies may be dropped.
-unsafe fn copy_nonoverlapping<T>(src : *const T, dst : *mut T, count : usize) -> void {
+pub unsafe fn copy_nonoverlapping<T>(src : *const T, dst : *mut T, count : usize) -> void {
   let bytes = (count as i64) * sizeof<T>();
   let _copied : i64 = mlir!( inputs : (%s = src : !llvm.ptr, %d = dst : !llvm.ptr, %b = bytes : i64), returns : i64, dialects : ["llvm"]) {
     "llvm.intr.memcpy"(%d, %s, %b) < {
@@ -87,7 +87,7 @@ unsafe fn copy_nonoverlapping<T>(src : *const T, dst : *mut T, count : usize) ->
 }
 
 /// Sets each byte of `count` values at `dst` to `byte`, as C's `memset` does.
-unsafe fn write_bytes<T>(dst : *mut T, byte : u8, count : usize) -> void {
+pub unsafe fn write_bytes<T>(dst : *mut T, byte : u8, count : usize) -> void {
   let bytes = (count as i64) * sizeof<T>();
   let _written : i64 = mlir!( inputs : (%d = dst : !llvm.ptr, %v = byte : i8, %b = bytes : i64), returns : i64, dialects : ["llvm"]) {
     "llvm.intr.memset"(%d, %v, %b) < {
@@ -98,27 +98,27 @@ unsafe fn write_bytes<T>(dst : *mut T, byte : u8, count : usize) -> void {
 }
 
 /// The pointer `count` elements further on.
-fn add<T, M : Memory>(p : *const T in Memory::M, count : usize) -> *const T in Memory::M {
+pub fn add<T, M : Memory>(p : *const T in Memory::M, count : usize) -> *const T in Memory::M {
   return offset(p, count as i64);
 }
 
 /// `add` for a mutable pointer.
-fn add_mut<T, M : Memory>(p : *mut T in Memory::M, count : usize) -> *mut T in Memory::M {
+pub fn add_mut<T, M : Memory>(p : *mut T in Memory::M, count : usize) -> *mut T in Memory::M {
   return offset_mut(p, count as i64);
 }
 
 /// The pointer `count` elements back.
-fn sub<T, M : Memory>(p : *const T in Memory::M, count : usize) -> *const T in Memory::M {
+pub fn sub<T, M : Memory>(p : *const T in Memory::M, count : usize) -> *const T in Memory::M {
   return offset(p, -(count as i64));
 }
 
 /// `sub` for a mutable pointer.
-fn sub_mut<T, M : Memory>(p : *mut T in Memory::M, count : usize) -> *mut T in Memory::M {
+pub fn sub_mut<T, M : Memory>(p : *mut T in Memory::M, count : usize) -> *mut T in Memory::M {
   return offset_mut(p, -(count as i64));
 }
 
 /// Whether the two pointers hold the same address.
-fn eq<T>(a : *const T, b : *const T) -> bool {
+pub fn eq<T>(a : *const T, b : *const T) -> bool {
   return unsafe { mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : bool, dialects : ["llvm"]) {
       %r = llvm.icmp "eq" %a, %b : !llvm.ptr
       macro.yield %r : i1
@@ -126,12 +126,12 @@ fn eq<T>(a : *const T, b : *const T) -> bool {
 }
 
 /// Whether the pointer is null.
-fn is_null<T>(p : *const T) -> bool {
+pub fn is_null<T>(p : *const T) -> bool {
   return eq(p, null<T>());
 }
 
 /// `is_null` for a mutable pointer.
-fn is_null_mut<T>(p : *mut T) -> bool {
+pub fn is_null_mut<T>(p : *mut T) -> bool {
   return is_null(p as *const T);
 }
 
