@@ -22,12 +22,13 @@ extern {
   pub fn vx_string_len(ptr : *mut i8) -> i32;
   /// The Rust core behind `==` on two strings: 1 when they hold the same bytes.
   pub fn vx_string_eq(a : *mut i8, b : *mut i8) -> i32;
-  /// Allocate a NUL-terminated copy and hand out its raw pointer. The caller owns it and
-  /// releases it with `vx_string_free_c_str`; `String::as_c_str` does not, and leaks.
+  /// The Rust core behind `String::as_c_str`. It allocates a NUL-terminated copy, and the
+  /// caller owns it.
   pub fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
   /// `vx_string_as_c_str`, but null when the string holds a NUL byte. `std::net` uses it.
   pub fn vx_string_try_as_c_str(ptr : *mut i8) -> *const i8;
-  /// Release what `vx_string_as_c_str` or `vx_string_try_as_c_str` returned.
+  /// The Rust core behind `String::free_c_str`. It releases what `vx_string_as_c_str` or
+  /// `vx_string_try_as_c_str` returned.
   pub fn vx_string_free_c_str(ptr : *const i8) -> i32;
   /// The Rust core behind `String::drop`.
   pub fn vx_string_drop(ptr : *mut i8) -> i32;
@@ -95,12 +96,20 @@ impl String {
 
   /// A NUL-terminated copy of the contents.
   ///
-  /// **This allocates and leaks.** The Rust core builds a fresh `CString` and hands out its
-  /// raw pointer, so every call costs a copy that is never released: the matching
-  /// `vx_string_free_c_str` is declared in the extern block and is not wrapped as a method
-  /// here. Calling this in a loop grows the process without bound.
+  /// Each call allocates a new copy, and the caller owns it. Release it with
+  /// `String::free_c_str` when you no longer use it. A copy that you do not release stays
+  /// allocated until the program ends. The copy does not change when the string changes or
+  /// drops, so it stays valid until you release it.
   pub fn as_c_str(self : &String) -> *const i8 {
     return unsafe { vx_string_as_c_str(self.ptr) };
+  }
+
+  /// Release a copy that `as_c_str` returned.
+  ///
+  /// Unsafe because nothing here checks that `c_str` came from `as_c_str`, or that it is not
+  /// released yet. After this call, do not read through `c_str`.
+  pub unsafe fn free_c_str(c_str : *const i8) -> void {
+    let _released = unsafe { vx_string_free_c_str(c_str) };
   }
 }
 

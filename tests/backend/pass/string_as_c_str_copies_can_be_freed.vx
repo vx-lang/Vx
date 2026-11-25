@@ -1,0 +1,59 @@
+//===- string_as_c_str_copies_can_be_freed.vx --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `String::as_c_str` returns a copy that the caller owns, and `String::free_c_str` releases
+// it. A copy stays valid after its string drops, until the caller releases it.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FREES
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s --check-prefix=FREES
+// FREES-LABEL: func.func @main(
+// FREES-COUNT-2: call @"String::free_c_str"(
+// FREES-NOT: call @"String::free_c_str"(
+// FREES-LABEL: func.func @"String::free_c_str"(
+// CHECK-LABEL: func.func @main(
+// CHECK: call @i32$to_string(
+// CHECK: %[[COPY:.*]] = call @String$as_c_str(
+// CHECK: call @String$drop(
+// CHECK: call @print_str(%[[COPY]])
+// CHECK: call @"String::free_c_str"(%[[COPY]])
+// CHECK-LABEL: func.func @"String::free_c_str"(
+// CHECK-NEXT: call @vx_string_free_c_str(%arg0)
+import std::string;
+
+fn main() -> i32 {
+  let mut s = String::new();
+  let mut i = 0;
+  while i < 100 {
+    unsafe { s.push_c_str("0123456789") };
+    i = i + 1;
+  }
+  // Each copy is released with `free_c_str`.
+  let mut n = 0;
+  let mut nines = 0;
+  while n < 1000 {
+    let p = s.as_c_str();
+    if unsafe { p[999] } == 57 {
+      nines = nines + 1;
+    }
+    unsafe { String::free_c_str(p) };
+    n = n + 1;
+  }
+  println!("copies that end in 9: {}", nines);
+
+  // The temporary string drops at the end of the statement. Its copy does not.
+  let number = 42;
+  let copy = number.to_string().as_c_str();
+  print!(copy);
+  println!(" is the copy of a string that dropped");
+  unsafe { String::free_c_str(copy) };
+  return 0;
+}
+
+// EXPECT: copies that end in 9: 1000
+// EXPECT: 42 is the copy of a string that dropped
