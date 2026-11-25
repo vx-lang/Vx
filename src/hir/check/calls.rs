@@ -3436,6 +3436,13 @@ impl<'a> TypeChecker<'a> {
             crate::hir::provenance::compute_return_provenance_with(inst, &self.env.decls, &callee)
         };
         self.mono.return_provenances.insert(inst.name.clone(), prov);
+        // Whether the instance writes only its own frame. Its calls are by name by now, so the
+        // bodies of the instances it calls say what the syntax could not.
+        if crate::hir::purity::writes_only_its_frame(inst, &self.env.decls, &|name| {
+            self.spawn_pure(name)
+        }) {
+            self.mono.spawn_pure.insert(inst.name.clone());
+        }
         // The walk of the checked body follows each call, so it proves more `!keeps` bits than
         // the walk of the syntax could.
         let inferred = {

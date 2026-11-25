@@ -69,7 +69,7 @@ struct Ctx {
     strict_ifs: bool,
 }
 
-struct Walk<'g> {
+struct Walk<'g, 'p> {
     graph: &'g crate::arch::TransferCostGraph,
     errors: Vec<(String, Span)>,
     /// The level of each `across` loop, by the position of its clause, with the lanes of a
@@ -104,6 +104,10 @@ struct Walk<'g> {
     /// The parameters that are `Distinct` tensors or `DisjointRanges` tables, with the type of
     /// their elements. A name that the body binds again is not here.
     claims: HashMap<String, (Claim, ElementType)>,
+    /// Whether a call to this function writes only the callee's own frame, which the checker
+    /// froze before it checked any body. A call to such a function writes nothing a pass of the
+    /// loop may race with.
+    pure: &'p dyn Fn(&str) -> bool,
 }
 
 /// A lane reduction in the code of a level.
@@ -172,39 +176,45 @@ impl crate::hir::TypeChecker<'_> {
             .filter(|d| d.scope == Some(crate::syntax::Scope::Thread))
             .map(|d| d.name.as_ref().to_string())
             .collect();
-        let mut walk = Walk {
-            graph: self.transfer_cost_graph,
-            errors: Vec::new(),
-            found: HashMap::new(),
-            largest_ends: HashMap::new(),
-            auto_schedule: self.worker.global.auto_schedule_levels,
-            shared,
-            registers,
-            register_tiles: Vec::new(),
-            contracts: self.atomic_contracts(),
-            templates: self
-                .env
-                .generic_functions
-                .keys()
-                .map(|k| k.as_ref().to_string())
-                .collect(),
-            lane_sizes: self.lane_reductions.clone(),
-            lane_copies_out: self.lane_copies_out.clone(),
-            lane_calls: Vec::new(),
-            lane_matmuls: HashSet::new(),
-            read_only,
-            claims,
+        // The purity fact is read, not computed here, so the walk only borrows the checker. The
+        // tile field is written back after the borrow ends.
+        let (mut errors, register_tiles) = {
+            let pure = |name: &str| self.spawn_pure(name);
+            let mut walk = Walk {
+                graph: self.transfer_cost_graph,
+                errors: Vec::new(),
+                found: HashMap::new(),
+                largest_ends: HashMap::new(),
+                auto_schedule: self.worker.global.auto_schedule_levels,
+                shared,
+                registers,
+                register_tiles: Vec::new(),
+                contracts: self.atomic_contracts(),
+                templates: self
+                    .env
+                    .generic_functions
+                    .keys()
+                    .map(|k| k.as_ref().to_string())
+                    .collect(),
+                lane_sizes: self.lane_reductions.clone(),
+                lane_copies_out: self.lane_copies_out.clone(),
+                lane_calls: Vec::new(),
+                lane_matmuls: HashSet::new(),
+                read_only,
+                claims,
+                pure: &pure,
+            };
+            walk.stmts(body, &Ctx::default());
+            mark_stmts(body, &walk.found);
+            check_sizes_at_launch(body, &walk.largest_ends, !walk.errors.is_empty());
+            walk.lane_reductions(body);
+            (walk.errors, std::mem::take(&mut walk.register_tiles))
         };
-        walk.stmts(body, &Ctx::default());
-        mark_stmts(body, &walk.found);
-        check_sizes_at_launch(body, &walk.largest_ends, !walk.errors.is_empty());
-        walk.lane_reductions(body);
-        self.block_register_tiles = std::mem::take(&mut walk.register_tiles);
+        self.block_register_tiles = register_tiles;
         // The proof of an outer loop also walks the inner loops, so one place can come twice.
         let mut seen = HashSet::new();
-        walk.errors
-            .retain(|(_, at)| seen.insert((at.line, at.column)));
-        for (msg, at) in walk.errors {
+        errors.retain(|(_, at)| seen.insert((at.line, at.column)));
+        for (msg, at) in errors {
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E6032,
                 msg,
@@ -314,7 +324,7 @@ fn kind_word(kind: LevelKind) -> &'static str {
     }
 }
 
-impl Walk<'_> {
+impl<'g, 'p> Walk<'g, 'p> {
     fn error(&mut self, msg: String, at: Span) {
         self.errors.push((msg, at));
     }
@@ -1445,6 +1455,7 @@ impl Walk<'_> {
             &self.templates,
             &self.lane_copies_out,
             &self.claims,
+            self.pure,
         ) {
             Err((why, at)) => self.error(why, at),
             Ok(ends) => {

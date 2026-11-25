@@ -1,19 +1,23 @@
 // W1033: a `spawn` loop runs on one thread although each pass writes only its own rows, so its
-// passes could run at the same time. The warning points at what keeps the loop serial.
-// WARN: w1033_spawn_loop_that_runs_on_one_thread.vx:16:17: this `spawn` loop runs on one thread: it calls `scale`
-// WARN: w1033_spawn_loop_that_runs_on_one_thread.vx:27:24: this `spawn` loop runs on one thread: it holds inline MLIR
-// WARN: w1033_spawn_loop_that_runs_on_one_thread.vx:40:25: this `spawn` loop runs on one thread: a pass reads a row of `o` that another pass writes
-// WARN: w1033_spawn_loop_that_runs_on_one_thread.vx:51:9: this `spawn` loop runs on one thread: a `break` would stop only one thread's share
+// passes could run at the same time. The warning points at what keeps the loop serial. A call to
+// a function that the compiler has shown writes only its own variables no longer keeps a loop
+// serial, so the first function here calls one that takes a tensor, which can read another pass's
+// row. The split of a proven-pure call is in
+// tests/optimizations/pass/spawn_loop_calling_a_pure_helper_splits.vx.
+// WARN: w1033_spawn_loop_that_runs_on_one_thread.vx:20:17: this `spawn` loop runs on one thread: it calls `scale`
+// WARN: w1033_spawn_loop_that_runs_on_one_thread.vx:31:24: this `spawn` loop runs on one thread: it holds inline MLIR
+// WARN: w1033_spawn_loop_that_runs_on_one_thread.vx:44:25: this `spawn` loop runs on one thread: a pass reads a row of `o` that another pass writes
+// WARN: w1033_spawn_loop_that_runs_on_one_thread.vx:55:9: this `spawn` loop runs on one thread: a `break` would stop only one thread's share
 
-fn scale(x : f32) on Topology::GPU -> f32 {
-  return x * 2.0;
+fn scale(x : f32, seed : &Tensor<f32, [64, 1], Memory::GPU_HBM>) on Topology::GPU -> f32 {
+  return x * seed[0][0];
 }
 
 fn calls_a_function() -> f32 {
   let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..64 {
-      o[r][0] = scale(1.0);
+      o[r][0] = scale(1.0, &o);
     }
   }
   return transfer(o, Memory::CPU_DRAM)[0][0];

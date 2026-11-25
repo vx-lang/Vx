@@ -26,7 +26,7 @@ pub enum Opcode {
     Const = 1,
     Load = 2,
     /// `imm` is normally 0. `IMM_PARALLEL_INIT` marks the one store `lower_for` emits to
-    /// initialize the induction variable of a loop `parallel_outer_for` proved disjoint — codegen
+    /// initialize the induction variable of a loop the checker proved has disjoint passes — codegen
     /// renders it with a `vx.parallel_init` attribute so the device clone can offset it by the
     /// global thread id (#251). `IMM_PARALLEL_BOUND` marks the store of that loop's upper bound,
     /// which the host clone moves so each worker owns a contiguous range. Inert everywhere else.
@@ -76,7 +76,7 @@ pub enum Opcode {
     /// Closes the `vx.spawn` region opened by the nearest preceding `Spawn` (maps to `vx.yield`).
     /// A region with a value yields `operand1` and is typed with it; this instruction's register
     /// is then the spawn's result.
-    /// `imm` is the trip count of the region's outermost loop when `parallel_outer_for` proved its
+    /// `imm` is the trip count of the region's outermost loop when the checker proved its
     /// iterations disjoint (0 otherwise) — codegen stamps it on the `vx.spawn` op as
     /// `vx_parallel_trip`, and the device pipeline grid-strides the loop and sizes the launch from
     /// it. The host path ignores it entirely (#251). Under `SPAWN_TWO_LEVEL` (bit 62, Vx#379) the

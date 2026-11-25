@@ -25,7 +25,7 @@ use crate::bytecode::{
 };
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
-use crate::hir::check::parallel::{parallel_outer_for, parallel_two_level, TwoLevelPlan};
+use crate::hir::check::parallel::TwoLevelPlan;
 use crate::layout::FieldTy;
 use crate::registry::ImmutableGlobalRegistry;
 use crate::session::LocalWorkerState;
@@ -580,7 +580,7 @@ struct Lowerer<'r> {
     /// path)`. The `FieldStore` the write lowers to reads this to tag itself as a place-write for
     /// alias-scope metadata; a direct `p.x = v` leaves it `None` and its store is untagged. (#275, §5.4)
     pending_place_write: Option<(Symbol, Vec<Symbol>)>,
-    /// Armed by `lower_spawn` for exactly the one statement `parallel_outer_for` named: the next
+    /// Armed by `lower_spawn` for exactly the one statement the checker's recorded split named: the next
     /// `lower_for` takes it and tags its induction-variable init and latch increment
     /// (`IMM_PARALLEL_INIT`/`IMM_PARALLEL_STEP`) so the device clone can grid-stride the loop (#251).
     stride_next_for: bool,
@@ -3673,13 +3673,12 @@ impl<'r> Lowerer<'r> {
         // Taken (not read) so the tag cannot leak into the nested loops this body lowers.
         let stride = std::mem::take(&mut self.stride_next_for);
         let across = self.across.next_loop.take();
-        // The two-level plan addresses loops by node identity, so membership is exact and
+        // The checker's two-level plan names its loops by source position, which is exact and
         // nesting-proof: the block loop and each thread loop pick up their own tag kind, and
         // every other loop -- including sequential loops BETWEEN the two levels -- gets none.
-        let addr = f as *const crate::syntax::ForLoopStmt as usize;
         let plan_kind = match &self.stride_plan {
-            Some(p) if p.block == addr => Some((IMM_BLOCK_INIT, IMM_BLOCK_STEP)),
-            Some(p) if p.threads.contains(&addr) => Some((IMM_THREAD_INIT, IMM_THREAD_STEP)),
+            Some(p) if p.block == f.span => Some((IMM_BLOCK_INIT, IMM_BLOCK_STEP)),
+            Some(p) if p.threads.contains(&f.span) => Some((IMM_THREAD_INIT, IMM_THREAD_STEP)),
             _ => None,
         };
         let Expr::Range(range) = &*f.iterable else {
@@ -4061,10 +4060,11 @@ impl<'r> Lowerer<'r> {
     /// nested MLIR region, so the region's blocks are self-contained (#226). A value-producing spawn
     /// yields its tail expression as the `SpawnEnd` value.
     ///
-    /// The region's outermost loop is additionally offered to `parallel_outer_for`: when its
-    /// iterations are provably disjoint, the loop is tagged for the device pipeline to grid-stride
-    /// (#251). Whether the offer is declined or accepted, the lowered body is identical apart from
-    /// two inert `imm` bits and the `SpawnEnd`'s trip count — the host path never changes.
+    /// The region's outermost loop may also have been proved to have disjoint iterations, which
+    /// the checker recorded on the statement: the loop is then tagged for the device pipeline to
+    /// grid-stride (#251). Whether the proof was declined or accepted, the lowered body is
+    /// identical apart from two inert `imm` bits and the `SpawnEnd`'s trip count — the host path
+    /// never changes.
     ///
     /// In expression position the region's tail is its value: the `SpawnEnd` carries it as
     /// `operand1` and is typed with it, so the end instruction's register is the value. In
@@ -4152,10 +4152,10 @@ impl<'r> Lowerer<'r> {
                 shape: &shape,
                 across: lanes.is_some(),
             },
+            &s.split,
             &s.stmts,
             s.ret.as_deref(),
             want_value,
-            true,
         );
         self.across = outer;
         if let (Ok(_), Some(count)) = (&lowered, count) {
@@ -4273,10 +4273,10 @@ impl<'r> Lowerer<'r> {
             let lowered = self.lower_region(
                 id as u32 as u64 | line,
                 launch,
+                &crate::syntax::SpawnSplit::NotOffered,
                 &u.stmts,
                 u.ret.as_deref(),
                 want_value,
-                false,
             );
             if task {
                 self.task_bodies.pop();
@@ -4335,9 +4335,9 @@ impl<'r> Lowerer<'r> {
         let lowered = self.lower_region(
             id as u32 as u64,
             launch,
+            &crate::syntax::SpawnSplit::NotOffered,
             &u.stmts,
             u.ret.as_deref(),
-            false,
             false,
         );
         let exits = self.tasks_exits.pop().expect("pushed above").exits;
@@ -4512,15 +4512,16 @@ impl<'r> Lowerer<'r> {
     }
 
     /// The `Spawn`/`SpawnEnd` region of `lower_spawn` and `lower_task_region`. `imm` is the
-    /// `Spawn` immediate. `offer_parallel` offers the region's loops to the device pipeline.
+    /// `Spawn` immediate. `split` is how the checker decided the region's loop runs, recorded
+    /// on the statement; this lowers that decision and never decides again.
     fn lower_region(
         &mut self,
         imm: u64,
         launch: RegionLaunch<'_>,
+        split: &crate::syntax::SpawnSplit,
         stmts: &[Statement],
         ret: Option<&Expr>,
         want_value: bool,
-        offer_parallel: bool,
     ) -> Lowered<Option<Val>> {
         let tail_slot = self.region_tail_slot.take();
         let cancels_on_err = self.region_cancels_on_err.take();
@@ -4567,15 +4568,10 @@ impl<'r> Lowerer<'r> {
         for (axis, v) in launch.shape {
             self.emit_effect(Opcode::LaunchDim, v.reg, Register(0), *axis);
         }
-        // A region with `across` loops maps its work to lanes itself.
-        let offer_parallel = offer_parallel && !launch.across;
-        // Two proofs are offered, FLAT FIRST. The flat grid-stride (#251) is the measured
-        // record shape -- one thread per iteration, slice bodies vectorized -- so a region it
-        // covers must keep it: since the block-row write rule (Vx#379 R3) landed, a plain
-        // elementwise nest can ALSO pass the two-level walk, and trying that first would
-        // silently trade the proven launch for an unmeasured one. `parallel_two_level` gets
-        // what flat cannot express at all: barriers, shared tiles, affine and block-row
-        // ownership. Failing both, the region lowers serially -- rejection is always free.
+        // The checker decided between the flat grid-stride (#251) and two-level (Vx#379)
+        // shapes, in that order, and recorded the answer. Reading it here is what keeps this
+        // code generator and the W1033 warning from disagreeing. A region with `across` loops
+        // maps its work to lanes itself, and the checker records no split for it.
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
         for (name, v) in fixed {
@@ -4584,15 +4580,24 @@ impl<'r> Lowerer<'r> {
         }
         self.spawn_depth += 1;
         self.device_depth += on_device as u32;
-        let par = if offer_parallel {
-            parallel_outer_for(stmts)
-        } else {
-            None
+        let par = match split {
+            crate::syntax::SpawnSplit::Flat { index, trip } => Some((*index, *trip)),
+            _ => None,
         };
-        let two_level = if offer_parallel && par.is_none() {
-            parallel_two_level(stmts)
-        } else {
-            None
+        let two_level = match split {
+            crate::syntax::SpawnSplit::TwoLevel {
+                block,
+                threads,
+                trip,
+            } => Some((
+                *trip,
+                TwoLevelPlan {
+                    block: *block,
+                    threads: threads.clone(),
+                    trip: *trip,
+                },
+            )),
+            _ => None,
         };
         let end_imm = if par.is_some() {
             for (i, stmt) in stmts.iter().enumerate() {

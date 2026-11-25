@@ -6,17 +6,20 @@
 //
 //===----------------------------------------------------------------------===//
 // `ensures writes_only()` says that a function writes no memory, as a fence does. Each function
-// here breaks that, or writes the clause wrong (E8007). The kernel at the end calls `quiet`, which
-// has the clause, and `seven`, which does not (E6032), in an `across` loop.
+// here breaks that, or writes the clause wrong (E8007). A call counts when the callee says
+// `writes_only()` too, or when the compiler has shown that it writes only its own variables, so
+// the function that calls `makes_and_writes_a_tensor` breaks the clause: that callee writes a
+// tensor it makes, and says nothing. The kernel at the end calls `quiet`, which has the clause,
+// and `write_first`, which does not (E6032), in an `across` loop.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:32:9: `takes_a_tensor` says `writes_only()`, so it may take no tensor, reference or pointer, but `t` is `&mut Tensor<i32, [?], Memory::HBM>`
-// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:38:9: `writes_only` takes no arguments here: `writes_only()` says that `names_a_tensor` writes no memory
-// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:46:19: `block_without_the_clause` says `writes_only()`, so each `mlir!` block in it must say `ensures : [writes_only()]`
-// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:56:10: `calls_a_function_without_the_clause` says `writes_only()`, so it may call only a function that says it too, but `seven` does not
-// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:64:19: a block that says `writes_only()` may take no memref or pointer input, but `%t` is `memref<?xi32>`
-// CHECK: Error[E6032] at {{.*}}writes_only_contracts_that_do_not_hold.vx:75:18: the call to `seven` may write through an argument, and the checker does not read its body. If `seven` writes no memory, give it `ensures writes_only()`. If it only reads a tensor parameter `t`, give it `ensures reads_only(t)`. Or write its work in the loop
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:35:9: `takes_a_tensor` says `writes_only()`, so it may take no tensor, reference or pointer, but `t` is `&mut Tensor<i32, [?], Memory::HBM>`
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:41:9: `writes_only` takes no arguments here: `writes_only()` says that `names_a_tensor` writes no memory
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:49:19: `block_without_the_clause` says `writes_only()`, so each `mlir!` block in it must say `ensures : [writes_only()]`
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:59:10: `calls_a_function_without_the_clause` says `writes_only()`, so it may call only a function that says it too or that the compiler has shown writes only its own variables, but `makes_and_writes_a_tensor` is neither
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:69:19: a block that says `writes_only()` may take no memref or pointer input, but `%t` is `memref<?xi32>`
+// CHECK: Error[E6032] at {{.*}}writes_only_contracts_that_do_not_hold.vx:85:18: the call to `write_first` writes memory that another pass can see, or the compiler cannot show that it writes only its own variables. If it writes no memory, say `ensures writes_only()`. Write its work in the loop
 
 fn quiet() on Topology::Device -> void
 ensures writes_only()
@@ -53,11 +56,13 @@ ensures writes_only()
 fn calls_a_function_without_the_clause() on Topology::Device -> i32
 ensures writes_only()
 {
-  return seven();
+  return makes_and_writes_a_tensor();
 }
 
-fn seven() on Topology::Device -> i32 {
-  return 7;
+fn makes_and_writes_a_tensor() on Topology::Device -> i32 {
+  let mut t = unsafe { Tensor<i32, [4], Memory::HBM>::uninit() };
+  t[0] = 7;
+  return t[0];
 }
 
 fn block_with_a_memory_input(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> void {
@@ -67,12 +72,17 @@ fn block_with_a_memory_input(t : &Tensor<i32, [?], Memory::HBM>) on Topology::De
   return;
 }
 
-pub fn calls_in_the_loop() -> void {
+fn write_first(t : &mut Tensor<i32, [?, 32], Memory::HBM>) on Topology::Device -> i32 {
+  t[0][0] = 8;
+  return 7;
+}
+
+pub fn calls_in_the_loop(o : &mut Tensor<i32, [?, 32], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..4 across blocks {
       for l in 0..32 across lanes {
         quiet();
-        let _s = seven();
+        let _s = write_first(o);
       }
     }
   }

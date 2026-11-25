@@ -146,6 +146,10 @@ struct Proof<'c> {
     /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
     /// call.
     copies_out: &'c HashMap<Span, Vec<u64>>,
+    /// Whether a call to this function writes only the callee's own frame. The checker froze
+    /// this before it checked any body, so a call the compiler has shown writes only its own
+    /// variables writes nothing that a pass may race with.
+    pure: &'c dyn Fn(&str) -> bool,
     /// The key of the loop's own variable.
     own: String,
     /// The values from outside the loop that are factors of its end, by key.
@@ -216,6 +220,7 @@ pub(crate) fn across_loop_race(
     templates: &HashSet<String>,
     copies_out: &HashMap<Span, Vec<u64>>,
     claims: &HashMap<String, (Claim, ElementType)>,
+    pure: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<LargestEnd>, (String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
@@ -230,6 +235,7 @@ pub(crate) fn across_loop_race(
             contracts,
             templates,
             copies_out,
+            pure,
             own: String::new(),
             end_factors: match &*f.iterable {
                 Expr::Range(r) => factors(&r.end),
@@ -825,11 +831,11 @@ impl Proof<'_> {
                 // Making a tensor writes only the new tensor.
                 // A lane reduction reads its tensor and writes nothing. The type checker
                 // refuses a name after `lanes::` that is not one.
-                let pure = crate::hir::check::parallel::parallel_pure_call(&fc.name)
+                let writes_nothing = (self.pure)(&fc.name)
                     || is_tensor_alloc_call(fc)
                     || fc.name.as_ref().starts_with("lanes::");
                 // A call with an atomic contract changes only the tensors that it names.
-                if let Some(params) = (!pure)
+                if let Some(params) = (!writes_nothing)
                     .then(|| self.contracts.get(fc.name.as_ref()))
                     .flatten()
                 {
@@ -843,7 +849,7 @@ impl Proof<'_> {
                     }
                     return;
                 }
-                if !pure {
+                if !writes_nothing {
                     let why = if fc.name.as_ref() == "barrier" {
                         "`barrier()` may not be in an `across` loop: the end of a lane loop is \
                          the barrier"
@@ -854,10 +860,11 @@ impl Proof<'_> {
                                 self.templates.contains(t)
                             });
                         format!(
-                            "the call to `{name}` may write through an argument, and the checker \
-                             does not read its body. If `{name}` writes no memory, give it \
-                             `ensures writes_only()`. If it only reads a tensor parameter `t`, \
-                             give it `ensures reads_only(t)`. Or write its work in the loop"
+                            "the call to `{}` writes memory that another pass can see, or the \
+                             compiler cannot show that it writes only its own variables. If it \
+                             writes no memory, say `ensures writes_only()`. Write its work in \
+                             the loop",
+                            name
                         )
                     };
                     self.fail(why, fc.span);

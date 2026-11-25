@@ -270,7 +270,7 @@ impl FnEmit<'_> {
         // gate on the architecture. Discardable attribute on the generic form -- no
         // dialect change involved.
         //
-        // A nonzero `imm` is the trip count `parallel_outer_for` proved for the region's
+        // A nonzero `imm` is the trip count the checker's recorded split gives the region's
         // outermost loop: `vx_parallel_trip` rides the same attribute dict, telling the
         // device pipeline the loop is safe to grid-stride and how wide the work is (#251).
         // The `SPAWN_TWO_LEVEL` bit (Vx#379) marks the trip as a BLOCK count instead, and

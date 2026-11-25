@@ -23,7 +23,7 @@
 //
 //===----------------------------------------------------------------------===//
 use crate::syntax::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -138,6 +138,12 @@ pub struct GlobalAstEnv<'a> {
         HashMap<crate::symbol::Symbol, crate::hir::provenance::ReturnProvenance>,
     /// The same summary for each method, under [`crate::hir::provenance::method_key`].
     pub method_provenances: HashMap<String, crate::hir::provenance::ReturnProvenance>,
+    /// The functions that write only plain variables in their own frame, so they may run in
+    /// every pass of a `spawn` loop at once, and inside a `writes_only()` function. Read from
+    /// the syntax of every body before any body is checked and frozen with the rest; see
+    /// `crate::hir::purity`. Filled from *present* bodies here, and refilled from the full
+    /// modules by [`Self::annotate_return_provenances`], as the return provenance is.
+    pub spawn_pure: HashSet<crate::symbol::Symbol>,
     /// The parameters that each function says `!keeps` for, as bits. A function with none is
     /// absent.
     pub not_kept: HashMap<crate::symbol::Symbol, u32>,
@@ -164,6 +170,29 @@ pub struct GlobalAstEnv<'a> {
     pub library_files: std::collections::HashSet<crate::symbol::Symbol>,
 }
 
+/// The functions that write only their own frame, by the name a call site uses: `functions`
+/// and every impl method, whose key is the mangled name a checked call carries. Built from the
+/// syntax of the bodies, which is what lets it be frozen before any body is checked.
+fn spawn_pure_of<'a>(
+    functions: impl Iterator<Item = &'a Function>,
+    impls: impl Iterator<Item = &'a ImplBlock>,
+    decls: &crate::hir::provenance::Decls<'_>,
+) -> HashSet<crate::symbol::Symbol> {
+    let free = functions.map(|f| (f.name.clone(), f));
+    let methods = impls.flat_map(|ib| {
+        ib.methods.iter().map(move |m| {
+            let key: crate::symbol::Symbol =
+                crate::hir::provenance::method_key(ib, m.name.as_ref()).into();
+            (key, m)
+        })
+    });
+    crate::hir::purity::functions_writing_only_their_frame(
+        free.chain(methods),
+        decls,
+        &crate::hir::check::parallel::parallel_pure_call,
+    )
+}
+
 impl<'a> GlobalAstEnv<'a> {
     pub fn build(modules: &'a [Program]) -> Self {
         let refs: Vec<&'a Program> = modules.iter().collect();
@@ -188,6 +217,7 @@ impl<'a> GlobalAstEnv<'a> {
             externs: Vec::new(),
             return_provenances: HashMap::new(),
             method_provenances: HashMap::new(),
+            spawn_pure: HashSet::new(),
             not_kept: HashMap::new(),
             not_freed: HashMap::new(),
             decls: Default::default(),
@@ -361,6 +391,16 @@ impl<'a> GlobalAstEnv<'a> {
         );
         env.return_provenances = functions;
         env.method_provenances = methods;
+        // The functions that write only their own frame, read from the syntax of every body
+        // before any body is checked and frozen with the rest (see `crate::hir::purity`).
+        env.spawn_pure = spawn_pure_of(
+            env.syntax_functions
+                .values()
+                .copied()
+                .chain(env.generic_functions.values().map(|(f, _)| *f)),
+            env.impls.values().flatten().copied(),
+            &env.decls,
+        );
         // A `!keeps` clause is in the signature, so a body that was stripped still has it. The
         // walk adds what it proves from each body that is present.
         let written = env
@@ -453,6 +493,13 @@ impl<'a> GlobalAstEnv<'a> {
             self.impls.values().flatten().copied(),
             &self.decls,
             &self.return_provenances,
+        );
+        // The full bodies are here now, so the freeze of what writes only its own frame is
+        // refilled from them, exactly as the return provenance is.
+        self.spawn_pure = spawn_pure_of(
+            funcs.iter().copied(),
+            self.impls.values().flatten().copied(),
+            &self.decls,
         );
         let plain: Vec<&Function> = funcs
             .iter()
@@ -2462,13 +2509,16 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // W1033: a `spawn` loop that runs on one thread although its passes could run at once.
-        if !self.speculating {
-            self.warn_serial_spawn_loops(&func.body);
-        }
         // E6032: an `across` loop in a place or with a size that it may not have.
         if !self.speculating {
             self.check_across_loops(&func.params, &mut func.body);
+        }
+        // Record how each `spawn` region's loop runs, which both code generators read, and
+        // warn (W1033) for a loop that runs on one thread although its passes could run at
+        // once. Last, because that check rewrites the body it judges: the record must name the
+        // body the lowering will see, down to the statement index of the loop.
+        if !self.speculating {
+            self.record_spawn_splits(&mut func.body);
         }
 
         // A tile that the GPU keeps in registers takes no shared memory.
