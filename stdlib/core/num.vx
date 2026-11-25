@@ -435,6 +435,27 @@ macro_rules stamp_signed_int {
         return out;
       }
 
+      /// The value in big-endian order. Vx cannot ask for the target's byte order yet,
+      /// so this assumes a little-endian target and swaps the bytes.
+      fn to_be(self : $t) -> $t {
+        return self.swap_bytes();
+      }
+
+      /// The value in little-endian order. On a little-endian target nothing changes.
+      fn to_le(self : $t) -> $t {
+        return self;
+      }
+
+      /// Reads a big-endian value. On a little-endian target the bytes are swapped.
+      fn from_be(self : $t) -> $t {
+        return self.swap_bytes();
+      }
+
+      /// Reads a little-endian value. On a little-endian target nothing changes.
+      fn from_le(self : $t) -> $t {
+        return self;
+      }
+
       /// The bits reversed.
       fn reverse_bits(self : $t) -> $t {
         let one : $t = 1;
@@ -967,6 +988,27 @@ macro_rules stamp_unsigned_int {
         return out;
       }
 
+      /// The value in big-endian order. Vx cannot ask for the target's byte order yet,
+      /// so this assumes a little-endian target and swaps the bytes.
+      fn to_be(self : $t) -> $t {
+        return self.swap_bytes();
+      }
+
+      /// The value in little-endian order. On a little-endian target nothing changes.
+      fn to_le(self : $t) -> $t {
+        return self;
+      }
+
+      /// Reads a big-endian value. On a little-endian target the bytes are swapped.
+      fn from_be(self : $t) -> $t {
+        return self.swap_bytes();
+      }
+
+      /// Reads a little-endian value. On a little-endian target nothing changes.
+      fn from_le(self : $t) -> $t {
+        return self;
+      }
+
       /// The bits reversed.
       fn reverse_bits(self : $t) -> $t {
         let one : $t = 1;
@@ -1127,8 +1169,20 @@ stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 /// `mlir!` blocks that skip the trap.
 ///
 /// Absent because their answer could set the top bit: `rotate_left`, `rotate_right`,
-/// `swap_bytes`, `reverse_bits`. `leading_ones` is absent too, since it is always zero.
+/// `swap_bytes`, `reverse_bits`, and so `to_be` and `from_be`. `leading_ones` is absent too,
+/// since it is always zero. `to_le` and `from_le` are here: on a little-endian target they
+/// change nothing.
 impl usize {
+  /// The value in little-endian order. On a little-endian target nothing changes.
+  fn to_le(self : usize) -> usize {
+    return self;
+  }
+
+  /// Reads a little-endian value. On a little-endian target nothing changes.
+  fn from_le(self : usize) -> usize {
+    return self;
+  }
+
   /// Zero.
   fn min_value(self : usize) -> usize {
     return 0;
