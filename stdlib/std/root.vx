@@ -28,7 +28,7 @@ struct Root {
 
 /// The `Root` of the program. The compiler calls it once, for a `main` that takes a `Root`.
 /// Unsafe because a second `Root` gives the rights to code that did not get them.
-unsafe fn root_of_the_program() -> Root {
+pub unsafe fn root_of_the_program() -> Root {
   return Root {
     network : unsafe { network_of_the_program() },
     files : unsafe { files_of_the_program() }

@@ -54,7 +54,7 @@ pub enum Action {
     EmitMsl,
     /// Parse and typecheck the program, then print each fact that the compiler trusts without a
     /// proof: each `assume`, each pointer clause that a call in `unsafe` code trusts, each
-    /// `ensures` of an `extern` function, and each pointer `requires` of a `pub fn`
+    /// `ensures` of a function in an `extern` block, and each pointer `requires` of an `extern fn`
     Audit,
 }
 
@@ -916,6 +916,7 @@ impl CompilerDriver {
     fn native_host_program() -> crate::syntax::Program {
         crate::syntax::Program {
             module_path: crate::symbol::Symbol::from(NATIVE_HOST_MODULE),
+            package: None,
             file: None,
             item_macros: Vec::new(),
             memories: vec![crate::syntax::MemoryDecl {
@@ -1143,6 +1144,7 @@ impl CompilerDriver {
         Some(crate::syntax::Program {
             item_macros: Vec::new(),
             module_path: "<interfaces>".into(),
+            package: None,
             file: None,
             imports: Vec::new(),
             macros: Vec::new(),
@@ -2085,7 +2087,7 @@ impl CompilerDriver {
             }
             let synth = crate::syntax::Function {
                 is_unsafe: false,
-                is_pub: false,
+                visibility: crate::gid::Visibility::Private,
                 exported: false,
                 name: body.name.clone(),
                 generics: vec![],
@@ -2110,6 +2112,7 @@ impl CompilerDriver {
                 doc_comment: None,
                 span: crate::syntax::Span::default(),
                 file: None,
+                package: None,
             };
             imported_entries.push((synth, body.hir.clone(), body.types.clone()));
         }

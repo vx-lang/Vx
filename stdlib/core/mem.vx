@@ -26,7 +26,7 @@
 import core::ptr;
 
 /// The size of `T` in bytes.
-fn size_of<T>() -> i64 {
+pub fn size_of<T>() -> i64 {
   return sizeof<T>();
 }
 
@@ -34,7 +34,7 @@ fn size_of<T>() -> i64 {
 ///
 /// Through raw pointers and `core::ptr::read`, as Rust's does: `*a` cannot move a value out
 /// from behind a reference, and nothing is dropped, since each value is moved, not copied.
-fn swap<T>(a : &mut T, b : &mut T) -> void {
+pub fn swap<T>(a : &mut T, b : &mut T) -> void {
   let pa = a as *mut T;
   let pb = b as *mut T;
   let t = unsafe { read(pa as *const T) };
@@ -43,7 +43,7 @@ fn swap<T>(a : &mut T, b : &mut T) -> void {
 }
 
 /// `src` goes in, and what was there comes back. Through a raw pointer, as `swap`.
-fn replace<T>(dest : &mut T, src : T) -> T {
+pub fn replace<T>(dest : &mut T, src : T) -> T {
   let p = dest as *mut T;
   let old = unsafe { read(p as *const T) };
   unsafe { *p = src; }
@@ -51,7 +51,7 @@ fn replace<T>(dest : &mut T, src : T) -> T {
 }
 
 /// Drops the value now, rather than at the end of the caller's block.
-fn drop<T>(_x : T) -> void {
+pub fn drop<T>(_x : T) -> void {
 }
 
 /// Holds a value and never drops it. Its `value` can still be read, and moved out.
@@ -60,7 +60,7 @@ struct ManuallyDrop<T> {
 }
 
 /// Ends the value's life without dropping it: what it owns is never released.
-fn forget<T>(x : T) -> void {
+pub fn forget<T>(x : T) -> void {
   let _kept = ManuallyDrop<T> {
     value : x
   };
@@ -68,6 +68,6 @@ fn forget<T>(x : T) -> void {
 
 /// Whether dropping a `T` does any work: runs a `drop`, or frees memory. The checker answers
 /// each call with the type it names, so this body is never used.
-fn needs_drop<T>() -> bool {
+pub fn needs_drop<T>() -> bool {
   return false;
 }

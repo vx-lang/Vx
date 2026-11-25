@@ -296,7 +296,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         // needs --machine
         "optimizations/pass/a_library_for_the_apple_gpu_waits_before_it_returns.vx",
         // needs --machine
-        "optimizations/pass/pub_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
+        "optimizations/pass/extern_fns_in_a_program_for_the_apple_gpu_return_without_a_wait.vx",
         "optimizations/pass/book_gpu_blocks_and_lanes.vx", // needs --machine
         "optimizations/pass/book_gpu_histogram_with_atomics.vx", // needs --machine
         "optimizations/pass/book_gpu_row_sums_in_shared_memory.vx", // needs --machine
@@ -342,6 +342,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_matmul_sums_that_stay_in_shared_memory.vx",
         // needs --machine
         "optimizations/pass/a_gpu_kernel_the_cpu_cannot_run_names_its_function_and_line.vx",
+        // needs --machine
+        "optimizations/pass/a_parallel_loop_that_reads_the_extent_of_a_tensor_that_it_writes_runs_in_parallel.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

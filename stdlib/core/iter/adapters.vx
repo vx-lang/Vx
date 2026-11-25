@@ -538,7 +538,7 @@ impl<I : Iterator> Peekable<I, I::Item> {
   /// The item `next` would answer, left where it is.
   ///
   /// Answers a copy, not a reference into the iterator.
-  fn peek(self : &mut Peekable<I, I::Item>) -> Option<I::Item> {
+  pub fn peek(self : &mut Peekable<I, I::Item>) -> Option<I::Item> {
     if !self.has_peeked {
       self.peeked = self.inner.next();
       self.has_peeked = true;
@@ -547,7 +547,7 @@ impl<I : Iterator> Peekable<I, I::Item> {
   }
 
   /// The next item if `accept` takes it, and otherwise nothing, with the item left in place.
-  fn next_if(self : &mut Peekable<I, I::Item>, accept : Closure1<&I::Item, bool>)
+  pub fn next_if(self : &mut Peekable<I, I::Item>, accept : Closure1<&I::Item, bool>)
   -> Option<I::Item> {
     let ahead = self.peek();
     if ahead.is_none() {
