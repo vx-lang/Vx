@@ -15,7 +15,7 @@
 // error if that module uses it. This is how a local item shadows a glob import in Rust.
 //
 // A C function in an `extern` block cannot be renamed, so a Vx function with its name is renamed
-// in every module, and the modules that see only the C function call it. A `pub fn` with the
+// in every module, and the modules that see only the C function call it. An `extern fn` with the
 // name of a C function is an error, because the object file must export it under its own name.
 //
 //===----------------------------------------------------------------------===//

@@ -17,7 +17,7 @@ import graph::shortest_path;
 import graph::analysis;
 
 // A small weighted DAG:  0->1 (2), 1->2 (3), 0->2 (10), 2->3 (1).
-fn build_directed() -> Graph {
+pub fn build_directed() -> Graph {
   let mut g: Graph = Graph::new(4);
   g.add_edge(0, 1, 2);
   g.add_edge(1, 2, 3);
@@ -27,7 +27,7 @@ fn build_directed() -> Graph {
 }
 
 // A 3-cycle: 0->1->2->0.
-fn build_cycle() -> Graph {
+pub fn build_cycle() -> Graph {
   let mut g: Graph = Graph::new(3);
   g.add_edge(0, 1, 1);
   g.add_edge(1, 2, 1);
@@ -37,7 +37,7 @@ fn build_cycle() -> Graph {
 
 // A connected weighted undirected graph on 5 nodes:
 //   0-1 (1), 1-2 (2), 2-3 (3), 3-4 (4), 0-2 (5).
-fn build_undirected() -> Graph {
+pub fn build_undirected() -> Graph {
   let mut g: Graph = Graph::new(5);
   g.add_undirected_edge(0, 1, 1);
   g.add_undirected_edge(1, 2, 2);

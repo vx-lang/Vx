@@ -92,27 +92,27 @@ const RYU_POW5_TABLE : Tensor<u64, [26]> = [
 ];
 
 /// ceil(log2(5^e)), and 1 for e = 0, for 0 <= e <= 3528: `pow5bits`.
-fn ryu_pow5_bits(e : i64) -> i64 {
+pub fn ryu_pow5_bits(e : i64) -> i64 {
   return ((e * 1217359i64) >> 19i64) + 1i64;
 }
 
 /// floor(log10(2^e)) for 0 <= e <= 1650: `log10Pow2`.
-fn ryu_log10_pow2(e : i64) -> i64 {
+pub fn ryu_log10_pow2(e : i64) -> i64 {
   return (e * 78913i64) >> 18i64;
 }
 
 /// floor(log10(5^e)) for 0 <= e <= 2620: `log10Pow5`.
-fn ryu_log10_pow5(e : i64) -> i64 {
+pub fn ryu_log10_pow5(e : i64) -> i64 {
   return (e * 732923i64) >> 20i64;
 }
 
 /// The two-bit correction for power `i` from an offsets table entry.
-fn ryu_offset_bits(word : u64, i : i64) -> u128 {
+pub fn ryu_offset_bits(word : u64, i : i64) -> u128 {
   return ((word >> (((i % 16i64) * 2i64) as u64)) & 3u64) as u128;
 }
 
 /// 5^i in the 125-bit form Ryu multiplies by: `double_computePow5`.
-fn ryu_pow5(i : i64) -> u128 {
+pub fn ryu_pow5(i : i64) -> u128 {
   let base = i / 26i64;
   let base2 = base * 26i64;
   let offset = i - base2;
@@ -129,7 +129,7 @@ fn ryu_pow5(i : i64) -> u128 {
 }
 
 /// 2^k / 5^i, rounded up, in the form Ryu multiplies by: `double_computeInvPow5`.
-fn ryu_inv_pow5(i : i64) -> u128 {
+pub fn ryu_inv_pow5(i : i64) -> u128 {
   let base = (i + 25i64) / 26i64;
   let base2 = base * 26i64;
   let offset = base2 - i;
@@ -147,21 +147,21 @@ fn ryu_inv_pow5(i : i64) -> u128 {
 }
 
 /// (m * mul) >> j, for j of at least 64: `mulShift64`.
-fn ryu_mul_shift64(m : u64, mul : u128, j : i64) -> u64 {
+pub fn ryu_mul_shift64(m : u64, mul : u128, j : i64) -> u64 {
   let b0 = (m as u128) * ((mul as u64) as u128);
   let b2 = (m as u128) * (mul >> 64u128);
   return (((b0 >> 64u128) + b2) >> ((j - 64i64) as u128)) as u64;
 }
 
 /// (m * factor) >> shift for a 32-bit m and 32 < shift < 96: `mulShift32`.
-fn ryu_mul_shift32(m : u64, factor : u64, shift : i64) -> u64 {
+pub fn ryu_mul_shift32(m : u64, factor : u64, shift : i64) -> u64 {
   let bits0 = m * (factor & 4294967295u64);
   let bits1 = m * (factor >> 32u64);
   return ((bits0 >> 32u64) + bits1) >> ((shift - 32i64) as u64);
 }
 
 /// How many times 5 divides `value`, which must not be zero: `pow5Factor`.
-fn ryu_pow5_factor(value : u64) -> i64 {
+pub fn ryu_pow5_factor(value : u64) -> i64 {
   // Multiplying by the inverse of 5 modulo 2^64 divides exactly when 5 divides the value,
   // and gives a result above 2^64 / 5 when it does not.
   let mut v = value;
@@ -177,7 +177,7 @@ fn ryu_pow5_factor(value : u64) -> i64 {
 }
 
 /// The number of decimal digits in `v`; 1 for zero.
-fn ryu_digit_count(v : u64) -> i64 {
+pub fn ryu_digit_count(v : u64) -> i64 {
   let mut n = 1i64;
   let mut x = v;
   loop {
@@ -191,7 +191,7 @@ fn ryu_digit_count(v : u64) -> i64 {
 }
 
 /// `digits * 10^exponent` with any trailing zeros of `digits` moved into the exponent.
-fn ryu_trimmed(negative : bool, digits : u64, exponent : i64) -> FloatDecimal {
+pub fn ryu_trimmed(negative : bool, digits : u64, exponent : i64) -> FloatDecimal {
   let mut d = digits;
   let mut e = exponent;
   loop {
@@ -207,7 +207,7 @@ fn ryu_trimmed(negative : bool, digits : u64, exponent : i64) -> FloatDecimal {
 }
 
 /// The shortest digits of a finite, nonzero f64 given its mantissa and exponent fields: `d2d`.
-fn ryu_f64_digits(negative : bool, ieee_mantissa : u64, ieee_exponent : u64) -> FloatDecimal {
+pub fn ryu_f64_digits(negative : bool, ieee_mantissa : u64, ieee_exponent : u64) -> FloatDecimal {
   // The value is m2 * 2^(e2 + 2); the 2 extra bits make room for the interval's bounds.
   let mut e2 = -1076i64;
   let mut m2 = ieee_mantissa;
@@ -353,7 +353,7 @@ fn ryu_f64_digits(negative : bool, ieee_mantissa : u64, ieee_exponent : u64) -> 
 }
 
 /// The value `bits` holds as an f64, with its shortest digits when it is finite.
-fn float_decimal_from_f64_bits(bits : u64) -> FloatDecimal {
+pub fn float_decimal_from_f64_bits(bits : u64) -> FloatDecimal {
   let negative = (bits >> 63u64) != 0u64;
   let ieee_mantissa = bits & 4503599627370495u64;
   let ieee_exponent = (bits >> 52u64) & 2047u64;
@@ -380,18 +380,18 @@ fn float_decimal_from_f64_bits(bits : u64) -> FloatDecimal {
 }
 
 /// (m * 2^k / 5^q) >> j for f32: `mulPow5InvDivPow2` over the double tables.
-fn ryu_mul_pow5_inv_div_pow2(m : u64, q : i64, j : i64) -> u64 {
+pub fn ryu_mul_pow5_inv_div_pow2(m : u64, q : i64, j : i64) -> u64 {
   // The table holds the rounded-down high half; the f32 multiplier is that plus one.
   return ryu_mul_shift32(m, ((ryu_inv_pow5(q) >> 64u128) as u64) + 1u64, j);
 }
 
 /// (m * 5^i) >> j for f32: `mulPow5divPow2` over the double tables.
-fn ryu_mul_pow5_div_pow2(m : u64, i : i64, j : i64) -> u64 {
+pub fn ryu_mul_pow5_div_pow2(m : u64, i : i64, j : i64) -> u64 {
   return ryu_mul_shift32(m, (ryu_pow5(i) >> 64u128) as u64, j);
 }
 
 /// The shortest digits of a finite, nonzero f32 given its mantissa and exponent fields: `f2d`.
-fn ryu_f32_digits(negative : bool, ieee_mantissa : u64, ieee_exponent : u64) -> FloatDecimal {
+pub fn ryu_f32_digits(negative : bool, ieee_mantissa : u64, ieee_exponent : u64) -> FloatDecimal {
   let mut e2 = -151i64;
   let mut m2 = ieee_mantissa;
   if ieee_exponent != 0u64 {
@@ -519,7 +519,7 @@ fn ryu_f32_digits(negative : bool, ieee_mantissa : u64, ieee_exponent : u64) -> 
 }
 
 /// The value `bits` holds as an f32, with its shortest digits when it is finite.
-fn float_decimal_from_f32_bits(bits : u32) -> FloatDecimal {
+pub fn float_decimal_from_f32_bits(bits : u32) -> FloatDecimal {
   let b = bits as u64;
   let negative = (b >> 31u64) != 0u64;
   let ieee_mantissa = b & 8388607u64;
@@ -539,7 +539,7 @@ fn float_decimal_from_f32_bits(bits : u32) -> FloatDecimal {
 
 /// Write the `n` digits of `digits` to `buf[at..]`, with a `.` after the first `point` of
 /// them when 0 < point < n. Returns how many bytes that took.
-unsafe fn ryu_write_digits(digits : u64, n : i64, point : i64, buf : *mut i8, at : i64) -> i64 {
+pub unsafe fn ryu_write_digits(digits : u64, n : i64, point : i64, buf : *mut i8, at : i64) -> i64 {
   let has_point = point > 0i64 && point < n;
   let mut x = digits;
   let mut k = n - 1i64;
@@ -565,7 +565,7 @@ unsafe fn ryu_write_digits(digits : u64, n : i64, point : i64, buf : *mut i8, at
 }
 
 /// Write `count` zeros to `buf[at..]`.
-unsafe fn ryu_write_zeros(count : i64, buf : *mut i8, at : i64) -> i64 {
+pub unsafe fn ryu_write_zeros(count : i64, buf : *mut i8, at : i64) -> i64 {
   let mut k = 0i64;
   unsafe {
     loop {
@@ -580,7 +580,7 @@ unsafe fn ryu_write_zeros(count : i64, buf : *mut i8, at : i64) -> i64 {
 }
 
 /// Write `NaN`, `inf` or `-inf` to `buf[at..]` and return how many bytes that took.
-unsafe fn ryu_write_special(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
+pub unsafe fn ryu_write_special(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
   let mut pos = at;
   unsafe {
     if d.is_nan {
@@ -601,7 +601,7 @@ unsafe fn ryu_write_special(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
 }
 
 /// How many bytes Rust's `{}` takes for `d`.
-fn float_decimal_display_len(d : FloatDecimal) -> i64 {
+pub fn float_decimal_display_len(d : FloatDecimal) -> i64 {
   if d.is_nan {
     return 3i64;
   }
@@ -630,7 +630,7 @@ fn float_decimal_display_len(d : FloatDecimal) -> i64 {
 /// Write what Rust's `{}` prints for `d` to `buf[at..]` and return how many bytes that took:
 /// plain decimal notation, never an exponent, and no `.0` on a whole number.
 /// Unsafe because nothing checks that the buffer has `float_decimal_display_len(d)` bytes.
-unsafe fn float_decimal_write_display(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
+pub unsafe fn float_decimal_write_display(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
   if d.is_nan || d.is_infinite {
     return unsafe { ryu_write_special(d, buf, at) };
   }
@@ -663,7 +663,7 @@ unsafe fn float_decimal_write_display(d : FloatDecimal, buf : *mut i8, at : i64)
 }
 
 /// How many bytes Rust's `{:e}` takes for `d`.
-fn float_decimal_scientific_len(d : FloatDecimal) -> i64 {
+pub fn float_decimal_scientific_len(d : FloatDecimal) -> i64 {
   if d.is_nan {
     return 3i64;
   }
@@ -692,7 +692,7 @@ fn float_decimal_scientific_len(d : FloatDecimal) -> i64 {
 /// Write what Rust's `{:e}` prints for `d` to `buf[at..]` and return how many bytes that took:
 /// one digit, the rest after a `.` if there are any, then `e` and the exponent, as in `1.5e-7`.
 /// Unsafe because nothing checks that the buffer has `float_decimal_scientific_len(d)` bytes.
-unsafe fn float_decimal_write_scientific(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
+pub unsafe fn float_decimal_write_scientific(d : FloatDecimal, buf : *mut i8, at : i64) -> i64 {
   if d.is_nan || d.is_infinite {
     return unsafe { ryu_write_special(d, buf, at) };
   }
