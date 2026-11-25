@@ -5,14 +5,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// An `Option<T>` holds its `T` by value. So a struct that holds an `Option` of itself, directly
-// or through a second struct, has an infinite size. The compiler crashed in the drop checker on
-// both. Each gets an error at its struct, in a normal compile and in a parallel compile (`-j`).
+// An `Option<T>` holds its `T` by value. So a struct that holds an `Option` of itself has an
+// infinite size. This holds directly, through a second struct, and for a generic struct. The
+// compiler crashed in the drop checker on each. Each now gets an error at its struct, in a
+// normal compile and in a parallel compile (`-j`).
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc -j 2 %s 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E3068] at {{.*}}structs_that_hold_themselves_through_option.vx:20:8: `Node` holds itself by value, so its size is infinite: field `next` of `Node` holds `Option<Node>`, variant `Some` of `Option<Node>` holds `Node`. Hold the value through a pointer, for example `Box<Node>`
-// CHECK: Error[E3068] at {{.*}}structs_that_hold_themselves_through_option.vx:24:8: `A` holds itself by value, so its size is infinite: field `b` of `A` holds `Option<B>`, variant `Some` of `Option<B>` holds `B`, field `a` of `B` holds `A`. Hold the value through a pointer, for example `Box<A>`
+// CHECK: Error[E3070] at {{.*}}structs_that_hold_themselves_through_option.vx:22:8: `Node` holds itself by value, so its size is infinite: field `next` of `Node` holds `Option<Node>`, variant `Some` of `Option<Node>` holds `Node`. Hold the value through a pointer, for example `Box<Node>`
+// CHECK: Error[E3070] at {{.*}}structs_that_hold_themselves_through_option.vx:26:8: `A` holds itself by value, so its size is infinite: field `b` of `A` holds `Option<B>`, variant `Some` of `Option<B>` holds `B`, field `a` of `B` holds `A`. Hold the value through a pointer, for example `Box<A>`
+// CHECK: Error[E3070] at {{.*}}structs_that_hold_themselves_through_option.vx:33:8: `List<T>` holds itself by value, so its size is infinite: field `tail` of `List<T>` holds `Option<List<T>>`, variant `Some` of `Option<List<T>>` holds `List<T>`. Hold the value through a pointer, for example `Box<List<T>>`
 
 import core::option;
 import core::result;
@@ -28,8 +30,14 @@ struct B {
   a: A
 }
 
+struct List<T> {
+  head: T,
+  tail: Option<List<T>>
+}
+
 fn main() -> i32 {
   let r = Result<u64, Node>::Ok(5u64);
+  let l = Result<u64, List<i32>>::Ok(5u64);
   print(1);
   return 0;
 }

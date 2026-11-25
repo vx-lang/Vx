@@ -496,7 +496,7 @@ pub enum DiagnosticCode {
     /// `struct Node { next: Option<Node> }`. A value of it would hold another value of it, without
     /// end, so its size is infinite. The chain can go through other structs, enum variants and
     /// generic types. Hold the value through a pointer, for example `Box<Node>`.
-    E3068,
+    E3070,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
