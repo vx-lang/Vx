@@ -2096,6 +2096,11 @@ impl<'a> TypeChecker<'a> {
                 });
                 let is_reborrow = direct.is_none() || through_ref;
                 let place = direct.or_else(|| self.reborrow_base_and_path(inner));
+                // `&p.b` is valid as long as `p`, so it gets the block of `p`, not the block where
+                // it is written. Through a reference `p`, what `p` points at outlives `p`.
+                let region = place.as_ref().map_or(self.scopes.len(), |(name, _)| {
+                    (self.scope_depth_of(name) + 1).min(self.scopes.len())
+                });
                 if let Some((name, path)) = place {
                     if *is_mut {
                         self.check_two_mut_element_borrows(&name, &path, span);
@@ -2142,7 +2147,7 @@ impl<'a> TypeChecker<'a> {
                     inner: Box::new(inner_ty),
                     mem_space: None,
                     is_mut: *is_mut,
-                    region_id: self.scopes.len(),
+                    region_id: region,
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
