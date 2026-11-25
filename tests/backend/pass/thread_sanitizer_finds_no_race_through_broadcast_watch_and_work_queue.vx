@@ -54,7 +54,7 @@ impl Clone for Note {
 impl Drop for Note {
   fn drop(self : &mut Note) -> void {
     let p : *mut i8 = self.number;
-    dealloc(p, 8);
+    unsafe { dealloc(p, 8) };
   }
 }
 

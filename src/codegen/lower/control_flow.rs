@@ -939,6 +939,7 @@ fn lower_for_loop<'c>(
                 span: Span::default(),
             })],
             span: Span::default(),
+            by_the_compiler: false,
         });
 
         let (opt_val, opt_ty, cond_block_end) = gen.generate_expr(&next_call, cond_block)?;

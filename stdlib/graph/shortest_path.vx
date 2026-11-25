@@ -14,7 +14,7 @@ import std::vec;
 import graph::core;
 
 // (3) Dijkstra: shortest distance src -> dst with non-negative weights, O(n^2).
-fn dijkstra(g: &Graph, src: i32, dst: i32) -> i32 {
+pub fn dijkstra(g: &Graph, src: i32, dst: i32) -> i32 {
   let n: i32 = g.node_count();
   let inf: i32 = graph_inf();
   let mut dist: Vec<i32> = Vec<i32>::with_capacity(n);
@@ -54,7 +54,7 @@ fn dijkstra(g: &Graph, src: i32, dst: i32) -> i32 {
 }
 
 // (4) Bellman-Ford: shortest distance src -> dst, tolerating negative edges.
-fn bellman_ford(g: &Graph, src: i32, dst: i32) -> i32 {
+pub fn bellman_ford(g: &Graph, src: i32, dst: i32) -> i32 {
   let n: i32 = g.node_count();
   let inf: i32 = graph_inf();
   let mut dist: Vec<i32> = Vec<i32>::with_capacity(n);
@@ -82,7 +82,7 @@ fn bellman_ford(g: &Graph, src: i32, dst: i32) -> i32 {
 }
 
 // (5) Floyd-Warshall: all-pairs shortest paths; returns the src -> dst entry.
-fn floyd_warshall(g: &Graph, src: i32, dst: i32) -> i32 {
+pub fn floyd_warshall(g: &Graph, src: i32, dst: i32) -> i32 {
   let n: i32 = g.node_count();
   let inf: i32 = graph_inf();
   let mut d: Vec<i32> = Vec<i32>::with_capacity(n * n);
