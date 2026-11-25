@@ -131,10 +131,10 @@ fn main() -> i32 {
 }
 ```
 
-When `vxc program.vx` runs a program, the program gets no standard input
-([Vx#3236](https://github.com/vx-lang/Vx/issues/3236)). So this loop stops at once and prints
-`0 lines`. Compile the program with `-c` and run the executable to give it input
-([Your first program](first-program.md#compiling-ahead-of-time)).
+When `vxc program.vx` runs a program, the program reads the standard input of vxc. So
+`printf 'a\nb\n' | vxc program.vx` prints `2 lines`. In a terminal, type the lines, then press
+Ctrl-D to end the input. vxc shows what the program prints only when the program ends
+([Vx#3458](https://github.com/vx-lang/Vx/issues/3458)).
 
 ## Time
 
