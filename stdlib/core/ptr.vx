@@ -147,7 +147,7 @@ impl<T> Copy for NonNull<T> {}
 
 impl<T> NonNull<T> {
   /// `None` when `p` is null, and `Some` of the same pointer otherwise.
-  fn new(p : *mut T) -> Option<NonNull<T>> {
+  pub fn new(p : *mut T) -> Option<NonNull<T>> {
     if is_null_mut(p) {
       return Option<NonNull<T>>::None;
     }
@@ -158,7 +158,7 @@ impl<T> NonNull<T> {
 
   /// A `NonNull` of `p`. The caller promises that `p` is not null. A null `p` fails an `assert`
   /// rather than making a `NonNull` that holds null.
-  unsafe fn new_unchecked(p : *mut T) -> NonNull<T> {
+  pub unsafe fn new_unchecked(p : *mut T) -> NonNull<T> {
     assert(!is_null_mut(p), "new_unchecked: the pointer is null");
     return NonNull<T> {
       ptr : p
@@ -166,7 +166,7 @@ impl<T> NonNull<T> {
   }
 
   /// The pointer.
-  fn as_ptr(self : NonNull<T>) -> *mut T {
+  pub fn as_ptr(self : NonNull<T>) -> *mut T {
     return self.ptr;
   }
 }
