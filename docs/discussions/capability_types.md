@@ -30,12 +30,12 @@ struct AdminCap {
   invariant true,
 }
 
-fn login(password : i32) -> AdminCap {
+pub fn login(password : i32) -> AdminCap {
   assert(password == 1234, "wrong password");
   return AdminCap {};
 }
 
-fn delete_everything(cap : AdminCap) -> i32 {
+pub fn delete_everything(cap : AdminCap) -> i32 {
   return 1;
 }
 ```
@@ -47,6 +47,25 @@ fn delete_everything(cap : AdminCap) -> i32 {
 | No keeping a lent value | A result cannot point into the frame of the function | E4005 |
 
 `invariant true` states no fact. It makes `AdminCap` a type that only `auth.vx` can build.
+
+**A capability for one request is lent.** The three rules stop copying, not keeping. A caller that
+gets an `AdminCap` by value from `login` can keep it in the state of a server, and use it for each
+later request. So `auth.vx` lends a right that must last for one request:
+
+```vx
+pub fn with_admin(password : i32, f : fn(&AdminCap) -> i32) -> i32 {
+  if password != 1234 {
+    return -1;
+  }
+  let cap = AdminCap {};
+  return f(&cap);
+}
+```
+
+The `AdminCap` stays in the frame of `with_admin`, and `f` gets only a reference. A `fn` captures
+nothing, and Vx has no mutable global, so `f` has no place to keep the reference. A lender that
+returns the reference gets E4005. Only a right that lasts as long as the program, such as `Files`
+or `Root`, goes by value. A closure cannot take a `&AdminCap` yet (#3970).
 
 ## 2. The test
 
@@ -152,9 +171,14 @@ In a Python model server, remote code execution usually comes from loading: a we
 runs no code. Native code runs only through `extern`. With sections 3 to 5:
 
 - An endpoint that loads a LoRA adapter gets a `Folder` for the adapter folder. A bug in it can
-  read the files of that folder, and nothing else.
+  read the files of that folder, and nothing else, unless the bug is in trusted code.
 - The parser of a request gets no capability. A bug in it cannot open a file or start a process.
 - The trusted code is the list that `vxc --audit` gives.
+
+These limits hold for a bug in safe code. A memory bug in trusted code, such as an `unsafe` block,
+an `extern` function or the GPU runtime, can still do anything. A `Vec` checks each index at run
+time (`vec_check_index`). So a bug in a parser that indexes a `Vec` stops the program, and does not
+write past the buffer.
 
 ## 7. The rules of a parallel compiler
 
