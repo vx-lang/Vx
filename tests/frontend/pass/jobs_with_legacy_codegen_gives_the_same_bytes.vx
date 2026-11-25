@@ -1,0 +1,76 @@
+//===- jobs_with_legacy_codegen_gives_the_same_bytes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `-j 2 --legacy-codegen` checks the program in parallel, then the AST code generator makes the
+// MLIR. The MLIR is the same bytes as a normal `--legacy-codegen` compile. The program has
+// generic instances made by two functions, a comptime function, `Vec` from std and two
+// imported modules, because the order of these is what a parallel check can change. The
+// comptime function `eleven` folds, so it is not in the MLIR.
+//
+// RUN: vxc --package tests=tests --legacy-codegen --emit-mlir %s > %t.seq
+// RUN: vxc --package tests=tests -j 2 --legacy-codegen --emit-mlir %s > %t.j2 2> %t.err
+// RUN: FileCheck --check-prefix=PATH %s < %t.err
+// RUN: FileCheck --check-prefix=MLIR %s --implicit-check-not=@eleven < %t.seq
+// RUN: (cmp %t.seq %t.j2 && echo "same bytes") | FileCheck %s
+// RUN: vxc --package tests=tests -j 2 --legacy-codegen %s 2>&1 | FileCheck --check-prefix=OUT %s --implicit-check-not=Error
+
+import std::vec;
+import tests::modules::jobs_wave_a;
+
+struct Holder<T> {
+  value: T,
+}
+
+fn wrap<T>(x: T) -> Holder<T> {
+  return Holder {
+    value: x
+  };
+}
+
+fn second<T>(a: T, b: T) -> T {
+  let _first = a;
+  return b;
+}
+
+fn zeta() -> i64 {
+  let h = wrap(7 as i64);
+  return second(h.value, 8 as i64);
+}
+
+fn alpha() -> i32 {
+  let mut v: Vec<i32> = Vec::new();
+  v.push(3);
+  return second(1, v.get(0));
+}
+
+fn eleven() -> i32 {
+  return comptime {
+    5 + 6
+  };
+}
+
+fn main() -> i32 {
+  println!("{}", zeta());
+  println!("{}", alpha());
+  println!("{}", eleven());
+  println!("{}", wave_a(1));
+  return 0;
+}
+
+// PATH: [parallel-frontend] emitted module with -j 2
+// MLIR: func.func @wave_b
+// MLIR: func.func @main
+// MLIR: func.func @zeta
+// MLIR: func.func @wrap$i64
+// MLIR: func.func @second$i64
+// MLIR: func.func @alpha
+// MLIR: func.func @second$i32
+// CHECK: same bytes
+// OUT: {{^}}8{{$}}
+// OUT-NEXT: {{^}}3{{$}}
+// OUT-NEXT: {{^}}11{{$}}
+// OUT-NEXT: {{^}}3{{$}}

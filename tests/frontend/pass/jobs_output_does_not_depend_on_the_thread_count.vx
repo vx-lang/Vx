@@ -31,6 +31,6 @@ fn main() -> i32 {
   return total(p);
 }
 
-// MLIR: func.func @main
-// MLIR: func.func @wave_b
+// MLIR-DAG: func.func @main
+// MLIR-DAG: func.func @wave_b
 // CHECK: same bytes

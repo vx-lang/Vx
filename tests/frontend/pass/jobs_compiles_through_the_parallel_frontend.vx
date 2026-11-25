@@ -19,5 +19,5 @@ fn main() -> i32 {
 }
 
 // CHECK: [parallel-frontend] emitted module with -j 4
-// CHECK: func.func @double
-// CHECK: func.func @main
+// CHECK-DAG: func.func @double
+// CHECK-DAG: func.func @main

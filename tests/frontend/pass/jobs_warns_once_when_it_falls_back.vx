@@ -14,7 +14,7 @@
 // produces the warning.
 //
 // This test checks the fallback, so it unsets VX_NO_AST_FALLBACK, which the test runner sets.
-// RUN: (env -u VX_NO_AST_FALLBACK VX_FLAT_DECLINE=seven_or_nine vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+// RUN: (env -u VX_NO_AST_FALLBACK VX_FLAT_DECLINE=seven_or_nine vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s # flat-codegen
 
 fn seven_or_nine(n : i64) -> i32 {
   return match n {

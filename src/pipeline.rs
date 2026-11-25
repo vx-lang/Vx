@@ -477,6 +477,99 @@ pub fn compile_modules_mlir_in(
     Ok(text)
 }
 
+/// The checked entry module, and the modules it imports by name.
+pub type CheckedModules = (
+    syntax::Program,
+    std::collections::HashMap<crate::symbol::Symbol, syntax::Program>,
+);
+
+/// The parallel frontend for the AST code generator: what `vxc -j --legacy-codegen` compiles.
+///
+/// Returns the entry module and the imported modules by name, as the sequential driver hands
+/// them to the AST code generator. The entry module gets every generic instance, in the order
+/// the sequential driver makes them, so the two compiles emit the same bytes.
+///
+/// `Ok(None)` when a check gave a name from a counter, such as `Closure_1`. Each check starts
+/// its counters again, so the names are not the ones the sequential driver gives.
+pub fn check_modules_for_ast_codegen(
+    modules: Vec<VxModule>,
+    sched: Schedule,
+    intern_mode: crate::intern_mode::InternMode,
+    auto_schedule_levels: bool,
+    entry: crate::symbol::Symbol,
+) -> Result<Option<CheckedModules>, PipelineError> {
+    let Frontend {
+        mut modules,
+        checks,
+        warnings,
+        ..
+    } = run_frontend_on(
+        modules,
+        sched,
+        intern_mode,
+        auto_schedule_levels,
+        Reported::OnlyEntry(entry.clone()),
+    )?;
+    if checks.iter().any(|c| c.named_by_counter) {
+        return Ok(None);
+    }
+    report_warnings(&warnings);
+    let entry_idx = modules
+        .iter()
+        .position(|m| m.module_path == entry)
+        .expect("the entry module is among the checked modules");
+
+    // The order of the sequential driver's checks: every check of the entry module, then the
+    // transfer lowerings of the other modules, then their non-generic free functions. It does
+    // not check the impl methods or the generic functions of the other modules.
+    let mut imported: Vec<usize> = (0..modules.len()).filter(|&i| i != entry_idx).collect();
+    imported.sort_by(|&a, &b| modules[a].module_path.cmp(&modules[b].module_path));
+    let all = &checks;
+    let of = move |module: usize, item: CheckedItem| {
+        all.iter()
+            .filter(move |c| c.module_idx == module && c.item == item)
+    };
+    let in_order: Vec<&FunctionCheck> = checks
+        .iter()
+        .filter(|c| c.module_idx == entry_idx)
+        .chain(imported.iter().flat_map(|&m| of(m, CheckedItem::Lowering)))
+        .chain(imported.iter().flat_map(|&m| of(m, CheckedItem::Function)))
+        .collect();
+
+    // A generic instance is made once in the sequential driver, the first time a check needs
+    // it. Here each check makes its own, so the first one by name is kept.
+    let mut seen = std::collections::HashSet::new();
+    let mut functions: Vec<syntax::Function> = in_order
+        .iter()
+        .flat_map(|c| c.monomorphs.iter().map(|(f, _)| f))
+        .filter(|f| seen.insert(f.name.clone()))
+        .cloned()
+        .collect();
+    // Only a closure makes a struct, and a program with a closure returned above.
+    assert!(
+        checks.iter().all(|c| c.generated_structs.is_empty()),
+        "a check made a struct, but only a closure makes one, and a closure goes to the \
+         sequential driver"
+    );
+    let comptime: std::collections::HashSet<&str> = checks
+        .iter()
+        .filter(|c| c.module_idx == entry_idx && c.item == CheckedItem::Function && c.was_comptime)
+        .map(|c| c.function.as_str())
+        .collect();
+
+    let mut main = modules.remove(entry_idx);
+    functions.extend(main.functions.drain(..).filter(|f| f.generics.is_empty()));
+    functions.retain(|f| {
+        !comptime.contains(f.name.as_ref()) && !crate::hir::TypeChecker::is_comptime_fn(f)
+    });
+    main.functions = functions;
+    let others = modules
+        .into_iter()
+        .map(|m| (m.module_path.clone(), m))
+        .collect();
+    Ok(Some((main, others)))
+}
+
 /// The module path a file is known by: its stem, so `.../m0.vx` is the module `m0`.
 ///
 /// This is the name an `import` can write, which is the whole point. `ModuleLoader` — the loader
@@ -618,6 +711,21 @@ struct FunctionCheck {
     /// Capacity summaries this worker produced (the function, plus any generic it was first
     /// to instantiate) -- the cross-call fold's input, collected after the parallel phase.
     capacity_summaries: Vec<crate::hir::check::capacity_fold::FnCapacitySummary>,
+    /// What the check read: a free function, an impl method or a transfer lowering.
+    item: CheckedItem,
+    /// The function was a comptime function before its check folded it.
+    was_comptime: bool,
+    /// The check named something with a counter of its checker, such as a closure.
+    named_by_counter: bool,
+}
+
+/// The kind of item a check read. The sequential driver checks the kinds in a fixed order,
+/// and that order decides the order of the generic instances.
+#[derive(Clone, Copy, PartialEq)]
+enum CheckedItem {
+    Function,
+    Method,
+    Lowering,
 }
 
 // ---- Phase 3: lowering AST types to the flat GID stream ------------------------------------
@@ -1317,15 +1425,18 @@ fn check_one_function(
     module_idx: usize,
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
+    item: CheckedItem,
     lowering_edge: Option<(syntax::MemorySpace, syntax::MemorySpace, String)>,
 ) -> FunctionCheck {
     let function = func.name.to_string();
+    let was_comptime = crate::hir::TypeChecker::is_comptime_fn(func);
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
     // Inside an `impl transfer` body the eight `raw::` primitives resolve; everywhere
     // else the edge is `None` and they do not (Vx#353).
     checker.seam.lowering_edge = lowering_edge;
     checker.check_function(func);
+    let named_by_counter = checker.named_by_counter();
 
     let errors = checker.errors;
     // A comptime lambda's generated body is not emitted: every call to it folded, so
@@ -1354,6 +1465,9 @@ fn check_one_function(
         module_idx,
         generated_structs: gen_structs,
         capacity_summaries,
+        item,
+        was_comptime,
+        named_by_counter,
     }
 }
 
@@ -1504,7 +1618,16 @@ fn type_check_phase(
                 let mut results: Vec<FunctionCheck> = module
                     .functions
                     .iter_mut()
-                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
+                    .map(|f| {
+                        check_one_function(
+                            f,
+                            module_idx,
+                            global_session,
+                            global_env,
+                            CheckedItem::Function,
+                            None,
+                        )
+                    })
                     .collect();
                 // A copied default is checked as the instance a call creates, as in the driver.
                 let impl_results: Vec<FunctionCheck> = module
@@ -1516,7 +1639,16 @@ fn type_check_phase(
                             .iter_mut()
                             .filter(move |f| !copied.contains(&f.name))
                     })
-                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
+                    .map(|f| {
+                        check_one_function(
+                            f,
+                            module_idx,
+                            global_session,
+                            global_env,
+                            CheckedItem::Method,
+                            None,
+                        )
+                    })
                     .collect();
                 results.extend(impl_results);
                 // Transfer lowerings, same walk (#353). Third traversal rather than folded
@@ -1537,6 +1669,7 @@ fn type_check_phase(
                                 module_idx,
                                 global_session,
                                 global_env,
+                                CheckedItem::Lowering,
                                 Some(edge.clone()),
                             )
                         })
@@ -1554,7 +1687,16 @@ fn type_check_phase(
                 let mut results: Vec<FunctionCheck> = module
                     .functions
                     .par_iter_mut()
-                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
+                    .map(|f| {
+                        check_one_function(
+                            f,
+                            module_idx,
+                            global_session,
+                            global_env,
+                            CheckedItem::Function,
+                            None,
+                        )
+                    })
                     .collect();
                 let impl_results: Vec<FunctionCheck> = module
                     .impls
@@ -1565,7 +1707,14 @@ fn type_check_phase(
                             .par_iter_mut()
                             .filter(move |f| !copied.contains(&f.name))
                             .map(|f| {
-                                check_one_function(f, module_idx, global_session, global_env, None)
+                                check_one_function(
+                                    f,
+                                    module_idx,
+                                    global_session,
+                                    global_env,
+                                    CheckedItem::Method,
+                                    None,
+                                )
                             })
                     })
                     .collect();
@@ -1585,6 +1734,7 @@ fn type_check_phase(
                                 module_idx,
                                 global_session,
                                 global_env,
+                                CheckedItem::Lowering,
                                 Some(edge.clone()),
                             )
                         })
@@ -2187,6 +2337,9 @@ mod gid_stream_tests {
                 module_idx: 0,
                 generated_structs: Vec::new(),
                 capacity_summaries: Vec::new(),
+                item: CheckedItem::Function,
+                was_comptime: false,
+                named_by_counter: false,
             }];
             let (_s, arena, offsets, slow, gen) = deduplication_phase(&results, &session);
             let mut streams = extract_type_streams(&mut results);

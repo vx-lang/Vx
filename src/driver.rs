@@ -527,7 +527,8 @@ impl CompilerDriver {
         self.execute_vx_pipeline(main_file, &filename, &mlir_args)
     }
 
-    /// `-j N`: the parallel frontend, then the same backend as the sequential path.
+    /// `-j N`: the parallel frontend, then the same backend as the sequential path. The flat code
+    /// generator makes the module, or the AST code generator with `--legacy-codegen`.
     ///
     /// Returns `Ok(None)` when the parallel frontend cannot take the program, after saying why on
     /// stderr; the caller then runs the sequential driver, which takes everything. A flag whose
@@ -541,7 +542,6 @@ impl CompilerDriver {
         jobs: usize,
     ) -> Result<Option<()>, String> {
         let unsupported = [
-            (self.options.legacy_codegen, "--legacy-codegen"),
             (self.options.link_interface.is_some(), "--link-interface"),
             (
                 self.options.diagnostics_json.is_some(),
@@ -577,7 +577,7 @@ impl CompilerDriver {
             Self::widen_heap_growth();
         }
 
-        let compile = || -> Result<Option<(String, Option<String>)>, String> {
+        let compile = || -> Result<Option<(Frontended, Option<String>)>, String> {
             let (mut programs, interfaces) = self.load_modules(filename, sched)?;
             crate::hir::check::audit::mark_refused_packages(
                 &mut programs,
@@ -594,23 +594,42 @@ impl CompilerDriver {
             let host_arch = Self::host_arch_of(programs.iter());
             // Only the file the user named reports its diagnostics, matching what the
             // sequential driver keeps from its own import pass.
-            let reported =
-                crate::pipeline::Reported::OnlyEntry(self.module_loader().root_name(filename));
+            let entry = self.module_loader().root_name(filename);
             // A failed check ends with the line the sequential driver prints, with the file.
-            let text = crate::pipeline::compile_modules_mlir_in(
-                programs,
-                sched,
-                intern_mode,
-                self.options.auto_schedule_levels(),
-                reported,
-            )
-            .map_err(|e| match e {
+            let failed = |e| match e {
                 crate::pipeline::PipelineError::Failed { count, .. } => format!(
                     "Semantic check failed on '{}': {} error(s) emitted",
                     filename, count
                 ),
                 other => other.to_string(),
-            })?;
+            };
+            if self.options.legacy_codegen {
+                let checked = crate::pipeline::check_modules_for_ast_codegen(
+                    programs,
+                    sched,
+                    intern_mode,
+                    self.options.auto_schedule_levels(),
+                    entry,
+                )
+                .map_err(failed)?;
+                let Some(checked) = checked else {
+                    eprintln!(
+                        "[parallel-frontend] the program has a closure, a task or a `vec!` value. \
+                         The names the checks give them depend on the order of the checks, so the \
+                         sequential driver compiles the program"
+                    );
+                    return Ok(None);
+                };
+                return Ok(Some((Frontended::Ast(Box::new(checked)), host_arch)));
+            }
+            let text = crate::pipeline::compile_modules_mlir_in(
+                programs,
+                sched,
+                intern_mode,
+                self.options.auto_schedule_levels(),
+                crate::pipeline::Reported::OnlyEntry(entry),
+            )
+            .map_err(failed)?;
             let Some(text) = text else {
                 // Worded so it cannot be mistaken for the flat emitter's own decline, which
                 // `flat_corpus_sweep` classifies a program by: the two say different things
@@ -622,7 +641,7 @@ impl CompilerDriver {
                 );
                 return Ok(None);
             };
-            Ok(Some((text, host_arch)))
+            Ok(Some((Frontended::Mlir(text), host_arch)))
         };
         let compiled = if jobs == 1 {
             compile()
@@ -633,11 +652,24 @@ impl CompilerDriver {
                 .map_err(|e| format!("could not start {jobs} compiler threads: {e}"))?;
             pool.install(compile)
         };
-        let Some((text, host_arch)) = compiled? else {
+        let Some((frontended, host_arch)) = compiled? else {
             return Ok(None);
         };
         eprintln!("[parallel-frontend] emitted module with -j {jobs}");
-        self.emit_from_mlir_text(&text, host_arch, filename, main_file, mlir_args)
+        match frontended {
+            Frontended::Mlir(text) => {
+                self.emit_from_mlir_text(&text, host_arch, filename, main_file, mlir_args)
+            }
+            Frontended::Ast(checked) => {
+                let (main_ast, module_syntaxes) = *checked;
+                let context = self.backend_context();
+                let module = crate::intern_mode::timed("codegen", || {
+                    self.ast_module(&context, &main_ast, &module_syntaxes)
+                })?;
+                self.lower_and_emit(&context, module, host_arch, filename, main_file, mlir_args)
+                    .map(Some)
+            }
+        }
     }
 
     /// Under `VX_PIPELINE_PHASES`, the per-phase wall clock of this compile, one line per phase
@@ -1686,19 +1718,28 @@ impl CompilerDriver {
                 if !self.options.legacy_codegen {
                     eprintln!("[flat-codegen] program outside the flat subset; using the AST path");
                 }
-                let mut codegen =
-                    MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
-                codegen.emit_seam_certs = self.options.emit_seam_certs;
-                codegen.describe_params =
-                    matches!(self.options.action, Action::EmitPtx | Action::EmitMsl);
-                codegen
-                    .generate(&monomorphized_ast, &module_syntaxes)
-                    .map_err(|e| format!("Codegen Error: {:?}", e))?;
-                codegen.into_module()
+                self.ast_module(&context, &monomorphized_ast, &module_syntaxes)?
             }
         };
 
         self.lower_and_emit(&context, module, host_arch, filename, main_file, mlir_args)
+    }
+
+    /// The module that the AST code generator makes from the checked entry module and the
+    /// modules it imports.
+    fn ast_module<'c>(
+        &self,
+        context: &'c melior::Context,
+        main_ast: &crate::syntax::Program,
+        module_syntaxes: &std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
+    ) -> Result<melior::ir::Module<'c>, String> {
+        let mut codegen = MeliorGenerator::new(context, main_ast.module_path.to_string());
+        codegen.emit_seam_certs = self.options.emit_seam_certs;
+        codegen.describe_params = matches!(self.options.action, Action::EmitPtx | Action::EmitMsl);
+        codegen
+            .generate(main_ast, module_syntaxes)
+            .map_err(|e| format!("Codegen Error: {:?}", e))?;
+        Ok(codegen.into_module())
     }
 
     /// The backend from an MLIR module to the action's output: verification, the pass pipeline,
@@ -2209,6 +2250,14 @@ impl CompilerDriver {
         }
         Ok(parsed)
     }
+}
+
+/// What the parallel frontend hands to the backend.
+enum Frontended {
+    /// The MLIR text of the flat code generator.
+    Mlir(String),
+    /// The checked modules, for the AST code generator.
+    Ast(Box<crate::pipeline::CheckedModules>),
 }
 
 /// The module as text with its source locations, so that `mlir-translate` can make DWARF.
