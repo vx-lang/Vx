@@ -1,0 +1,14 @@
+//===- calls_a_method_of_its_importer.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Imports the test that imports this file, and calls the method `doubled` that the test
+// writes for `i64`.
+import tests::backend::pass::a_method_of_a_file_that_is_read_twice;
+
+pub fn tripled(x : i64) -> i64 {
+  return x.doubled() + x;
+}

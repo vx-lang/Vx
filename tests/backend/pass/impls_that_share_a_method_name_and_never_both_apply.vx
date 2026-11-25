@@ -1,0 +1,118 @@
+//===- impls_that_share_a_method_name_and_never_both_apply.vx ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two impls with no trait define one method, and at most one of them applies to each value.
+// There is nothing to choose, so each call compiles. These calls gave the same answers before
+// the compiler chose the impl for the most specific type. This file checks that they still do.
+//
+// Each method returns a number that names its impl.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s -j 2 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// Two types with no type parameter: a `Pair<i64>` is not a `Pair<i32>`.
+struct Pair<T> {
+  a : T,
+}
+
+impl Pair<i32> {
+  fn which(self : &Pair<i32>) -> i32 {
+    return 1;
+  }
+}
+
+impl Pair<i64> {
+  fn which(self : &Pair<i64>) -> i32 {
+    return 2;
+  }
+}
+
+// Two impls for one type, with different bounds. `Inch` is `Short` and not `Long`, so only
+// the first impl applies to a `Wrap<Inch>`.
+trait Short {}
+
+trait Long {}
+
+struct Inch {
+  n : i32,
+}
+
+struct Mile {
+  n : i32,
+}
+
+impl Short for Inch {}
+
+impl Long for Mile {}
+
+struct Wrap<T> {
+  inner : T,
+}
+
+impl<T : Short> Wrap<T> {
+  fn which(self : &Wrap<T>) -> i32 {
+    return 1;
+  }
+}
+
+impl<T : Long> Wrap<T> {
+  fn which(self : &Wrap<T>) -> i32 {
+    return 2;
+  }
+}
+
+// An impl with no trait and an impl of a trait: the method of the impl with no trait is the
+// one a call uses.
+trait Named {
+  fn which(self : &Self) -> i32;
+}
+
+struct Point {
+  x : i32,
+}
+
+impl Named for Point {
+  fn which(self : &Point) -> i32 {
+    return 1;
+  }
+}
+
+impl Point {
+  fn which(self : &Point) -> i32 {
+    return 2;
+  }
+}
+
+fn main() -> i32 {
+  // CHECK: two types: 1 2
+  let a = Pair<i32> {
+    a : 1
+  };
+  let b = Pair<i64> {
+    a : 1i64
+  };
+  println!("two types: {} {}", a.which(), b.which());
+  // CHECK: two bounds: 1 2
+  let short = Wrap<Inch> {
+    inner : Inch {
+      n : 1
+    }
+  };
+  let long = Wrap<Mile> {
+    inner : Mile {
+      n : 1
+    }
+  };
+  println!("two bounds: {} {}", short.which(), long.which());
+  // CHECK: with a trait: 2
+  let point = Point {
+    x : 1
+  };
+  println!("with a trait: {}", point.which());
+  return 0;
+}

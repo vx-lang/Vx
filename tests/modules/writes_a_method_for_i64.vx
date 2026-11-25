@@ -1,0 +1,20 @@
+//===- writes_a_method_for_i64.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Writes the method `doubled` for `i64` in an impl with no trait. The test
+// `method_that_two_files_write_for_one_type` writes the same method for `i64`.
+//
+// The impl below is at line 16 and column 8, and so is the impl of the test. A file that the
+// compiler reads twice gives two copies of one impl, and the compiler takes them as one impl.
+// The test checks that it does not do so for two impls at the same place of two files.
+// Keep the two impls at the same line.
+
+extern impl i64 {
+  pub fn doubled(self : &i64) -> i64 {
+    return *self + *self;
+  }
+}

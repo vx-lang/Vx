@@ -356,6 +356,12 @@ pub enum DiagnosticCode {
     /// are kept in a hash map, so which body a call reached used to change from one run of
     /// the compiler to the next; refusing the call is the only answer that is the same twice.
     /// Naming the trait, as in `Display::fmt(&x, f)`, chooses one impl.
+    ///
+    /// Two impls with no trait can also define one method, and both can apply to one value, as
+    /// `impl<T> Two<T, i32>` and `impl<T> Two<i32, T>` do for a `Two<i32, i32>`. A method call
+    /// `x.f()` uses the impl for the most specific type, whatever the order of the impls. When
+    /// no impl is for a more specific type than the others, the call is this error. A bound
+    /// does not make a type more specific. Give the method a different name in each impl.
     E3035,
     /// An impl of a trait that declares an associated type does not bind it. The trait's
     /// signatures are written against `Self::Item`, so with no binding there is nothing to put

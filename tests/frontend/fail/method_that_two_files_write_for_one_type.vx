@@ -1,0 +1,27 @@
+//===- method_that_two_files_write_for_one_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// This file and `writes_a_method_for_i64` each write the method `doubled` for `i64`, in an
+// impl with no trait. Neither impl is for a more specific type, so a call of `doubled` is an
+// error. The error names the two files.
+//
+// The two impls are at the same line and column of their files. They are two impls.
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=E3035
+// RUN: not vxc --package tests=tests %s -j 2 2>&1 | FileCheck %s --implicit-check-not=E3035
+import tests::modules::writes_a_method_for_i64;
+extern impl i64 {
+  fn doubled(self : &i64) -> i64 {
+    return *self * 2i64;
+  }
+}
+
+fn main() -> i32 {
+  let x = 4i64;
+  // CHECK: Error[E3035] at {{.*}}.vx:[[@LINE+1]]:3: Method 'doubled' on 'i64' is defined by more than one impl (`extern impl i64` at method_that_two_files_write_for_one_type.vx:16, `extern impl i64` at writes_a_method_for_i64.vx:16). No impl is for a more specific type than the others. Give the method a different name in each impl
+  print(x.doubled());
+  return 0;
+}
