@@ -1,0 +1,51 @@
+//===- requires_with_a_negation_or_a_cast_in_parentheses.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The error for a precondition that a call may not meet (E8006) quotes the precondition.
+// The quote keeps the parentheses of `-(...)` and `(...) as T`, so it means what the program
+// wrote. A negation or a cast that needs no parentheses is quoted without them.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+fn negated_cast(x : i32) -> i32
+requires -(x as i64) < 0i64 {
+  return x;
+}
+
+fn cast_of_a_negation(x : i32) -> i32
+requires -x as i64 < 0i64 {
+  return x;
+}
+
+fn cast_of_a_sum(x : i32) -> i32
+requires (x + 1) as i64 > 0i64 {
+  return x;
+}
+
+fn negated_difference(x : i32) -> i32
+requires -(x - 1) > 0 {
+  return x;
+}
+
+fn above_minus_one(x : i32) -> i32
+requires x > -1 {
+  return x;
+}
+
+fn main(n : i32) -> i32 {
+  // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'negated_cast' may not meet its precondition `-(x as i64) < 0`
+  let a = negated_cast(n);
+  // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'cast_of_a_negation' may not meet its precondition `-x as i64 < 0`
+  let b = cast_of_a_negation(n);
+  // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'cast_of_a_sum' may not meet its precondition `(x + 1) as i64 > 0`
+  let c = cast_of_a_sum(n);
+  // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'negated_difference' may not meet its precondition `-(x - 1) > 0`
+  let d = negated_difference(n);
+  // CHECK-DAG: E8006] at {{.*}}.vx:[[@LINE+1]]:11: this call to 'above_minus_one' may not meet its precondition `x > -1`
+  let e = above_minus_one(n);
+  return a + b + c + d + e;
+}
+// CHECK: 5 error(s) emitted
