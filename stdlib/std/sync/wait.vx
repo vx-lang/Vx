@@ -57,7 +57,7 @@ const WAIT_IN_ACQUIRE : i32 = 8;
 /// with the words `channel`. When the program stops on a deadlock, the report says it for each
 /// task, with the line `at` of the wait and the line `made` that made the channel. It also counts
 /// the `Sender`s of the channel that are not dropped.
-pub fn waiting_for(what : i32, at : Caller, made : Location, channel : *mut AtomicI64) -> void {
+pkg fn waiting_for(what : i32, at : Caller, made : Location, channel : *mut AtomicI64) -> void {
   let l = at.location;
   unsafe {
     vx_waiting_for(what, l.file, l.line, made.file, made.line, channel);

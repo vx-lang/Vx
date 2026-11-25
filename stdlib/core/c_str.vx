@@ -14,7 +14,7 @@
 /// at the first NUL. For `s == "hello"` the bound is 6: the five letters and the NUL, so
 /// "hello!" is not equal to "hello". When both sides are literals, the call runs while
 /// compiling and the comparison becomes `true` or `false`.
-pub fn c_str_equals(a : *const i8, b : *const i8, bound : i64) -> bool {
+fn c_str_equals(a : *const i8, b : *const i8, bound : i64) -> bool {
   let mut i = 0i64;
   while i < bound {
     let x = unsafe { a[i] };

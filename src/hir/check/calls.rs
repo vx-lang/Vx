@@ -167,6 +167,7 @@ impl<'a> TypeChecker<'a> {
                         type_args: None,
                         args: new_args,
                         span: Span::default(),
+                        by_the_compiler: false,
                     });
 
                     return closure_ret;
@@ -1006,6 +1007,7 @@ impl<'a> TypeChecker<'a> {
                 type_args,
                 args,
                 span,
+                by_the_compiler,
             }) => {
                 let resolved_name = name.clone();
                 // Calling a local, `p(env, x)` with `p` a closure's function, uses it.
@@ -1014,7 +1016,7 @@ impl<'a> TypeChecker<'a> {
                 } else if resolved_name.as_ref() == "main" {
                     self.refuse_a_use_of_main(span);
                     return Type::Unknown;
-                } else {
+                } else if !*by_the_compiler {
                     self.refuse_a_call_of_a_private_function(resolved_name.as_ref(), span);
                 }
                 let mut base_name = resolved_name.clone();
@@ -1311,6 +1313,7 @@ impl<'a> TypeChecker<'a> {
                                 type_args: None,
                                 args: new_args,
                                 span: Span::default(),
+                                by_the_compiler: false,
                             });
 
                             func.0.return_type.clone()
@@ -3786,6 +3789,7 @@ impl<'a> TypeChecker<'a> {
             type_args: None,
             args: call_args,
             span,
+            by_the_compiler: false,
         });
         // Probe the synthesized call *speculatively* to recover its return type without
         // emitting diagnostics or committing borrow/move side effects: the method-call
@@ -3945,6 +3949,7 @@ impl<'a> TypeChecker<'a> {
                             type_args: None,
                             args: args.clone(),
                             span: Span::default(),
+                            by_the_compiler: false,
                         });
                         *expr = func_call;
                         return exported_ty.clone();

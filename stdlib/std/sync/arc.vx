@@ -55,7 +55,7 @@ pub fn core_arc_max_count() -> i64 {
 }
 
 /// The value in the block that starts with `count`.
-pub fn core_arc_value<T>(count : *mut AtomicI64) -> *mut T {
+fn core_arc_value<T>(count : *mut AtomicI64) -> *mut T {
   let block : *mut i8 = count;
   let value : *mut T = offset_mut(block, core_arc_value_offset());
   return value;
