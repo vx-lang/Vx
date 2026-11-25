@@ -1,0 +1,134 @@
+//===- seam_assert_of_a_value_the_transfer_does_not_give.vx ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A synchronizing transfer gives the consumer the number that the producer wrote. Each
+// function here writes one number and asserts another number after the transfer. No run can
+// pass that assert, so the seam check refuses the transfer (E6004). Each transfer gets one
+// report, on its last hop.
+//
+// VERIFY-SEAMS
+// RUN: not vxc %s --verify-seams 2>&1 | FileCheck %s --implicit-check-not=E6004
+
+Memory Local_SRAM {
+  managed: cached
+}
+Memory HBM3e {
+  capacity: 192 GiB, bandwidth: 8 TB/s
+}
+Memory TMEM {
+  within: Memory::HBM3e, capacity: 256 KiB, granule: 16 KiB, managed: explicit, scope: sm
+}
+Topology TensorCore5 {
+  memory: Memory::TMEM,
+  visible: [Memory::TMEM, Memory::HBM3e],
+  transfer Memory::CPU_DRAM -> Memory::HBM3e : 300,
+  transfer Memory::HBM3e -> Memory::TMEM : 40
+}
+
+fn one_hop() -> i32 {
+  let a : Tensor<i32, []> = 0;
+  // CHECK: Error[E6004] at {{.*}}.vx:[[@LINE+1]]:17: the transfer of 'a' across the CPU_DRAM -> NPU_HBM seam violates the boundary contract. 'a' is 0, so 'local_a' is 0 after the transfer. The program asserts 'local_a' == 42, so this assert always fails
+  let local_a = a.to_device();
+  // CHECK-NEXT: note: seam obligation is satisfiable; z3 counterexample: ((tag_a #b01) (val_a #x0000000000000000))
+  spawn on(Topology::NPU[0]) {
+    assert(local_a == 42);
+  }
+  return 0;
+}
+
+// The route has two hops: CPU_DRAM -> HBM3e -> TMEM.
+fn two_hops() -> i32 {
+  let b : Tensor<i32, []> = 0;
+  // CHECK: Error[E6004] at {{.*}}.vx:[[@LINE+1]]:26: the transfer of 'b' across the HBM3e -> TMEM seam violates the boundary contract. 'b' is 0, so 'local_b' is 0 after the transfer. The program asserts 'local_b' == 42, so this assert always fails
+  let local_b = transfer(b, Memory::TMEM);
+  spawn on(Topology::TensorCore5) {
+    assert(local_b == 42);
+  }
+  return 0;
+}
+
+// A relaxed transfer into a `managed: cached` memory cannot be read stale. It still cannot
+// change 0 into 42.
+fn relaxed_into_a_cached_memory() -> i32 {
+  let c : Tensor<i32, []> = 0;
+  // CHECK: Error[E6004] at {{.*}}.vx:[[@LINE+1]]:17: the transfer of 'c' across the NPU_HBM -> Local_SRAM seam violates the boundary contract. 'c' is 0, so 'local_c' is 0 after the transfer. The program asserts 'local_c' == 42, so this assert always fails
+  let local_c = c.to_sram_relaxed();
+  spawn on(Topology::AccCore[0]) {
+    assert(local_c == 42);
+  }
+  return 0;
+}
+
+// The assert can name the number first, and can be one part of an `&&`.
+fn assert_with_the_number_first() -> i32 {
+  let d : Tensor<i32, []> = 7;
+  // CHECK: Error[E6004] at {{.*}}.vx:[[@LINE+1]]:17: the transfer of 'd' across the CPU_DRAM -> NPU_HBM seam violates the boundary contract. 'd' is 7, so 'local_d' is 7 after the transfer. The program asserts 'local_d' == 8, so this assert always fails
+  let local_d = d.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(8 == local_d && 1 == 1);
+  }
+  return 0;
+}
+
+// A float literal that is a whole number is a number that the check knows.
+fn float_tensor() -> i32 {
+  let e : Tensor<f32, []> = 0.0;
+  // CHECK: Error[E6004] at {{.*}}.vx:[[@LINE+1]]:17: the transfer of 'e' across the CPU_DRAM -> NPU_HBM seam violates the boundary contract. 'e' is 0.0, so 'local_e' is 0.0 after the transfer. The program asserts 'local_e' == 42.0, so this assert always fails
+  let local_e = e.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(local_e == 42.0);
+  }
+  return 0;
+}
+
+// A relaxed transfer into a memory that is not `managed: cached` can be read stale. The
+// check refuses it when the two numbers are equal, and names the number.
+fn relaxed_with_equal_numbers() -> i32 {
+  let g : Tensor<i32, []> = 42;
+  // CHECK: Error[E6004] at {{.*}}.vx:[[@LINE+1]]:17: relaxed transfer of 'g' across the CPU_DRAM -> NPU_HBM seam violates the boundary contract ('g' == 42): the buffer carries no synchronizing release
+  let local_g = g.to_device_relaxed();
+  // CHECK-NEXT: note: seam obligation is satisfiable; z3 counterexample: ((tag_g #b11)
+  spawn on(Topology::NPU[0]) {
+    assert(local_g == 42);
+  }
+  return 0;
+}
+
+// When the two numbers are different, the message names the number of the assert.
+fn relaxed_with_different_numbers() -> i32 {
+  let h : Tensor<i32, []> = 7;
+  // CHECK: Error[E6004] at {{.*}}.vx:[[@LINE+1]]:17: relaxed transfer of 'h' across the CPU_DRAM -> NPU_HBM seam violates the boundary contract ('h' == 42): the buffer carries no synchronizing release
+  let local_h = h.to_device_relaxed();
+  spawn on(Topology::NPU[0]) {
+    assert(local_h == 42);
+  }
+  return 0;
+}
+
+// A `return` before the transfer does not hide the assert, because each run that reaches the
+// transfer also reaches the assert. A `return` after the assert does not hide it.
+fn return_before_the_transfer(n : i32) -> i32 {
+  if n == 0 {
+    return 0;
+  }
+  let k : Tensor<i32, []> = 0;
+  // CHECK: Error[E6004] at {{.*}}.vx:[[@LINE+1]]:17: the transfer of 'k' across the CPU_DRAM -> NPU_HBM seam violates the boundary contract. 'k' is 0, so 'local_k' is 0 after the transfer. The program asserts 'local_k' == 42, so this assert always fails
+  let local_k = k.to_device();
+  spawn on(Topology::NPU[0]) {
+    assert(local_k == 42);
+  }
+  if n == 1 {
+    return 1;
+  }
+  return 2;
+}
+
+fn main() -> i32 {
+  return one_hop() + two_hops() + relaxed_into_a_cached_memory() + assert_with_the_number_first()
+  + float_tensor() + relaxed_with_equal_numbers() + relaxed_with_different_numbers()
+  + return_before_the_transfer(1);
+}

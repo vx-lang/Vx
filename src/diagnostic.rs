@@ -631,7 +631,8 @@ pub enum DiagnosticCode {
     /// tensor reads no element, so a `let`, an argument, a store or a `return` of it is allowed.
     E6003,
     /// Transfer violates the boundary contract at a seam (per-seam local-completeness
-    /// / soundness obligation is `sat`; a stale read can violate the contract).
+    /// / soundness obligation is `sat`; a stale read can violate the contract, or the
+    /// consumer asserts a number that the producer does not give).
     E6004,
     /// A user-defined topology declaration is incoherent: it cannot see its own default
     /// memory space (`default_space ∉ visibility`). See the topology coherence check.

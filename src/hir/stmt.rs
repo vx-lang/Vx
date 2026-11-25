@@ -805,7 +805,15 @@ impl<'a> TypeChecker<'a> {
         // The parser's `let` for the sum in `let r = (v + w)[1]` holds what was the base of an
         // index. Reading an index does not move its base, so `v` and `w` stay usable.
         let consume = consume && !name.starts_with(crate::syntax::expr::INDEXED_TEMPORARY);
+        // A transfer that is this whole initializer gives `name` its value, so a seam check
+        // can use what an assert requires of `name`.
+        let binding = self
+            .seam
+            .verify
+            .then(|| (std::ptr::from_ref::<Expr>(expr) as usize, name.to_string()));
+        let prev_binding = std::mem::replace(&mut self.seam.binding, binding);
         let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
+        self.seam.binding = prev_binding;
         self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
