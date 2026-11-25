@@ -40,27 +40,29 @@ gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
 ## The command line
 
-A `main` written `fn main(root : Root) -> i32` gets the words of its command line in `root.args`, a
-`Vec<String>`. The first word is the path of the program, and each argument comes after it.
-Reading them needs no `unsafe`.
+A `main` written `fn main(root : Root, args : Vec<String>) -> i32` gets the words of its command
+line in `args`. The program owns them, so it can move them and change them. Each argument comes
+after the first word. Whoever starts the program chooses every word, the first one too.
+Usually the first word is the name or the path of the program, but it can be empty. A `String`
+holds only UTF-8 text, so an argument that is not UTF-8 stops the program before `main` runs.
 
 ```vx
 import std::root;
 import std::string;
 import std::vec;
 
-fn main(root : Root) -> i32 {
+fn main(_root : Root, args : Vec<String>) -> i32 {
   let mut i = 1;
-  while i < root.args.len() {
-    println!("{}", root.args.get_ref(i));
+  while i < args.len() {
+    println!("{}", args.get_ref(i));
     i = i + 1;
   }
   return 0;
 }
 ```
 
-`vxc args.vx -- one two` prints `one` and `two`. The test is
-`a_program_reads_its_arguments_from_its_root.vx`.
+`vxc args.vx -- one two` prints `one` and `two`. The words are data and not a right, so they are
+not part of `Root`. The test is `main_gets_the_words_of_the_command_line.vx`.
 
 ## Files
 

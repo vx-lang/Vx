@@ -287,7 +287,7 @@ pub struct DriverOptions {
 
     /// Arguments to pass to the running program
     #[arg(last = true)]
-    pub program_args: Vec<String>,
+    pub program_args: Vec<std::ffi::OsString>,
 }
 
 impl DriverOptions {
