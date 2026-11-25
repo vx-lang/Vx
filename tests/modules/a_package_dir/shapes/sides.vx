@@ -7,6 +7,6 @@
 //===----------------------------------------------------------------------===//
 // A module one directory into a package.
 
-fn square_sides() -> i64 {
+pub fn square_sides() -> i64 {
   return 4;
 }

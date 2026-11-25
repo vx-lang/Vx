@@ -1,0 +1,13 @@
+//===- a_module_with_pkg_functions.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module for `a_call_of_a_private_function_from_another_file.vx`. A `pkg` function is visible
+// to each file of its package, here the package `tests`, and to no other file.
+
+pkg fn pkg_twice(x : i64) -> i64 {
+  return x * 2;
+}
