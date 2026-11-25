@@ -708,6 +708,9 @@ pub struct TypeChecker<'a> {
     /// on every pass. Otherwise the variables that the condition reads: an arm that changes one
     /// can end the loop.
     pub(crate) cancel_loops: Vec<Option<Vec<String>>>,
+    /// The names that `?n` gives the run-time extents of the parameters of the function being
+    /// checked: for each, the parameter whose extent it is first, and the axis.
+    pub(crate) extent_homes: HashMap<crate::symbol::Symbol, (crate::symbol::Symbol, usize)>,
     /// The function being checked is the `drop` of a `Drop` impl, for W1036.
     pub(crate) in_drop: bool,
     /// The function being checked is the `wait_limit` of a `Drop` impl, for W1036.
@@ -858,6 +861,7 @@ impl<'a> TypeChecker<'a> {
             indexed_name: None,
             value_unused: false,
             cancel_loops: Vec::new(),
+            extent_homes: HashMap::new(),
             in_drop: false,
             in_wait_limit: false,
             within_depth: 0,
@@ -1055,6 +1059,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
+        self.refuse_a_variable_with_an_extent_name(&name);
         // A new variable of this name: a move of the old one, or of its fields, says nothing
         // about it.
         if let Some(moved) = self.borrow.moved_vars.last_mut() {
@@ -1620,7 +1625,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
                     match (dim1, dim2) {
-                        (Dim::Dyn, _) => {}
+                        (Dim::Dyn(_), _) => {}
                         (Dim::Static(Expr::Identifier(id)), Dim::Static(Expr::Number(n))) => {
                             let extent = Type::Generic(n.value.clone(), None);
                             if !Self::bind_dim(&id.name, extent, mapping) {
@@ -1633,7 +1638,7 @@ impl<'a> TypeChecker<'a> {
                                 return false;
                             }
                         }
-                        (Dim::Static(Expr::Identifier(_)), Dim::Dyn) => return false,
+                        (Dim::Static(Expr::Identifier(_)), Dim::Dyn(_)) => return false,
                         _ if dim1 != dim2 => return false,
                         _ => {}
                     }
@@ -2071,6 +2076,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check_function(&mut self, func: &mut Function) {
+        // Before the return for a generic function: its instances have no const parameters.
+        let file = std::mem::replace(&mut self.errors.file, func.file.clone());
+        self.warn_extent_names_that_hide(&func.params, &func.generics, func.span);
+        self.errors.file = file;
         if !func.generics.is_empty() {
             return;
         }
@@ -2306,6 +2315,8 @@ impl<'a> TypeChecker<'a> {
         // The drop frames too, so that a raw pointer in a generic callee does not make the
         // caller count as a function that uses raw pointers.
         let prev_drops = std::mem::take(&mut self.borrow.drops);
+        // The extent names of a caller do not reach the body of a function that it calls.
+        let prev_extent_homes = std::mem::take(&mut self.extent_homes);
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             // A token that the caller passes must be waited by the function.
@@ -2313,6 +2324,7 @@ impl<'a> TypeChecker<'a> {
             self.borrow.current_params.insert(name.clone(), ty.clone());
             self.set_mutable(name.as_ref(), func.mut_params.contains(name));
         }
+        self.declare_extent_names(&func.params);
         // Inside a transfer lowering, the raw:: primitives may only touch tiles the
         // transfer was given -- record the parameter names they are allowed to name.
         if self.seam.lowering_edge.is_some() {
@@ -2404,6 +2416,12 @@ impl<'a> TypeChecker<'a> {
                 }
             });
         }
+        // A contract about an extent, `n` of `?n`, is about the parameter of the extent.
+        for (extent, p, _) in crate::syntax::types::extent_names(&func.params) {
+            if in_contracts.contains(&extent) {
+                in_contracts.push(func.params[p].0.clone());
+            }
+        }
         for (param_name, _) in &func.params {
             let name_str: &str = param_name.as_ref();
             if !name_str.starts_with('_')
@@ -2461,6 +2479,10 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+
+        // The code generators read the extent where the body names it.
+        self.rewrite_extent_names(&mut func.body);
+        self.extent_homes = prev_extent_homes;
 
         // W1033: a `spawn` loop that runs on one thread although its passes could run at once.
         if !self.speculating {

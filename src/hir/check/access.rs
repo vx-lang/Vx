@@ -406,6 +406,9 @@ impl<'a> TypeChecker<'a> {
                 if name.as_ref() == "true" || name.as_ref() == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
+                if let Some(ty) = self.check_extent_name_read(&name, span) {
+                    return ty;
+                }
 
                 // Track variable usage for W1001/W1009 diagnostics
                 self.used_vars.insert(name.clone());
@@ -1148,7 +1151,11 @@ impl<'a> TypeChecker<'a> {
                 } else if member.as_ref() == "$extent" {
                     // The form `t.extent(i)` is rewritten to; no source spells this member. It
                     // is the list of the tensor's extents, indexed by axis.
-                    return Type::Tensor(ElementType::I32, vec![crate::syntax::Dim::Dyn], None);
+                    return Type::Tensor(
+                        ElementType::I32,
+                        vec![crate::syntax::Dim::Dyn(None)],
+                        None,
+                    );
                 } else if member.as_ref() == "shape" && Self::tensor_operand_elem(&obj_ty).is_some()
                 {
                     self.errors.error_with_code(
@@ -2720,6 +2727,9 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn report_read_only(&mut self, name: &str, what: &str, span: &crate::syntax::Span) {
         if self.speculating {
             return;
+        }
+        if self.extent_homes.contains_key(name) {
+            return self.refuse_an_assignment_to_an_extent_name(name, span);
         }
         if self.lookup(name).is_none() && self.env.consts.contains_key(name) {
             self.errors.error_with_code(

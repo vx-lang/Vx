@@ -1,0 +1,34 @@
+//===- an_extent_name_outside_the_parameters_of_a_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Only the tensor type of a parameter of a function with a body can name an extent, as `?n`
+// does in `t : &Tensor<f32, [?n]>`. Each program below names one somewhere else, or gives a
+// parameter the name of an extent. The parser stops at the first error, so each one is a file.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'fn f(t : &Tensor<f32, [?n]>) -> usize {\n  let w : Tensor<f32, [?r]> = Tensor<f32, [?]>::new([2]);\n  return n;\n}\n' > %t.d/let.vx
+// RUN: not vxc %t.d/let.vx --action parse-only 2>&1 | FileCheck %s --check-prefix=LET
+// RUN: printf 'fn f(t : &Tensor<f32, [?n]>) -> Tensor<f32, [?n]> {\n  return t;\n}\n' > %t.d/ret.vx
+// RUN: not vxc %t.d/ret.vx --action parse-only 2>&1 | FileCheck %s --check-prefix=RET
+// RUN: printf 'struct Rows {\n  t : Tensor<f32, [?n]>,\n}\n' > %t.d/field.vx
+// RUN: not vxc %t.d/field.vx --action parse-only 2>&1 | FileCheck %s --check-prefix=FIELD
+// RUN: printf 'fn f(v : &DisjointRanges<Tensor<i32, [?n, 2]>>) -> i32 {\n  return 0;\n}\n' > %t.d/nested.vx
+// RUN: not vxc %t.d/nested.vx --action parse-only 2>&1 | FileCheck %s --check-prefix=NESTED
+// RUN: printf 'fn f(n : i32, t : &Tensor<f32, [?n]>) -> i32 {\n  return 0;\n}\n' > %t.d/param.vx
+// RUN: not vxc %t.d/param.vx --action parse-only 2>&1 | FileCheck %s --check-prefix=PARAM
+// RUN: printf 'extern "C" {\n  fn g(t : &Tensor<f32, [?n]>) -> i32;\n}\n' > %t.d/ext.vx
+// RUN: not vxc %t.d/ext.vx --action parse-only 2>&1 | FileCheck %s --check-prefix=EXTERN
+// RUN: printf 'trait Rows {\n  fn rows(t : &Tensor<f32, [?n]>) -> i32;\n}\n' > %t.d/trait.vx
+// RUN: not vxc %t.d/trait.vx --action parse-only 2>&1 | FileCheck %s --check-prefix=TRAIT
+//
+// LET: let.vx:2:25: `?r` gives a run-time extent a name, and only the type of a parameter of a function with a body can do that
+// RET: ret.vx:1:47: `?n` gives a run-time extent a name, and only the type of a parameter of a function with a body can do that
+// FIELD: field.vx:2:21: `?n` gives a run-time extent a name, and only the type of a parameter of a function with a body can do that
+// NESTED: nested.vx:1:6: parameter `v`: a name such as `?n` can stand only in the tensor type of the parameter itself, as in `t : &Tensor<f32, [?n]>`
+// PARAM: param.vx:1:6: `?n` names an extent, so no parameter can have the name `n`
+// EXTERN: ext.vx:2:27: `?n` gives a run-time extent a name, and only the type of a parameter of a function with a body can do that
+// TRAIT: trait.vx:2:30: `?n` gives a run-time extent a name, and only the type of a parameter of a function with a body can do that

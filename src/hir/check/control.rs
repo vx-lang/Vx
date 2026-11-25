@@ -1729,6 +1729,8 @@ impl<'a> TypeChecker<'a> {
                 let in_within = self.within_bodies.contains(&e.span);
                 self.within_depth += usize::from(in_within);
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                // The body becomes a function of its own, so it reads its extents now.
+                self.rewrite_extent_names_in(&mut b);
                 self.within_depth -= usize::from(in_within);
                 self.consteval.constraints.truncate(outer_facts);
                 self.borrow.restore(outer_borrows);
