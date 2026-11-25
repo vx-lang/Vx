@@ -8,8 +8,9 @@
 // Raw pointers: making one, moving it, comparing it, and reading or writing through it.
 //
 // `read` and `write` are `unsafe fn` because nothing here checks that the pointer is
-// valid. The others are safe: making, moving or comparing a pointer is fine, and using
-// one is what they cannot promise.
+// valid. `read_volatile_u32`, `write_volatile_u32` and their `u64` forms are also `unsafe fn`.
+// The optimizer keeps each load and store that they do. The others are safe: making, moving or
+// comparing a pointer is fine, and using one is what they cannot promise.
 //
 // Vx has no pointer arithmetic, and `==` on two pointers is not in the flat code
 // generator. So `offset` and `eq` are each one LLVM operation in an `mlir!` block.
@@ -22,8 +23,8 @@
 //
 //   `copy`                   wants `llvm.intr.memmove` through `mlir!`, as
 //                            `copy_nonoverlapping` uses `llvm.intr.memcpy`.
-//   `read_volatile`,         want the volatile forms of the load and store.
-//   `write_volatile`
+//   `read_volatile<T>`,      want `mlir!` to name the LLVM type of a type parameter. Only
+//   `write_volatile<T>`      the fixed widths are here: `read_volatile_u32` and the like.
 //   `NonNull<T>`             not written yet.
 
 /// A pointer to nothing.
@@ -45,6 +46,56 @@ pub unsafe fn read<T>(p : *const T) -> T {
 /// Puts a value where the pointer addresses. The caller promises it may.
 pub unsafe fn write<T>(p : *mut T, v : T) -> void {
   unsafe { *p = v; }
+}
+
+/// Reads the `u32` the pointer addresses with a volatile load. The optimizer must not remove it,
+/// merge it with another, or move it past another volatile access.
+pub unsafe fn read_volatile_u32(p : *const u32) -> u32
+requires valid(p, 1)
+{
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : u32, dialects : ["llvm"]) {
+      %r = llvm.load volatile %p {
+        alignment = 4 : i64
+      } : !llvm.ptr -> i32
+      macro.yield %r : i32
+    } };
+}
+
+/// Writes `v` where the pointer addresses with a volatile store. The optimizer must keep every
+/// such store, even two to the same address with no read between them.
+pub unsafe fn write_volatile_u32(p : *mut u32, v : u32) -> void
+requires valid(p, 1)
+{
+  unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %v = v : i32), dialects : ["llvm"]) {
+      llvm.store volatile %v, %p {
+        alignment = 4 : i64
+      } : i32, !llvm.ptr
+      macro.yield
+    } };
+}
+
+/// `read_volatile_u32` for a `u64`.
+pub unsafe fn read_volatile_u64(p : *const u64) -> u64
+requires valid(p, 1)
+{
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : u64, dialects : ["llvm"]) {
+      %r = llvm.load volatile %p {
+        alignment = 8 : i64
+      } : !llvm.ptr -> i64
+      macro.yield %r : i64
+    } };
+}
+
+/// `write_volatile_u32` for a `u64`.
+pub unsafe fn write_volatile_u64(p : *mut u64, v : u64) -> void
+requires valid(p, 1)
+{
+  unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %v = v : i64), dialects : ["llvm"]) {
+      llvm.store volatile %v, %p {
+        alignment = 8 : i64
+      } : i64, !llvm.ptr
+      macro.yield
+    } };
 }
 
 /// The pointer `count` elements further on, or back for a negative `count`. Like Rust's
