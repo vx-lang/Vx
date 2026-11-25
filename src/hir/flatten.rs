@@ -263,7 +263,7 @@ fn tensor_dim_string(d: &Dim) -> Option<String> {
         Dim::Static(Expr::Number(n)) => Some(n.value.as_ref().to_string()),
         Dim::Static(Expr::Identifier(id)) => Some(id.name.as_ref().to_string()),
         Dim::Static(_) => None,
-        Dim::Dyn => Some(DYN_DIM.to_string()),
+        Dim::Dyn(_) => Some(DYN_DIM.to_string()),
     }
 }
 
@@ -5770,7 +5770,7 @@ impl<'r> Lowerer<'r> {
             };
             let local_dims: Vec<bool> = dims.iter().map(local_dim).collect();
             let dynamic =
-                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn));
+                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn(_)));
             let mut extents: Vec<Register> = Vec::new();
             let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
@@ -5780,7 +5780,7 @@ impl<'r> Lowerer<'r> {
                 };
                 for (i, d) in dims.iter().enumerate() {
                     let extent = match d {
-                        Dim::Dyn => written_shape
+                        Dim::Dyn(_) => written_shape
                             .filter(|s| s.len() == dims.len())
                             .map(|s| &s[i])?,
                         Dim::Static(e) if local_dims[i] => e,
@@ -8148,7 +8148,7 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 /// corpus sweep's histogram measures the gap.
 fn is_dyn_tensor(ty: &Type) -> bool {
     match ty {
-        Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn)),
+        Type::Tensor(_, dims, _) => dims.iter().any(|d| matches!(d, Dim::Dyn(_))),
         Type::Verified(inner)
         | Type::Distinct(inner)
         | Type::DisjointRanges(inner)

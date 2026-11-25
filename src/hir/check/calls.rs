@@ -846,19 +846,29 @@ impl<'a> TypeChecker<'a> {
                 .find(|(f, _)| f.name.as_ref() == name)
                 .map(|(f, _)| f)
         });
-        let Some((params, requires)) = callee.filter(|f| !f.requires.is_empty()).map(|f| {
-            let params: Vec<_> = f.params.iter().map(|(p, _)| p.clone()).collect();
-            (
-                params,
-                f.requires
-                    .iter()
-                    .map(|req| self.typed_callee_contract(req, &f.params, &f.return_type))
-                    .collect::<Vec<_>>(),
-            )
-        }) else {
+        let Some((callee_params, callee_requires, callee_return)) =
+            callee.map(|f| (f.params.clone(), f.requires.clone(), f.return_type.clone()))
+        else {
             return;
         };
-        let mut names = HashMap::new();
+        // The callee's extent names are the extents of the arguments. The prover knows nothing
+        // about an extent that the caller does not know.
+        let extents = self.callee_extent_values(&callee_params, args, &mut |name| {
+            Expr::Identifier(IdentifierExpr {
+                name: format!("$extent_{}_{}_{name}", span.line, span.column).into(),
+                span: *span,
+            })
+        });
+        self.report_extent_mismatches(shown, &extents.mismatches, span);
+        if callee_requires.is_empty() {
+            return;
+        }
+        let params: Vec<_> = callee_params.iter().map(|(p, _)| p.clone()).collect();
+        let requires = callee_requires
+            .iter()
+            .map(|req| self.typed_callee_contract(req, &callee_params, &callee_return))
+            .collect::<Vec<_>>();
+        let mut names = extents.values;
         for (i, (param, arg)) in params.iter().zip(args).enumerate() {
             let arg = crate::hir::prover::without_borrow(arg);
             let value = if crate::hir::prover::is_modelled(arg) {
@@ -3022,7 +3032,7 @@ impl<'a> TypeChecker<'a> {
             // takes exactly the arguments the other cannot. `::fill(v)` adds one on top: the
             // value, which no other constructor takes.
             let fills = resolved_name == "Tensor::fill";
-            let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn)));
+            let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn(_))));
             let wanted = usize::from(dynamic) + usize::from(fills);
             if args.len() != wanted {
                 let why = if fills {
@@ -3210,7 +3220,7 @@ impl<'a> TypeChecker<'a> {
                     if self.eval_expr(&d, &env).is_some() {
                         Dim::Static(d)
                     } else {
-                        Dim::Dyn
+                        Dim::Dyn(None)
                     }
                 })
                 .collect::<Vec<_>>();
@@ -3365,11 +3375,11 @@ impl<'a> TypeChecker<'a> {
                                 if self.eval_expr(a, &env).is_some() {
                                     Dim::Static(a.clone())
                                 } else {
-                                    Dim::Dyn
+                                    Dim::Dyn(None)
                                 }
                             })
                             .collect(),
-                        None => vec![Dim::Dyn; rank],
+                        None => vec![Dim::Dyn(None); rank],
                     };
                     Some(Type::Tensor(e, dims, place))
                 }
