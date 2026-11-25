@@ -185,7 +185,9 @@ pub fn trusted_code(program: &Program) -> Vec<(TrustedCode, Trusted)> {
     bodies.extend(defaults.filter_map(|m| m.default_body.as_deref()));
     for body in bodies {
         crate::syntax::visit_exprs(body, &mut |e| match e {
-            Expr::UnsafeBlock(b) if !b.generated && b.task.is_none() => add(
+            // The parser keeps the `{ .. }` of a closure as a block of this kind. The walk still
+            // goes into it, so an `unsafe` block that the closure writes counts.
+            Expr::UnsafeBlock(b) if !b.generated && b.task.is_none() && !b.closure_body => add(
                 TrustedCode::UnsafeBlock,
                 b.span,
                 "an `unsafe` block".to_string(),
