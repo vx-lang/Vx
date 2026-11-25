@@ -23,6 +23,10 @@ extern {
   pub fn vx_unix_timestamp() -> f64;
   /// The Rust core behind `bench_report`.
   pub fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32;
+  /// The Rust core behind `cycles`.
+  pub fn vx_cycles() -> u64;
+  /// The Rust core behind `cycles_to_ns`. Gives -1 when the answer does not fit in an `i64`.
+  pub fn vx_cycles_to_ns(c : u64) -> i64;
 }
 
 /// A reading of a clock that never goes back, for measuring how long something took. Only the
@@ -184,6 +188,29 @@ impl Interval {
       ns: self.start.ns + self.period_ns * k
     };
   }
+}
+
+/// A reading of the CPU's counter that ticks at a constant rate: `rdtsc` on x86-64 and
+/// `cntvct_el0` on aarch64. A reading is one function call to the runtime with no system call, so
+/// it costs less than `Instant::now` and it can stamp each packet or message.
+///
+/// The unit is one tick of that counter, not a nanosecond, and the rate depends on the machine.
+/// On x86-64 the rate is constant only on a CPU with an invariant TSC.
+/// It is not wall time: a reading is not a time of day, and only the difference of two readings
+/// means something. The counter goes forward on one core. Compare readings from two cores only
+/// when the CPU keeps their counters in step. Give `cycles_to_ns` the difference of two readings,
+/// later minus earlier, to get nanoseconds.
+pub fn cycles() -> u64 {
+  return unsafe { vx_cycles() };
+}
+
+/// `c` ticks of `cycles` in nanoseconds. On x86-64 the first call measures the rate of the counter
+/// against the clock of `Instant` for 10 ms. Stops the program when the answer does not fit in an
+/// `i64`.
+pub fn cycles_to_ns(c : u64) -> i64 {
+  let ns = unsafe { vx_cycles_to_ns(c) };
+  assert(ns >= 0, "cycles_to_ns: the ticks are too many nanoseconds for an i64");
+  return ns;
 }
 
 /// Seconds since the Unix epoch, as an `f64`. Wall-clock time, so it can move backwards

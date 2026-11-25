@@ -146,6 +146,14 @@ cancel of the `tasks` block, or the limit of `within`, ends the sleep early
 ([Cancellation](tasks.md#cancellation)). `sleep` gives `true` when the whole time passed, and
 `false` when it ended early. `sleep_until(at)` sleeps until the `Instant` `at`.
 
+To stamp each packet or message, use `cycles()`, which costs less than `Instant::now()`. It is one
+function call that reads the CPU's counter that ticks at a constant rate:
+`rdtsc` on x86-64 and `cntvct_el0` on aarch64. Its unit is one tick of that counter, not a
+nanosecond, and it is not wall time. On x86-64 the rate is constant only on a CPU with an
+invariant TSC. Only the difference of two readings means something.
+`cycles_to_ns(later - earlier)` gives that difference in nanoseconds. The counter goes forward on
+one core. Compare readings from two cores only when the CPU keeps their counters in step.
+
 For periodic work, use an `Interval`. `Interval::new(period)` makes one, and each `tick()` waits
 for the next tick. Tick `k` is due `k` periods after `Interval::new`. So a late tick does not move
 the ticks after it, and the ticks do not drift. `tick()` gives the time when the tick was due, or
