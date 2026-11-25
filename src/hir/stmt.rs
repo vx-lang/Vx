@@ -1449,6 +1449,10 @@ impl<'a> TypeChecker<'a> {
                         Type::Scalar(ElementType::I64)
                     }
                 }
+                // An element of a tensor of rank 2 or more is a row.
+                Type::Tensor(el_ty, dims, top) if dims.len() > 1 => {
+                    Type::Tensor(el_ty, dims[1..].to_vec(), top)
+                }
                 Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
                 // A scalar iterable is an integer range (`a..b`); the induction variable takes
                 // the range's element type, so `for i in 0..10` binds `i: i32` and code like

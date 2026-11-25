@@ -1,0 +1,36 @@
+//===- index_of_a_number.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A number has no index. Each function below indexes a number, and each gets one type error
+// at that index.
+
+fn index_of_an_f32() -> f32 {
+  let x : f32 = 1.0;
+  return x[0];
+}
+
+// `q` has two dimensions, so `q[0][0]` is an `f32`.
+fn one_index_too_many() -> f32 {
+  let q = Tensor<f32, [4, 3]>::fill(1.0);
+  return q[0][0][0];
+}
+
+fn index_of_an_element() -> f32 {
+  let q = Tensor<f32, [4, 3]>::fill(1.0);
+  let e = q[0][0];
+  return e[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:15:11: Cannot index a value of type f32
+// CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:21:17: Cannot index a value of type f32
+// CHECK: Error[E3004] at {{.*}}index_of_a_number.vx:27:11: Cannot index a value of type f32

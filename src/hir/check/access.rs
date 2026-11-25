@@ -1818,6 +1818,11 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type(idx);
                 self.checking_assign_lhs = lhs;
 
+                // `p[i]` on a `&mut f32` reads the buffer that `p` points into, as a pointer does.
+                let number_by_reference = match &obj_ty {
+                    Type::Borrow { inner, .. } => matches!(**inner, Type::Scalar(_)),
+                    _ => false,
+                };
                 // Look through a Pinned/Ref device wrapper to the underlying tensor so that
                 // indexing a transferred tensor follows the same rule as a local one.
                 let base = match obj_ty {
@@ -1952,7 +1957,10 @@ impl<'a> TypeChecker<'a> {
                         return t;
                     }
                     elem
-                } else if let Type::Scalar(el_ty) = base {
+                } else if let (Type::Scalar(el_ty), true) = (
+                    base.clone(),
+                    number_by_reference || self.indexes_a_tensor_of_unknown_rank(obj),
+                ) {
                     // A dynamically shaped `Tensor<T>` carries no dims, so the branch above
                     // takes `dims.len() > 1` as false and the *first* index already yields
                     // `Scalar(T)`. The second index of `t[i][j]` therefore arrives here with a
@@ -1980,7 +1988,7 @@ impl<'a> TypeChecker<'a> {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3004,
                             format!("Cannot index a value of type {}", base),
-                            None,
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
                         );
                     }
                     Type::Unknown
@@ -1988,6 +1996,31 @@ impl<'a> TypeChecker<'a> {
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
+    }
+
+    /// Whether `base`, a number that is indexed, is an index of a tensor whose number of
+    /// dimensions is not known, such as `t[i]` for a `Tensor<f32>`. Only then can a number
+    /// take a further index. `x[0]` for an `f32 x`, and `q[0][0][0]` for a 2-D `q`, cannot.
+    fn indexes_a_tensor_of_unknown_rank(&self, base: &Expr) -> bool {
+        let Expr::IndexAccess(first) = base else {
+            return false;
+        };
+        let mut ix = first;
+        while let Expr::IndexAccess(inner) = &*ix.base {
+            ix = inner;
+        }
+        let mut root = self.check_expr_type_probe(&ix.base);
+        while let Type::Borrow { inner, .. }
+        | Type::Pinned(inner, _)
+        | Type::Ref(inner, _)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner) = root
+        {
+            root = *inner;
+        }
+        // The probe does not know every expression, such as a method call. Keep the old
+        // answer for those, and refuse only a tensor whose dimensions are known.
+        !matches!(root, Type::Tensor(_, dims, _) if !dims.is_empty())
     }
 
     /// `holder` gets a copy of the `&mut` in `from`, as in `let b = a` or `H { r : a }`. That
