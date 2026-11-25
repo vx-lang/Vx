@@ -1,0 +1,37 @@
+//===- a_closure_call_gives_an_integer_literal_the_parameter_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An integer literal given to a closure or a function pointer takes the type of the
+// parameter, as it does in a direct call of a function. Each call below passes `2` to an
+// `i64` parameter, in a different way.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}closure in a variable 3{{$}}
+// CHECK: {{^}}closure in parentheses 13{{$}}
+// CHECK: {{^}}closure value 102{{$}}
+// CHECK: {{^}}closure value in parentheses 102{{$}}
+// CHECK: {{^}}function pointer 4{{$}}
+
+fn double(x : i64) -> i64 {
+  return x * 2;
+}
+
+fn main() -> i32 {
+  let add_one = | x : i64 | x + 1;
+  println!("closure in a variable {}", add_one(2));
+  let add_ten = | x : i64 | x + 11;
+  println!("closure in parentheses {}", (add_ten)(2));
+  let add_hundred = | x : i64 | -> i64 {
+    x + 100
+  } as | i64 | -> i64;
+  println!("closure value {}", add_hundred(2));
+  println!("closure value in parentheses {}", (add_hundred)(2));
+  let f = double;
+  println!("function pointer {}", f(2));
+  return 0;
+}
