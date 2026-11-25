@@ -67,7 +67,7 @@ fn offset_mut<T, M : Memory>(p : *mut T in Memory::M, count : i64) -> *mut T in 
 /// Copies `count` values from `src` to `dst`, as C's `memmove` does. The two ranges may overlap.
 /// The values are copied bit for bit, so for a type that is not `Copy`, only one of the two
 /// copies may be dropped.
-unsafe fn copy<T>(src : *const T, dst : *mut T, count : usize) -> void {
+pub unsafe fn copy<T>(src : *const T, dst : *mut T, count : usize) -> void {
   let bytes = (count as i64) * sizeof<T>();
   let _copied : i64 = mlir!( inputs : (%s = src : !llvm.ptr, %d = dst : !llvm.ptr, %b = bytes : i64), returns : i64, dialects : ["llvm"]) {
     "llvm.intr.memmove"(%d, %s, %b) < {
