@@ -188,6 +188,44 @@ macro_rules stamp_signed_int {
         return q;
       }
 
+      /// Nothing on division by zero, or on the smallest value divided by -1.
+      pub fn checked_div_euclid(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self.div_euclid(rhs));
+      }
+
+      /// Refused in the same two cases as `checked_div_euclid`.
+      pub fn checked_rem_euclid(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self.rem_euclid(rhs));
+      }
+
+      /// The smallest value divided by -1 gives itself. Refused on a zero divisor, as `/` is.
+      pub fn wrapping_div_euclid(self : $t, rhs : $t) -> $t {
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return self;
+        }
+        return self.div_euclid(rhs);
+      }
+
+      /// The smallest value by -1 gives 0. Refused on a zero divisor, as `%` is.
+      pub fn wrapping_rem_euclid(self : $t, rhs : $t) -> $t {
+        if self == self.min_value() && rhs == (-1 as $t) {
+          return 0;
+        }
+        return self.rem_euclid(rhs);
+      }
+
       /// This raised to `exp`, or nothing if the answer does not fit.
       pub fn checked_pow(self : $t, exp : $t) -> Option<$t> {
         assert(exp >= (0 as $t), "checked_pow takes a non-negative exponent");
@@ -743,6 +781,32 @@ macro_rules stamp_unsigned_int {
         return self % rhs;
       }
 
+      /// Nothing on division by zero, which is the only division that fails here.
+      pub fn checked_div_euclid(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self / rhs);
+      }
+
+      /// Refused on a zero divisor, as `checked_div_euclid` is.
+      pub fn checked_rem_euclid(self : $t, rhs : $t) -> Option<$t> {
+        if rhs == (0 as $t) {
+          return Option<$t>::None();
+        }
+        return Option<$t>::Some(self % rhs);
+      }
+
+      /// Plain division, since an unsigned quotient never wraps. Refused on a zero divisor.
+      pub fn wrapping_div_euclid(self : $t, rhs : $t) -> $t {
+        return self / rhs;
+      }
+
+      /// Plain remainder, since an unsigned remainder never wraps. Refused on a zero divisor.
+      pub fn wrapping_rem_euclid(self : $t, rhs : $t) -> $t {
+        return self % rhs;
+      }
+
       /// This raised to `exp`, or nothing if the answer does not fit.
       pub fn checked_pow(self : $t, exp : $t) -> Option<$t> {
         assert(exp >= (0 as $t), "checked_pow takes a non-negative exponent");
@@ -1214,6 +1278,32 @@ impl usize {
 
   /// Plain remainder, which is never negative.
   pub fn rem_euclid(self : usize, rhs : usize) -> usize {
+    return self % rhs;
+  }
+
+  /// Nothing on division by zero, the only division that fails here.
+  pub fn checked_div_euclid(self : usize, rhs : usize) -> Option<usize> {
+    if rhs == 0 {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self / rhs);
+  }
+
+  /// Nothing on a zero divisor, as `checked_div_euclid`.
+  pub fn checked_rem_euclid(self : usize, rhs : usize) -> Option<usize> {
+    if rhs == 0 {
+      return Option<usize>::None();
+    }
+    return Option<usize>::Some(self % rhs);
+  }
+
+  /// Plain division, since a `usize` quotient never wraps. Refused on a zero divisor.
+  pub fn wrapping_div_euclid(self : usize, rhs : usize) -> usize {
+    return self / rhs;
+  }
+
+  /// Plain remainder, since a `usize` remainder never wraps. Refused on a zero divisor.
+  pub fn wrapping_rem_euclid(self : usize, rhs : usize) -> usize {
     return self % rhs;
   }
 
