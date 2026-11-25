@@ -10,8 +10,9 @@
 // lanes 960 times. The first loop reads the output once, at the end. The second
 // reads `x[0]` with `transfer(&x, Memory::CPU_DRAM)` after each launch, so each
 // launch pays a wait for the GPU. Each run prints the wall time of each loop,
-// divided by the launches. The reads go through a `&` parameter, so each read
-// is in place, and the cost of the loop is the wait.
+// divided by the launches; round 0 only warms up, so it prints nothing. The reads
+// go through a `&` parameter, so each read is in place, and the cost of the loop
+// is the wait.
 //
 // Run from the repository root:
 //
