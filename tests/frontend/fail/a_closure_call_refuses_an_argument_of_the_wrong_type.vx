@@ -1,0 +1,40 @@
+//===- a_closure_call_refuses_an_argument_of_the_wrong_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A literal given to a closure or a function pointer takes the parameter type. A value that
+// already has a type does not. Each call below passes an `i32` variable or a float literal to an
+// `i64` parameter, and each one gives an error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Type mismatch in argument 1 for closure 'add_one'. Expected i64, got i32
+// CHECK: Type mismatch in argument 1 for closure 'add_one'. Expected i64, got f32
+// CHECK: Type mismatch in argument 1 for closure. Expected i64, got i32
+// CHECK: Type mismatch in argument 1 for closure 'add_hundred'. Expected i64, got i32
+// CHECK: Type mismatch in argument 1 for closure fat pointer. Expected i64, got i32
+// CHECK: Type mismatch in argument 1 for function pointer 'f'. Expected i64, got i32
+// CHECK: 6 error(s) emitted
+
+fn double(x : i64) -> i64 {
+  return x * 2;
+}
+
+fn main() -> i32 {
+  let n : i32 = 2;
+  let add_one = | x : i64 | x + 1;
+  println!("{}", add_one(n));
+  println!("{}", add_one(2.5));
+  let add_ten = | x : i64 | x + 10;
+  println!("{}", (add_ten)(n));
+  let add_hundred = | x : i64 | -> i64 {
+    x + 100
+  } as | i64 | -> i64;
+  println!("{}", add_hundred(n));
+  println!("{}", (add_hundred)(n));
+  let f = double;
+  println!("{}", f(n));
+  return 0;
+}
