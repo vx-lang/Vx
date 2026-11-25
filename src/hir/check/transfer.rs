@@ -811,6 +811,11 @@ impl<'a> TypeChecker<'a> {
                 return;
             };
             let Some(raw) = crate::hir::memory::static_tensor_bytes(elem, dims) else {
+                // A parameter, a return type, a struct field or a raw pointer makes no tensor.
+                // The code that makes the tensor gets the check, or this warning.
+                if !record {
+                    return;
+                }
                 // A dynamic (non-literal) shape placed in a capacity-bounded space cannot be
                 // capacity-checked (E6009/E6010) — warn rather than skip silently, so the user knows
                 // the placement is unverified. We are past the `capacity` guard above, so there
