@@ -342,6 +342,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_matmul_sums_that_stay_in_shared_memory.vx",
         // needs --machine
         "optimizations/pass/a_gpu_kernel_the_cpu_cannot_run_names_its_function_and_line.vx",
+        // needs --machine
+        "optimizations/pass/gpu_region_uses_a_tensor_field_of_a_struct.vx",
+        // needs --host
+        "optimizations/pass/gpu_region_reads_a_tensor_field_after_it_changes_the_field.vx",
     ];
     // Each program is its own run of vxc, so the programs run in parallel. `collect` keeps the
     // order of the corpus, so the messages below do not change from run to run.

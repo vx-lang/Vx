@@ -1,0 +1,43 @@
+//===- gpu_region_reads_a_tensor_field_after_it_changes_the_field.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The GPU of this machine sees host memory, so a GPU region can give a tensor field of a host
+// struct a new tensor. The uses of the field after that are of the new tensor: the region
+// reads 2.0 from it and stores 7.0 in it. The compiler must not read the field one time before
+// the region, because that gives the old tensor.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: elements: 7 2
+
+Memory HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
+}
+Topology Gpu {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::CPU_DRAM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 31.5 GB/s
+}
+
+struct Holder {
+  t : Tensor<f32, [?], Memory::HBM>
+}
+
+fn main() -> i32 {
+  let mut h = Holder {
+    t: transfer(Tensor<f32, [4]>::fill(1.0), Memory::HBM)
+  };
+  spawn on(Topology::Gpu) {
+    h.t = transfer(Tensor<f32, [4]>::fill(2.0), Memory::HBM);
+    h.t[0] = h.t[1] + 5.0;
+  }
+  let home = transfer(h.t, Memory::CPU_DRAM);
+  println!("elements: {} {}", home[0], home[1]);
+  return 0;
+}

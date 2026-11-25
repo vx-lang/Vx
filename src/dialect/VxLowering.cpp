@@ -6799,6 +6799,116 @@ static void readCellsBeforeSpawns(ModuleOp module) {
   });
 }
 
+// The variable that the address `addr` points into: the base of its
+// `llvm.getelementptr` operations.
+static Value baseOfAddress(Value addr) {
+  while (auto gep = addr.getDefiningOp<LLVM::GEPOp>())
+    addr = gep.getBase();
+  return addr;
+}
+
+// A copy before `spawn` of the value `v` of its region. The region must
+// compute `v` from the code around it with pure operations, and with loads
+// from memory that the region does not write. `written` has the base of each
+// address that the region can write. A copy equal to one in `hoisted` is that
+// one, so two reads of one field give one value. Null when the region computes
+// `v` in another way.
+static Value hostValueBeforeSpawn(Value v, vx::SpawnOp spawn, OpBuilder &b,
+                                  IRMapping &copied,
+                                  const SmallPtrSetImpl<Value> &written,
+                                  SmallVectorImpl<Operation *> &hoisted,
+                                  int depth = 0) {
+  auto inRegion = [&](Value value) {
+    Operation *def = value.getDefiningOp();
+    return spawn->isAncestor(def ? def : value.getParentBlock()->getParentOp());
+  };
+  if (copied.contains(v))
+    return copied.lookup(v);
+  if (!inRegion(v))
+    return v;
+  Operation *def = v.getDefiningOp();
+  if (!def || depth > 16 || def->getNumRegions() != 0)
+    return nullptr;
+  if (auto load = dyn_cast<LLVM::LoadOp>(def)) {
+    Value base = baseOfAddress(load.getAddr());
+    if (load.getVolatile_() || inRegion(base) || written.contains(base))
+      return nullptr;
+  } else if (!isPure(def)) {
+    return nullptr;
+  }
+  for (Value operand : def->getOperands())
+    if (!hostValueBeforeSpawn(operand, spawn, b, copied, written, hoisted,
+                              depth + 1))
+      return nullptr;
+  Operation *copy = b.clone(*def, copied);
+  for (Operation *earlier : hoisted) {
+    if (!OperationEquivalence::isEquivalentTo(
+            earlier, copy, OperationEquivalence::exactValueMatch, nullptr,
+            OperationEquivalence::IgnoreLocations))
+      continue;
+    copy->erase();
+    for (unsigned i = 0, e = def->getNumResults(); i < e; ++i)
+      copied.map(def->getResult(i), earlier->getResult(i));
+    return copied.lookup(v);
+  }
+  hoisted.push_back(copy);
+  return copied.lookup(v);
+}
+
+// Erase `op` of `region` when nothing uses it, then each operation that only
+// `op` used.
+static void eraseUnusedInRegion(Operation *op, Operation *region) {
+  if (!region->isProperAncestor(op) || !isOpTriviallyDead(op))
+    return;
+  llvm::SmallSetVector<Operation *, 4> defs;
+  for (Value operand : op->getOperands())
+    if (Operation *def = operand.getDefiningOp())
+      defs.insert(def);
+  op->erase();
+  for (Operation *def : defs)
+    eraseUnusedInRegion(def, region);
+}
+
+// Read the tensor in a field of a host struct once before a device
+// `vx.spawn`. The region reads the field with a load from the struct. The
+// struct is in host memory, which a GPU cannot read. After this, the kernel
+// takes the tensor itself. A region that can write the struct keeps its loads.
+static void readTensorFieldsBeforeSpawns(ModuleOp module) {
+  module.walk([](vx::SpawnOp spawn) {
+    if (spawn.getTopology() == 0)
+      return;
+    SmallVector<UnrealizedConversionCastOp> tensors;
+    llvm::SmallPtrSet<Value, 4> written;
+    spawn.getBody().walk([&](Operation *op) {
+      if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op);
+          cast && cast->getNumResults() == 1 &&
+          isa<BaseMemRefType>(cast->getResult(0).getType()))
+        tensors.push_back(cast);
+      if (isa<LLVM::LoadOp, LLVM::GEPOp>(op))
+        return;
+      for (Value operand : op->getOperands())
+        if (isa<LLVM::LLVMPointerType>(operand.getType()))
+          written.insert(baseOfAddress(operand));
+    });
+    OpBuilder builder(spawn);
+    IRMapping copied;
+    SmallVector<Operation *> hoisted;
+    for (UnrealizedConversionCastOp cast : tensors) {
+      Value tensor = hostValueBeforeSpawn(cast->getResult(0), spawn, builder,
+                                          copied, written, hoisted);
+      if (!tensor)
+        continue;
+      cast->getResult(0).replaceAllUsesWith(tensor);
+      eraseUnusedInRegion(cast, spawn);
+    }
+    // A value that could not be read before the region leaves its first
+    // copies with no use.
+    for (Operation *copy : llvm::reverse(hoisted))
+      if (isOpTriviallyDead(copy))
+        copy->erase();
+  });
+}
+
 // The value from the code around a region that every `vx.yield` of the region
 // gives, or null if the region makes its value or yields none.
 static Value capturedSpawnResult(vx::SpawnOp spawn) {
@@ -9259,6 +9369,7 @@ struct ConvertVxToStandardPass
     copyPlacedArgumentsToTheHeap(getOperation());
     placeTransferFrees(getOperation());
     readCellsBeforeSpawns(getOperation());
+    readTensorFieldsBeforeSpawns(getOperation());
     promoteBufferCells(getOperation());
     // After the cells are promoted, so that a value the region reads from a
     // cell is a plain value.
