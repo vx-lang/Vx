@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // `vxc --audit` prints each fact that the compiler trusts without a proof, one line each, in the
 // order of the file and the line. Here: the `ensures` of an `extern` function, the pointer
-// `requires` of a `pub fn`, each `assume`, the `assume`s of `Vec::as_mut_ptr`, and the clauses
+// `requires` of an `extern fn`, each `assume`, the `assume`s of `Vec::as_mut_ptr`, and the clauses
 // that a call in `unsafe` code trusts. A call in `unsafe` code whose clauses the compiler proves
 // is not in the list, and its `unsafe` block gets W1010. The block of the other call does not.
 // The audit also lists the trusted code of the file: each `extern` function and each `unsafe`
@@ -59,7 +59,7 @@ requires initialized(p, n)
   return total;
 }
 
-pub fn fill(p : *mut i64, n : i64) -> void
+extern fn fill(p : *mut i64, n : i64) -> void
 requires valid(p, n)
 {
   for i in 0i64..n {

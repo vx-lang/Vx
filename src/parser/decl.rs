@@ -1935,9 +1935,7 @@ impl<'a> Parser<'a> {
                     return Err(self.error_at(&start, "a generic function cannot be `extern`"));
                 }
                 f.is_pub = is_pub;
-                // Until the tests that read a C name say `extern fn`, a `pub fn` that is not
-                // generic is exported too.
-                f.exported = exported || (is_pub && f.generics.is_empty());
+                f.exported = exported;
                 f.doc_comment = doc_comment;
                 // Vx has no overloading: a second `fn foo` replaced the first without a word.
                 let earlier = defined_at.get(&f.name).copied().or_else(|| {

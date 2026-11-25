@@ -33,13 +33,14 @@ pub fn warn_functions_nothing_calls(program: &Program, errors: &mut DiagnosticsV
         return;
     }
 
-    // Code outside the program can call an exported function, like `main`.
+    // Code in another file can call a `pub fn`, and code outside the program can call an exported
+    // function, like `main`.
     let mut to_visit: Vec<String> = vec!["main".to_string()];
     to_visit.extend(
         program
             .functions
             .iter()
-            .filter(|f| f.exported)
+            .filter(|f| f.is_pub || f.exported)
             .map(|f| f.name.to_string()),
     );
     for i in &program.impls {
