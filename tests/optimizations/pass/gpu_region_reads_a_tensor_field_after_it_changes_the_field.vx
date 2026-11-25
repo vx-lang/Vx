@@ -8,11 +8,17 @@
 // The GPU of this machine sees host memory, so a GPU region can give a tensor field of a host
 // struct a new tensor. The uses of the field after that are of the new tensor: the region
 // reads 2.0 from it and stores 7.0 in it. The compiler must not read the field one time before
-// the region, because that gives the old tensor.
+// such a region, because that gives the old tensor. The first region writes the field by its
+// name, `h.t`. The second region writes it through `r`, which points at `g`.
 //
-// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --run 2>&1 | FileCheck %s --implicit-check-not=Error
-// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --run 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: elements: 7 2
+// The third region writes no host memory. The compiler reads its field before the launch, so
+// the GPU code generator gets no cast of a value from host memory.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --run 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not="op 'builtin.unrealized_conversion_cast'"
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --run 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not="op 'builtin.unrealized_conversion_cast'"
+// CHECK: by its name: 7 2
+// CHECK: through a reference: 7 2
+// CHECK: only reads: 8
 
 Memory HBM {
   capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
@@ -38,6 +44,31 @@ fn main() -> i32 {
     h.t[0] = h.t[1] + 5.0;
   }
   let home = transfer(h.t, Memory::CPU_DRAM);
-  println!("elements: {} {}", home[0], home[1]);
+  println!("by its name: {} {}", home[0], home[1]);
+
+  let mut g = Holder {
+    t: transfer(Tensor<f32, [4]>::fill(1.0), Memory::HBM)
+  };
+  let mut spare = Holder {
+    t: transfer(Tensor<f32, [4]>::fill(3.0), Memory::HBM)
+  };
+  let mut r = &mut spare;
+  r = &mut g;
+  spawn on(Topology::Gpu) {
+    r.t = transfer(Tensor<f32, [4]>::fill(2.0), Memory::HBM);
+    g.t[0] = g.t[1] + 5.0;
+  }
+  let g_home = transfer(g.t, Memory::CPU_DRAM);
+  println!("through a reference: {} {}", g_home[0], g_home[1]);
+
+  let w = Holder {
+    t: transfer(Tensor<f32, [4]>::fill(4.0), Memory::HBM)
+  };
+  let mut out = transfer(Tensor<f32, [4]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Gpu) {
+    out[0] = w.t[1] * 2.0;
+  }
+  let out_home = transfer(out, Memory::CPU_DRAM);
+  println!("only reads: {}", out_home[0]);
   return 0;
 }

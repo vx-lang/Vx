@@ -971,6 +971,10 @@ impl<'a> TypeChecker<'a> {
     /// tensor, such as `h` in `h.t` or in `h.layer.t`. A device region can use such a field of
     /// a host struct: the launch reads the handle of the tensor on the host and passes it.
     fn root_of_a_placed_field(&self, place: &Expr) -> Option<crate::syntax::Span> {
+        // Host code sees the struct, so only a device region needs the answer.
+        if matches!(self.active_topology, Topology::CPU) {
+            return None;
+        }
         let Expr::MemberAccess(field) = place else {
             return None;
         };
