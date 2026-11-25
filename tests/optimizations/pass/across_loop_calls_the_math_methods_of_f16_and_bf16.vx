@@ -1,0 +1,70 @@
+// An `across` loop calls the math methods of `f16` and `bf16`, as it can for `f32`. These
+// methods write nothing, so the race check must accept each call. `exp` and `tanh` call the
+// library code for the narrow type. `fast_exp` and `fast_tanh` use the target's own math.
+// The test runs both kernels on the CPU copy of the GPU code, and builds them for the GPU.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=PTX --input-file=%t.ptx
+//
+// PTX-DAG: .entry half_math(
+// PTX-DAG: .entry brain_math(
+//
+// x = 0.5, so exp(x) + tanh(x) = 2.1108. The test prints this sum times 100, cut to a whole
+// number. Lane 0 uses `exp` and `tanh`, and lane 1 uses `fast_exp` and `fast_tanh`.
+// `bf16` keeps fewer digits, so its sum rounds to 2.109.
+// CHECK: {{^}}half 211 211{{$}}
+// CHECK: {{^}}brain 210 210{{$}}
+
+import core::num;
+
+fn half_math(out : &mut Tensor<f16, [?], Memory::HBM>, x : &Tensor<f16, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..2 across lanes {
+        let v = x[l];
+        if l == 0 {
+          out[l] = v.exp() + v.tanh();
+        } else {
+          out[l] = v.fast_exp() + v.fast_tanh();
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn brain_math(out : &mut Tensor<bf16, [?], Memory::HBM>, x : &Tensor<bf16, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..2 across lanes {
+        let v = x[l];
+        if l == 0 {
+          out[l] = v.exp() + v.tanh();
+        } else {
+          out[l] = v.fast_exp() + v.fast_tanh();
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut h = transfer(Tensor<f16, [?]>::new([2]), Memory::HBM);
+  let mut hx = Tensor<f16, [?]>::new([2]);
+  hx[0] = 0.5;
+  hx[1] = 0.5;
+  half_math(&mut h, &transfer(hx, Memory::HBM));
+  let hs = transfer(h, Memory::CPU_DRAM);
+  println!("half {} {}", (hs[0] as f32 * 100.0) as i32, (hs[1] as f32 * 100.0) as i32);
+  let mut g = transfer(Tensor<bf16, [?]>::new([2]), Memory::HBM);
+  let mut gx = Tensor<bf16, [?]>::new([2]);
+  gx[0] = 0.5;
+  gx[1] = 0.5;
+  brain_math(&mut g, &transfer(gx, Memory::HBM));
+  let gs = transfer(g, Memory::CPU_DRAM);
+  println!("brain {} {}", (gs[0] as f32 * 100.0) as i32, (gs[1] as f32 * 100.0) as i32);
+  return 0;
+}
