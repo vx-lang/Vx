@@ -853,11 +853,19 @@ impl<'a> TypeChecker<'a> {
                     let bare_some = matches!(
                         expr,
                         Expr::FunctionCall(c)
-                            if (c.name.as_ref() == "Some" || c.name.as_ref() == "Option::Some")
-                                && c.owner_type_args.is_none()
-                    ) && ann.to_string().starts_with("Option<");
+                            if c.name.as_ref() == "Some" && c.owner_type_args.is_none()
+                    ) || matches!(
+                        expr,
+                        Expr::EnumVariant(v)
+                            if v.enum_name.as_ref() == "Option"
+                                && v.variant_name.as_ref() == "Some"
+                                && v.type_args.as_ref().is_none_or(|a| a.is_empty())
+                    );
+                    let bare_some = bare_some
+                        && matches!(&*ann, Type::GenericInstance(base, _)
+                        if matches!(&**base, Type::Enum(n, _) | Type::Struct(n, _) if n.as_ref() == "Option"));
                     let hint = if bare_some {
-                        format!("; write `{ann}::Some(value)`")
+                        format!(". Write `{ann}::Some(value)`")
                     } else {
                         String::new()
                     };

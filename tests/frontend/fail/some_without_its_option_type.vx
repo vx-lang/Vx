@@ -13,11 +13,13 @@
 import core::option;
 
 fn main() -> i32 {
-  // CHECK: '_a' is declared Option<i64> but its initializer is Option; write `Option<i64>::Some(value)`
+  // CHECK: '_a' is declared Option<i64> but its initializer is Option. Write `Option<i64>::Some(value)`
   let _a : Option<i64> = Some(3);
-  // CHECK: '_b' is declared Option<bool> but its initializer is Option; write `Option<bool>::Some(value)`
+  // CHECK: '_b' is declared Option<bool> but its initializer is Option. Write `Option<bool>::Some(value)`
   let _b : Option<bool> = Some(true);
-  // CHECK: '_c' is declared Option<i64> but its initializer is Option<bool>{{$}}
-  let _c : Option<i64> = Option<bool>::None();
+  // CHECK: '_c' is declared Option<i64> but its initializer is Option. Write `Option<i64>::Some(value)`
+  let _c : Option<i64> = Option::Some(3);
+  // CHECK: '_d' is declared Option<i64> but its initializer is Option<bool>{{$}}
+  let _d : Option<i64> = Option<bool>::None();
   return 0;
 }
