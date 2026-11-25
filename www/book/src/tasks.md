@@ -333,8 +333,10 @@ It prints `10 downloads, at most 2 at once`.
 An `acquire` can be cancelled, as a `recv` can. It gives `Cancelled` when the `tasks` block of
 the task was cancelled. `acquire_for(limit)` also gives `TimedOut` after the time limit, and
 `acquire_until(deadline)` at a deadline. `try_acquire()` does not wait: it gives `None` when no
-permit is free. The tasks do not get the permits in the order of their `acquire` calls. So when
-many tasks compete, one waiter can wait without limit.
+permit is free. The drop of a `Permit` wakes one task that waits, the one that waits the
+longest. But another task can take the permit before that task runs. So the tasks do not get the
+permits in the order of their `acquire` calls, and when many tasks compete, one waiter can wait
+without limit.
 
 ### Compared with tokio
 

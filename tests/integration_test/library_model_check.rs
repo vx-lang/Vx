@@ -6,12 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// A model check of the channel, `select` and `Mutex` in `stdlib/std/sync`. Each access to a word
-// there is a `SeqCst` atomic, so each run of the code is some interleaving of its atomic steps.
+// A model check of the channel, `select`, `Mutex` and `Semaphore` in `stdlib/std/sync`. Each
+// access to a word there is a `SeqCst` atomic, so each run of the code is some interleaving of its atomic steps.
 // This file writes the steps of each operation as a small program, copied by hand from the Vx
 // code, and visits every interleaving of a few threads. `wait_while` blocks only while the word
-// holds the value, and `wake_all` wakes only the threads that wait on that word. The runtime can
-// also wake a thread early, which never hides a lost wake, so the model leaves that out.
+// holds the value, and `wake_all` wakes only the threads that wait on that word. `wake_one` wakes
+// one of them, and the search visits a wake of each one. The runtime can also wake a thread
+// early, which never hides a lost wake, so the model leaves that out.
 //
 // The search keeps a 128-bit hash of each state that it saw, not the state (`fingerprint`).
 //
@@ -122,6 +123,15 @@ enum Step {
     },
     WakeAll {
         word: E,
+    },
+    /// Wake one thread that waits on `word`, as `vx_wake_one` does. The search visits a wake of
+    /// each such thread, so a model holds for each thread that the runtime can take.
+    WakeOne {
+        word: E,
+    },
+    /// The time limit of thread `thread` ends its wait. No other thread wakes.
+    EndWait {
+        thread: usize,
     },
     /// Wake each thread that waits, on any word, as a cancel does.
     WakeEvery,
@@ -285,6 +295,10 @@ struct Breaks {
     /// The drop of a broadcast receiver does not take 1 from the counts of the values that it
     /// did not read.
     drop_keeps_its_counts: bool,
+    /// An `acquire` of the `Semaphore` that gives up does not wake the next sleeper.
+    acquire_gives_up_and_wakes_none: bool,
+    /// The drop of a `Permit` wakes a sleeper only when two tasks sleep.
+    permit_drop_needs_two_sleepers: bool,
 }
 
 // The words of a channel, as in `channel.vx`.
@@ -1524,10 +1538,24 @@ impl Model {
         }
     }
 
+    /// The count of ways that the next step of thread `t` can go. A `WakeOne` has one way for
+    /// each thread that waits on its word.
+    fn choices(&self, s: &State, t: usize) -> usize {
+        let th = &s.threads[t];
+        match &self.programs[t][th.pc] {
+            Step::WakeOne { word } => {
+                let w = word.eval(&th.regs);
+                let waiters = s.threads.iter().filter(|o| o.waits_on == Some(w));
+                waiters.count().max(1)
+            }
+            _ => 1,
+        }
+    }
+
     /// Run one step of thread `t`, and then the steps after it that touch only its registers.
     /// No other thread can see those, so running them at once hides no interleaving.
-    /// `Ok(false)` when the thread cannot move.
-    fn step(&self, s: &mut State, t: usize) -> Result<bool, String> {
+    /// `choice` is a number below `choices`. `Ok(false)` when the thread cannot move.
+    fn step(&self, s: &mut State, t: usize, choice: usize) -> Result<bool, String> {
         let th = &s.threads[t];
         if th.waits_on.is_some() || matches!(self.programs[t][th.pc], Step::Done) {
             return Ok(false);
@@ -1538,19 +1566,19 @@ impl Model {
                 return Ok(false);
             }
         }
-        self.act(s, t)?;
+        self.act(s, t, choice)?;
         while s.threads[t].waits_on.is_none()
             && matches!(
                 self.programs[t][s.threads[t].pc],
                 Step::Set { .. } | Step::If { .. } | Step::Jump { .. }
             )
         {
-            self.act(s, t)?;
+            self.act(s, t, 0)?;
         }
         Ok(true)
     }
 
-    fn act(&self, s: &mut State, t: usize) -> Result<(), String> {
+    fn act(&self, s: &mut State, t: usize, choice: usize) -> Result<(), String> {
         let th = &s.threads[t];
         let regs = th.regs;
         let mut pc = th.pc + 1;
@@ -1579,6 +1607,14 @@ impl Model {
                     s.threads[t].waits_on = Some(w);
                 }
             }
+            Step::WakeOne { word } => {
+                let w = word.eval(&regs);
+                let mut waiters = s.threads.iter_mut().filter(|o| o.waits_on == Some(w));
+                if let Some(other) = waiters.nth(choice) {
+                    other.waits_on = None;
+                }
+            }
+            Step::EndWait { thread } => s.threads[*thread].waits_on = None,
             Step::WakeEvery => {
                 for other in s.threads.iter_mut() {
                     other.waits_on = None;
@@ -1771,24 +1807,23 @@ impl Model {
         seen.insert(key(&start, usize::MAX, 0));
         let mut stack = vec![(start, usize::MAX, 0u8)];
         while let Some((s, last, used)) = stack.pop() {
+            // Each move is a thread and the state after its step.
             let mut moves = Vec::new();
             let mut cut = false;
             for t in 0..s.threads.len() {
-                let mut next = s.clone();
-                match self.step(&mut next, t) {
-                    Ok(false) => moves.push(None),
-                    Ok(true) => moves.push(Some(next)),
-                    Err(what) if other(&what) => {
-                        cut = true;
-                        moves.push(None);
+                for choice in 0..self.choices(&s, t) {
+                    let mut next = s.clone();
+                    match self.step(&mut next, t, choice) {
+                        Ok(false) => {}
+                        Ok(true) => moves.push((t, next)),
+                        Err(what) if other(&what) => cut = true,
+                        Err(what) => return Err(found(what, &s)),
                     }
-                    Err(what) => return Err(found(what, &s)),
                 }
             }
-            let last_can_move = moves.get(last).is_some_and(|m| m.is_some());
-            let moved = moves.iter().any(|m| m.is_some());
-            for (t, next) in moves.into_iter().enumerate() {
-                let Some(next) = next else { continue };
+            let last_can_move = moves.iter().any(|m| m.0 == last);
+            let moved = !moves.is_empty();
+            for (t, next) in moves {
                 let used = used + u8::from(last_can_move && t != last);
                 if bound.is_some_and(|k| used > k) {
                     continue;
@@ -1980,6 +2015,8 @@ const NONE: Breaks = Breaks {
     clone_without_the_lock: false,
     drop_without_the_lock: false,
     drop_keeps_its_counts: false,
+    acquire_gives_up_and_wakes_none: false,
+    permit_drop_needs_two_sleepers: false,
 };
 
 #[test]
@@ -2023,6 +2060,214 @@ fn select_on_two_channels() {
 #[test]
 fn mutex_with_three_threads() {
     holds("3 threads, 2 locks each", mutex_model(3, 2, NONE));
+}
+
+// The words of a `Semaphore`, as in `semaphore.vx`.
+const PERMITS: i64 = 0;
+const S_SLEEPERS: i64 = 1;
+// Not 0 when the time limit of the first task passed. `vx_cancelled_at` then gives true in that
+// task, as in a call of `within`. No cancel comes with it, so no other task wakes.
+const LATE: i64 = 2;
+
+/// A task that calls `acquire`, runs the code that the permit guards, and drops the `Permit`.
+/// With `late`, the task has a time limit: when that word is set, its wait ends and its `acquire`
+/// gives up. With `one_permit`, the permit works as a lock, and `Enter` checks that one task at
+/// a time holds it.
+fn acquirer(late: Option<i64>, one_permit: bool, b: Breaks) -> Vec<Step> {
+    let mut a = Asm::new();
+    let (top, sleep, got, wake, gave_up, done) = (
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+        a.label(),
+    );
+    // `acquire`: SEEN is the value of `permits`.
+    a.push(Step::Load {
+        dst: SEEN,
+        word: c(PERMITS),
+    });
+    a.here(top);
+    if let Some(late) = late {
+        a.push(Step::Load {
+            dst: T,
+            word: c(late),
+        });
+        a.jump_if(r(T), Cmp::Ne, c(0), gave_up);
+    }
+    a.jump_if(r(SEEN), Cmp::Eq, c(0), sleep);
+    a.push(Step::Cas {
+        dst: T,
+        word: c(PERMITS),
+        expect: r(SEEN),
+        new: add(r(SEEN), c(-1)),
+    });
+    a.jump_if(r(T), Cmp::Eq, c(1), got);
+    a.push(Step::Load {
+        dst: SEEN,
+        word: c(PERMITS),
+    });
+    a.jump(top);
+    a.here(sleep);
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: c(S_SLEEPERS),
+        delta: c(1),
+    });
+    a.push(Step::WaitWhile {
+        word: c(PERMITS),
+        val: c(0),
+        or_cancel: late,
+    });
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: c(S_SLEEPERS),
+        delta: c(-1),
+    });
+    a.push(Step::Load {
+        dst: SEEN,
+        word: c(PERMITS),
+    });
+    a.jump(top);
+    a.here(got);
+    if one_permit {
+        a.push(Step::Enter);
+        a.push(Step::Leave);
+    }
+    // The drop of the `Permit`.
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: c(PERMITS),
+        delta: c(1),
+    });
+    a.push(Step::Load {
+        dst: T,
+        word: c(S_SLEEPERS),
+    });
+    let enough = if b.permit_drop_needs_two_sleepers {
+        1
+    } else {
+        0
+    };
+    a.jump_if(r(T), Cmp::Gt, c(enough), wake);
+    a.jump(done);
+    // `wake_a_sleeper`, after an `acquire` that gives up.
+    a.here(gave_up);
+    if b.acquire_gives_up_and_wakes_none {
+        a.jump(done);
+    }
+    a.push(Step::Load {
+        dst: T,
+        word: c(PERMITS),
+    });
+    a.jump_if(r(T), Cmp::Eq, c(0), done);
+    a.push(Step::Load {
+        dst: T,
+        word: c(S_SLEEPERS),
+    });
+    a.jump_if(r(T), Cmp::Eq, c(0), done);
+    a.here(wake);
+    a.push(Step::WakeOne { word: c(PERMITS) });
+    a.here(done);
+    a.push(Step::Done);
+    a.finish()
+}
+
+/// A `Semaphore` with `permits` permits and `tasks` tasks that call `acquire`. The first `timed`
+/// tasks have a time limit, and the last thread is the clock: at any point, the limit passes and
+/// the wait of each of these tasks ends.
+fn semaphore_model(permits: i64, tasks: usize, timed: usize, b: Breaks) -> Model {
+    let mut clock = Asm::new();
+    clock.push(Step::Store {
+        word: c(LATE),
+        val: c(1),
+    });
+    for thread in 0..timed {
+        clock.push(Step::EndWait { thread });
+    }
+    clock.push(Step::Done);
+    let late = |task: usize| (task < timed).then_some(LATE);
+    let mut programs: Vec<_> = (0..tasks)
+        .map(|task| acquirer(late(task), permits == 1, b))
+        .collect();
+    programs.push(clock.finish());
+    Model {
+        programs,
+        senders: Vec::new(),
+        allowed: Vec::new(),
+        first_words: vec![permits, 0, 0],
+        ring: 0,
+        in_order: true,
+    }
+}
+
+#[test]
+fn semaphore_with_three_tasks_and_one_that_gives_up() {
+    holds(
+        "1 permit, 3 tasks, and the time limit of one task passes",
+        semaphore_model(1, 3, 1, NONE),
+    );
+}
+
+/// The first task gives up and wakes the second one, which gives up too.
+#[test]
+fn semaphore_with_two_tasks_that_give_up() {
+    holds(
+        "1 permit, 3 tasks, and the time limit of two tasks passes",
+        semaphore_model(1, 3, 2, NONE),
+    );
+}
+
+/// With 2 permits and 4 tasks, two tasks can sleep while two drops give permits back. Each drop
+/// must wake a sleeper of its own.
+#[test]
+fn semaphore_with_two_permits_and_four_tasks() {
+    holds(
+        "2 permits, 4 tasks, and the time limit of one task passes",
+        semaphore_model(2, 4, 1, NONE),
+    );
+}
+
+#[test]
+fn the_search_finds_a_lost_wake_with_two_permits() {
+    let b = Breaks {
+        permit_drop_needs_two_sleepers: true,
+        ..NONE
+    };
+    finds(
+        "2 permits, and the drop of a permit wakes only when two tasks sleep",
+        semaphore_model(2, 4, 1, b),
+        "nothing can wake it",
+    );
+}
+
+/// The drop of a `Permit` wakes one sleeper. When that sleeper gives up, it must wake the next
+/// one, or the permit stays free while a task sleeps.
+#[test]
+fn the_search_finds_an_acquire_that_gives_up_and_wakes_no_one() {
+    let b = Breaks {
+        acquire_gives_up_and_wakes_none: true,
+        ..NONE
+    };
+    finds(
+        "an acquire that gives up wakes no one",
+        semaphore_model(1, 3, 1, b),
+        "nothing can wake it",
+    );
+}
+
+#[test]
+fn the_search_finds_a_permit_drop_that_wakes_only_when_two_tasks_sleep() {
+    let b = Breaks {
+        permit_drop_needs_two_sleepers: true,
+        ..NONE
+    };
+    finds(
+        "the drop of a permit wakes only when two tasks sleep",
+        semaphore_model(1, 3, 1, b),
+        "nothing can wake it",
+    );
 }
 
 #[test]

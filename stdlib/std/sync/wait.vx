@@ -10,7 +10,7 @@
 //
 // The pattern: the waiter reads the atomic, and while it does not hold what the waiter needs,
 // calls `wait_while` with the value that it read. The waker changes the atomic first, and then
-// calls `wake_all`. So the waiter never sleeps through the change.
+// calls `wake_all` or `wake_one`. So the waiter never sleeps through the change.
 //===----------------------------------------------------------------------===//
 import core::panic;
 import core::ptr;
@@ -25,6 +25,8 @@ extern {
   pub fn vx_wait_while_or_cancel(word : *mut i64, value : i64) -> void;
   /// The Rust core behind `wake_all`.
   pub fn vx_wake_all(word : *mut i64) -> void;
+  /// The Rust core behind `wake_one`.
+  pub fn vx_wake_one(word : *mut i64) -> void;
   /// The Rust core behind `cancelled`.
   pub fn vx_cancelled() -> i32;
   /// The Rust core behind `cancelled_at`.
@@ -141,6 +143,15 @@ pub fn within<T>(limit : Duration, body : || -> T) -> T {
 /// Wake each thread that waits on `word`. Change `word` before the call.
 pub fn wake_all(word : &AtomicI64) -> void {
   unsafe { vx_wake_all(word.as_ptr()); }
+}
+
+/// Wake one thread that waits on `word`: the one that waits the longest. With no thread that
+/// waits on `word`, it does nothing. Change `word` before the call.
+///
+/// The thread that it wakes must use the change, or call `wake_one` for the next thread. If it
+/// does neither, the next thread can sleep forever. Use `wake_all` when this rule is hard to keep.
+pub fn wake_one(word : &AtomicI64) -> void {
+  unsafe { vx_wake_one(word.as_ptr()); }
 }
 
 /// Nanoseconds on a clock that never goes back. Only the difference of two readings means

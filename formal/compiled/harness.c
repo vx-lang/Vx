@@ -108,15 +108,28 @@ void vx_lock_released(long *holder) {}
 // Which task holds which channel end is only for the deadlock report too.
 void vx_task_holds_an_end(long *words, int sender) {}
 
-// The wait and the wake, as the Rust runtime does them: a lock and a condition
-// variable. Here the condition variable is a count of wakes. A wait reads the
-// word and the count under the lock. Then it sleeps until the count changes,
-// and takes the lock again. A wake adds 1 to the count under the lock. GenMC
-// turns the sleep loop into a blocked thread. With
-// `--check-liveness`, it reports a thread that sleeps forever, so it also finds
-// a lost wake.
+// The wait and the wake, as the Rust runtime does them: a lock, and a list of
+// the threads that sleep. A wait reads the word under the lock. Then it goes
+// on the list, lets the lock go, and sleeps until a wake takes it off the
+// list. `vx_wake_all` takes each thread off the list. `vx_wake_one` takes
+// only the thread that waits the longest on the word. GenMC turns the sleep
+// loop into a blocked thread. With `--check-liveness`, it reports a thread
+// that sleeps forever, so it also finds a lost wake.
+#define MAX_SLEEPERS (MAX_TASKS + 1)
+
+struct sleeper {
+  // A thread uses the entry. Only that thread frees it.
+  int in_use;
+  atomic_long *word;
+  // The count of waits before this one, and this one.
+  long turn;
+  // 1 while the thread is on the list. A wake sets it to 0.
+  atomic_long asleep;
+};
+
 static pthread_mutex_t bucket = PTHREAD_MUTEX_INITIALIZER;
-static atomic_long wakes;
+static struct sleeper sleepers[MAX_SLEEPERS];
+static long turns;
 
 void vx_wait_while(atomic_long *word, long value) {
   pthread_mutex_lock(&bucket);
@@ -124,11 +137,19 @@ void vx_wait_while(atomic_long *word, long value) {
     pthread_mutex_unlock(&bucket);
     return;
   }
-  long seen = atomic_load_explicit(&wakes, memory_order_relaxed);
+  int me = 0;
+  while (me < MAX_SLEEPERS && sleepers[me].in_use)
+    me++;
+  assert(me < MAX_SLEEPERS);
+  sleepers[me].in_use = 1;
+  sleepers[me].word = word;
+  sleepers[me].turn = ++turns;
+  atomic_store_explicit(&sleepers[me].asleep, 1, memory_order_relaxed);
   pthread_mutex_unlock(&bucket);
-  while (atomic_load_explicit(&wakes, memory_order_relaxed) == seen)
+  while (atomic_load_explicit(&sleepers[me].asleep, memory_order_relaxed) == 1)
     ;
   pthread_mutex_lock(&bucket);
+  sleepers[me].in_use = 0;
   pthread_mutex_unlock(&bucket);
 }
 
@@ -143,9 +164,29 @@ void vx_wait_while_until(atomic_long *word, long value, long deadline,
 
 void vx_wake_all(atomic_long *word) {
   pthread_mutex_lock(&bucket);
-  atomic_fetch_add_explicit(&wakes, 1, memory_order_relaxed);
+  for (int i = 0; i < MAX_SLEEPERS; i++)
+    if (sleepers[i].in_use)
+      atomic_store_explicit(&sleepers[i].asleep, 0, memory_order_relaxed);
   pthread_mutex_unlock(&bucket);
 }
+
+void vx_wake_one(atomic_long *word) {
+  pthread_mutex_lock(&bucket);
+  int first = -1;
+  for (int i = 0; i < MAX_SLEEPERS; i++) {
+    if (!sleepers[i].in_use || sleepers[i].word != word ||
+        atomic_load_explicit(&sleepers[i].asleep, memory_order_relaxed) == 0)
+      continue;
+    if (first < 0 || sleepers[i].turn < sleepers[first].turn)
+      first = i;
+  }
+  if (first >= 0)
+    atomic_store_explicit(&sleepers[first].asleep, 0, memory_order_relaxed);
+  pthread_mutex_unlock(&bucket);
+}
+
+// The pause of an `acquire` is only for a test of the runtime.
+void vx_test_acquire_pause(void) {}
 
 // The watch list of `select`. The clients do not use `select`, so no channel
 // has a watcher, and `notify` never calls these.

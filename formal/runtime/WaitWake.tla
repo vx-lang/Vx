@@ -5,10 +5,11 @@
 (*                                                                         *)
 (* A waiter waits until its word is 1, or until a cancel. A fiber (a task  *)
 (* of the shared runtime) parks, and a thread sleeps on the condition      *)
-(* variable of the bucket. A waker sets a word to 1 and then wakes the     *)
+(* variable of its own. A waker sets a word to 1 and then wakes the        *)
 (* bucket. A cancel sets its mark and then wakes the bucket. All words     *)
 (* share one bucket. A wake of a word wakes each thread of the bucket, but *)
 (* only the fibers of that word. A cancel wakes every fiber.               *)
+(* `vx_wake_one` wakes one waiter of a word, a fiber or a thread.          *)
 (*                                                                         *)
 (* Each model can turn on one more part of the runtime:                    *)
 (* - `OnC`: waiters on word "c", which no waker sets. They never end, and  *)
@@ -21,6 +22,9 @@
 (* - `OnIo`: waiters on a socket or a helper call (io.rs). The io thread *)
 (*   sets word "s" while the entry of the waiter is on its list, and then  *)
 (*   wakes the bucket. A waiter that stops takes its entry off the list.   *)
+(* - `OneByOne`: the waker of word "a" does not wake the bucket. It calls   *)
+(*   `vx_wake_one` once for each waiter of the word, as the drops of a     *)
+(*   `Semaphore` do: one wake for each permit.                             *)
 (* - `Seed`: no workers. The main thread "t1" runs the ready tasks itself  *)
 (*   while it waits for them to end, and a push wakes each sleeping thread.*)
 (*                                                                         *)
@@ -42,6 +46,7 @@ CONSTANTS
     Watch,          \* TRUE: the deadlock watcher runs. Without it, the model is smaller.
     SetWords,       \* TRUE: a waker sets word "a" and word "b" to 1
     Cancel,         \* TRUE: a cancel comes
+    OneByOne,       \* TRUE: the waker of word "a" calls `vx_wake_one` once for each waiter of "a"
     Bug
 
 Waiters == Fibers \cup Threads
@@ -72,14 +77,13 @@ VARIABLES
     fibers,     \* the list of parked fibers of the bucket
     sleepers,   \* the list of sleeping threads of the bucket
     notes,      \* the waiters that have a note for the deadlock report
-    wakes,      \* the count of wakes of the bucket
     asleep,     \* WAITING of the watcher: the sleeping threads that are not workers
     blocked,    \* the tasks under a callback that the scheduler counts as blocked
     state,      \* the state of each fiber
     ready,      \* the ready queue of the scheduler
-    seen,       \* the count of wakes that each thread saw before its sleep
-    notified,   \* a notify of the condition variable came to the thread
-    taken,      \* the fibers that a waker took from the list and did not wake yet
+    notified,   \* a notify of its condition variable came to the thread
+    taken,      \* the waiters that a waker took from the lists and did not wake yet
+    left,       \* the calls of `vx_wake_one` that each waker still makes
     pc,
     bad,        \* a check of the runtime failed: an `expect` or an `unreachable!`
     expired,    \* the waiters whose deadline came
@@ -96,8 +100,8 @@ VARIABLES
     reported    \* the watcher reported a deadlock, and the program stopped
 
 watched == <<wpc, wsame, wparked, wstuck, reported>>
-vars == <<word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked, state,
-          ready, seen, notified, taken, pc, bad, expired, armed, firing, listed, host,
+vars == <<word, cancelled, lock, fibers, sleepers, notes, asleep, blocked, state,
+          ready, notified, taken, left, pc, bad, expired, armed, firing, listed, host,
           spurious, progressed, watched>>
 
 Init ==
@@ -107,15 +111,16 @@ Init ==
     /\ fibers = {}
     /\ sleepers = {}
     /\ notes = {}
-    /\ wakes = 0
     /\ asleep = 0
     /\ blocked = 0
     \* With a seed, each task starts on the queue, and the main thread runs it.
     /\ state = [f \in Fibers |-> IF Seed THEN WOKEN ELSE RUNNING]
     /\ ready = IF Seed THEN InOrder(Fibers) ELSE <<>>
-    /\ seen = [t \in Threads |-> 0]
     /\ notified = [t \in Threads |-> FALSE]
     /\ taken = [k \in Wakers \cup Timer \cup Io |-> {}]
+    /\ left = [k \in Wakers \cup Timer \cup Io |->
+                 IF OneByOne /\ k = "a"
+                 THEN Cardinality({w \in Waiters : WordOf(w) = "a"}) ELSE 0]
     /\ pc = [w \in Waiters |-> IF Seed /\ w \in Fibers THEN "parked" ELSE "check"] @@
            [k \in Wakers |-> IF Bug = "wake_before_set" THEN "wake" ELSE "set"] @@
            [k \in Timer \cup Io |-> "set"]
@@ -149,20 +154,22 @@ MustWait(w) ==
     /\ Bug = "no_cancel_check_under_the_lock" \/ ~CancelEnds(w)
     /\ w \notin expired
 
-\* The parts of a wake that run under the lock of the bucket: each thread comes off the list
-\* and off its count, and the wake is counted.
-Asleep(s) == IF Bug = "the_old_callback_wait" THEN s ELSE s \ OnWorker
-Blocked(s) == IF Bug = "the_old_callback_wait" THEN {} ELSE s \cap OnWorker
-WakeTheSleepers ==
-    /\ sleepers' = {}
+\* The parts of a wake that run under the lock of the bucket: each thread of `s` comes off the
+\* list and off its count. A thread with a time limit has no count.
+Asleep(s) == (IF Bug = "the_old_callback_wait" THEN s ELSE s \ OnWorker) \ Timed
+Blocked(s) == IF Bug = "the_old_callback_wait" THEN {} ELSE (s \cap OnWorker) \ Timed
+WakeTheSleepers(s) ==
+    /\ sleepers' = sleepers \ s
     /\ asleep' = IF Bug = "a_woken_thread_counts_as_waiting" THEN asleep
-                 ELSE asleep - Cardinality(Asleep(sleepers))
+                 ELSE asleep - Cardinality(Asleep(s))
     /\ blocked' = IF Bug = "a_woken_callback_task_stays_blocked" THEN blocked
-                  ELSE blocked - Cardinality(Blocked(sleepers))
-    /\ wakes' = wakes + 1
+                  ELSE blocked - Cardinality(Blocked(s))
 
-\* `notify_all`: it reaches each thread that sleeps now.
-NotifyAll == notified' = [t \in Threads |-> notified[t] \/ pc[t] = "asleep"]
+\* A notify of the condition variable of each thread of `s`. It reaches a thread that still
+\* sleeps in the wait that the wake took. A thread on the list `now` started a new wait, with a
+\* new condition variable.
+NotifyThe(s, now) ==
+    notified' = [t \in Threads |-> notified[t] \/ (t \in s \ now /\ pc[t] = "asleep")]
 
 -----------------------------------------------------------------------------
 (* A waiter. The caller of the wait reads its word in a loop.             *)
@@ -178,8 +185,8 @@ Check(w) ==
               /\ progressed' = Watch
          ELSE /\ pc' = [pc EXCEPT ![w] = "lock"]
               /\ UNCHANGED progressed
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, bad, expired, armed, firing, host,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, left, bad, expired, armed, firing, host,
                    spurious, watched>>
 
 \* `Poller::remove` takes the entry off the list, under the lock of the list.
@@ -187,8 +194,8 @@ Unlist(w) ==
     /\ pc[w] = "unlist"
     /\ listed' = listed \ {w}
     /\ pc' = [pc EXCEPT ![w] = "done"]
-    /\ UNCHANGED <<word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, bad, expired, armed, firing, host,
+    /\ UNCHANGED <<word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, left, bad, expired, armed, firing, host,
                    spurious, progressed, watched>>
 
 Lock(w) ==
@@ -196,8 +203,8 @@ Lock(w) ==
     /\ lock = "none"
     /\ lock' = w
     /\ pc' = [pc EXCEPT ![w] = "test"]
-    /\ UNCHANGED <<listed, word, cancelled, fibers, sleepers, notes, wakes, asleep, blocked, state,
-                   ready, seen, notified, taken, bad, expired, armed, firing, host,
+    /\ UNCHANGED <<listed, word, cancelled, fibers, sleepers, notes, asleep, blocked, state,
+                   ready, notified, taken, left, bad, expired, armed, firing, host,
                    spurious, progressed, watched>>
 
 Test(w) ==
@@ -205,8 +212,8 @@ Test(w) ==
     /\ ~MustWait(w)
     /\ lock' = "none"
     /\ pc' = [pc EXCEPT ![w] = "check"]
-    /\ UNCHANGED <<listed, word, cancelled, fibers, sleepers, notes, wakes, asleep, blocked, state,
-                   ready, seen, notified, taken, bad, expired, armed, firing, host,
+    /\ UNCHANGED <<listed, word, cancelled, fibers, sleepers, notes, asleep, blocked, state,
+                   ready, notified, taken, left, bad, expired, armed, firing, host,
                    spurious, progressed, watched>>
 
 \* A fiber marks itself `PARKING`, goes on the list, and lets the lock go. With a time limit,
@@ -221,15 +228,15 @@ Enlist(f) ==
     /\ armed' = IF f \in Timed THEN armed \cup {f} ELSE armed
     /\ lock' = "none"
     /\ pc' = [pc EXCEPT ![f] = IF Bug = "parking_after_the_unlock" THEN "mark" ELSE "switch"]
-    /\ UNCHANGED <<listed, word, cancelled, sleepers, wakes, asleep, blocked, ready, seen, notified,
-                   taken, bad, expired, firing, host, spurious, progressed, watched>>
+    /\ UNCHANGED <<listed, word, cancelled, sleepers, asleep, blocked, ready, notified,
+                   taken, left, bad, expired, firing, host, spurious, progressed, watched>>
 
 MarkLate(f) ==
     /\ pc[f] = "mark"
     /\ state' = [state EXCEPT ![f] = PARKING]
     /\ pc' = [pc EXCEPT ![f] = "switch"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   ready, seen, notified, taken, bad, expired, armed, firing, host,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   ready, notified, taken, left, bad, expired, armed, firing, host,
                    spurious, progressed, watched>>
 
 \* The worker, after the switch away from the fiber. A wake before the switch left the fiber
@@ -242,8 +249,8 @@ Switch(f) ==
          ELSE /\ ready' = Append(ready, f)
               /\ UNCHANGED state
     /\ pc' = [pc EXCEPT ![f] = "parked"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   seen, notified, taken, bad, expired, armed, firing, host, spurious,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   notified, taken, left, bad, expired, armed, firing, host, spurious,
                    progressed, watched>>
 
 \* A worker takes the fiber at the head of the queue and runs it. With a seed, there is no
@@ -255,8 +262,8 @@ Run(f) ==
     /\ ready' = Tail(ready)
     /\ state' = [state EXCEPT ![f] = RUNNING]
     /\ pc' = [pc EXCEPT ![f] = "check"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   seen, notified, taken, bad, expired, armed, firing, host, spurious,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   notified, taken, left, bad, expired, armed, firing, host, spurious,
                    progressed, watched>>
 
 \* With a seed, the main thread sees a ready task under the lock, lets the lock go, and runs
@@ -271,8 +278,8 @@ RunHere(t) ==
     /\ ready' = Tail(ready)
     /\ state' = [state EXCEPT ![Head(ready)] = RUNNING]
     /\ pc' = [pc EXCEPT ![t] = "host", ![Head(ready)] = "check"]
-    /\ UNCHANGED <<listed, word, cancelled, fibers, sleepers, notes, wakes, asleep, blocked, seen,
-                   notified, taken, bad, expired, armed, firing, spurious, progressed,
+    /\ UNCHANGED <<listed, word, cancelled, fibers, sleepers, notes, asleep, blocked,
+                   notified, taken, left, bad, expired, armed, firing, spurious, progressed,
                    watched>>
 
 HostDone(t) ==
@@ -280,28 +287,28 @@ HostDone(t) ==
     /\ pc[host] \in {"parked", "done"}
     /\ host' = "none"
     /\ pc' = [pc EXCEPT ![t] = "check"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, bad, expired, armed, firing,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, left, bad, expired, armed, firing,
                    spurious, progressed, watched>>
 
-\* A thread goes on the list and sleeps. The wait of the condition variable lets the lock go
-\* in the same step. A thread of the program counts in WAITING, and a task under a callback
-\* counts as blocked in its scheduler. A sleep with a time limit is on no list and no count.
+\* A thread goes on the list and sleeps on a condition variable of its own. The wait lets the
+\* lock go in the same step. A thread of the program counts in WAITING, and a task under a
+\* callback counts as blocked in its scheduler. A sleep with a time limit is on the list, but it
+\* has no note and no count.
 Sleep(t) ==
     /\ pc[t] = "test"
     /\ MustWait(t)
     /\ ~(Seed /\ t = Main /\ ready # <<>>)
-    /\ seen' = [seen EXCEPT ![t] = wakes]
+    /\ sleepers' = sleepers \cup {t}
     /\ IF t \in Timed
-         THEN UNCHANGED <<listed, sleepers, notes, asleep, blocked>>
-         ELSE /\ sleepers' = sleepers \cup {t}
-              /\ notes' = notes \cup {t}
+         THEN UNCHANGED <<notes, asleep, blocked>>
+         ELSE /\ notes' = notes \cup {t}
               /\ asleep' = asleep + Cardinality(Asleep({t}))
               /\ blocked' = blocked + Cardinality(Blocked({t}))
     /\ notified' = [notified EXCEPT ![t] = FALSE]
     /\ lock' = "none"
     /\ pc' = [pc EXCEPT ![t] = "asleep"]
-    /\ UNCHANGED <<listed, word, cancelled, fibers, wakes, state, ready, taken, bad, expired, armed,
+    /\ UNCHANGED <<listed, word, cancelled, fibers, state, ready, taken, left, bad, expired, armed,
                    firing, host, spurious, progressed, watched>>
 
 \* The condition variable wakes the thread after a notify.
@@ -309,8 +316,8 @@ WakeUp(t) ==
     /\ pc[t] = "asleep"
     /\ notified[t]
     /\ pc' = [pc EXCEPT ![t] = "relock"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, bad, expired, armed, firing, host,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, left, bad, expired, armed, firing, host,
                    spurious, progressed, watched>>
 
 \* The time limit of a sleep ends it.
@@ -319,8 +326,8 @@ Timeout(t) ==
     /\ t \in Timed
     /\ expired' = expired \cup {t}
     /\ pc' = [pc EXCEPT ![t] = "relock"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, bad, armed, firing, host, spurious,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, left, bad, armed, firing, host, spurious,
                    progressed, watched>>
 
 \* A condition variable can also wake a thread with no notify.
@@ -330,24 +337,25 @@ Spurious(t) ==
     /\ spurious < SpuriousLimit
     /\ spurious' = spurious + 1
     /\ pc' = [pc EXCEPT ![t] = "relock"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, bad, expired, armed, firing, host,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, left, bad, expired, armed, firing, host,
                    progressed, watched>>
 
-\* The thread holds the lock again. With no wake of the bucket since its sleep, it takes
+\* The thread holds the lock again. A thread that is still on the list had no wake. It takes
 \* itself off the list and off its count, and it then lets the lock go.
 Relock(t) ==
     /\ pc[t] = "relock"
     /\ lock = "none"
-    /\ IF t \in Timed
-         THEN UNCHANGED <<listed, sleepers, notes, asleep, blocked, bad, progressed>>
-       ELSE IF wakes = seen[t]
+    /\ IF t \in sleepers /\ t \in Timed
+         THEN /\ sleepers' = sleepers \ {t}
+              /\ UNCHANGED <<notes, asleep, blocked, bad, progressed>>
+       ELSE IF t \in sleepers
          THEN /\ sleepers' = sleepers \ {t}
               /\ notes' = notes \ {t}
               /\ asleep' = asleep - Cardinality(Asleep({t}))
               /\ blocked' = blocked - Cardinality(Blocked({t}))
               /\ progressed' = Watch
-              /\ bad' = IF t \in notes /\ t \in sleepers THEN bad
+              /\ bad' = IF t \in notes THEN bad
                         ELSE "a waiter has a note in its bucket"
          ELSE /\ asleep' = asleep - Cardinality(Asleep({t}) \cap
                     (IF Bug \in {"a_woken_thread_counts_again",
@@ -356,7 +364,7 @@ Relock(t) ==
                     (IF Bug = "a_woken_callback_task_stays_blocked" THEN {t} ELSE {}))
               /\ UNCHANGED <<listed, sleepers, notes, bad, progressed>>
     /\ pc' = [pc EXCEPT ![t] = "check"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, wakes, state, ready, seen, notified, taken,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, state, ready, notified, taken, left,
                    expired, armed, firing, host, spurious, watched>>
 
 -----------------------------------------------------------------------------
@@ -372,8 +380,8 @@ SetWord(k) ==
          ELSE /\ word' = [word EXCEPT ![k] = 1]
               /\ UNCHANGED cancelled
     /\ pc' = [pc EXCEPT ![k] = IF Bug = "wake_before_set" THEN "done" ELSE "wake"]
-    /\ UNCHANGED <<listed, lock, fibers, sleepers, notes, wakes, asleep, blocked, state, ready, seen,
-                   notified, taken, bad, expired, armed, firing, host, spurious, progressed,
+    /\ UNCHANGED <<listed, lock, fibers, sleepers, notes, asleep, blocked, state, ready,
+                   notified, taken, left, bad, expired, armed, firing, host, spurious, progressed,
                    watched>>
 
 \* The deadline of a fiber comes, and the timer wakes the word of the fiber.
@@ -385,8 +393,8 @@ Fire(k) ==
          /\ expired' = expired \cup {f}
          /\ firing' = f
     /\ pc' = [pc EXCEPT ![k] = "wake"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, bad, host, spurious, progressed,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, left, bad, host, spurious, progressed,
                    watched>>
 
 \* The socket of a waiter is ready, or its helper call ended. Under the lock of its list, the io
@@ -400,8 +408,8 @@ IoTake(k) ==
          /\ bad' = IF pc[w] = "done" THEN "the io thread set the word of a wait that returned"
                    ELSE bad
     /\ pc' = [pc EXCEPT ![k] = "wake"]
-    /\ UNCHANGED <<cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked, state,
-                   ready, seen, notified, taken, expired, armed, firing, host, spurious,
+    /\ UNCHANGED <<cancelled, lock, fibers, sleepers, notes, asleep, blocked, state,
+                   ready, notified, taken, left, expired, armed, firing, host, spurious,
                    progressed, watched>>
 
 \* The fibers that the wake of `k` takes: the fibers of the word, or every fiber for a cancel.
@@ -411,28 +419,43 @@ FibersOf(k) ==
       [] k = "io" -> {f \in fibers : WordOf(f) = "s"}
       [] OTHER -> {f \in fibers : WordOf(f) = k}
 
-\* `wake` takes the threads and the fibers of `k` off the lists, under the lock of the
-\* bucket, with their notes. It counts the wake, and it is progress for the watcher.
+\* The waiters that `vx_wake_one` can take: the waiters of the word of `k`. The model does not
+\* keep the order of the waits, so it checks a wake of each of them.
+OneOf(k) == {w \in fibers \cup sleepers :
+               Bug = "vx_wake_one_takes_a_waiter_of_any_word" \/ WordOf(w) = k}
+
+\* The sets of waiters that the wake of `k` can take. `wake` takes each thread of the bucket and
+\* the fibers of `k`. `vx_wake_one` takes one waiter of the word, or none when no waiter is there.
+Takes(k) ==
+    IF left[k] = 0 THEN {FibersOf(k) \cup sleepers}
+    ELSE IF OneOf(k) = {} THEN {{}}
+    ELSE {{w} : w \in OneOf(k)}
+
+\* `wake` and `vx_wake_one` take waiters off the lists and off the counts, under the lock of the
+\* bucket, with their notes. A wake is progress for the watcher.
 Wake(k) ==
     /\ pc[k] = "wake"
     /\ lock = "none"
-    /\ taken' = [taken EXCEPT ![k] = FibersOf(k)]
-    /\ fibers' = fibers \ FibersOf(k)
-    /\ notes' = IF Bug = "a_wake_clears_every_note" THEN {}
-                ELSE notes \ (FibersOf(k) \cup sleepers)
-    /\ WakeTheSleepers
+    /\ \E T \in Takes(k) :
+         /\ taken' = [taken EXCEPT ![k] =
+                         IF Bug = "vx_wake_one_does_not_wake_its_waiter" /\ left[k] > 0
+                         THEN {} ELSE T]
+         /\ fibers' = fibers \ T
+         /\ notes' = IF Bug = "a_wake_clears_every_note" THEN {} ELSE notes \ T
+         /\ WakeTheSleepers(T \cap Threads)
     /\ progressed' = Watch
     /\ pc' = [pc EXCEPT ![k] = "notify"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, state, ready, seen, notified, bad, expired, armed,
-                   firing, host, spurious, watched>>
+    /\ UNCHANGED <<listed, word, cancelled, lock, state, ready, notified, left, bad, expired,
+                   armed, firing, host, spurious, watched>>
 
-\* `notify_all`, after the lock is let go.
+\* A notify of each thread that the waker took, after the lock is let go.
 Notify(k) ==
     /\ pc[k] = "notify"
-    /\ NotifyAll
+    /\ NotifyThe(taken[k], sleepers)
+    /\ taken' = [taken EXCEPT ![k] = @ \ Threads]
     /\ pc' = [pc EXCEPT ![k] = "wake_fibers"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, taken, bad, expired, armed, firing, host, spurious,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, left, bad, expired, armed, firing, host, spurious,
                    progressed, watched>>
 
 \* `sched::wake` for one fiber that the waker took. With a seed, a push also wakes each
@@ -455,8 +478,8 @@ WakeFiber(k) ==
               [] OTHER ->
                    /\ UNCHANGED <<listed, ready, pc>>
                    /\ bad' = "a wake of a fiber in state " \o state[f]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   seen, notified, expired, armed, firing, host, spurious, progressed,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   notified, left, expired, armed, firing, host, spurious, progressed,
                    watched>>
 
 \* `wake_every_sleeper` after a push with a seed: it takes no fiber.
@@ -464,23 +487,26 @@ PushWake(k) ==
     /\ pc[k] = "push_wake"
     /\ lock = "none"
     /\ notes' = notes \ sleepers
-    /\ WakeTheSleepers
-    /\ NotifyAll
+    /\ WakeTheSleepers(sleepers)
+    /\ NotifyThe(sleepers, {})
     /\ progressed' = Watch
     /\ pc' = [pc EXCEPT ![k] = "wake_fibers"]
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, state, ready, seen, taken, bad, expired,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, state, ready, taken, left, bad, expired,
                    armed, firing, host, spurious, watched>>
 
 \* A waker is a thread of the program, and its end is progress. The timer waits for the next
-\* deadline, and the io thread for the next ready socket.
+\* deadline, and the io thread for the next ready socket. A waker that has calls of
+\* `vx_wake_one` left makes the next one.
 WakerDone(k) ==
     /\ pc[k] = "wake_fibers"
     /\ taken[k] = {}
-    /\ pc' = [pc EXCEPT ![k] = IF Bug = "wake_before_set" \/ k \in Timer \cup Io THEN "set"
+    /\ left' = [left EXCEPT ![k] = IF @ > 0 THEN @ - 1 ELSE 0]
+    /\ pc' = [pc EXCEPT ![k] = IF left[k] > 1 THEN "wake"
+                              ELSE IF Bug = "wake_before_set" \/ k \in Timer \cup Io THEN "set"
                               ELSE "done"]
     /\ progressed' = Watch
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, bad, expired, armed, firing, host,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, bad, expired, armed, firing, host,
                    spurious, watched>>
 
 -----------------------------------------------------------------------------
@@ -545,8 +571,8 @@ LookAtCounts ==
 WatcherStep ==
     /\ ~reported
     /\ LookAtProgress \/ LookAtParked \/ LookAtCounts
-    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, wakes, asleep, blocked,
-                   state, ready, seen, notified, taken, pc, bad, expired, armed, firing,
+    /\ UNCHANGED <<listed, word, cancelled, lock, fibers, sleepers, notes, asleep, blocked,
+                   state, ready, notified, taken, left, pc, bad, expired, armed, firing,
                    host, spurious>>
 
 -----------------------------------------------------------------------------
@@ -590,7 +616,7 @@ TheWatcherCountsEachSleeper ==
     /\ blocked = Cardinality(Blocked(sleepers))
 
 \* Each waiter on a list has a note for the deadlock report.
-EachWaiterHasANote == fibers \cup sleepers \subseteq notes
+EachWaiterHasANote == fibers \cup (sleepers \ Timed) \subseteq notes
 
 \* A fiber is on the ready queue at most once, and only while it does not run.
 ReadyOnce ==

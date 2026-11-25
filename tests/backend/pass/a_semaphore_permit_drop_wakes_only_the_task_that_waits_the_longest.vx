@@ -1,0 +1,71 @@
+//===- a_semaphore_permit_drop_wakes_only_the_task_that_waits_the_longest.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Four tasks wait for the one permit of a `Semaphore`, and task 1 waits the longest. The drop of
+// a `Permit` wakes only the task that waits the longest. So the tasks get the permit in the
+// order 1, 2, 3, 4.
+//
+// With VX_TASK_SEED, one thread runs all tasks, and the seed picks the next task from the tasks
+// that can run. If the drop woke each waiter, the seed would pick the task that gets the permit,
+// and the order would change with the seed. So each RUN line uses another seed.
+//
+// Each task starts to wait only after the task before it. With a seed, a task runs until it
+// waits, so no other task runs between the store to `turn` and the wait in `acquire`. With a
+// thread for each task, two tasks can start to wait in any order, so no RUN line uses threads.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_NO_AST_FALLBACK=1 VX_TASK_SEED=2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_NO_AST_FALLBACK=1 VX_TASK_SEED=3 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_NO_AST_FALLBACK=1 VX_TASK_SEED=4 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_SEED=5 vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the tasks got the permit in the order 1234{{$}}
+
+import core::mem;
+import core::sync::atomic;
+import core::time;
+import std::sync::semaphore;
+import std::time;
+
+// Task `id` starts to wait for the permit after task `id - 1`. When it has the permit, it adds
+// its digit to `order`.
+fn take_a_turn(s : &Semaphore, turn : &AtomicI64, order : &AtomicI64, id : i64) -> void {
+  while turn.load(AtomicOrdering::SeqCst) != id - 1 {
+    sleep(Duration::from_millis(1));
+  }
+  turn.store(id, AtomicOrdering::SeqCst);
+  let permit = s.acquire().unwrap();
+  order.store(order.load(AtomicOrdering::SeqCst) * 10 + id, AtomicOrdering::SeqCst);
+  drop(permit);
+}
+
+fn main() -> i32 {
+  let s = Semaphore::new(1);
+  let turn = AtomicI64::new(0);
+  let order = AtomicI64::new(0);
+  let held = s.acquire().unwrap();
+  tasks {
+    spawn {
+      take_a_turn(&s, &turn, &order, 1);
+    };
+    spawn {
+      take_a_turn(&s, &turn, &order, 2);
+    };
+    spawn {
+      take_a_turn(&s, &turn, &order, 3);
+    };
+    spawn {
+      take_a_turn(&s, &turn, &order, 4);
+    };
+    // Each of the four tasks waits for the permit when `turn` holds 4.
+    while turn.load(AtomicOrdering::SeqCst) != 4 {
+      sleep(Duration::from_millis(1));
+    }
+    drop(held);
+  };
+  println!("the tasks got the permit in the order {}", order.load(AtomicOrdering::SeqCst));
+  return 0;
+}
