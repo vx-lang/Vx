@@ -31,6 +31,9 @@ pub struct SmtProver {
     sorts: std::collections::HashMap<String, Sort>,
     /// Pairs of names that `==` or `!=` compares, so that they have the same sort.
     same_sort: Vec<(String, String)>,
+    /// The name of the unknown value of each `usize` operation that can overflow, by the text
+    /// of the operation.
+    overflow_names: std::collections::HashMap<String, String>,
 }
 
 /// The SMT sort of a term. A name that no fact uses as a condition is an `Int`.
@@ -66,6 +69,7 @@ impl SmtProver {
             nonlinear: false,
             sorts: std::collections::HashMap::new(),
             same_sort: Vec::new(),
+            overflow_names: std::collections::HashMap::new(),
         }
     }
 
@@ -198,15 +202,22 @@ impl SmtProver {
 
     /// `exact`, an integer `+`, `-` or `*`, with the result the machine gives. A `usize` operation
     /// stops the program on overflow, so then it has no value. It becomes a name with no facts.
-    /// The name is the text of the operation, so that one operation on the same operands has
-    /// one value in a query: the fact `a + b < n` proves the goal `a + b < n`. Each other
-    /// integer type wraps.
+    /// One operation on the same operands has one name, so that it has one value in a query:
+    /// the fact `a + b < n` proves the goal `a + b < n`. Each other integer type wraps.
     fn machine_result(&mut self, exact: String, ty: Option<ElementType>) -> Result<String, String> {
         if ty != Some(ElementType::USize) {
             return wrap(exact, ty);
         }
         let (lo, hi) = int_range(&ElementType::USize).expect("the range of usize");
-        let undefined = self.name(&format!("overflow.undefined.{exact}"), Some(Sort::Int))?;
+        // The name is short. A name that held the text of the operation made the text three
+        // times as long at each step of a chain such as `a + b + c`.
+        let count = self.overflow_names.len();
+        let undefined = self
+            .overflow_names
+            .entry(exact.clone())
+            .or_insert_with(|| format!("overflow.undefined.{count}"))
+            .clone();
+        let undefined = self.name(&undefined, Some(Sort::Int))?;
         Ok(format!("(ite (<= {lo} {exact} {hi}) {exact} {undefined})"))
     }
 
@@ -1061,6 +1072,41 @@ mod tests {
         let first = prover.lower_term(&name_expr("_"), &i64_names).unwrap();
         let second = prover.lower_term(&name_expr("_"), &i64_names).unwrap();
         assert_ne!(first, second, "two `_` got one name");
+    }
+
+    /// `a + b + c` on usize, written twice, has the same term both times. The names of its two
+    /// unknown values are short: they do not hold the text of the operation.
+    #[test]
+    fn a_usize_operation_has_one_short_name_for_its_unknown_value() {
+        let add = |lhs: Expr, rhs: &str| {
+            let mut sum = BinaryOpExpr::new(
+                Box::new(lhs),
+                BinaryOp::Add,
+                Box::new(name_expr(rhs)),
+                Span::default(),
+            );
+            sum.operand_ty = Some(ElementType::USize);
+            Expr::BinaryOp(sum)
+        };
+        let chain = add(add(name_expr("a"), "b"), "c");
+        let usize_names = |e: &Expr| match e {
+            Expr::Identifier(_) => Some((ElementType::USize, true)),
+            _ => None,
+        };
+        let mut prover = SmtProver::new();
+        let first = prover.lower_term(&chain, &usize_names).unwrap();
+        let second = prover.lower_term(&chain, &usize_names).unwrap();
+        assert_eq!(first, second, "one operation got two unknown values");
+        let unknown: Vec<&String> = prover
+            .declarations
+            .iter()
+            .filter(|name| name.contains("overflow.undefined"))
+            .collect();
+        assert_eq!(
+            unknown,
+            ["|overflow.undefined.0|", "|overflow.undefined.1|"],
+            "the names of the unknown values of `a + b` and `a + b + c`"
+        );
     }
 
     #[test]
