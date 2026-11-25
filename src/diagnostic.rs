@@ -337,7 +337,8 @@ pub enum DiagnosticCode {
     /// value survives being assigned elsewhere, and a field that does not survive it breaks
     /// that promise for the whole type -- which would be a way to duplicate a tensor, or any
     /// other placed value, without saying so. In `impl<T> Copy for Twice<T>`, a field of type
-    /// `T` needs the bound `T : Copy`.
+    /// `T` needs the bound `T : Copy`. A type with a `Drop` impl cannot be `Copy` either,
+    /// because the drop of a `Copy` value does not run.
     E3031,
     /// A chain of generic instantiations that does not end -- `f<N - 1>()` whose base case
     /// is never reached. Reported here rather than left to run out of stack, which gave no

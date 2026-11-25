@@ -9,7 +9,7 @@
 //
 // A `Folder` is the right to read the files of one folder. Only `std::fs` can make one, from a
 // `&Files` or from a wider `Folder`. Code in another file cannot:
-// - copy a `Folder` with an `impl Copy` (E3066),
+// - copy a `Folder` with an `impl Copy` (E3066, and E3031 because a `Folder` has a `Drop` impl),
 // - make a `Folder` from the handle of a `File` (E8014),
 // - point a `Folder` at another handle (E8014),
 // - use a `&Folder` as the right to open any file (E3003).
@@ -37,6 +37,7 @@ fn main() -> i32 {
   return 0;
 }
 
+// CHECK: Error[E3031] at {{.*}}.vx:19:1: 'Folder' cannot be `Copy`: it has a `Drop` impl, and the drop of a `Copy` value does not run
 // CHECK: Error[E3066] at {{.*}}.vx:19:1: `impl Copy for Folder` is in `the_folder_right_cannot_be_forged.vx`, and `fs.vx` declares `Folder`
 // CHECK: Error[E8014] at {{.*}}.vx:22:10: this struct literal builds a `Folder`. `Folder` has an invariant, so only code in `fs.vx` can build it
 // CHECK: Error[E8014] at {{.*}}.vx:28:10: this assignment changes the field `dir` of `Folder`. `Folder` has an invariant, so only code in `fs.vx` can change its fields

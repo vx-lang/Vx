@@ -13,7 +13,8 @@
 use super::super::*;
 
 impl TypeChecker<'_> {
-    /// Refuse `impl Copy for X` when one of `X`'s fields is a type that moves (E3031).
+    /// Refuse `impl Copy for X` when one of `X`'s fields is a type that moves, or when `X` has a
+    /// `Drop` impl (E3031).
     ///
     /// `Copy` means a value can be used again after it has been assigned somewhere else, so
     /// every field has to survive the same treatment. A struct holding a tensor cannot: the
@@ -63,11 +64,32 @@ impl TypeChecker<'_> {
             })
             .collect();
 
+        // The types with a `Drop` impl. The drop of a `Copy` value does not run.
+        let dropped: Vec<crate::symbol::Symbol> = self
+            .env
+            .impls
+            .get("Drop")
+            .into_iter()
+            .flatten()
+            .filter_map(|ib| named_type(&ib.target_type))
+            .collect();
+
         // Each error points at the `impl Copy`.
         let outside = self.errors.here();
         for target in targets {
             let name = &target.name;
             self.errors.point_at(&target.place, &outside);
+            if dropped.contains(name) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3031,
+                    format!(
+                        "'{name}' cannot be `Copy`: it has a `Drop` impl, and the drop of a \
+                         `Copy` value does not run"
+                    ),
+                    None,
+                );
+                continue;
+            }
             let mut generics: &[crate::syntax::decl::GenericParam] = &[];
             let mut held: Vec<(String, Type)> = Vec::new();
             if let Some(decl) = self.env.structs.get(name.as_ref()) {
@@ -134,6 +156,15 @@ struct CopyTarget {
     params: Vec<crate::symbol::Symbol>,
     copy_params: Vec<crate::symbol::Symbol>,
     place: crate::syntax::DeclPlace,
+}
+
+/// The name of a struct or an enum, or of the base of a generic instance of one.
+fn named_type(ty: &Type) -> Option<crate::symbol::Symbol> {
+    match ty {
+        Type::Struct(name, _) | Type::Enum(name, _) => Some(name.clone()),
+        Type::GenericInstance(base, _) => named_type(base),
+        _ => None,
+    }
 }
 
 /// The first of `params` that `ty` holds by value. A reference, a pointer or a function type
