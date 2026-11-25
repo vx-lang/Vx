@@ -468,10 +468,15 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_named_type(&mut self) -> ParseResult<'a, Type> {
         if self.check(&TokenType::Impl) {
-            return Err(self.error(
-                "Vx has no `impl Trait` type yet: write a generic parameter instead, \
-                 as in `fn show<T : Get>(g : &T)`",
-            ));
+            // Name the trait the user wrote, so the example matches their code.
+            let trait_name = match &self.peek_n(1).kind {
+                TokenType::Identifier(name) => name.to_string(),
+                _ => "Trait".to_string(),
+            };
+            return Err(self.error(&format!(
+                "Vx has no `impl Trait` type yet. In a parameter, write a generic parameter \
+                 instead, as in `fn show<T : {trait_name}>(g : &T)`"
+            )));
         }
         let ident = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
