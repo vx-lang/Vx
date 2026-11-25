@@ -1,0 +1,45 @@
+//===- block_matmul.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tile matmul in the code of a block: one block for each output tile, and
+// 128 lanes that fill the tile of shared memory and multiply. With VX_WGMMA=1
+// on sm_90a, a matmul of 128 lanes whose accumulator has 128 rows lowers to a
+// warpgroup `wgmma.mma_async`. The activations are bf16 in shared memory and
+// the weights are bf16 in HBM, so the tiles are in two memories and the
+// product goes to the memory that its target names, the tile of `out` in HBM.
+// `wgmmaFor` asks for static shapes, N a multiple of 8, and K a multiple of
+// 16. On an A100 the matmul keeps the `mma.sync` path.
+//
+// RUN: VX_WGMMA=1 vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=WGMMA --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFAULT --implicit-check-not=Error
+
+pub fn run_block_matmul(out : &mut Tensor<f32, [2, 128, 8], Memory::HBM>, weights : &Tensor<bf16, [16, 8], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<bf16, [128, 16], Memory::SMEM>::uninit() };
+      for i in 0..128 across lanes {
+        for k in 0..16 {
+          sa[i][k] = 1.0;
+        }
+      }
+      out[blk] = (sa as f32) @ (weights as f32);
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let h_out = unsafe { Tensor<f32, [2, 128, 8], Memory::CPU_DRAM>::uninit() };
+  let mut d_out = transfer(h_out, Memory::HBM);
+  let weights = Tensor<bf16, [16, 8]>::fill(1.0);
+  let d_weights = transfer(weights, Memory::HBM);
+  run_block_matmul(&mut d_out, &d_weights);
+  return 0;
+}
+
+// WGMMA: wgmma.mma_async
+// DEFAULT-NOT: Error[E6032]
