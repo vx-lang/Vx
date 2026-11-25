@@ -367,6 +367,11 @@ impl<'a> TypeChecker<'a> {
                 Some(ty) if self.type_can_hold_reference(&ty) => ty,
                 _ => continue,
             };
+            // `info.text = text_of(&u)` with `info : &mut Info` stores a `Vec<u8>` in `info`.
+            // The stored value cannot hold a reference, so `info` keeps no borrow of `u`.
+            if !self.type_can_hold_reference(&self.check_expr_type_probe(&lhs)) {
+                continue;
+            }
             let depth = self.scope_depth_of(&holder);
             let mut borrowed = Vec::new();
             crate::syntax::visit_expr(&rhs, &mut |e| {
