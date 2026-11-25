@@ -141,7 +141,8 @@ impl<'a> TypeChecker<'a> {
                         }
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty = &arg_types[i];
+                            let arg_ty =
+                                &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                     "Type mismatch in argument {} for closure. Expected {}, got {}",
@@ -194,7 +195,7 @@ impl<'a> TypeChecker<'a> {
                 }
             } else {
                 for (i, param_ty) in param_types.iter().enumerate() {
-                    let arg_ty = &arg_types[i];
+                    let arg_ty = &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
                     if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                         self.errors.push(format!(
                             "Type mismatch in argument {} for closure fat pointer. Expected {}, got {}",
@@ -1205,7 +1206,8 @@ impl<'a> TypeChecker<'a> {
                         ));
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty = &arg_types[i];
+                            let arg_ty =
+                                &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                         "Type mismatch in argument {} for function pointer '{}'. Expected {}, got {}",
@@ -1227,7 +1229,8 @@ impl<'a> TypeChecker<'a> {
                         ));
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty = &arg_types[i];
+                            let arg_ty =
+                                &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                         "Type mismatch in argument {} for closure '{}'. Expected {}, got {}",
@@ -1258,19 +1261,23 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         let call_name = format!("{}_call", struct_name);
-                        if let Some(func) = self
+                        if let Some((param_types, closure_ret)) = self
                             .mono
                             .functions
                             .iter()
                             .find(|f| f.0.name == call_name.as_str().into())
+                            .map(|func| {
+                                (
+                                    func.0
+                                        .params
+                                        .iter()
+                                        .skip(1)
+                                        .map(|(_, t)| t.clone())
+                                        .collect::<Vec<Type>>(),
+                                    func.0.return_type.clone(),
+                                )
+                            })
                         {
-                            let param_types: Vec<Type> = func
-                                .0
-                                .params
-                                .iter()
-                                .skip(1)
-                                .map(|(_, t)| t.clone())
-                                .collect();
                             if args.len() != param_types.len() {
                                 if !self.speculating {
                                     self.errors.push(format!(
@@ -1282,7 +1289,11 @@ impl<'a> TypeChecker<'a> {
                                 }
                             } else {
                                 for (i, param_ty) in param_types.iter().enumerate() {
-                                    let arg_ty = &arg_types[i];
+                                    let arg_ty = &self.refine_literal_arg(
+                                        &mut args[i],
+                                        param_ty,
+                                        &arg_types[i],
+                                    );
                                     if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                         self.errors.push(format!(
                                                 "Type mismatch in argument {} for closure '{}'. Expected {}, got {}",
@@ -1310,7 +1321,7 @@ impl<'a> TypeChecker<'a> {
                                 span: Span::default(),
                             });
 
-                            func.0.return_type.clone()
+                            closure_ret
                         } else {
                             if !self.speculating {
                                 self.errors.push(format!(
