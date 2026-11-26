@@ -294,6 +294,27 @@ macro_rules! instantiate_string_ffi {
             s.push_str(&c_str.to_string_lossy());
         }
 
+        /// Append the bytes of `other` to `ptr`. The two may be the same string.
+        #[no_mangle]
+        pub extern "C" fn vx_string_push_str(
+            ptr: *mut std::ffi::c_void,
+            other: *mut std::ffi::c_void,
+        ) {
+            assert!(
+                !ptr.is_null() && !other.is_null(),
+                "vx_string_push_str: null string"
+            );
+            if ptr == other {
+                let s = unsafe { &mut *(ptr as *mut String) };
+                let copy = s.clone();
+                s.push_str(&copy);
+                return;
+            }
+            let s = unsafe { &mut *(ptr as *mut String) };
+            let other = unsafe { &*(other as *const String) };
+            s.push_str(other);
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_string_len(ptr: *mut std::ffi::c_void) -> usize {
             if ptr.is_null() {
