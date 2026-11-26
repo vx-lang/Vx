@@ -199,7 +199,13 @@ impl<'a> TypeChecker<'a> {
                         if poisoned {
                             crate::registry::ambiguous_import_message("Enum", enum_name)
                         } else {
-                            format!("Unknown enum {}", enum_name)
+                            let base = enum_name.split('<').next().unwrap_or(enum_name);
+                            let hint = self.missing_import_hint(base);
+                            if hint.is_empty() {
+                                format!("Unknown enum {}", enum_name)
+                            } else {
+                                format!("Unknown enum {}.{}", enum_name, hint)
+                            }
                         },
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
@@ -364,7 +370,7 @@ impl<'a> TypeChecker<'a> {
         for (i, (p, a)) in pd.iter().zip(ad.iter()).enumerate() {
             if let (
                 crate::syntax::Dim::Static(crate::syntax::Expr::Identifier(id)),
-                crate::syntax::Dim::Dyn,
+                crate::syntax::Dim::Dyn(None),
             ) = (p, a)
             {
                 return format!(

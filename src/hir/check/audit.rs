@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // `vxc --audit`: the facts that the compiler trusts without a proof. Each `assume`, each pointer
-// clause that a call in `unsafe` code trusts, each `ensures` of an `extern` function, and each
-// pointer `requires` of a `pub fn`, which C code can call with no proof. A1 in
+// clause that a call in `unsafe` code trusts, each `ensures` of a function in an `extern` block,
+// and each pointer `requires` of an `extern fn`, which C code can call with no proof. A1 in
 // docs/discussions/contracts_for_extern_and_unsafe_code.md has the design.
 //
 //===----------------------------------------------------------------------===//
@@ -52,8 +52,8 @@ pub(crate) fn clause_text(e: &Expr) -> String {
 }
 
 /// The facts that the declarations of `program` state and the compiler trusts: each `ensures`
-/// of an `extern` function, whose body the compiler cannot read, and each pointer `requires` of
-/// a `pub fn`, because a call from C proves nothing.
+/// of a function in an `extern` block, whose body the compiler cannot read, and each pointer
+/// `requires` of an `extern fn`, because a call from C proves nothing.
 pub fn trusted_declarations(program: &Program) -> Vec<Trusted> {
     let file = program
         .file
@@ -77,10 +77,10 @@ pub fn trusted_declarations(program: &Program) -> Vec<Trusted> {
         }
     }
     let pointer_clause = |e: &&Expr| crate::hir::check::pointer_facts::read_clause(e).is_some();
-    for f in program.functions.iter().filter(|f| f.is_pub) {
+    for f in program.functions.iter().filter(|f| f.exported) {
         for clause in f.requires.iter().filter(pointer_clause) {
             let what = format!(
-                "`pub fn {}` requires `{}`, and a call from C proves nothing",
+                "the exported function `{}` requires `{}`, and a call from C proves nothing",
                 f.name,
                 clause_text(clause)
             );
@@ -163,7 +163,14 @@ pub fn trusted_code(program: &Program) -> Vec<(TrustedCode, Trusted)> {
             (false, false) => {}
         }
     }
-    let methods = program.impls.iter().flat_map(|ib| ib.methods.iter());
+    // A default method that the compiler copied from a trait into an impl is the trait's code.
+    // It counts once, in the trait's file, below.
+    let methods = program.impls.iter().flat_map(|ib| {
+        ib.methods
+            .iter()
+            .filter(|m| !ib.copied_defaults.contains(&m.name))
+    });
+    let mut bodies: Vec<&[crate::syntax::Statement]> = Vec::new();
     for f in program.functions.iter().chain(methods) {
         if f.is_unsafe {
             add(
@@ -172,8 +179,15 @@ pub fn trusted_code(program: &Program) -> Vec<(TrustedCode, Trusted)> {
                 format!("`unsafe fn {}`", f.name),
             );
         }
-        crate::syntax::visit_exprs(&f.body, &mut |e| match e {
-            Expr::UnsafeBlock(b) if !b.generated && b.task.is_none() => add(
+        bodies.push(&f.body);
+    }
+    let defaults = program.traits.iter().flat_map(|t| t.methods.iter());
+    bodies.extend(defaults.filter_map(|m| m.default_body.as_deref()));
+    for body in bodies {
+        crate::syntax::visit_exprs(body, &mut |e| match e {
+            // The parser keeps the `{ .. }` of a closure as a block of this kind. The walk still
+            // goes into it, so an `unsafe` block that the closure writes counts.
+            Expr::UnsafeBlock(b) if !b.generated && b.task.is_none() && !b.closure_body => add(
                 TrustedCode::UnsafeBlock,
                 b.span,
                 "an `unsafe` block".to_string(),

@@ -33,6 +33,9 @@ enum Memory {
     Local { var: String, drops: bool },
     /// Memory that the body does not name.
     Other,
+    /// Memory that lives as long as the program, as the bytes of a string literal. No event
+    /// ends a fact about it.
+    Static,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -213,6 +216,7 @@ impl PointerFacts {
         self.end_ranges(at, why, |r, memory| match memory {
             Memory::Local { drops, .. } => *drops && r.kind == Kind::Init,
             Memory::Other => true,
+            Memory::Static => false,
         });
     }
 
@@ -748,9 +752,32 @@ impl<'a> TypeChecker<'a> {
                 });
                 v
             }
-            // A cast between `*const T` and `*mut T` keeps the value.
+            // A string literal of `n` bytes is `n` bytes and a NUL, in memory that lives as long
+            // as the program: `Valid` and `Init` for its `n + 1` elements.
+            Expr::StringLiteral(l) => {
+                let base = self.new_base(Memory::Static);
+                let len = Expr::Number(NumberExpr {
+                    value: (l.value.as_ref().len() + 1).to_string().into(),
+                    ty: None,
+                    span: Span::default(),
+                });
+                self.add_range(Kind::Valid, base, Vec::new(), vec![len.clone()]);
+                self.add_range(Kind::Init, base, Vec::new(), vec![len]);
+                PointerValue {
+                    base,
+                    offset: Vec::new(),
+                }
+            }
+            // A cast between `*const T` and `*mut T` keeps the value, and so does a cast between
+            // pointers to integers of the same width: the count of elements stays the same.
             Expr::AsCast(c) => match (&c.source_ty, &c.target_ty) {
-                (Some(Type::Pointer(from, ..)), Type::Pointer(to, ..)) if from == to => {
+                (Some(Type::Pointer(from, ..)), Type::Pointer(to, ..))
+                    if from == to
+                        || matches!(
+                            (from.as_ref(), to.as_ref()),
+                            (Type::Scalar(a), Type::Scalar(b)) if a.is_int_of_the_same_width(b)
+                        ) =>
+                {
                     self.pointer_value(&c.expr, pointee)
                 }
                 _ => fresh(self),
@@ -2460,10 +2487,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The callee `name` as the program wrote it: an instance of a generic function, such as
-    /// `sum$i64`, is shown as `sum`.
+    /// `sum$i64`, is shown as `sum`, and a method, such as `Rng$fill_f32`, as `Rng::fill_f32`.
     pub(crate) fn shown_callee(&self, name: &str) -> String {
         match name.split_once('$') {
             Some((first, _)) if self.env.generic_functions.contains_key(first) => first.to_string(),
+            Some((ty, method))
+                if !method.contains('$')
+                    && (self.env.structs.contains_key(ty) || self.env.enums.contains_key(ty)) =>
+            {
+                format!("{ty}::{method}")
+            }
             _ => name.to_string(),
         }
     }

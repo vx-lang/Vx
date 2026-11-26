@@ -6,7 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
+// CHECK-LABEL: func.func @main(%arg0: i32) -> i32
+// CHECK: [[VALUE:%.+]] = arith.constant 7 : i32
+// CHECK-NEXT: return [[VALUE]] : i32
 
 fn main(n : i32) -> i32 {
   let value = comptime {

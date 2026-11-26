@@ -37,7 +37,7 @@ enum Reading {
 fn value_of(r : &Reading) -> i32 {
   match r {
     Reading::Value(v) => {
-      return v;
+      return *v;
     }
     Reading::Missing => {
       return 0;

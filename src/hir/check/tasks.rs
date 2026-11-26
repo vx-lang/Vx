@@ -569,7 +569,10 @@ impl TypeChecker<'_> {
         }
         let block_err = result_parts(block_ty).map(|(_, e)| e);
         for f in failures {
-            if block_err.as_ref() != Some(&f.err) {
+            if !block_err
+                .as_ref()
+                .is_some_and(|e| self.is_assignable(e, &f.err))
+            {
                 self.task_error(
                     DiagnosticCode::E3060,
                     format!(
@@ -583,7 +586,10 @@ impl TypeChecker<'_> {
             }
         }
         for (err, at) in passed_up {
-            if block_err.as_ref() != Some(err) {
+            if !block_err
+                .as_ref()
+                .is_some_and(|e| self.is_assignable(e, err))
+            {
                 self.task_error(
                     DiagnosticCode::E3063,
                     format!(
@@ -648,7 +654,9 @@ impl TypeChecker<'_> {
                      `|..| -> Result<T, {err_ty}> {{ .. }}`"
                 ),
             )),
-            None if result_parts(&fn_ret).is_some_and(|(_, e)| e == err_ty) => None,
+            None if result_parts(&fn_ret).is_some_and(|(_, e)| self.is_assignable(&e, &err_ty)) => {
+                None
+            }
             None => Some((
                 DiagnosticCode::E3063,
                 format!(
@@ -1053,7 +1061,11 @@ impl TypeChecker<'_> {
         }
         let task_err = result_parts(ty).map(|(_, e)| e);
         for (err, at) in passed_up {
-            if *ty != Type::Unknown && task_err.as_ref() != Some(err) {
+            if *ty != Type::Unknown
+                && !task_err
+                    .as_ref()
+                    .is_some_and(|e| self.is_assignable(e, err))
+            {
                 self.task_error(
                     DiagnosticCode::E3063,
                     format!(

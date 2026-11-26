@@ -5,27 +5,22 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --run -- first second 2>&1 | FileCheck %s
+// The legacy code generator prints a `String` with no text (#3972), so only the default one runs.
+// RUN: vxc %s --run -- first second 2>&1 | FileCheck %s # flat-codegen
 // A program run by `vxc --run` sees the arguments after `--`, as a built binary would:
 // argument 0 is the program, and the `.vx` file is not one of them.
 // CHECK: 3 arguments
 // CHECK-NEXT: first
 // CHECK-NEXT: second
 
-extern {
-  fn vx_env_args_count() -> i32;
-  fn vx_env_arg(idx : i32) -> *mut i8;
-}
+import std::root;
+import std::string;
+import std::vec;
 
-fn main() -> i32 {
-  let n = unsafe { vx_env_args_count() };
-  print!(n);
-  print!(" arguments
-");
-  for i in 1..n {
-    print!(unsafe { vx_env_arg(i) });
-    print!("
-");
+fn main(_root : Root, args : Vec<String>) -> i32 {
+  println!("{} arguments", args.len());
+  for i in 1..args.len() {
+    println!("{}", args.get_ref(i));
   }
   return 0;
 }

@@ -229,6 +229,10 @@ pub struct FunctionCallExpr {
     pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
     pub span: Span,
+    /// The compiler wrote this call, as `c_str_equals` for `s == "hi"`. The program did not, so
+    /// the check of visibility skips it (docs/lang/visibility.md, section 4, rule 4). The AST
+    /// code generator also writes `transpose(t, [1, 0])` for the method `t.transpose([1, 0])`.
+    pub by_the_compiler: bool,
 }
 impl FunctionCallExpr {
     pub fn new(name: Symbol, type_args: Option<Vec<Type>>, args: Vec<Expr>, span: Span) -> Self {
@@ -238,6 +242,15 @@ impl FunctionCallExpr {
             type_args,
             args,
             span,
+            by_the_compiler: false,
+        }
+    }
+
+    /// A call that the compiler writes, not the program.
+    pub fn by_the_compiler(name: Symbol, args: Vec<Expr>, span: Span) -> Self {
+        Self {
+            by_the_compiler: true,
+            ..Self::new(name, None, args, span)
         }
     }
 }
@@ -1100,10 +1113,18 @@ pub struct MatchExpr {
     pub expr: Box<Expr>,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// The checker sets it when the matched value is a reference. Each name in a pattern then
+    /// binds a reference to its part of the value, not a copy of it.
+    pub binds_references: bool,
 }
 impl MatchExpr {
     pub fn new(expr: Box<Expr>, arms: Vec<MatchArm>, span: Span) -> Self {
-        Self { expr, arms, span }
+        Self {
+            expr,
+            arms,
+            span,
+            binds_references: false,
+        }
     }
 }
 
@@ -1841,6 +1862,7 @@ impl Expr {
                     type_args: substituted_type_args,
                     args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
                     span: e.span,
+                    by_the_compiler: e.by_the_compiler,
                 })
             }
             Expr::IndirectCall(e) => Expr::IndirectCall(IndirectCallExpr {
@@ -1973,6 +1995,7 @@ impl Expr {
                     })
                     .collect(),
                 span: e.span,
+                binds_references: e.binds_references,
             }),
             Expr::Grad(e) => Expr::Grad(GradExpr {
                 target_fn: e.target_fn.clone(),

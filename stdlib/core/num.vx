@@ -58,23 +58,23 @@ macro_rules stamp_signed_int {
   ($t : ident , $bits : expr , $min : expr , $max : expr , $byte_mask : expr) => {
     impl $t {
       /// The smallest value of this width.
-      fn min_value(self : $t) -> $t {
+      pub fn min_value(self : $t) -> $t {
         return $min;
       }
 
       /// The largest value of this width.
-      fn max_value(self : $t) -> $t {
+      pub fn max_value(self : $t) -> $t {
         return $max;
       }
 
       /// How many bits this width has.
-      fn bits(self : $t) -> $t {
+      pub fn bits(self : $t) -> $t {
         return $bits;
       }
 
       /// How many bits are set. The hardware instruction, so a negative operand is
       /// counted right; a loop shifting right would copy the sign bit forever.
-      fn count_ones(self : $t) -> $t {
+      pub fn count_ones(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.ctpop %a : $t
           macro.yield %r : $t
@@ -82,12 +82,12 @@ macro_rules stamp_signed_int {
       }
 
       /// How many bits are clear.
-      fn count_zeros(self : $t) -> $t {
+      pub fn count_zeros(self : $t) -> $t {
         return self.bits() - self.count_ones();
       }
 
       /// Zero bits above the highest set bit. All of them, for zero.
-      fn leading_zeros(self : $t) -> $t {
+      pub fn leading_zeros(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.ctlz %a : $t
           macro.yield %r : $t
@@ -95,7 +95,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Zero bits below the lowest set bit. All of them, for zero.
-      fn trailing_zeros(self : $t) -> $t {
+      pub fn trailing_zeros(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.cttz %a : $t
           macro.yield %r : $t
@@ -103,22 +103,22 @@ macro_rules stamp_signed_int {
       }
 
       /// Zero and the negatives are not.
-      fn is_power_of_two(self : $t) -> bool {
+      pub fn is_power_of_two(self : $t) -> bool {
         return self > (0 as $t) && (self & (self - 1)) == (0 as $t);
       }
 
       /// Is this greater than zero? Zero is neither positive nor negative.
-      fn is_positive(self : $t) -> bool {
+      pub fn is_positive(self : $t) -> bool {
         return self > (0 as $t);
       }
 
       /// Is this less than zero?
-      fn is_negative(self : $t) -> bool {
+      pub fn is_negative(self : $t) -> bool {
         return self < (0 as $t);
       }
 
       /// Refused at the smallest value, which has no positive counterpart.
-      fn abs(self : $t) -> $t {
+      pub fn abs(self : $t) -> $t {
         assert(self != self.min_value(), "abs of the smallest value has no answer at this width");
         if self < (0 as $t) {
           return -self;
@@ -127,7 +127,7 @@ macro_rules stamp_signed_int {
       }
 
       /// -1, 0 or 1, by sign.
-      fn signum(self : $t) -> $t {
+      pub fn signum(self : $t) -> $t {
         if self < (0 as $t) {
           return -1;
         }
@@ -138,7 +138,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The distance between two values.
-      fn abs_diff(self : $t, other : $t) -> $t {
+      pub fn abs_diff(self : $t, other : $t) -> $t {
         if self < other {
           return other - self;
         }
@@ -146,7 +146,7 @@ macro_rules stamp_signed_int {
       }
 
       /// By squaring. Overflow wraps, as every arithmetic operator here does.
-      fn pow(self : $t, exp : $t) -> $t {
+      pub fn pow(self : $t, exp : $t) -> $t {
         assert(exp >= (0 as $t), "pow takes a non-negative exponent");
         let mut result : $t = 1;
         let mut base : $t = self;
@@ -165,7 +165,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Never negative, whatever the signs: -7 % 4 is -3 where this is 1.
-      fn rem_euclid(self : $t, rhs : $t) -> $t {
+      pub fn rem_euclid(self : $t, rhs : $t) -> $t {
         let r = self % rhs;
         if r < (0 as $t) {
           if rhs < (0 as $t) {
@@ -177,7 +177,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The quotient pairing with `rem_euclid`.
-      fn div_euclid(self : $t, rhs : $t) -> $t {
+      pub fn div_euclid(self : $t, rhs : $t) -> $t {
         let q = self / rhs;
         if self % rhs < (0 as $t) {
           if rhs > (0 as $t) {
@@ -189,7 +189,7 @@ macro_rules stamp_signed_int {
       }
 
       /// This raised to `exp`, or nothing if the answer does not fit.
-      fn checked_pow(self : $t, exp : $t) -> Option<$t> {
+      pub fn checked_pow(self : $t, exp : $t) -> Option<$t> {
         assert(exp >= (0 as $t), "checked_pow takes a non-negative exponent");
         // By squaring. The last square is never taken, so a base whose square would not
         // fit still gives an answer when that square is not needed.
@@ -222,13 +222,13 @@ macro_rules stamp_signed_int {
 
       /// This raised to `exp`, wrapping round at the width. The same as `pow`, under the
       /// name that says so.
-      fn wrapping_pow(self : $t, exp : $t) -> $t {
+      pub fn wrapping_pow(self : $t, exp : $t) -> $t {
         return self.pow(exp);
       }
 
       /// The logarithm to `base`, rounded down. Refused at zero and below, and for a base
       /// below two.
-      fn ilog(self : $t, base : $t) -> $t {
+      pub fn ilog(self : $t, base : $t) -> $t {
         assert(self > (0 as $t), "ilog needs a positive value");
         assert(base >= (2 as $t), "ilog needs a base of at least two");
         let mut n : $t = 0;
@@ -244,12 +244,12 @@ macro_rules stamp_signed_int {
       }
 
       /// The logarithm to base ten, rounded down. Refused at zero and below.
-      fn ilog10(self : $t) -> $t {
+      pub fn ilog10(self : $t) -> $t {
         return self.ilog(10);
       }
 
       /// The logarithm to `base`, or nothing at zero and below or for a base below two.
-      fn checked_ilog(self : $t, base : $t) -> Option<$t> {
+      pub fn checked_ilog(self : $t, base : $t) -> Option<$t> {
         if self <= (0 as $t) || base < (2 as $t) {
           return Option<$t>::None();
         }
@@ -257,7 +257,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The logarithm to base two, or nothing at zero and below.
-      fn checked_ilog2(self : $t) -> Option<$t> {
+      pub fn checked_ilog2(self : $t) -> Option<$t> {
         if self <= (0 as $t) {
           return Option<$t>::None();
         }
@@ -265,13 +265,13 @@ macro_rules stamp_signed_int {
       }
 
       /// The logarithm to base ten, or nothing at zero and below.
-      fn checked_ilog10(self : $t) -> Option<$t> {
+      pub fn checked_ilog10(self : $t) -> Option<$t> {
         return self.checked_ilog(10);
       }
 
       /// This raised to `exp`, held at the end of the range it overflows towards: the
       /// bottom for a negative base to an odd power, the top otherwise.
-      fn saturating_pow(self : $t, exp : $t) -> $t {
+      pub fn saturating_pow(self : $t, exp : $t) -> $t {
         let r = self.checked_pow(exp);
         if r.is_some() {
           return r.unwrap();
@@ -283,7 +283,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The absolute value, or nothing for the smallest value, whose positive does not fit.
-      fn checked_abs(self : $t) -> Option<$t> {
+      pub fn checked_abs(self : $t) -> Option<$t> {
         if self == self.min_value() {
           return Option<$t>::None();
         }
@@ -291,7 +291,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The absolute value, wrapping: the smallest value gives itself.
-      fn wrapping_abs(self : $t) -> $t {
+      pub fn wrapping_abs(self : $t) -> $t {
         if self == self.min_value() {
           return self;
         }
@@ -299,7 +299,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The absolute value, held at the largest value for the smallest.
-      fn saturating_abs(self : $t) -> $t {
+      pub fn saturating_abs(self : $t) -> $t {
         if self == self.min_value() {
           return self.max_value();
         }
@@ -307,7 +307,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The negation, held at the largest value for the smallest.
-      fn saturating_neg(self : $t) -> $t {
+      pub fn saturating_neg(self : $t) -> $t {
         if self == self.min_value() {
           return self.max_value();
         }
@@ -316,7 +316,7 @@ macro_rules stamp_signed_int {
 
       /// The quotient, wrapping: the smallest value divided by -1 gives itself. Refused on
       /// a zero divisor, as `/` is.
-      fn wrapping_div(self : $t, rhs : $t) -> $t {
+      pub fn wrapping_div(self : $t, rhs : $t) -> $t {
         if self == self.min_value() && rhs == (-1 as $t) {
           return self;
         }
@@ -324,7 +324,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The remainder, wrapping: the smallest value by -1 gives 0.
-      fn wrapping_rem(self : $t, rhs : $t) -> $t {
+      pub fn wrapping_rem(self : $t, rhs : $t) -> $t {
         if self == self.min_value() && rhs == (-1 as $t) {
           return 0;
         }
@@ -332,7 +332,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Rounded down. Refused at zero and below.
-      fn ilog2(self : $t) -> $t {
+      pub fn ilog2(self : $t) -> $t {
         assert(self > (0 as $t), "ilog2 needs a positive value");
         return self.bits() - 1 - self.leading_zeros();
       }
@@ -340,7 +340,7 @@ macro_rules stamp_signed_int {
       /// The square root, rounded down. Refused below zero.
       ///
       /// Digit by digit in base four, so nothing overflows and no float is involved.
-      fn isqrt(self : $t) -> $t {
+      pub fn isqrt(self : $t) -> $t {
         assert(self >= (0 as $t), "isqrt of a negative value has no answer");
         let two : $t = 2;
         let mut rest : $t = self;
@@ -368,7 +368,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The square root rounded down, or nothing below zero.
-      fn checked_isqrt(self : $t) -> Option<$t> {
+      pub fn checked_isqrt(self : $t) -> Option<$t> {
         if self < (0 as $t) {
           return Option<$t>::None();
         }
@@ -377,7 +377,7 @@ macro_rules stamp_signed_int {
 
       /// Halfway between two values, rounded towards zero, without overflowing.
       /// `>>` rounds down, so a negative answer with a half left over is moved up by one.
-      fn midpoint(self : $t, rhs : $t) -> $t {
+      pub fn midpoint(self : $t, rhs : $t) -> $t {
         let down = (self & rhs) + ((self ^ rhs) >> (1 as $t));
         if down < (0 as $t) && ((self ^ rhs) & (1 as $t)) == (1 as $t) {
           return down + 1;
@@ -387,7 +387,7 @@ macro_rules stamp_signed_int {
 
       /// One for anything at or below one. The top power of two does not fit in a
       /// signed width, so a value beyond it is refused.
-      fn next_power_of_two(self : $t) -> $t {
+      pub fn next_power_of_two(self : $t) -> $t {
         if self <= (1 as $t) {
           return 1;
         }
@@ -398,7 +398,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Wrapping round. The right half is masked because `>>` copies the sign bit.
-      fn rotate_left(self : $t, n : $t) -> $t {
+      pub fn rotate_left(self : $t, n : $t) -> $t {
         let k = n % self.bits();
         if k == (0 as $t) {
           return self;
@@ -409,7 +409,7 @@ macro_rules stamp_signed_int {
       }
 
       /// The bits rotated right.
-      fn rotate_right(self : $t, n : $t) -> $t {
+      pub fn rotate_right(self : $t, n : $t) -> $t {
         let k = n % self.bits();
         if k == (0 as $t) {
           return self;
@@ -419,7 +419,7 @@ macro_rules stamp_signed_int {
 
       /// The bytes reversed. The mask is a parameter because 255 does not fit in an
       /// `i8`; it is accepted there and wraps to -1, which is right by luck.
-      fn swap_bytes(self : $t) -> $t {
+      pub fn swap_bytes(self : $t) -> $t {
         let eight : $t = 8;
         let mask : $t = $byte_mask;
         let mut out : $t = 0;
@@ -435,8 +435,29 @@ macro_rules stamp_signed_int {
         return out;
       }
 
+      /// The value in big-endian order. Vx cannot ask for the target's byte order yet,
+      /// so this assumes a little-endian target and swaps the bytes.
+      pub fn to_be(self : $t) -> $t {
+        return self.swap_bytes();
+      }
+
+      /// The value in little-endian order. On a little-endian target nothing changes.
+      pub fn to_le(self : $t) -> $t {
+        return self;
+      }
+
+      /// Reads a big-endian value. On a little-endian target the bytes are swapped.
+      pub fn from_be(self : $t) -> $t {
+        return self.swap_bytes();
+      }
+
+      /// Reads a little-endian value. On a little-endian target nothing changes.
+      pub fn from_le(self : $t) -> $t {
+        return self;
+      }
+
       /// The bits reversed.
-      fn reverse_bits(self : $t) -> $t {
+      pub fn reverse_bits(self : $t) -> $t {
         let one : $t = 1;
         let mut out : $t = 0;
         let mut i : $t = 0;
@@ -453,7 +474,7 @@ macro_rules stamp_signed_int {
 
       /// Nothing if it would not fit. The bound is rearranged so the check itself
       /// cannot overflow.
-      fn checked_add(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_add(self : $t, rhs : $t) -> Option<$t> {
         if rhs > (0 as $t) && self > self.max_value() - rhs {
           return Option<$t>::None();
         }
@@ -464,7 +485,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Nothing if it would not fit.
-      fn checked_sub(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_sub(self : $t, rhs : $t) -> Option<$t> {
         if rhs < (0 as $t) && self > self.max_value() + rhs {
           return Option<$t>::None();
         }
@@ -476,7 +497,7 @@ macro_rules stamp_signed_int {
 
       /// Checked by dividing back out, exact when the product fit. The two divisions
       /// that would themselves overflow are ruled out first.
-      fn checked_mul(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_mul(self : $t, rhs : $t) -> Option<$t> {
         if self == (0 as $t) || rhs == (0 as $t) {
           return Option<$t>::Some(0 as $t);
         }
@@ -494,7 +515,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Nothing on division by zero, or on the one division that overflows.
-      fn checked_div(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_div(self : $t, rhs : $t) -> Option<$t> {
         if rhs == (0 as $t) {
           return Option<$t>::None();
         }
@@ -505,7 +526,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Refused in the same two cases as `checked_div`.
-      fn checked_rem(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_rem(self : $t, rhs : $t) -> Option<$t> {
         if rhs == (0 as $t) {
           return Option<$t>::None();
         }
@@ -516,7 +537,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Nothing for the smallest value.
-      fn checked_neg(self : $t) -> Option<$t> {
+      pub fn checked_neg(self : $t) -> Option<$t> {
         if self == self.min_value() {
           return Option<$t>::None();
         }
@@ -524,7 +545,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Held at the end of the range instead of wrapping past it.
-      fn saturating_add(self : $t, rhs : $t) -> $t {
+      pub fn saturating_add(self : $t, rhs : $t) -> $t {
         if rhs > (0 as $t) && self > self.max_value() - rhs {
           return self.max_value();
         }
@@ -535,7 +556,7 @@ macro_rules stamp_signed_int {
       }
 
       /// Held at the end of the range instead of wrapping past it.
-      fn saturating_sub(self : $t, rhs : $t) -> $t {
+      pub fn saturating_sub(self : $t, rhs : $t) -> $t {
         if rhs < (0 as $t) && self > self.max_value() + rhs {
           return self.max_value();
         }
@@ -548,29 +569,29 @@ macro_rules stamp_signed_int {
       /// The sum, wrapping round at the width. Vx's `+` already wraps, so the body is the
       /// operator; the name is what a reader who wants that on purpose looks for, and what
       /// a hash function is written in.
-      fn wrapping_add(self : $t, rhs : $t) -> $t {
+      pub fn wrapping_add(self : $t, rhs : $t) -> $t {
         return self + rhs;
       }
 
       /// The difference, wrapping round at the width.
-      fn wrapping_sub(self : $t, rhs : $t) -> $t {
+      pub fn wrapping_sub(self : $t, rhs : $t) -> $t {
         return self - rhs;
       }
 
       /// The product, keeping the low bits and discarding the rest.
-      fn wrapping_mul(self : $t, rhs : $t) -> $t {
+      pub fn wrapping_mul(self : $t, rhs : $t) -> $t {
         return self * rhs;
       }
 
       /// Zero minus this, wrapping. The smallest value negates to itself, because its
       /// positive is one past the largest.
-      fn wrapping_neg(self : $t) -> $t {
+      pub fn wrapping_neg(self : $t) -> $t {
         return (0 as $t) - self;
       }
 
       /// Clamped to the width rather than wrapping. Which end it clamps to is the sign the
       /// product would have had, which is whether the two operands agree in sign.
-      fn saturating_mul(self : $t, rhs : $t) -> $t {
+      pub fn saturating_mul(self : $t, rhs : $t) -> $t {
         let product = self.checked_mul(rhs);
         let signs_agree = (self < (0 as $t)) == (rhs < (0 as $t));
         let mut limit = self.min_value();
@@ -581,37 +602,37 @@ macro_rules stamp_signed_int {
       }
 
       /// How many set bits the value starts with, counting from the top.
-      fn leading_ones(self : $t) -> $t {
+      pub fn leading_ones(self : $t) -> $t {
         return (!self).leading_zeros();
       }
 
       /// How many set bits the value ends with, counting from the bottom.
-      fn trailing_ones(self : $t) -> $t {
+      pub fn trailing_ones(self : $t) -> $t {
         return (!self).trailing_zeros();
       }
 
       /// The wrapped sum, and whether it wrapped.
-      fn overflowing_add(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_add(self : $t, rhs : $t) -> ($t, bool) {
         return (self + rhs, self.checked_add(rhs).is_none());
       }
 
       /// The wrapped difference, and whether it wrapped.
-      fn overflowing_sub(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_sub(self : $t, rhs : $t) -> ($t, bool) {
         return (self - rhs, self.checked_sub(rhs).is_none());
       }
 
       /// The wrapped product, and whether it wrapped.
-      fn overflowing_mul(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_mul(self : $t, rhs : $t) -> ($t, bool) {
         return (self * rhs, self.checked_mul(rhs).is_none());
       }
 
       /// The negation, and whether it wrapped: only the smallest value does, to itself.
-      fn overflowing_neg(self : $t) -> ($t, bool) {
+      pub fn overflowing_neg(self : $t) -> ($t, bool) {
         return ((0 as $t) - self, self == self.min_value());
       }
 
       /// The absolute value, and whether it wrapped: only the smallest value does, to itself.
-      fn overflowing_abs(self : $t) -> ($t, bool) {
+      pub fn overflowing_abs(self : $t) -> ($t, bool) {
         if self == self.min_value() {
           return (self, true);
         }
@@ -620,7 +641,7 @@ macro_rules stamp_signed_int {
 
       /// The quotient, and whether it wrapped: the smallest value divided by -1 gives
       /// itself. Refused on a zero divisor, as `/` is.
-      fn overflowing_div(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_div(self : $t, rhs : $t) -> ($t, bool) {
         if self == self.min_value() && rhs == (-1 as $t) {
           return (self, true);
         }
@@ -629,7 +650,7 @@ macro_rules stamp_signed_int {
 
       /// The remainder, and whether it wrapped: the smallest value by -1 gives 0 and says
       /// so, since the division beside it overflows.
-      fn overflowing_rem(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_rem(self : $t, rhs : $t) -> ($t, bool) {
         if self == self.min_value() && rhs == (-1 as $t) {
           return (0 as $t, true);
         }
@@ -659,22 +680,22 @@ macro_rules stamp_unsigned_int {
   ($t : ident , $mlir : ident , $bits : expr , $max : expr) => {
     impl $t {
       /// Zero, at every unsigned width.
-      fn min_value(self : $t) -> $t {
+      pub fn min_value(self : $t) -> $t {
         return 0;
       }
 
       /// The largest value of this width.
-      fn max_value(self : $t) -> $t {
+      pub fn max_value(self : $t) -> $t {
         return $max;
       }
 
       /// How many bits this width has.
-      fn bits(self : $t) -> $t {
+      pub fn bits(self : $t) -> $t {
         return $bits;
       }
 
       /// How many bits are set.
-      fn count_ones(self : $t) -> $t {
+      pub fn count_ones(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $mlir), returns : $t, dialects : ["math"]) {
           %r = math.ctpop %a : $mlir
           macro.yield %r : $mlir
@@ -682,12 +703,12 @@ macro_rules stamp_unsigned_int {
       }
 
       /// How many bits are clear.
-      fn count_zeros(self : $t) -> $t {
+      pub fn count_zeros(self : $t) -> $t {
         return self.bits() - self.count_ones();
       }
 
       /// Zero bits above the highest set bit. All of them, for zero.
-      fn leading_zeros(self : $t) -> $t {
+      pub fn leading_zeros(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $mlir), returns : $t, dialects : ["math"]) {
           %r = math.ctlz %a : $mlir
           macro.yield %r : $mlir
@@ -695,7 +716,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Zero bits below the lowest set bit. All of them, for zero.
-      fn trailing_zeros(self : $t) -> $t {
+      pub fn trailing_zeros(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $mlir), returns : $t, dialects : ["math"]) {
           %r = math.cttz %a : $mlir
           macro.yield %r : $mlir
@@ -703,12 +724,12 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Zero is not a power of two.
-      fn is_power_of_two(self : $t) -> bool {
+      pub fn is_power_of_two(self : $t) -> bool {
         return self > (0 as $t) && (self & (self - 1)) == (0 as $t);
       }
 
       /// The distance between two values, which is never negative and so always fits.
-      fn abs_diff(self : $t, other : $t) -> $t {
+      pub fn abs_diff(self : $t, other : $t) -> $t {
         if self < other {
           return other - self;
         }
@@ -716,7 +737,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// By squaring. Overflow wraps, as every arithmetic operator here does.
-      fn pow(self : $t, exp : $t) -> $t {
+      pub fn pow(self : $t, exp : $t) -> $t {
         let mut result : $t = 1;
         let mut base : $t = self;
         let mut e : $t = exp;
@@ -734,17 +755,17 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Plain division: an unsigned quotient is already the Euclidean one.
-      fn div_euclid(self : $t, rhs : $t) -> $t {
+      pub fn div_euclid(self : $t, rhs : $t) -> $t {
         return self / rhs;
       }
 
       /// Plain remainder, which at this width is never negative.
-      fn rem_euclid(self : $t, rhs : $t) -> $t {
+      pub fn rem_euclid(self : $t, rhs : $t) -> $t {
         return self % rhs;
       }
 
       /// This raised to `exp`, or nothing if the answer does not fit.
-      fn checked_pow(self : $t, exp : $t) -> Option<$t> {
+      pub fn checked_pow(self : $t, exp : $t) -> Option<$t> {
         assert(exp >= (0 as $t), "checked_pow takes a non-negative exponent");
         // By squaring. The last square is never taken, so a base whose square would not
         // fit still gives an answer when that square is not needed.
@@ -777,13 +798,13 @@ macro_rules stamp_unsigned_int {
 
       /// This raised to `exp`, wrapping round at the width. The same as `pow`, under the
       /// name that says so.
-      fn wrapping_pow(self : $t, exp : $t) -> $t {
+      pub fn wrapping_pow(self : $t, exp : $t) -> $t {
         return self.pow(exp);
       }
 
       /// The logarithm to `base`, rounded down. Refused at zero and below, and for a base
       /// below two.
-      fn ilog(self : $t, base : $t) -> $t {
+      pub fn ilog(self : $t, base : $t) -> $t {
         assert(self > (0 as $t), "ilog needs a positive value");
         assert(base >= (2 as $t), "ilog needs a base of at least two");
         let mut n : $t = 0;
@@ -799,12 +820,12 @@ macro_rules stamp_unsigned_int {
       }
 
       /// The logarithm to base ten, rounded down. Refused at zero and below.
-      fn ilog10(self : $t) -> $t {
+      pub fn ilog10(self : $t) -> $t {
         return self.ilog(10);
       }
 
       /// The logarithm to `base`, or nothing at zero and below or for a base below two.
-      fn checked_ilog(self : $t, base : $t) -> Option<$t> {
+      pub fn checked_ilog(self : $t, base : $t) -> Option<$t> {
         if self <= (0 as $t) || base < (2 as $t) {
           return Option<$t>::None();
         }
@@ -812,7 +833,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// The logarithm to base two, or nothing at zero and below.
-      fn checked_ilog2(self : $t) -> Option<$t> {
+      pub fn checked_ilog2(self : $t) -> Option<$t> {
         if self <= (0 as $t) {
           return Option<$t>::None();
         }
@@ -820,18 +841,18 @@ macro_rules stamp_unsigned_int {
       }
 
       /// The logarithm to base ten, or nothing at zero and below.
-      fn checked_ilog10(self : $t) -> Option<$t> {
+      pub fn checked_ilog10(self : $t) -> Option<$t> {
         return self.checked_ilog(10);
       }
 
       /// This raised to `exp`, held at the largest value if it overflows.
-      fn saturating_pow(self : $t, exp : $t) -> $t {
+      pub fn saturating_pow(self : $t, exp : $t) -> $t {
         return self.checked_pow(exp).unwrap_or(self.max_value());
       }
 
       /// Does `rhs` divide this exactly? Zero is a multiple only of zero, and every value of
       /// one.
-      fn is_multiple_of(self : $t, rhs : $t) -> bool {
+      pub fn is_multiple_of(self : $t, rhs : $t) -> bool {
         if rhs == (0 as $t) {
           return self == (0 as $t);
         }
@@ -840,7 +861,7 @@ macro_rules stamp_unsigned_int {
 
       /// The smallest multiple of `rhs` at or above this. Refused on a zero `rhs`, and when
       /// the answer does not fit.
-      fn next_multiple_of(self : $t, rhs : $t) -> $t {
+      pub fn next_multiple_of(self : $t, rhs : $t) -> $t {
         let r = self.checked_next_multiple_of(rhs);
         assert(r.is_some(), "next_multiple_of has no answer here");
         return r.unwrap();
@@ -848,7 +869,7 @@ macro_rules stamp_unsigned_int {
 
       /// The smallest multiple of `rhs` at or above this, or nothing on a zero `rhs` or when
       /// the answer does not fit.
-      fn checked_next_multiple_of(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_next_multiple_of(self : $t, rhs : $t) -> Option<$t> {
         if rhs == (0 as $t) {
           return Option<$t>::None();
         }
@@ -860,7 +881,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// The smallest power of two at or above this, or nothing above the top power of two.
-      fn checked_next_power_of_two(self : $t) -> Option<$t> {
+      pub fn checked_next_power_of_two(self : $t) -> Option<$t> {
         if self <= (1 as $t) {
           return Option<$t>::Some(1 as $t);
         }
@@ -873,13 +894,13 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Rounded down. Refused at zero, which has no logarithm.
-      fn ilog2(self : $t) -> $t {
+      pub fn ilog2(self : $t) -> $t {
         assert(self > (0 as $t), "ilog2 needs a positive value");
         return self.bits() - 1 - self.leading_zeros();
       }
 
       /// The square root, rounded down, digit by digit in base four.
-      fn isqrt(self : $t) -> $t {
+      pub fn isqrt(self : $t) -> $t {
         let two : $t = 2;
         let mut rest : $t = self;
         let mut root : $t = 0;
@@ -906,12 +927,12 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Halfway between two values, rounded down, without overflowing.
-      fn midpoint(self : $t, rhs : $t) -> $t {
+      pub fn midpoint(self : $t, rhs : $t) -> $t {
         return (self & rhs) + ((self ^ rhs) >> (1 as $t));
       }
 
       /// The quotient rounded up. Refused on a zero divisor.
-      fn div_ceil(self : $t, rhs : $t) -> $t {
+      pub fn div_ceil(self : $t, rhs : $t) -> $t {
         assert(rhs != (0 as $t), "div_ceil by zero");
         let q = self / rhs;
         if self % rhs != (0 as $t) {
@@ -922,7 +943,7 @@ macro_rules stamp_unsigned_int {
 
       /// One for anything at or below one. Refused above the top power of two, which is the
       /// half of the range that has no next power to reach.
-      fn next_power_of_two(self : $t) -> $t {
+      pub fn next_power_of_two(self : $t) -> $t {
         if self <= (1 as $t) {
           return 1;
         }
@@ -933,7 +954,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Wrapping round. No mask, unlike the signed rotate: `>>` brings in zeros here.
-      fn rotate_left(self : $t, n : $t) -> $t {
+      pub fn rotate_left(self : $t, n : $t) -> $t {
         let k = n % self.bits();
         if k == (0 as $t) {
           return self;
@@ -942,7 +963,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// The bits rotated right.
-      fn rotate_right(self : $t, n : $t) -> $t {
+      pub fn rotate_right(self : $t, n : $t) -> $t {
         let k = n % self.bits();
         if k == (0 as $t) {
           return self;
@@ -951,7 +972,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// The bytes reversed.
-      fn swap_bytes(self : $t) -> $t {
+      pub fn swap_bytes(self : $t) -> $t {
         let eight : $t = 8;
         let mask : $t = 255;
         let mut out : $t = 0;
@@ -967,8 +988,29 @@ macro_rules stamp_unsigned_int {
         return out;
       }
 
+      /// The value in big-endian order. Vx cannot ask for the target's byte order yet,
+      /// so this assumes a little-endian target and swaps the bytes.
+      pub fn to_be(self : $t) -> $t {
+        return self.swap_bytes();
+      }
+
+      /// The value in little-endian order. On a little-endian target nothing changes.
+      pub fn to_le(self : $t) -> $t {
+        return self;
+      }
+
+      /// Reads a big-endian value. On a little-endian target the bytes are swapped.
+      pub fn from_be(self : $t) -> $t {
+        return self.swap_bytes();
+      }
+
+      /// Reads a little-endian value. On a little-endian target nothing changes.
+      pub fn from_le(self : $t) -> $t {
+        return self;
+      }
+
       /// The bits reversed.
-      fn reverse_bits(self : $t) -> $t {
+      pub fn reverse_bits(self : $t) -> $t {
         let one : $t = 1;
         let mut out : $t = 0;
         let mut i : $t = 0;
@@ -984,7 +1026,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Nothing if it would not fit. The bound is rearranged so the check cannot overflow.
-      fn checked_add(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_add(self : $t, rhs : $t) -> Option<$t> {
         if self > self.max_value() - rhs {
           return Option<$t>::None();
         }
@@ -992,7 +1034,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Nothing if it would go below zero, which is where an unsigned width ends.
-      fn checked_sub(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_sub(self : $t, rhs : $t) -> Option<$t> {
         if self < rhs {
           return Option<$t>::None();
         }
@@ -1000,7 +1042,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Checked by dividing back out, exact when the product fit.
-      fn checked_mul(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_mul(self : $t, rhs : $t) -> Option<$t> {
         if self == (0 as $t) || rhs == (0 as $t) {
           return Option<$t>::Some(0 as $t);
         }
@@ -1012,7 +1054,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Nothing on division by zero, which is the only division that fails here.
-      fn checked_div(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_div(self : $t, rhs : $t) -> Option<$t> {
         if rhs == (0 as $t) {
           return Option<$t>::None();
         }
@@ -1020,7 +1062,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Refused on a zero divisor, as `checked_div` is.
-      fn checked_rem(self : $t, rhs : $t) -> Option<$t> {
+      pub fn checked_rem(self : $t, rhs : $t) -> Option<$t> {
         if rhs == (0 as $t) {
           return Option<$t>::None();
         }
@@ -1028,7 +1070,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Held at the top of the range instead of wrapping past it.
-      fn saturating_add(self : $t, rhs : $t) -> $t {
+      pub fn saturating_add(self : $t, rhs : $t) -> $t {
         if self > self.max_value() - rhs {
           return self.max_value();
         }
@@ -1036,7 +1078,7 @@ macro_rules stamp_unsigned_int {
       }
 
       /// Held at zero instead of wrapping below it.
-      fn saturating_sub(self : $t, rhs : $t) -> $t {
+      pub fn saturating_sub(self : $t, rhs : $t) -> $t {
         if self < rhs {
           return 0;
         }
@@ -1044,69 +1086,69 @@ macro_rules stamp_unsigned_int {
       }
 
       /// The sum, wrapping round at the width. Vx's `+` already wraps.
-      fn wrapping_add(self : $t, rhs : $t) -> $t {
+      pub fn wrapping_add(self : $t, rhs : $t) -> $t {
         return self + rhs;
       }
 
       /// The difference, wrapping round at the width, so subtracting past zero lands near
       /// the top.
-      fn wrapping_sub(self : $t, rhs : $t) -> $t {
+      pub fn wrapping_sub(self : $t, rhs : $t) -> $t {
         return self - rhs;
       }
 
       /// The product, keeping the low bits and discarding the rest.
-      fn wrapping_mul(self : $t, rhs : $t) -> $t {
+      pub fn wrapping_mul(self : $t, rhs : $t) -> $t {
         return self * rhs;
       }
 
       /// Zero minus this, wrapping.
-      fn wrapping_neg(self : $t) -> $t {
+      pub fn wrapping_neg(self : $t) -> $t {
         return 0 - self;
       }
 
       /// Clamped to the top of the width rather than wrapping. There is no other end to
       /// clamp to without a sign.
-      fn saturating_mul(self : $t, rhs : $t) -> $t {
+      pub fn saturating_mul(self : $t, rhs : $t) -> $t {
         return self.checked_mul(rhs).unwrap_or(self.max_value());
       }
 
       /// How many set bits the value starts with, counting from the top.
-      fn leading_ones(self : $t) -> $t {
+      pub fn leading_ones(self : $t) -> $t {
         return (!self).leading_zeros();
       }
 
       /// How many set bits the value ends with, counting from the bottom.
-      fn trailing_ones(self : $t) -> $t {
+      pub fn trailing_ones(self : $t) -> $t {
         return (!self).trailing_zeros();
       }
 
       /// The wrapped sum, and whether it wrapped.
-      fn overflowing_add(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_add(self : $t, rhs : $t) -> ($t, bool) {
         return (self + rhs, self.checked_add(rhs).is_none());
       }
 
       /// The wrapped difference, and whether it went below zero.
-      fn overflowing_sub(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_sub(self : $t, rhs : $t) -> ($t, bool) {
         return (self - rhs, self < rhs);
       }
 
       /// The wrapped product, and whether it wrapped.
-      fn overflowing_mul(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_mul(self : $t, rhs : $t) -> ($t, bool) {
         return (self * rhs, self.checked_mul(rhs).is_none());
       }
 
       /// Zero minus this, wrapping, and whether it wrapped: every value but zero does.
-      fn overflowing_neg(self : $t) -> ($t, bool) {
+      pub fn overflowing_neg(self : $t) -> ($t, bool) {
         return (0 - self, self != (0 as $t));
       }
 
       /// The quotient, which never wraps at an unsigned width.
-      fn overflowing_div(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_div(self : $t, rhs : $t) -> ($t, bool) {
         return (self / rhs, false);
       }
 
       /// The remainder, which never wraps at an unsigned width.
-      fn overflowing_rem(self : $t, rhs : $t) -> ($t, bool) {
+      pub fn overflowing_rem(self : $t, rhs : $t) -> ($t, bool) {
         return (self % rhs, false);
       }
     }
@@ -1127,25 +1169,37 @@ stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 /// `mlir!` blocks that skip the trap.
 ///
 /// Absent because their answer could set the top bit: `rotate_left`, `rotate_right`,
-/// `swap_bytes`, `reverse_bits`. `leading_ones` is absent too, since it is always zero.
+/// `swap_bytes`, `reverse_bits`, and so `to_be` and `from_be`. `leading_ones` is absent too,
+/// since it is always zero. `to_le` and `from_le` are here: on a little-endian target they
+/// change nothing.
 impl usize {
+  /// The value in little-endian order. On a little-endian target nothing changes.
+  pub fn to_le(self : usize) -> usize {
+    return self;
+  }
+
+  /// Reads a little-endian value. On a little-endian target nothing changes.
+  pub fn from_le(self : usize) -> usize {
+    return self;
+  }
+
   /// Zero.
-  fn min_value(self : usize) -> usize {
+  pub fn min_value(self : usize) -> usize {
     return 0;
   }
 
   /// The largest `usize`, which is the largest `i64`.
-  fn max_value(self : usize) -> usize {
+  pub fn max_value(self : usize) -> usize {
     return 9223372036854775807;
   }
 
   /// 64, the width in memory. The top bit is always clear.
-  fn bits(self : usize) -> usize {
+  pub fn bits(self : usize) -> usize {
     return 64;
   }
 
   /// How many bits are set.
-  fn count_ones(self : usize) -> usize {
+  pub fn count_ones(self : usize) -> usize {
     return mlir!( inputs : (%a = self : i64), returns : usize, dialects : ["math"]) {
       %r = math.ctpop %a : i64
       macro.yield %r : i64
@@ -1153,12 +1207,12 @@ impl usize {
   }
 
   /// How many of the 64 bits are clear. At least one, the top bit.
-  fn count_zeros(self : usize) -> usize {
+  pub fn count_zeros(self : usize) -> usize {
     return self.bits() - self.count_ones();
   }
 
   /// Zero bits above the highest set bit. At least one, and all 64 for zero.
-  fn leading_zeros(self : usize) -> usize {
+  pub fn leading_zeros(self : usize) -> usize {
     return mlir!( inputs : (%a = self : i64), returns : usize, dialects : ["math"]) {
       %r = math.ctlz %a : i64
       macro.yield %r : i64
@@ -1166,7 +1220,7 @@ impl usize {
   }
 
   /// Zero bits below the lowest set bit. All 64, for zero.
-  fn trailing_zeros(self : usize) -> usize {
+  pub fn trailing_zeros(self : usize) -> usize {
     return mlir!( inputs : (%a = self : i64), returns : usize, dialects : ["math"]) {
       %r = math.cttz %a : i64
       macro.yield %r : i64
@@ -1175,7 +1229,7 @@ impl usize {
 
   /// Set bits below the lowest clear bit. `!` is refused on a `usize`, so the bits are
   /// flipped in MLIR.
-  fn trailing_ones(self : usize) -> usize {
+  pub fn trailing_ones(self : usize) -> usize {
     return mlir!( inputs : (%a = self : i64), returns : usize, dialects : ["arith", "math"]) {
       %m = arith.constant -1 : i64
       %n = arith.xori %a, %m : i64
@@ -1185,7 +1239,7 @@ impl usize {
   }
 
   /// Zero is not a power of two.
-  fn is_power_of_two(self : usize) -> bool {
+  pub fn is_power_of_two(self : usize) -> bool {
     if self == 0 {
       return false;
     }
@@ -1193,7 +1247,7 @@ impl usize {
   }
 
   /// The distance between two values, which always fits.
-  fn abs_diff(self : usize, other : usize) -> usize {
+  pub fn abs_diff(self : usize, other : usize) -> usize {
     if self < other {
       return other - self;
     }
@@ -1201,24 +1255,24 @@ impl usize {
   }
 
   /// This raised to `exp`. Traps if the answer does not fit, as `*` does.
-  fn pow(self : usize, exp : usize) -> usize {
+  pub fn pow(self : usize, exp : usize) -> usize {
     let r = self.checked_pow(exp);
     assert(r.is_some(), "usize pow overflowed");
     return r.unwrap();
   }
 
   /// Plain division: an unsigned quotient is already the Euclidean one.
-  fn div_euclid(self : usize, rhs : usize) -> usize {
+  pub fn div_euclid(self : usize, rhs : usize) -> usize {
     return self / rhs;
   }
 
   /// Plain remainder, which is never negative.
-  fn rem_euclid(self : usize, rhs : usize) -> usize {
+  pub fn rem_euclid(self : usize, rhs : usize) -> usize {
     return self % rhs;
   }
 
   /// This raised to `exp`, or nothing if the answer does not fit.
-  fn checked_pow(self : usize, exp : usize) -> Option<usize> {
+  pub fn checked_pow(self : usize, exp : usize) -> Option<usize> {
     // By squaring. The last square is never taken, so a base whose square would not fit
     // still gives an answer when that square is not needed.
     if exp == 0 {
@@ -1249,12 +1303,12 @@ impl usize {
   }
 
   /// This raised to `exp`, held at the largest value if it does not fit.
-  fn saturating_pow(self : usize, exp : usize) -> usize {
+  pub fn saturating_pow(self : usize, exp : usize) -> usize {
     return self.checked_pow(exp).unwrap_or(self.max_value());
   }
 
   /// This raised to `exp`, wrapping at the top of the range.
-  fn wrapping_pow(self : usize, exp : usize) -> usize {
+  pub fn wrapping_pow(self : usize, exp : usize) -> usize {
     let mut result : usize = 1;
     let mut base : usize = self;
     let mut e : usize = exp;
@@ -1272,7 +1326,7 @@ impl usize {
   }
 
   /// The logarithm to `base`, rounded down. Refused at zero, and for a base below two.
-  fn ilog(self : usize, base : usize) -> usize {
+  pub fn ilog(self : usize, base : usize) -> usize {
     assert(self > 0, "ilog needs a positive value");
     assert(base >= 2, "ilog needs a base of at least two");
     let mut n : usize = 0;
@@ -1288,18 +1342,18 @@ impl usize {
   }
 
   /// The logarithm to base two, rounded down. Refused at zero.
-  fn ilog2(self : usize) -> usize {
+  pub fn ilog2(self : usize) -> usize {
     assert(self > 0, "ilog2 needs a positive value");
     return self.bits() - 1 - self.leading_zeros();
   }
 
   /// The logarithm to base ten, rounded down. Refused at zero.
-  fn ilog10(self : usize) -> usize {
+  pub fn ilog10(self : usize) -> usize {
     return self.ilog(10);
   }
 
   /// The logarithm to `base`, or nothing at zero or for a base below two.
-  fn checked_ilog(self : usize, base : usize) -> Option<usize> {
+  pub fn checked_ilog(self : usize, base : usize) -> Option<usize> {
     if self == 0 || base < 2 {
       return Option<usize>::None();
     }
@@ -1307,7 +1361,7 @@ impl usize {
   }
 
   /// The logarithm to base two, or nothing at zero.
-  fn checked_ilog2(self : usize) -> Option<usize> {
+  pub fn checked_ilog2(self : usize) -> Option<usize> {
     if self == 0 {
       return Option<usize>::None();
     }
@@ -1315,12 +1369,12 @@ impl usize {
   }
 
   /// The logarithm to base ten, or nothing at zero.
-  fn checked_ilog10(self : usize) -> Option<usize> {
+  pub fn checked_ilog10(self : usize) -> Option<usize> {
     return self.checked_ilog(10);
   }
 
   /// Does `rhs` divide this exactly? Zero is a multiple only of zero.
-  fn is_multiple_of(self : usize, rhs : usize) -> bool {
+  pub fn is_multiple_of(self : usize, rhs : usize) -> bool {
     if rhs == 0 {
       return self == 0;
     }
@@ -1329,7 +1383,7 @@ impl usize {
 
   /// The smallest multiple of `rhs` at or above this. Refused on a zero `rhs`, and when the
   /// answer does not fit.
-  fn next_multiple_of(self : usize, rhs : usize) -> usize {
+  pub fn next_multiple_of(self : usize, rhs : usize) -> usize {
     let r = self.checked_next_multiple_of(rhs);
     assert(r.is_some(), "next_multiple_of has no answer here");
     return r.unwrap();
@@ -1337,7 +1391,7 @@ impl usize {
 
   /// The smallest multiple of `rhs` at or above this, or nothing on a zero `rhs` or when the
   /// answer does not fit.
-  fn checked_next_multiple_of(self : usize, rhs : usize) -> Option<usize> {
+  pub fn checked_next_multiple_of(self : usize, rhs : usize) -> Option<usize> {
     if rhs == 0 {
       return Option<usize>::None();
     }
@@ -1350,7 +1404,7 @@ impl usize {
 
   /// The smallest power of two at or above this, or nothing above 2^62, the largest power
   /// of two a `usize` holds.
-  fn checked_next_power_of_two(self : usize) -> Option<usize> {
+  pub fn checked_next_power_of_two(self : usize) -> Option<usize> {
     if self <= 1 {
       return Option<usize>::Some(1usize);
     }
@@ -1363,14 +1417,14 @@ impl usize {
   }
 
   /// One for zero and one. Refused above 2^62, the largest power of two a `usize` holds.
-  fn next_power_of_two(self : usize) -> usize {
+  pub fn next_power_of_two(self : usize) -> usize {
     let r = self.checked_next_power_of_two();
     assert(r.is_some(), "next power of two does not fit in a usize");
     return r.unwrap();
   }
 
   /// The square root, rounded down, digit by digit in base four.
-  fn isqrt(self : usize) -> usize {
+  pub fn isqrt(self : usize) -> usize {
     let mut rest : usize = self;
     let mut root : usize = 0;
     let mut bit : usize = 1usize << 62;
@@ -1396,12 +1450,12 @@ impl usize {
   }
 
   /// Halfway between two values, rounded down, without overflowing.
-  fn midpoint(self : usize, rhs : usize) -> usize {
+  pub fn midpoint(self : usize, rhs : usize) -> usize {
     return (self & rhs) + ((self ^ rhs) >> 1);
   }
 
   /// The quotient rounded up. Refused on a zero divisor.
-  fn div_ceil(self : usize, rhs : usize) -> usize {
+  pub fn div_ceil(self : usize, rhs : usize) -> usize {
     assert(rhs != 0, "div_ceil by zero");
     let q = self / rhs;
     if self % rhs != 0 {
@@ -1411,7 +1465,7 @@ impl usize {
   }
 
   /// The sum, or nothing if it would pass the largest `usize`.
-  fn checked_add(self : usize, rhs : usize) -> Option<usize> {
+  pub fn checked_add(self : usize, rhs : usize) -> Option<usize> {
     if self > self.max_value() - rhs {
       return Option<usize>::None();
     }
@@ -1419,7 +1473,7 @@ impl usize {
   }
 
   /// The difference, or nothing if it would go below zero.
-  fn checked_sub(self : usize, rhs : usize) -> Option<usize> {
+  pub fn checked_sub(self : usize, rhs : usize) -> Option<usize> {
     if self < rhs {
       return Option<usize>::None();
     }
@@ -1428,7 +1482,7 @@ impl usize {
 
   /// The product, or nothing if it would pass the largest `usize`. Checked by dividing
   /// first, since multiplying first would trap.
-  fn checked_mul(self : usize, rhs : usize) -> Option<usize> {
+  pub fn checked_mul(self : usize, rhs : usize) -> Option<usize> {
     if rhs == 0 {
       return Option<usize>::Some(0usize);
     }
@@ -1439,7 +1493,7 @@ impl usize {
   }
 
   /// Nothing on division by zero, the only division that fails here.
-  fn checked_div(self : usize, rhs : usize) -> Option<usize> {
+  pub fn checked_div(self : usize, rhs : usize) -> Option<usize> {
     if rhs == 0 {
       return Option<usize>::None();
     }
@@ -1447,7 +1501,7 @@ impl usize {
   }
 
   /// Nothing on a zero divisor, as `checked_div`.
-  fn checked_rem(self : usize, rhs : usize) -> Option<usize> {
+  pub fn checked_rem(self : usize, rhs : usize) -> Option<usize> {
     if rhs == 0 {
       return Option<usize>::None();
     }
@@ -1455,12 +1509,12 @@ impl usize {
   }
 
   /// Held at the largest `usize` instead of trapping.
-  fn saturating_add(self : usize, rhs : usize) -> usize {
+  pub fn saturating_add(self : usize, rhs : usize) -> usize {
     return self.checked_add(rhs).unwrap_or(self.max_value());
   }
 
   /// Held at zero instead of trapping.
-  fn saturating_sub(self : usize, rhs : usize) -> usize {
+  pub fn saturating_sub(self : usize, rhs : usize) -> usize {
     if self < rhs {
       return 0;
     }
@@ -1468,12 +1522,12 @@ impl usize {
   }
 
   /// Held at the largest `usize` instead of trapping.
-  fn saturating_mul(self : usize, rhs : usize) -> usize {
+  pub fn saturating_mul(self : usize, rhs : usize) -> usize {
     return self.checked_mul(rhs).unwrap_or(self.max_value());
   }
 
   /// The sum modulo 2^63: past the largest `usize` it starts again from zero.
-  fn wrapping_add(self : usize, rhs : usize) -> usize {
+  pub fn wrapping_add(self : usize, rhs : usize) -> usize {
     return mlir!( inputs : (%a = self : i64, %b = rhs : i64), returns : usize, dialects : ["arith"]) {
       %s = arith.addi %a, %b : i64
       %m = arith.constant 9223372036854775807 : i64
@@ -1483,7 +1537,7 @@ impl usize {
   }
 
   /// The difference modulo 2^63: below zero it starts again from the largest `usize`.
-  fn wrapping_sub(self : usize, rhs : usize) -> usize {
+  pub fn wrapping_sub(self : usize, rhs : usize) -> usize {
     return mlir!( inputs : (%a = self : i64, %b = rhs : i64), returns : usize, dialects : ["arith"]) {
       %s = arith.subi %a, %b : i64
       %m = arith.constant 9223372036854775807 : i64
@@ -1493,7 +1547,7 @@ impl usize {
   }
 
   /// The product modulo 2^63.
-  fn wrapping_mul(self : usize, rhs : usize) -> usize {
+  pub fn wrapping_mul(self : usize, rhs : usize) -> usize {
     return mlir!( inputs : (%a = self : i64, %b = rhs : i64), returns : usize, dialects : ["arith"]) {
       %s = arith.muli %a, %b : i64
       %m = arith.constant 9223372036854775807 : i64
@@ -1503,43 +1557,43 @@ impl usize {
   }
 
   /// Zero minus this, modulo 2^63.
-  fn wrapping_neg(self : usize) -> usize {
+  pub fn wrapping_neg(self : usize) -> usize {
     return self.min_value().wrapping_sub(self);
   }
 
   /// The sum modulo 2^63, and whether it passed the largest `usize`.
-  fn overflowing_add(self : usize, rhs : usize) -> (usize, bool) {
+  pub fn overflowing_add(self : usize, rhs : usize) -> (usize, bool) {
     return (self.wrapping_add(rhs), self.checked_add(rhs).is_none());
   }
 
   /// The difference modulo 2^63, and whether it went below zero.
-  fn overflowing_sub(self : usize, rhs : usize) -> (usize, bool) {
+  pub fn overflowing_sub(self : usize, rhs : usize) -> (usize, bool) {
     return (self.wrapping_sub(rhs), self < rhs);
   }
 
   /// The product modulo 2^63, and whether it passed the largest `usize`.
-  fn overflowing_mul(self : usize, rhs : usize) -> (usize, bool) {
+  pub fn overflowing_mul(self : usize, rhs : usize) -> (usize, bool) {
     return (self.wrapping_mul(rhs), self.checked_mul(rhs).is_none());
   }
 
   /// Zero minus this, modulo 2^63, and whether it wrapped: every value but zero does.
-  fn overflowing_neg(self : usize) -> (usize, bool) {
+  pub fn overflowing_neg(self : usize) -> (usize, bool) {
     return (self.wrapping_neg(), self != 0);
   }
 
   /// The quotient, which never overflows.
-  fn overflowing_div(self : usize, rhs : usize) -> (usize, bool) {
+  pub fn overflowing_div(self : usize, rhs : usize) -> (usize, bool) {
     return (self / rhs, false);
   }
 
   /// The remainder, which never overflows.
-  fn overflowing_rem(self : usize, rhs : usize) -> (usize, bool) {
+  pub fn overflowing_rem(self : usize, rhs : usize) -> (usize, bool) {
     return (self % rhs, false);
   }
 }
 
 /// "00" to "99" back to back, so the pair for `k` starts at byte `2 * k`.
-fn decimal_digit_pairs() -> *const i8 {
+pub fn decimal_digit_pairs() -> *const i8 {
   return "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899";
 }
 
@@ -1551,7 +1605,7 @@ macro_rules stamp_decimal_core {
   ($t : ident) => {
     impl $t {
       /// How many bytes the decimal form takes.
-      fn decimal_len(self : $t) -> i64 {
+      pub fn decimal_len(self : $t) -> i64 {
         let mut n = 1i64;
         let mut x = self;
         loop {
@@ -1577,7 +1631,7 @@ macro_rules stamp_decimal_core {
       ///
       /// Unsafe because nothing checks that the buffer has room: 20 bytes past `at` holds
       /// every integer of every width. No NUL is written.
-      unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
+      pub unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
         let len = self.decimal_len();
         let table = decimal_digit_pairs();
         let mut x = self;
@@ -1615,13 +1669,13 @@ macro_rules stamp_decimal_unsigned {
   ($t : ident , $wide : ident) => {
     impl $t {
       /// How many bytes the decimal form takes.
-      fn decimal_len(self : $t) -> i64 {
+      pub fn decimal_len(self : $t) -> i64 {
         return (self as $wide).decimal_len();
       }
 
       /// Write the decimal form to `buf[at..]` and return how many bytes that took.
       /// Unsafe for the reason `u64::write_decimal` is.
-      unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
+      pub unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
         return unsafe { (self as $wide).write_decimal(buf, at) };
       }
     }
@@ -1640,7 +1694,7 @@ macro_rules stamp_decimal_signed {
   ($t : ident , $signed : ident , $unsigned : ident) => {
     impl $t {
       /// How many bytes the decimal form takes, counting the `-`.
-      fn decimal_len(self : $t) -> i64 {
+      pub fn decimal_len(self : $t) -> i64 {
         let x = self as $signed;
         if x < (0 as $signed) {
           let head = (-(x / (10 as $signed))) as $unsigned;
@@ -1654,7 +1708,7 @@ macro_rules stamp_decimal_signed {
 
       /// Write the decimal form to `buf[at..]` and return how many bytes that took.
       /// Unsafe for the reason `u64::write_decimal` is.
-      unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
+      pub unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
         let x = self as $signed;
         if x < (0 as $signed) {
           let head = (-(x / (10 as $signed))) as $unsigned;
@@ -1691,7 +1745,7 @@ macro_rules stamp_decimal_c_str {
       /// A comptime function, so the number has to be known while compiling, and a call with
       /// a run-time value is an error. A `u64` from 2^63 up cannot be worked out yet: the
       /// evaluator's integers are `i64`.
-      fn decimal_c_str(self : $t) -> *const i8 {
+      pub fn decimal_c_str(self : $t) -> *const i8 {
         return comptime {
           let buf = "                    " as *mut i8;
           unsafe { buf[self.write_decimal(buf, 0i64)] = 0i8; }
@@ -1725,102 +1779,102 @@ macro_rules stamp_float {
       // The literal takes this width from the return type.
 
       /// Pi.
-      fn pi() -> $t {
+      pub fn pi() -> $t {
         return 3.14159265358979323846264338327950288;
       }
 
       /// 2 pi, a full turn in radians.
-      fn tau() -> $t {
+      pub fn tau() -> $t {
         return 6.28318530717958647692528676655900577;
       }
 
       /// Euler's number.
-      fn e() -> $t {
+      pub fn e() -> $t {
         return 2.71828182845904523536028747135266250;
       }
 
       /// Pi / 2.
-      fn frac_pi_2() -> $t {
+      pub fn frac_pi_2() -> $t {
         return 1.57079632679489661923132169163975144;
       }
 
       /// Pi / 3.
-      fn frac_pi_3() -> $t {
+      pub fn frac_pi_3() -> $t {
         return 1.04719755119659774615421446109316763;
       }
 
       /// Pi / 4.
-      fn frac_pi_4() -> $t {
+      pub fn frac_pi_4() -> $t {
         return 0.785398163397448309615660845819875721;
       }
 
       /// Pi / 6.
-      fn frac_pi_6() -> $t {
+      pub fn frac_pi_6() -> $t {
         return 0.52359877559829887307710723054658381;
       }
 
       /// Pi / 8.
-      fn frac_pi_8() -> $t {
+      pub fn frac_pi_8() -> $t {
         return 0.39269908169872415480783042290993786;
       }
 
       /// 1 / pi.
-      fn frac_1_pi() -> $t {
+      pub fn frac_1_pi() -> $t {
         return 0.318309886183790671537767526745028724;
       }
 
       /// 2 / pi.
-      fn frac_2_pi() -> $t {
+      pub fn frac_2_pi() -> $t {
         return 0.636619772367581343075535053490057448;
       }
 
       /// 2 / sqrt(pi).
-      fn frac_2_sqrt_pi() -> $t {
+      pub fn frac_2_sqrt_pi() -> $t {
         return 1.12837916709551257389615890312154517;
       }
 
       /// Sqrt(2).
-      fn sqrt_2() -> $t {
+      pub fn sqrt_2() -> $t {
         return 1.41421356237309504880168872420969808;
       }
 
       /// 1 / sqrt(2).
-      fn frac_1_sqrt_2() -> $t {
+      pub fn frac_1_sqrt_2() -> $t {
         return 0.707106781186547524400844362104849039;
       }
 
       /// Ln(2).
-      fn ln_2() -> $t {
+      pub fn ln_2() -> $t {
         return 0.693147180559945309417232121458176568;
       }
 
       /// Ln(10).
-      fn ln_10() -> $t {
+      pub fn ln_10() -> $t {
         return 2.30258509299404568401799145468436421;
       }
 
       /// Log2(e).
-      fn log2_e() -> $t {
+      pub fn log2_e() -> $t {
         return 1.44269504088896340735992468100189214;
       }
 
       /// Log10(e).
-      fn log10_e() -> $t {
+      pub fn log10_e() -> $t {
         return 0.434294481903251827651128918916605082;
       }
 
       /// Log2(10).
-      fn log2_10() -> $t {
+      pub fn log2_10() -> $t {
         return 3.32192809488736234787031942948939018;
       }
 
       /// Log10(2).
-      fn log10_2() -> $t {
+      pub fn log10_2() -> $t {
         return 0.301029995663981195213738894724493027;
       }
 
       /// The positive square root.
-      fn sqrt(self : $t) -> $t {
+      pub fn sqrt(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.sqrt %a : $t
           macro.yield %r : $t
@@ -1828,7 +1882,7 @@ macro_rules stamp_float {
       }
 
       /// The distance from zero, so the sign is dropped.
-      fn abs(self : $t) -> $t {
+      pub fn abs(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.absf %a : $t
           macro.yield %r : $t
@@ -1838,7 +1892,7 @@ macro_rules stamp_float {
       /// e raised to this, by the target's own `exp`: on a GPU, a few fast instructions in
       /// the type's own width. Not correctly rounded, as `exp` is; a `spawn` loop calling it
       /// still runs in parallel.
-      fn fast_exp(self : $t) -> $t {
+      pub fn fast_exp(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.exp %a : $t
           macro.yield %r : $t
@@ -1846,7 +1900,7 @@ macro_rules stamp_float {
       }
 
       /// The hyperbolic tangent, by the target's own `tanh`, as `fast_exp` is to `exp`.
-      fn fast_tanh(self : $t) -> $t {
+      pub fn fast_tanh(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.tanh %a : $t
           macro.yield %r : $t
@@ -1863,7 +1917,7 @@ macro_rules stamp_float {
 
 
       /// The largest whole number no greater than this.
-      fn floor(self : $t) -> $t {
+      pub fn floor(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.floor %a : $t
           macro.yield %r : $t
@@ -1871,7 +1925,7 @@ macro_rules stamp_float {
       }
 
       /// The smallest whole number no less than this.
-      fn ceil(self : $t) -> $t {
+      pub fn ceil(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.ceil %a : $t
           macro.yield %r : $t
@@ -1879,7 +1933,7 @@ macro_rules stamp_float {
       }
 
       /// The nearest whole number, halves going away from zero.
-      fn round(self : $t) -> $t {
+      pub fn round(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.round %a : $t
           macro.yield %r : $t
@@ -1887,7 +1941,7 @@ macro_rules stamp_float {
       }
 
       /// The whole part, so the fraction is dropped and the sign is kept.
-      fn trunc(self : $t) -> $t {
+      pub fn trunc(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.trunc %a : $t
           macro.yield %r : $t
@@ -1895,14 +1949,14 @@ macro_rules stamp_float {
       }
 
       /// The fractional part, which carries this value's sign.
-      fn fract(self : $t) -> $t {
+      pub fn fract(self : $t) -> $t {
         return self - self.trunc();
       }
 
 
 
       /// This value's magnitude with `sign`'s sign.
-      fn copysign(self : $t, sign : $t) -> $t {
+      pub fn copysign(self : $t, sign : $t) -> $t {
         return mlir!( inputs : (%a = self : $t, %b = sign : $t), returns : $t, dialects : ["math"]) {
           %r = math.copysign %a, %b : $t
           macro.yield %r : $t
@@ -1910,7 +1964,7 @@ macro_rules stamp_float {
       }
 
       /// `self * a + b` with one rounding instead of two.
-      fn mul_add(self : $t, a : $t, b : $t) -> $t {
+      pub fn mul_add(self : $t, a : $t, b : $t) -> $t {
         return mlir!( inputs : (%x = self : $t, %y = a : $t, %z = b : $t), returns : $t, dialects : ["math"]) {
           %r = math.fma %x, %y, %z : $t
           macro.yield %r : $t
@@ -1919,7 +1973,7 @@ macro_rules stamp_float {
 
 
       /// Never negative, whatever the signs: -7.0 % 4.0 is -3.0 where this is 1.0.
-      fn rem_euclid(self : $t, rhs : $t) -> $t {
+      pub fn rem_euclid(self : $t, rhs : $t) -> $t {
         let r = self % rhs;
         if r < $zero {
           return r + rhs.abs();
@@ -1928,7 +1982,7 @@ macro_rules stamp_float {
       }
 
       /// The whole quotient pairing with `rem_euclid`.
-      fn div_euclid(self : $t, rhs : $t) -> $t {
+      pub fn div_euclid(self : $t, rhs : $t) -> $t {
         let q = (self / rhs).trunc();
         if self % rhs < $zero {
           if rhs > $zero {
@@ -1940,7 +1994,7 @@ macro_rules stamp_float {
       }
 
       /// This raised to a whole power, by squaring. A negative power gives the reciprocal.
-      fn powi(self : $t, n : i32) -> $t {
+      pub fn powi(self : $t, n : i32) -> $t {
         // In `i64`, so the smallest `i32` can be negated.
         let mut e : i64 = n as i64;
         if e < 0 {
@@ -1966,7 +2020,7 @@ macro_rules stamp_float {
 
       /// The larger of the two. A NaN is ignored: the other value is the answer. A NaN on the
       /// left fails the comparison, so only the right needs a test.
-      fn max(self : $t, other : $t) -> $t {
+      pub fn max(self : $t, other : $t) -> $t {
         if other.is_nan() || self > other {
           return self;
         }
@@ -1974,7 +2028,7 @@ macro_rules stamp_float {
       }
 
       /// The smaller of the two. A NaN is ignored: the other value is the answer.
-      fn min(self : $t, other : $t) -> $t {
+      pub fn min(self : $t, other : $t) -> $t {
         if other.is_nan() || self < other {
           return self;
         }
@@ -1983,7 +2037,7 @@ macro_rules stamp_float {
 
       /// Held between `lo` and `hi`. A NaN stays a NaN. Refused when `lo` is above `hi`
       /// or either bound is a NaN.
-      fn clamp(self : $t, lo : $t, hi : $t) -> $t {
+      pub fn clamp(self : $t, lo : $t, hi : $t) -> $t {
         assert(lo <= hi, "clamp needs lo at or below hi, and neither a NaN");
         let mut x = self;
         if x < lo {
@@ -1996,28 +2050,28 @@ macro_rules stamp_float {
       }
 
       /// One divided by this.
-      fn recip(self : $t) -> $t {
+      pub fn recip(self : $t) -> $t {
         return $one / self;
       }
 
       /// This many radians in degrees.
-      fn to_degrees(self : $t) -> $t {
+      pub fn to_degrees(self : $t) -> $t {
         return self * ($half_circle / 3.14159265358979323846);
       }
 
       /// This many degrees in radians.
-      fn to_radians(self : $t) -> $t {
+      pub fn to_radians(self : $t) -> $t {
         return self * (3.14159265358979323846 / $half_circle);
       }
 
       /// Is this the value that is equal to nothing, itself included?
-      fn is_nan(self : $t) -> bool {
+      pub fn is_nan(self : $t) -> bool {
         return self != self;
       }
 
       /// One with this value's sign, or the value itself when it is a NaN. A zero answers 1
       /// with the zero's sign, not 0.
-      fn signum(self : $t) -> $t {
+      pub fn signum(self : $t) -> $t {
         if self.is_nan() {
           return self;
         }
@@ -2026,7 +2080,7 @@ macro_rules stamp_float {
       }
 
       /// Is this a real number, rather than an infinity or a NaN?
-      fn is_finite(self : $t) -> bool {
+      pub fn is_finite(self : $t) -> bool {
         if self.is_nan() {
           return false;
         }
@@ -2036,7 +2090,7 @@ macro_rules stamp_float {
       }
 
       /// Is this an infinity, of either sign?
-      fn is_infinite(self : $t) -> bool {
+      pub fn is_infinite(self : $t) -> bool {
         if self.is_nan() {
           return false;
         }
@@ -2046,12 +2100,12 @@ macro_rules stamp_float {
       }
 
       /// The logarithm to `base`, as `ln(self) / ln(base)`.
-      fn log(self : $t, base : $t) -> $t {
+      pub fn log(self : $t, base : $t) -> $t {
         return self.ln() / base.ln();
       }
 
       /// The nearest whole number, halves going to the even neighbour: 2.5 gives 2.0.
-      fn round_ties_even(self : $t) -> $t {
+      pub fn round_ties_even(self : $t) -> $t {
         return mlir!( inputs : (%a = self : $t), returns : $t, dialects : ["math"]) {
           %r = math.roundeven %a : $t
           macro.yield %r : $t
@@ -2059,13 +2113,13 @@ macro_rules stamp_float {
       }
 
       /// The sine and the cosine, as a pair.
-      fn sin_cos(self : $t) -> ($t, $t) {
+      pub fn sin_cos(self : $t) -> ($t, $t) {
         return (self.sin(), self.cos());
       }
 
       /// Halfway between two values, without overflowing near the largest value or losing
       /// the answer to underflow near the smallest.
-      fn midpoint(self : $t, other : $t) -> $t {
+      pub fn midpoint(self : $t, other : $t) -> $t {
         let lo : $t = $t::min_positive() * 2.0;
         let hi : $t = $t::max_value() / 2.0;
         let abs_a = self.abs();
@@ -2083,29 +2137,29 @@ macro_rules stamp_float {
       }
 
       /// Is the sign bit set? True for -0.0, and for a NaN whose sign bit is set.
-      fn is_sign_negative(self : $t) -> bool {
+      pub fn is_sign_negative(self : $t) -> bool {
         let one : $t = $one;
         return one.copysign(self) < $zero;
       }
 
       /// Is the sign bit clear? True for 0.0, and for a NaN whose sign bit is clear.
-      fn is_sign_positive(self : $t) -> bool {
+      pub fn is_sign_positive(self : $t) -> bool {
         return !self.is_sign_negative();
       }
 
       /// Is this neither zero, infinite, subnormal nor a NaN?
-      fn is_normal(self : $t) -> bool {
+      pub fn is_normal(self : $t) -> bool {
         return self.is_finite() && self.abs() >= $t::min_positive();
       }
 
       /// Is this nonzero but smaller in size than the smallest normal value?
-      fn is_subnormal(self : $t) -> bool {
+      pub fn is_subnormal(self : $t) -> bool {
         let m = self.abs();
         return m != $zero && m < $t::min_positive();
       }
 
       /// Which of the five kinds of float value this is.
-      fn classify(self : $t) -> FpCategory {
+      pub fn classify(self : $t) -> FpCategory {
         if self.is_nan() {
           return FpCategory::Nan();
         }
@@ -2132,33 +2186,33 @@ stamp_float!(bf16 , 1.0 , 0.0 , 180.0);
 impl f64 {
   /// One over the square root, correctly rounded, from a double-double square root (LLVM libc
   /// has no double-precision `rsqrt`). Infinite at zero and NaN below it.
-  fn rsqrt(self : f64) -> f64 {
+  pub fn rsqrt(self : f64) -> f64 {
     return libm_rsqrt(self);
   }
 }
 
 impl f32 {
   /// The error function, correctly rounded (LLVM libc's `erff`).
-  fn erf(self : f32) -> f32 {
+  pub fn erf(self : f32) -> f32 {
     return libm_erff(self);
   }
 
   /// One over the square root (LLVM libc's `rsqrtf`, the double result rounded to f32).
   /// Infinite at zero and NaN below it.
-  fn rsqrt(self : f32) -> f32 {
+  pub fn rsqrt(self : f32) -> f32 {
     return libm_rsqrtf(self);
   }
 }
 
 impl f16 {
   /// The error function, correctly rounded (LLVM libc's `erff16`).
-  fn erf(self : f16) -> f16 {
+  pub fn erf(self : f16) -> f16 {
     return libm_erff16(self);
   }
 
   /// One over the square root, correctly rounded (LLVM libc's `rsqrtf16`). Infinite at zero and
   /// NaN below it.
-  fn rsqrt(self : f16) -> f16 {
+  pub fn rsqrt(self : f16) -> f16 {
     return libm_rsqrtf16(self);
   }
 }
@@ -2166,34 +2220,34 @@ impl f16 {
 impl bf16 {
   /// The error function: `erff`'s double result rounded once to bf16 (LLVM libc has no bf16
   /// `erf`).
-  fn erf(self : bf16) -> bf16 {
+  pub fn erf(self : bf16) -> bf16 {
     return libm_erf_bf16(self);
   }
 
   /// One over the square root: the double result rounded once to bf16. Infinite at zero and NaN
   /// below it.
-  fn rsqrt(self : bf16) -> bf16 {
+  pub fn rsqrt(self : bf16) -> bf16 {
     return libm_rsqrt_bf16(self);
   }
 }
 
 impl f64 {
   /// The cube root, correctly rounded (LLVM libc's `cbrt`). Defined for negative numbers too.
-  fn cbrt(self : f64) -> f64 {
+  pub fn cbrt(self : f64) -> f64 {
     return libm_cbrt(self);
   }
 }
 
 impl f32 {
   /// The cube root, correctly rounded (LLVM libc's `cbrtf`). Defined for negative numbers too.
-  fn cbrt(self : f32) -> f32 {
+  pub fn cbrt(self : f32) -> f32 {
     return libm_cbrtf(self);
   }
 }
 
 impl f16 {
   /// The cube root, correctly rounded (LLVM libc's `cbrtf16`). Defined for negative numbers too.
-  fn cbrt(self : f16) -> f16 {
+  pub fn cbrt(self : f16) -> f16 {
     return libm_cbrtf16(self);
   }
 }
@@ -2201,478 +2255,478 @@ impl f16 {
 impl bf16 {
   /// The cube root: LLVM libc's `cbrtbf16`, the f32 cube root rounded to bf16. Defined for
   /// negative numbers too.
-  fn cbrt(self : bf16) -> bf16 {
+  pub fn cbrt(self : bf16) -> bf16 {
     return libm_cbrt_bf16(self);
   }
 }
 
 impl f64 {
   /// The inverse hyperbolic sine, almost always correctly rounded, from `core::libm`'s own double-double code (LLVM libc has no double-precision version).
-  fn asinh(self : f64) -> f64 {
+  pub fn asinh(self : f64) -> f64 {
     return libm_asinh(self);
   }
 
   /// The inverse hyperbolic cosine; NaN below 1, almost always correctly rounded, from `core::libm`'s own double-double code (LLVM libc has no double-precision version).
-  fn acosh(self : f64) -> f64 {
+  pub fn acosh(self : f64) -> f64 {
     return libm_acosh(self);
   }
 
   /// The inverse hyperbolic tangent; infinite at 1 and NaN past it, almost always correctly rounded, from `core::libm`'s own double-double code (LLVM libc has no double-precision version).
-  fn atanh(self : f64) -> f64 {
+  pub fn atanh(self : f64) -> f64 {
     return libm_atanh(self);
   }
 }
 
 impl f16 {
   /// The inverse hyperbolic sine, correctly rounded (LLVM libc's `asinhf16`).
-  fn asinh(self : f16) -> f16 {
+  pub fn asinh(self : f16) -> f16 {
     return libm_asinhf16(self);
   }
 
   /// The inverse hyperbolic cosine; NaN below 1, correctly rounded (LLVM libc's `acoshf16`).
-  fn acosh(self : f16) -> f16 {
+  pub fn acosh(self : f16) -> f16 {
     return libm_acoshf16(self);
   }
 
   /// The inverse hyperbolic tangent; infinite at 1 and NaN past it, correctly rounded (LLVM libc's `atanhf16`).
-  fn atanh(self : f16) -> f16 {
+  pub fn atanh(self : f16) -> f16 {
     return libm_atanhf16(self);
   }
 }
 
 impl bf16 {
   /// The inverse hyperbolic sine, the double result rounded once to bf16.
-  fn asinh(self : bf16) -> bf16 {
+  pub fn asinh(self : bf16) -> bf16 {
     return libm_asinh_bf16(self);
   }
 
   /// The inverse hyperbolic cosine; NaN below 1, the double result rounded once to bf16.
-  fn acosh(self : bf16) -> bf16 {
+  pub fn acosh(self : bf16) -> bf16 {
     return libm_acosh_bf16(self);
   }
 
   /// The inverse hyperbolic tangent; infinite at 1 and NaN past it, the double result rounded once to bf16.
-  fn atanh(self : bf16) -> bf16 {
+  pub fn atanh(self : bf16) -> bf16 {
     return libm_atanh_bf16(self);
   }
 }
 
 impl f64 {
   /// The natural logarithm, correctly rounded (LLVM libc's `log`).
-  fn ln(self : f64) -> f64 {
+  pub fn ln(self : f64) -> f64 {
     return libm_log(self);
   }
 
   /// The logarithm to base two, correctly rounded (LLVM libc's `log2`).
-  fn log2(self : f64) -> f64 {
+  pub fn log2(self : f64) -> f64 {
     return libm_log2(self);
   }
 
   /// The logarithm to base ten, correctly rounded (LLVM libc's `log10`).
-  fn log10(self : f64) -> f64 {
+  pub fn log10(self : f64) -> f64 {
     return libm_log10(self);
   }
 
   /// `ln` of one plus this, correctly rounded and accurate for a small argument (LLVM libc's
   /// `log1p`).
-  fn ln_1p(self : f64) -> f64 {
+  pub fn ln_1p(self : f64) -> f64 {
     return libm_log1p(self);
   }
 
   /// e raised to this, correctly rounded (LLVM libc's `exp`).
-  fn exp(self : f64) -> f64 {
+  pub fn exp(self : f64) -> f64 {
     return libm_exp(self);
   }
 
   /// Two raised to this, correctly rounded (LLVM libc's `exp2`).
-  fn exp2(self : f64) -> f64 {
+  pub fn exp2(self : f64) -> f64 {
     return libm_exp2(self);
   }
 
   /// `exp` minus one, correctly rounded, so a small argument keeps its digits (LLVM libc's
   /// `expm1`).
-  fn exp_m1(self : f64) -> f64 {
+  pub fn exp_m1(self : f64) -> f64 {
     return libm_expm1(self);
   }
 
   /// The sine of this many radians, correctly rounded (LLVM libc's `sin`).
-  fn sin(self : f64) -> f64 {
+  pub fn sin(self : f64) -> f64 {
     return libm_sin(self);
   }
 
   /// The cosine of this many radians, correctly rounded (LLVM libc's `cos`).
-  fn cos(self : f64) -> f64 {
+  pub fn cos(self : f64) -> f64 {
     return libm_cos(self);
   }
 
   /// The tangent of this many radians, correctly rounded (LLVM libc's `tan`).
-  fn tan(self : f64) -> f64 {
+  pub fn tan(self : f64) -> f64 {
     return libm_tan(self);
   }
 
   /// The angle in radians whose sine is this, between -pi/2 and pi/2, correctly rounded (LLVM
   /// libc's `asin`).
-  fn asin(self : f64) -> f64 {
+  pub fn asin(self : f64) -> f64 {
     return libm_asin(self);
   }
 
   /// The angle in radians whose cosine is this, between 0 and pi, correctly rounded (LLVM libc's
   /// `acos`).
-  fn acos(self : f64) -> f64 {
+  pub fn acos(self : f64) -> f64 {
     return libm_acos(self);
   }
 
   /// The angle in radians whose tangent is this. `atan2` is the form that keeps the quadrant.
   /// LLVM libc's `atan`, which can be off in the last bit.
-  fn atan(self : f64) -> f64 {
+  pub fn atan(self : f64) -> f64 {
     return libm_atan(self);
   }
 
   /// The angle to the point (`x`, this), which is `atan` with the quadrant kept. LLVM libc's
   /// `atan2`, which can be off in the last bit.
-  fn atan2(self : f64, x : f64) -> f64 {
+  pub fn atan2(self : f64, x : f64) -> f64 {
     return libm_atan2(self, x);
   }
 
   /// The length of the hypotenuse, the square root of `self * self + other * other`, correctly
   /// rounded and without overflow or underflow in the squares (LLVM libc's `hypot`).
-  fn hypot(self : f64, other : f64) -> f64 {
+  pub fn hypot(self : f64, other : f64) -> f64 {
     return libm_hypot(self, other);
   }
 
   /// This raised to `n`, correctly rounded (LLVM libc's `pow`).
-  fn powf(self : f64, n : f64) -> f64 {
+  pub fn powf(self : f64, n : f64) -> f64 {
     return libm_pow(self, n);
   }
 
   /// The hyperbolic sine, from `core::libm`'s `exp` (LLVM libc has no double-precision `sinh`):
   /// almost always correctly rounded, and within one unit in the last place.
-  fn sinh(self : f64) -> f64 {
+  pub fn sinh(self : f64) -> f64 {
     return libm_sinh(self);
   }
 
   /// The hyperbolic cosine, from `core::libm`'s `exp` (LLVM libc has no double-precision
   /// `cosh`): almost always correctly rounded, and within one unit in the last place.
-  fn cosh(self : f64) -> f64 {
+  pub fn cosh(self : f64) -> f64 {
     return libm_cosh(self);
   }
 
   /// The hyperbolic tangent, from `core::libm`'s `exp` (LLVM libc has no double-precision
   /// `tanh`): almost always correctly rounded, and within one unit in the last place.
-  fn tanh(self : f64) -> f64 {
+  pub fn tanh(self : f64) -> f64 {
     return libm_tanh(self);
   }
 }
 
 impl f32 {
   /// The inverse hyperbolic sine, correctly rounded (LLVM libc's `asinhf`).
-  fn asinh(self : f32) -> f32 {
+  pub fn asinh(self : f32) -> f32 {
     return libm_asinhf(self);
   }
 
   /// The inverse hyperbolic cosine, correctly rounded; NaN below one (LLVM libc's `acoshf`).
-  fn acosh(self : f32) -> f32 {
+  pub fn acosh(self : f32) -> f32 {
     return libm_acoshf(self);
   }
 
   /// The inverse hyperbolic tangent, correctly rounded; infinite at plus or minus one and NaN
   /// beyond (LLVM libc's `atanhf`).
-  fn atanh(self : f32) -> f32 {
+  pub fn atanh(self : f32) -> f32 {
     return libm_atanhf(self);
   }
 
   /// The natural logarithm, correctly rounded (LLVM libc's `logf`).
-  fn ln(self : f32) -> f32 {
+  pub fn ln(self : f32) -> f32 {
     return libm_logf(self);
   }
 
   /// The logarithm to base two, correctly rounded (LLVM libc's `log2f`).
-  fn log2(self : f32) -> f32 {
+  pub fn log2(self : f32) -> f32 {
     return libm_log2f(self);
   }
 
   /// The logarithm to base ten, correctly rounded (LLVM libc's `log10f`).
-  fn log10(self : f32) -> f32 {
+  pub fn log10(self : f32) -> f32 {
     return libm_log10f(self);
   }
 
   /// `ln` of one plus this, correctly rounded (LLVM libc's `log1pf`).
-  fn ln_1p(self : f32) -> f32 {
+  pub fn ln_1p(self : f32) -> f32 {
     return libm_log1pf(self);
   }
 
   /// e raised to this, correctly rounded (LLVM libc's `expf`).
-  fn exp(self : f32) -> f32 {
+  pub fn exp(self : f32) -> f32 {
     return libm_expf(self);
   }
 
   /// Two raised to this, correctly rounded (LLVM libc's `exp2f`).
-  fn exp2(self : f32) -> f32 {
+  pub fn exp2(self : f32) -> f32 {
     return libm_exp2f(self);
   }
 
   /// `exp` minus one, correctly rounded, so a small argument keeps its digits (LLVM libc's `expm1f`).
-  fn exp_m1(self : f32) -> f32 {
+  pub fn exp_m1(self : f32) -> f32 {
     return libm_expm1f(self);
   }
 
   /// The hyperbolic sine, correctly rounded (LLVM libc's `sinhf`).
-  fn sinh(self : f32) -> f32 {
+  pub fn sinh(self : f32) -> f32 {
     return libm_sinhf(self);
   }
 
   /// The hyperbolic cosine, correctly rounded (LLVM libc's `coshf`).
-  fn cosh(self : f32) -> f32 {
+  pub fn cosh(self : f32) -> f32 {
     return libm_coshf(self);
   }
 
   /// The hyperbolic tangent, correctly rounded (LLVM libc's `tanhf`).
-  fn tanh(self : f32) -> f32 {
+  pub fn tanh(self : f32) -> f32 {
     return libm_tanhf(self);
   }
 
   /// The sine of this many radians, correctly rounded (LLVM libc's `sinf`).
-  fn sin(self : f32) -> f32 {
+  pub fn sin(self : f32) -> f32 {
     return libm_sinf(self);
   }
 
   /// The cosine of this many radians, correctly rounded (LLVM libc's `cosf`).
-  fn cos(self : f32) -> f32 {
+  pub fn cos(self : f32) -> f32 {
     return libm_cosf(self);
   }
 
   /// The tangent of this many radians, correctly rounded (LLVM libc's `tanf`).
-  fn tan(self : f32) -> f32 {
+  pub fn tan(self : f32) -> f32 {
     return libm_tanf(self);
   }
 
   /// The arcsine, between -pi/2 and pi/2, correctly rounded (LLVM libc's `asinf`).
-  fn asin(self : f32) -> f32 {
+  pub fn asin(self : f32) -> f32 {
     return libm_asinf(self);
   }
 
   /// The arccosine, between 0 and pi, correctly rounded (LLVM libc's `acosf`).
-  fn acos(self : f32) -> f32 {
+  pub fn acos(self : f32) -> f32 {
     return libm_acosf(self);
   }
 
   /// The arctangent, between -pi/2 and pi/2, correctly rounded (LLVM libc's `atanf`).
-  fn atan(self : f32) -> f32 {
+  pub fn atan(self : f32) -> f32 {
     return libm_atanf(self);
   }
 
   /// The angle to the point (`x`, this), which is `atan` with the quadrant kept; correctly
   /// rounded (LLVM libc's `atan2f`).
-  fn atan2(self : f32, x : f32) -> f32 {
+  pub fn atan2(self : f32, x : f32) -> f32 {
     return libm_atan2f(self, x);
   }
 
   /// The length of the hypotenuse, the square root of `self * self + other * other`, without
   /// overflow or underflow in between; correctly rounded (LLVM libc's `hypotf`).
-  fn hypot(self : f32, other : f32) -> f32 {
+  pub fn hypot(self : f32, other : f32) -> f32 {
     return libm_hypotf(self, other);
   }
 
   /// This raised to `n`, correctly rounded (LLVM libc's `powf`).
-  fn powf(self : f32, n : f32) -> f32 {
+  pub fn powf(self : f32, n : f32) -> f32 {
     return libm_powf(self, n);
   }
 }
 
 impl f16 {
   /// The natural logarithm, correctly rounded (LLVM libc's `logf16`).
-  fn ln(self : f16) -> f16 {
+  pub fn ln(self : f16) -> f16 {
     return libm_logf16(self);
   }
 
   /// The logarithm to base two, correctly rounded (LLVM libc's `log2f16`).
-  fn log2(self : f16) -> f16 {
+  pub fn log2(self : f16) -> f16 {
     return libm_log2f16(self);
   }
 
   /// The logarithm to base ten, correctly rounded (LLVM libc's `log10f16`).
-  fn log10(self : f16) -> f16 {
+  pub fn log10(self : f16) -> f16 {
     return libm_log10f16(self);
   }
 
   /// `ln` of one plus this, correctly rounded (through LLVM libc's `log1pf`).
-  fn ln_1p(self : f16) -> f16 {
+  pub fn ln_1p(self : f16) -> f16 {
     return libm_log1pf16(self);
   }
 
   /// e raised to this, correctly rounded (through LLVM libc's `expf`).
-  fn exp(self : f16) -> f16 {
+  pub fn exp(self : f16) -> f16 {
     return libm_expf16(self);
   }
 
   /// Two raised to this, correctly rounded (through LLVM libc's `exp2f`).
-  fn exp2(self : f16) -> f16 {
+  pub fn exp2(self : f16) -> f16 {
     return libm_exp2f16(self);
   }
 
   /// `exp` minus one, correctly rounded, so a small argument keeps its digits (through LLVM libc's `expm1f`).
-  fn exp_m1(self : f16) -> f16 {
+  pub fn exp_m1(self : f16) -> f16 {
     return libm_expm1f16(self);
   }
 
   /// The hyperbolic sine, correctly rounded (through LLVM libc's `sinhf`).
-  fn sinh(self : f16) -> f16 {
+  pub fn sinh(self : f16) -> f16 {
     return libm_sinhf16(self);
   }
 
   /// The hyperbolic cosine, correctly rounded (through LLVM libc's `coshf`).
-  fn cosh(self : f16) -> f16 {
+  pub fn cosh(self : f16) -> f16 {
     return libm_coshf16(self);
   }
 
   /// The hyperbolic tangent, correctly rounded (through LLVM libc's `tanhf`).
-  fn tanh(self : f16) -> f16 {
+  pub fn tanh(self : f16) -> f16 {
     return libm_tanhf16(self);
   }
 
   /// The sine of this many radians, correctly rounded (through LLVM libc's `sinf`).
-  fn sin(self : f16) -> f16 {
+  pub fn sin(self : f16) -> f16 {
     return libm_sinf16(self);
   }
 
   /// The cosine of this many radians, correctly rounded (through LLVM libc's `cosf`).
-  fn cos(self : f16) -> f16 {
+  pub fn cos(self : f16) -> f16 {
     return libm_cosf16(self);
   }
 
   /// The tangent of this many radians, correctly rounded (through LLVM libc's `tanf`).
-  fn tan(self : f16) -> f16 {
+  pub fn tan(self : f16) -> f16 {
     return libm_tanf16(self);
   }
 
   /// The arcsine, between -pi/2 and pi/2, correctly rounded (through LLVM libc's `asinf`).
-  fn asin(self : f16) -> f16 {
+  pub fn asin(self : f16) -> f16 {
     return libm_asinf16(self);
   }
 
   /// The arccosine, between 0 and pi, correctly rounded (through LLVM libc's `acosf`).
-  fn acos(self : f16) -> f16 {
+  pub fn acos(self : f16) -> f16 {
     return libm_acosf16(self);
   }
 
   /// The arctangent, between -pi/2 and pi/2, correctly rounded (through LLVM libc's `atanf`).
-  fn atan(self : f16) -> f16 {
+  pub fn atan(self : f16) -> f16 {
     return libm_atanf16(self);
   }
 
   /// The angle to the point (`x`, this), which is `atan` with the quadrant kept; correctly
   /// rounded (through LLVM libc's `atan2f`).
-  fn atan2(self : f16, x : f16) -> f16 {
+  pub fn atan2(self : f16, x : f16) -> f16 {
     return libm_atan2f16(self, x);
   }
 
   /// The length of the hypotenuse, the square root of `self * self + other * other`, without
   /// overflow or underflow in between; correctly rounded (in double, rounded once).
-  fn hypot(self : f16, other : f16) -> f16 {
+  pub fn hypot(self : f16, other : f16) -> f16 {
     return libm_hypotf16(self, other);
   }
 
   /// This raised to `n`, correctly rounded.
-  fn powf(self : f16, n : f16) -> f16 {
+  pub fn powf(self : f16, n : f16) -> f16 {
     return libm_powf16(self, n);
   }
 }
 
 impl bf16 {
   /// The natural logarithm, correctly rounded (LLVM libc's `log_bf16`).
-  fn ln(self : bf16) -> bf16 {
+  pub fn ln(self : bf16) -> bf16 {
     return libm_log_bf16(self);
   }
 
   /// The logarithm to base two, correctly rounded (through LLVM libc's `log2f`).
-  fn log2(self : bf16) -> bf16 {
+  pub fn log2(self : bf16) -> bf16 {
     return libm_log2_bf16(self);
   }
 
   /// The logarithm to base ten, correctly rounded (through LLVM libc's `log10f`).
-  fn log10(self : bf16) -> bf16 {
+  pub fn log10(self : bf16) -> bf16 {
     return libm_log10_bf16(self);
   }
 
   /// `ln` of one plus this, correctly rounded (through LLVM libc's `log1pf`).
-  fn ln_1p(self : bf16) -> bf16 {
+  pub fn ln_1p(self : bf16) -> bf16 {
     return libm_log1p_bf16(self);
   }
 
   /// e raised to this, correctly rounded (through LLVM libc's `expf`).
-  fn exp(self : bf16) -> bf16 {
+  pub fn exp(self : bf16) -> bf16 {
     return libm_exp_bf16(self);
   }
 
   /// Two raised to this, correctly rounded (through LLVM libc's `exp2f`).
-  fn exp2(self : bf16) -> bf16 {
+  pub fn exp2(self : bf16) -> bf16 {
     return libm_exp2_bf16(self);
   }
 
   /// `exp` minus one, correctly rounded, so a small argument keeps its digits (through LLVM libc's `expm1f`).
-  fn exp_m1(self : bf16) -> bf16 {
+  pub fn exp_m1(self : bf16) -> bf16 {
     return libm_expm1_bf16(self);
   }
 
   /// The hyperbolic sine, correctly rounded (through LLVM libc's `sinhf`).
-  fn sinh(self : bf16) -> bf16 {
+  pub fn sinh(self : bf16) -> bf16 {
     return libm_sinh_bf16(self);
   }
 
   /// The hyperbolic cosine, correctly rounded (through LLVM libc's `coshf`).
-  fn cosh(self : bf16) -> bf16 {
+  pub fn cosh(self : bf16) -> bf16 {
     return libm_cosh_bf16(self);
   }
 
   /// The hyperbolic tangent, correctly rounded (through LLVM libc's `tanhf`).
-  fn tanh(self : bf16) -> bf16 {
+  pub fn tanh(self : bf16) -> bf16 {
     return libm_tanh_bf16(self);
   }
 
   /// The sine of this many radians, correctly rounded (through LLVM libc's `sinf`).
-  fn sin(self : bf16) -> bf16 {
+  pub fn sin(self : bf16) -> bf16 {
     return libm_sin_bf16(self);
   }
 
   /// The cosine of this many radians, correctly rounded (through LLVM libc's `cosf`).
-  fn cos(self : bf16) -> bf16 {
+  pub fn cos(self : bf16) -> bf16 {
     return libm_cos_bf16(self);
   }
 
   /// The tangent of this many radians, correctly rounded (through LLVM libc's `tanf`).
-  fn tan(self : bf16) -> bf16 {
+  pub fn tan(self : bf16) -> bf16 {
     return libm_tan_bf16(self);
   }
 
   /// The arcsine, between -pi/2 and pi/2, correctly rounded (through LLVM libc's `asinf`).
-  fn asin(self : bf16) -> bf16 {
+  pub fn asin(self : bf16) -> bf16 {
     return libm_asin_bf16(self);
   }
 
   /// The arccosine, between 0 and pi, correctly rounded (through LLVM libc's `acosf`).
-  fn acos(self : bf16) -> bf16 {
+  pub fn acos(self : bf16) -> bf16 {
     return libm_acos_bf16(self);
   }
 
   /// The arctangent, between -pi/2 and pi/2, correctly rounded (through LLVM libc's `atanf`).
-  fn atan(self : bf16) -> bf16 {
+  pub fn atan(self : bf16) -> bf16 {
     return libm_atan_bf16(self);
   }
 
   /// The angle to the point (`x`, this), which is `atan` with the quadrant kept; correctly
   /// rounded (through LLVM libc's `atan2f`).
-  fn atan2(self : bf16, x : bf16) -> bf16 {
+  pub fn atan2(self : bf16, x : bf16) -> bf16 {
     return libm_atan2_bf16(self, x);
   }
 
   /// The length of the hypotenuse, the square root of `self * self + other * other`, without
   /// overflow or underflow in between; correctly rounded (in double, rounded once).
-  fn hypot(self : bf16, other : bf16) -> bf16 {
+  pub fn hypot(self : bf16, other : bf16) -> bf16 {
     return libm_hypot_bf16(self, other);
   }
 
   /// This raised to `n`, correctly rounded.
-  fn powf(self : bf16, n : bf16) -> bf16 {
+  pub fn powf(self : bf16, n : bf16) -> bf16 {
     return libm_pow_bf16(self, n);
   }
 }
@@ -2682,7 +2736,7 @@ impl bf16 {
 // The integer widths still ask for theirs through a value, `x.max_value()`.
 impl f64 {
   /// The largest finite value.
-  fn max_value() -> f64 {
+  pub fn max_value() -> f64 {
     return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
       %r = arith.constant 1.7976931348623157e+308 : f64
       macro.yield %r : f64
@@ -2690,7 +2744,7 @@ impl f64 {
   }
 
   /// The most negative finite value.
-  fn min_value() -> f64 {
+  pub fn min_value() -> f64 {
     return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
       %r = arith.constant -1.7976931348623157e+308 : f64
       macro.yield %r : f64
@@ -2698,7 +2752,7 @@ impl f64 {
   }
 
   /// The gap between 1.0 and the next larger value.
-  fn epsilon() -> f64 {
+  pub fn epsilon() -> f64 {
     return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
       %r = arith.constant 2.220446049250313e-16 : f64
       macro.yield %r : f64
@@ -2706,7 +2760,7 @@ impl f64 {
   }
 
   /// The smallest positive normal value.
-  fn min_positive() -> f64 {
+  pub fn min_positive() -> f64 {
     return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
       %r = arith.constant 2.2250738585072014e-308 : f64
       macro.yield %r : f64
@@ -2714,7 +2768,7 @@ impl f64 {
   }
 
   /// Positive infinity.
-  fn infinity() -> f64 {
+  pub fn infinity() -> f64 {
     return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
       %r = arith.constant 0x7FF0000000000000 : f64
       macro.yield %r : f64
@@ -2722,7 +2776,7 @@ impl f64 {
   }
 
   /// Negative infinity.
-  fn neg_infinity() -> f64 {
+  pub fn neg_infinity() -> f64 {
     return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
       %r = arith.constant 0xFFF0000000000000 : f64
       macro.yield %r : f64
@@ -2730,7 +2784,7 @@ impl f64 {
   }
 
   /// A quiet NaN.
-  fn nan() -> f64 {
+  pub fn nan() -> f64 {
     return mlir!( inputs : (), returns : f64, dialects : ["arith"]) {
       %r = arith.constant 0x7FF8000000000000 : f64
       macro.yield %r : f64
@@ -2740,7 +2794,7 @@ impl f64 {
 
 impl f32 {
   /// The largest finite value.
-  fn max_value() -> f32 {
+  pub fn max_value() -> f32 {
     return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
       %r = arith.constant 3.40282347e+38 : f32
       macro.yield %r : f32
@@ -2748,7 +2802,7 @@ impl f32 {
   }
 
   /// The most negative finite value.
-  fn min_value() -> f32 {
+  pub fn min_value() -> f32 {
     return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
       %r = arith.constant -3.40282347e+38 : f32
       macro.yield %r : f32
@@ -2756,7 +2810,7 @@ impl f32 {
   }
 
   /// The gap between 1.0 and the next larger value.
-  fn epsilon() -> f32 {
+  pub fn epsilon() -> f32 {
     return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
       %r = arith.constant 1.1920929e-07 : f32
       macro.yield %r : f32
@@ -2764,7 +2818,7 @@ impl f32 {
   }
 
   /// The smallest positive normal value.
-  fn min_positive() -> f32 {
+  pub fn min_positive() -> f32 {
     return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
       %r = arith.constant 1.17549435e-38 : f32
       macro.yield %r : f32
@@ -2772,7 +2826,7 @@ impl f32 {
   }
 
   /// Positive infinity.
-  fn infinity() -> f32 {
+  pub fn infinity() -> f32 {
     return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
       %r = arith.constant 0x7F800000 : f32
       macro.yield %r : f32
@@ -2780,7 +2834,7 @@ impl f32 {
   }
 
   /// Negative infinity.
-  fn neg_infinity() -> f32 {
+  pub fn neg_infinity() -> f32 {
     return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
       %r = arith.constant 0xFF800000 : f32
       macro.yield %r : f32
@@ -2788,7 +2842,7 @@ impl f32 {
   }
 
   /// A quiet NaN.
-  fn nan() -> f32 {
+  pub fn nan() -> f32 {
     return mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
       %r = arith.constant 0x7FC00000 : f32
       macro.yield %r : f32
@@ -2799,7 +2853,7 @@ impl f32 {
 // The same limits for f16, written as bits.
 impl f16 {
   /// The largest finite value.
-  fn max_value() -> f16 {
+  pub fn max_value() -> f16 {
     return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
       %r = arith.constant 0x7BFF : f16
       macro.yield %r : f16
@@ -2807,7 +2861,7 @@ impl f16 {
   }
 
   /// The most negative finite value.
-  fn min_value() -> f16 {
+  pub fn min_value() -> f16 {
     return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
       %r = arith.constant 0xFBFF : f16
       macro.yield %r : f16
@@ -2815,7 +2869,7 @@ impl f16 {
   }
 
   /// The gap between 1.0 and the next larger value.
-  fn epsilon() -> f16 {
+  pub fn epsilon() -> f16 {
     return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
       %r = arith.constant 0x1400 : f16
       macro.yield %r : f16
@@ -2823,7 +2877,7 @@ impl f16 {
   }
 
   /// The smallest positive normal value.
-  fn min_positive() -> f16 {
+  pub fn min_positive() -> f16 {
     return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
       %r = arith.constant 0x0400 : f16
       macro.yield %r : f16
@@ -2831,7 +2885,7 @@ impl f16 {
   }
 
   /// Positive infinity.
-  fn infinity() -> f16 {
+  pub fn infinity() -> f16 {
     return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
       %r = arith.constant 0x7C00 : f16
       macro.yield %r : f16
@@ -2839,7 +2893,7 @@ impl f16 {
   }
 
   /// Negative infinity.
-  fn neg_infinity() -> f16 {
+  pub fn neg_infinity() -> f16 {
     return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
       %r = arith.constant 0xFC00 : f16
       macro.yield %r : f16
@@ -2847,7 +2901,7 @@ impl f16 {
   }
 
   /// A quiet NaN.
-  fn nan() -> f16 {
+  pub fn nan() -> f16 {
     return mlir!( inputs : (), returns : f16, dialects : ["arith"]) {
       %r = arith.constant 0x7E00 : f16
       macro.yield %r : f16
@@ -2858,7 +2912,7 @@ impl f16 {
 // The same limits for bf16, written as bits.
 impl bf16 {
   /// The largest finite value.
-  fn max_value() -> bf16 {
+  pub fn max_value() -> bf16 {
     return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
       %r = arith.constant 0x7F7F : bf16
       macro.yield %r : bf16
@@ -2866,7 +2920,7 @@ impl bf16 {
   }
 
   /// The most negative finite value.
-  fn min_value() -> bf16 {
+  pub fn min_value() -> bf16 {
     return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
       %r = arith.constant 0xFF7F : bf16
       macro.yield %r : bf16
@@ -2874,7 +2928,7 @@ impl bf16 {
   }
 
   /// The gap between 1.0 and the next larger value.
-  fn epsilon() -> bf16 {
+  pub fn epsilon() -> bf16 {
     return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
       %r = arith.constant 0x3C00 : bf16
       macro.yield %r : bf16
@@ -2882,7 +2936,7 @@ impl bf16 {
   }
 
   /// The smallest positive normal value.
-  fn min_positive() -> bf16 {
+  pub fn min_positive() -> bf16 {
     return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
       %r = arith.constant 0x0080 : bf16
       macro.yield %r : bf16
@@ -2890,7 +2944,7 @@ impl bf16 {
   }
 
   /// Positive infinity.
-  fn infinity() -> bf16 {
+  pub fn infinity() -> bf16 {
     return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
       %r = arith.constant 0x7F80 : bf16
       macro.yield %r : bf16
@@ -2898,7 +2952,7 @@ impl bf16 {
   }
 
   /// Negative infinity.
-  fn neg_infinity() -> bf16 {
+  pub fn neg_infinity() -> bf16 {
     return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
       %r = arith.constant 0xFF80 : bf16
       macro.yield %r : bf16
@@ -2906,7 +2960,7 @@ impl bf16 {
   }
 
   /// A quiet NaN.
-  fn nan() -> bf16 {
+  pub fn nan() -> bf16 {
     return mlir!( inputs : (), returns : bf16, dialects : ["arith"]) {
       %r = arith.constant 0x7FC0 : bf16
       macro.yield %r : bf16
@@ -2924,7 +2978,7 @@ macro_rules stamp_float_bits {
   ($t : ident , $u : ident , $m : ident , $neg_tiny : expr , $smax : expr , $mantissa : expr , $digits : expr , $min_exp : expr , $max_exp : expr , $min_10 : expr , $max_10 : expr) => {
     impl $t {
       /// The bits of this value, as an unsigned integer of the same width.
-      fn to_bits(self : $t) -> $u {
+      pub fn to_bits(self : $t) -> $u {
         return mlir!( inputs : (%a = self : $t), returns : $u, dialects : ["arith"]) {
           %r = "arith.bitcast"(%a) : ($t) -> $m
           macro.yield %r : $m
@@ -2932,7 +2986,7 @@ macro_rules stamp_float_bits {
       }
 
       /// The value these bits spell. Static: `f32::from_bits(1065353216)` is 1.0.
-      fn from_bits(v : $u) -> $t {
+      pub fn from_bits(v : $u) -> $t {
         return mlir!( inputs : (%v = v : $m), returns : $t, dialects : ["arith"]) {
           %r = "arith.bitcast"(%v) : ($m) -> $t
           macro.yield %r : $t
@@ -2941,7 +2995,7 @@ macro_rules stamp_float_bits {
 
       /// The smallest value greater than this one. A NaN and positive infinity give
       /// themselves, and either zero gives the smallest positive value.
-      fn next_up(self : $t) -> $t {
+      pub fn next_up(self : $t) -> $t {
         if self.is_nan() || self == $t::infinity() {
           return self;
         }
@@ -2957,7 +3011,7 @@ macro_rules stamp_float_bits {
 
       /// The largest value less than this one. A NaN and negative infinity give themselves,
       /// and either zero gives the negative value nearest zero.
-      fn next_down(self : $t) -> $t {
+      pub fn next_down(self : $t) -> $t {
         if self.is_nan() || self == $t::neg_infinity() {
           return self;
         }
@@ -2975,7 +3029,7 @@ macro_rules stamp_float_bits {
       /// infinity, the negatives, -0.0, 0.0, the positives, positive infinity, positive NaNs.
       /// It compares the bits as signed integers, with the bits of a negative value turned
       /// round so that more negative sorts lower.
-      fn total_cmp(self : &$t, other : &$t) -> Ordering {
+      pub fn total_cmp(self : &$t, other : &$t) -> Ordering {
         let x : $t = *self;
         let y : $t = *other;
         let smax : $m = $smax;
@@ -3003,37 +3057,37 @@ macro_rules stamp_float_bits {
       }
 
       /// The base the format counts in: 2.
-      fn radix() -> u32 {
+      pub fn radix() -> u32 {
         return 2;
       }
 
       /// How many binary digits the significand holds, the leading one included.
-      fn mantissa_digits() -> u32 {
+      pub fn mantissa_digits() -> u32 {
         return $mantissa;
       }
 
       /// How many decimal digits survive a round trip through this width.
-      fn digits() -> u32 {
+      pub fn digits() -> u32 {
         return $digits;
       }
 
       /// One more than the smallest power of two a normal value can have.
-      fn min_exp() -> i32 {
+      pub fn min_exp() -> i32 {
         return $min_exp;
       }
 
       /// One more than the largest power of two a finite value can have.
-      fn max_exp() -> i32 {
+      pub fn max_exp() -> i32 {
         return $max_exp;
       }
 
       /// The smallest power of ten that is a normal value.
-      fn min_10_exp() -> i32 {
+      pub fn min_10_exp() -> i32 {
         return $min_10;
       }
 
       /// The largest power of ten that is a finite value.
-      fn max_10_exp() -> i32 {
+      pub fn max_10_exp() -> i32 {
         return $max_10;
       }
     }
@@ -3050,12 +3104,12 @@ macro_rules stamp_float_text {
     impl $t {
       /// The fewest decimal digits that read back as this same value, as
       /// `digits * 10^exponent` (Ryu's algorithm). NaN and the infinities are flagged.
-      fn shortest_decimal(self : $t) -> FloatDecimal {
+      pub fn shortest_decimal(self : $t) -> FloatDecimal {
         return $from_bits(self.to_bits());
       }
 
       /// How many bytes `write_decimal` writes: the length of Rust's `format!("{}", x)`.
-      fn decimal_len(self : $t) -> i64 {
+      pub fn decimal_len(self : $t) -> i64 {
         return float_decimal_display_len($from_bits(self.to_bits()));
       }
 
@@ -3063,21 +3117,21 @@ macro_rules stamp_float_text {
       /// the shortest digits in plain notation, as in `0.1`, `-2`, `1e21` as 22 digits,
       /// `inf` and `NaN`. Unsafe because nothing checks that the buffer has `decimal_len()`
       /// bytes. No NUL is written.
-      unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
+      pub unsafe fn write_decimal(self : $t, buf : *mut i8, at : i64) -> i64 {
         return unsafe {
           float_decimal_write_display($from_bits(self.to_bits()), buf, at)
         };
       }
 
       /// How many bytes `write_scientific` writes: the length of Rust's `format!("{:e}", x)`.
-      fn scientific_len(self : $t) -> i64 {
+      pub fn scientific_len(self : $t) -> i64 {
         return float_decimal_scientific_len($from_bits(self.to_bits()));
       }
 
       /// Write what Rust's `{:e}` prints to `buf[at..]` and return how many bytes that took:
       /// the shortest digits as `1.5e-7`, `1e0` or `-0e0`. Unsafe for the reason
       /// `write_decimal` is.
-      unsafe fn write_scientific(self : $t, buf : *mut i8, at : i64) -> i64 {
+      pub unsafe fn write_scientific(self : $t, buf : *mut i8, at : i64) -> i64 {
         return unsafe {
           float_decimal_write_scientific($from_bits(self.to_bits()), buf, at)
         };

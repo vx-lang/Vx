@@ -358,6 +358,17 @@ impl<'a> TypeChecker<'a> {
             {
                 return target_ty;
             }
+            // A pointer to an integer to a pointer to an integer of the same width, as
+            // `"text" as *const u8`: the same bytes, read with the other sign.
+            (Type::Pointer(from, from_space, _), Type::Pointer(to, to_space, _))
+                if from_space == to_space
+                    && matches!(
+                        (from.as_ref(), to.as_ref()),
+                        (Type::Scalar(a), Type::Scalar(b)) if a.is_int_of_the_same_width(b)
+                    ) =>
+            {
+                return target_ty;
+            }
             // Any pointer to `*const void` in the same memory: an address that no program can
             // read through, as C's `void *`.
             (Type::Pointer(_, from_space, _), Type::Pointer(to, to_space, _))
@@ -1097,9 +1108,8 @@ impl<'a> TypeChecker<'a> {
             Some(ElementType::I64),
             *span,
         ));
-        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::new(
+        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::by_the_compiler(
             "c_str_equals".into(),
-            None,
             vec![(**lhs).clone(), (**rhs).clone(), bound],
             *span,
         ));
@@ -1220,6 +1230,7 @@ impl<'a> TypeChecker<'a> {
                     type_args: None,
                     args: vec![lhs_ref, rhs_ref],
                     span,
+                    by_the_compiler: false,
                 });
                 let ty = self.check_expr_type_flag(&mut call, false);
                 *expr = call;

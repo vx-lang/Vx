@@ -6,15 +6,15 @@
 // methods. `docs/implementation_plans/io_error_contract.md` describes their status values.
 extern {
   /// Open with a validated set of option bits. Other outputs follow the file error ABI.
-  fn _vx_file_open_options(path : *const i8, options : i32, out : *mut *mut i8,
+  pkg fn _vx_file_open_options(path : *const i8, options : i32, out : *mut *mut i8,
   native_code : *mut i32, has_native_code : *mut bool) -> i32;
   /// Seek with an unsigned start offset or signed relative offset, encoded in `offset`.
-  fn _vx_file_try_seek(ptr : *mut i8, offset : i64, whence : i32, position : *mut u64,
+  pkg fn _vx_file_try_seek(ptr : *mut i8, offset : i64, whence : i32, position : *mut u64,
   native_code : *mut i32, has_native_code : *mut bool) -> i32;
   /// Read, and report an error. Outputs are separate writable locals.
-  fn _vx_file_try_read(ptr : *mut i8, buffer : *mut u8, len : u64, count : *mut u64,
+  pkg fn _vx_file_try_read(ptr : *mut i8, buffer : *mut u8, len : u64, count : *mut u64,
   native_code : *mut i32, has_native_code : *mut bool) -> i32;
   /// Write, and report an error. Outputs are separate writable locals.
-  fn _vx_file_try_write(ptr : *mut i8, buffer : *const u8, len : u64, count : *mut u64,
+  pkg fn _vx_file_try_write(ptr : *mut i8, buffer : *const u8, len : u64, count : *mut u64,
   native_code : *mut i32, has_native_code : *mut bool) -> i32;
 }

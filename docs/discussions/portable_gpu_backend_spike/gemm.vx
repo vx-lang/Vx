@@ -2,7 +2,7 @@
 // One block makes 256 elements of one row of c. For each step of 16 along k, the lanes copy
 // 16 elements of a and a 16 x 256 tile of b into the block's shared memory, wait at the end of
 // the lane loop, and then add the products from shared memory.
-pub fn gemm(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, b : &Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+extern fn gemm(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, b : &Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {
     for row in 0..n across blocks {
       for strip in 0..n / 256 across blocks {

@@ -19,7 +19,7 @@ use std::process::Command;
 const FILL: &str = "
 Memory CPU_DRAM {}
 
-pub fn NAME(out: &mut Tensor<f32, [?]>, n: i32EXTRA) -> void {
+extern fn NAME(out: &mut Tensor<f32, [?]>, n: i32EXTRA) -> void {
   let mut d = transfer(Tensor<f32, [?]>::new([n as i64]), Memory::HBM);
   spawn on(Topology::Device) {
     for b in 0..(n + 255) / 256 across blocks {

@@ -100,10 +100,13 @@ impl FnEmit<'_> {
             .cloned()
             .flatten()
             .is_some();
+        let vector = self.vec_of.get(ins.operand2.0 as usize).cloned().flatten();
         let store_ty = if let Some(d) = descriptor {
             d
         } else if self.is_pointer_value(ins.operand2.0 as usize)? {
             "!llvm.ptr".to_string()
+        } else if let Some(v) = vector {
+            v.to_string()
         } else {
             match self.etypes.get(ins.operand2.0 as usize).cloned().flatten() {
                 Some(e) if !is_tensor => crate::mlir_ty::mlir_scalar(&e)
@@ -161,10 +164,12 @@ impl FnEmit<'_> {
             Some(payload) => payload.aggregate_id,
             None => agg.field_agg.get(field_idx).copied().flatten(),
         };
+        // A payload is a pointer when a struct field of its type would be one. A function is a
+        // pointer too, and a borrowed tensor is its descriptor.
         let pointer = match payload {
             Some(payload) => matches!(
-                payload.ty,
-                Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..)
+                crate::layout::structural_field_info(&payload.ty),
+                Some((_, _, crate::layout::FieldTy::Opaque))
             ),
             None => fty == "!llvm.ptr",
         };
@@ -198,8 +203,16 @@ impl FnEmit<'_> {
             Some((_, shape)) if payload.is_some() => memref_descriptor_ty(shape.len()),
             _ => fty,
         };
+        let vector = match payload.map(|p| crate::layout::structural_field_info(&p.ty)) {
+            Some(Some((_, _, crate::layout::FieldTy::Vector(e, lanes)))) => {
+                Some(VectorTy::new(&e, lanes).ok_or(crate::emitter_gap!())?)
+            }
+            _ => None,
+        };
         let load_ty = if pointer {
             "!llvm.ptr".to_string()
+        } else if let Some(v) = &vector {
+            v.to_string()
         } else if payload.is_some() && result_is_tensor {
             fty.clone()
         } else {
@@ -236,6 +249,8 @@ impl FnEmit<'_> {
         if pointer {
             self.ptr_of[idx] = true;
             self.agg_of[idx] = pointee;
+        } else if vector.is_some() {
+            self.vec_of[idx] = vector;
         } else if let Some(nested_gid) = nested {
             // A by-value nested-aggregate field load yields the whole `!llvm.struct` value,
             // tracked as an aggregate value so it can be re-stored / passed by value. (#242)
