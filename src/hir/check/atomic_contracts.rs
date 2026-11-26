@@ -87,7 +87,7 @@ fn is_writes_only(e: &Expr) -> bool {
 }
 
 /// Whether `e` is `writes_only()`: the code writes no memory, as a fence does.
-fn is_writes_nothing(e: &Expr) -> bool {
+pub(crate) fn is_writes_nothing(e: &Expr) -> bool {
     matches!(e, Expr::FunctionCall(fc) if fc.name.as_ref() == "writes_only" && fc.args.is_empty())
 }
 

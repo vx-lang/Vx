@@ -4038,7 +4038,7 @@ impl<'r> Lowerer<'r> {
     ///
     /// The region's outermost loop may also have been proved to have disjoint iterations, which
     /// the checker recorded on the statement: the loop is then tagged for the device pipeline to
-    /// grid-stride (#251). Whether the proof was declined or accepted, the lowered body is
+    /// grid-stride. Whether the proof was declined or accepted, the lowered body is
     /// identical apart from two inert `imm` bits and the `SpawnEnd`'s trip count — the host path
     /// never changes.
     ///
@@ -4544,10 +4544,10 @@ impl<'r> Lowerer<'r> {
         for (axis, v) in launch.shape {
             self.emit_effect(Opcode::LaunchDim, v.reg, Register(0), *axis);
         }
-        // The checker decided between the flat grid-stride (#251) and two-level (Vx#379)
-        // shapes, in that order, and recorded the answer. Reading it here is what keeps this
-        // code generator and the W1033 warning from disagreeing. A region with `across` loops
-        // maps its work to lanes itself, and the checker records no split for it.
+        // The checker decided between the flat grid-stride and two-level shapes, in that order,
+        // and recorded the answer. Reading it here is what keeps this code generator and the
+        // W1033 warning from disagreeing. A region with `across` loops maps its work to lanes
+        // itself, and the checker records no split for it.
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
         for (name, v) in fixed {

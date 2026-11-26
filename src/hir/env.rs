@@ -734,6 +734,10 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// Set when the driver checks copies of the bodies a second time only to annotate them: the
+    /// `spawn` splits were recorded by the first check and the lowering reads those, so this
+    /// check must not decide them again from a different set of purity facts.
+    pub(crate) keep_recorded_splits: bool,
     /// The `for` loops around the expression being checked, innermost last.
     pub(crate) unroll_candidates: Vec<UnrollCandidate>,
     /// Identifiers already reported as unreadable from the active topology, so the indexing of
@@ -899,6 +903,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            keep_recorded_splits: false,
             unroll_candidates: Vec::new(),
             unreadable_reported: Default::default(),
             device_spawn: None,
@@ -2449,7 +2454,11 @@ impl<'a> TypeChecker<'a> {
         // warn (W1033) for a loop that runs on one thread although its passes could run at
         // once. Last, because that check rewrites the body it judges: the record must name the
         // body the lowering will see, down to the statement index of the loop.
-        if !self.speculating {
+        //
+        // A second check of a copy, which the driver runs only to annotate it, finds the record
+        // the first check wrote and leaves it alone: its own purity facts are not the same ones,
+        // and two answers would let the warning and the emitted code disagree.
+        if !self.speculating && !self.keep_recorded_splits {
             self.record_spawn_splits(&mut func.body);
         }
 

@@ -27,12 +27,17 @@
 use crate::hir::provenance::Decls;
 use crate::symbol::Symbol;
 use crate::syntax::{Expr, Function, Statement};
+use crate::syntax::{LetDeclStmt, Type};
 use std::collections::HashSet;
 
 /// Whether every parameter of `f` is a value that cannot reach memory, and its result is one
 /// too. A type parameter counts as reaching memory: at this point nothing says what it becomes.
+/// A parameter whose type has a `Drop` impl does not count either: dropping it runs that impl,
+/// which is code this walk cannot see.
 fn signature_is_pure(f: &Function, decls: &Decls) -> bool {
-    f.params.iter().all(|(_, ty)| !decls.reaches_memory(ty, 0))
+    f.params
+        .iter()
+        .all(|(_, ty)| !decls.reaches_memory(ty, 0) && !decls.has_drop(ty, 0))
         && !decls.reaches_memory(&f.return_type, 0)
 }
 
@@ -50,7 +55,11 @@ pub fn writes_only_its_frame(
     if f.body.is_empty() || !signature_is_pure(f, decls) {
         return false;
     }
-    let walk = Walk { decls, callee_pure };
+    let walk = Walk {
+        decls,
+        callee_pure,
+        inside_unsafe: false,
+    };
     walk.stmts(&f.body)
 }
 
@@ -60,9 +69,12 @@ fn mlir_input_reaches_memory(ty: &str) -> bool {
     ty.contains("memref") || ty.contains("tensor<") || ty.contains("ptr") || ty.starts_with('!')
 }
 
+#[derive(Clone, Copy)]
 struct Walk<'a> {
     decls: &'a Decls<'a>,
     callee_pure: &'a dyn Fn(&str) -> bool,
+    /// Inside an `unsafe { }` block, where an `mlir!` block may do anything the program says.
+    inside_unsafe: bool,
 }
 
 impl Walk<'_> {
@@ -72,7 +84,7 @@ impl Walk<'_> {
 
     fn stmt(&self, s: &Statement) -> bool {
         match s {
-            Statement::LetDecl(l) => self.expr(&l.expr),
+            Statement::LetDecl(l) => !self.binds_a_dropped_value(l) && self.expr(&l.expr),
             Statement::Return(r) => r.expr.as_ref().is_none_or(|e| self.expr(e)),
             Statement::ExprStmt(e) => self.expr(&e.expr),
             Statement::ForLoop(f) => self.expr(&f.iterable) && self.stmts(&f.body),
@@ -85,6 +97,24 @@ impl Walk<'_> {
             // the function owns, which is a write the caller can see.
             Statement::MacroCall(_) | Statement::Drop(_) | Statement::Error(_) => false,
         }
+    }
+
+    /// Whether this `let` binds a value whose type has a `Drop` impl. Dropping it at the end of
+    /// the block runs that impl, which is code this walk cannot see. A `let` with no written type
+    /// is judged by what builds the value: a struct or an enum variant the declarations know.
+    fn binds_a_dropped_value(&self, l: &LetDeclStmt) -> bool {
+        if l.ty_ann
+            .as_ref()
+            .is_some_and(|ty| self.decls.has_drop(ty, 0))
+        {
+            return true;
+        }
+        let built = match &l.expr {
+            Expr::StructInit(s) => Some(Type::Struct(s.name.clone(), s.type_id)),
+            Expr::EnumVariant(v) => Some(Type::Enum(v.enum_name.clone(), None)),
+            _ => None,
+        };
+        built.is_some_and(|ty| self.decls.has_drop(&ty, 0))
     }
 
     /// Whether an assignment writes a name of the function's own frame. An element, a field or
@@ -122,15 +152,25 @@ impl Walk<'_> {
                     && i.else_block.as_ref().is_none_or(|b| self.stmts(b))
             }
             Expr::Match(m) => self.expr(&m.expr) && m.arms.iter().all(|arm| self.stmts(&arm.body)),
-            // A block is no more than its statements: the operations that need `unsafe`, or
-            // that only compile time can run, show up inside and are judged there.
-            Expr::UnsafeBlock(b) => self.stmts(&b.stmts),
+            // A block is no more than its statements, and inside `unsafe { }` the walk knows that
+            // an `mlir!` block there is not one the compiler verified (see `InlineMlir`).
+            Expr::UnsafeBlock(b) => Walk {
+                inside_unsafe: true,
+                ..*self
+            }
+            .stmts(&b.stmts),
             Expr::ComptimeBlock(b) => self.stmts(&b.stmts),
             Expr::FunctionCall(fc) => (self.callee_pure)(fc.name.as_ref()) && self.exprs(&fc.args),
             // An `mlir!` block is opaque, but a block that takes no memory value and names no
-            // clobber cannot write memory that a caller sees: the program has no globals.
+            // clobber cannot write memory that a caller sees: the program has no globals. Inside
+            // `unsafe { }` the compiler does not verify the block, so it counts only when it says
+            // `ensures : [writes_only()]`, which is the same rule the contract check applies.
             Expr::InlineMlir(m) => {
-                m.clobbers.is_empty()
+                (!self.inside_unsafe
+                    || m.ensures
+                        .iter()
+                        .any(crate::hir::check::atomic_contracts::is_writes_nothing))
+                    && m.clobbers.is_empty()
                     && m.inputs
                         .iter()
                         .all(|(_, e, ty)| !mlir_input_reaches_memory(ty) && self.expr(e))
@@ -209,11 +249,19 @@ pub fn functions_writing_only_their_frame<'a>(
 mod tests {
     use super::*;
 
+    /// Parse, then expand macros, as the compiler does before it builds the environment: an
+    /// `mlir!` block is a `MacroCall` in the parse tree and an `InlineMlir` expression after.
     fn parse(src: &str) -> crate::syntax::Program {
         let mut lexer = crate::lexer::Lexer::new(src);
         let tokens = lexer.tokenize();
         let mut parser = crate::parser::Parser::new(&tokens, src);
-        parser.parse().expect("parses")
+        let mut program = parser.parse().expect("parses");
+        let macros = crate::parser::MacroTable::new(std::iter::once(&program));
+        let defaults = crate::resolver::collect_trait_defaults(std::iter::once(&program));
+        crate::parser::MacroExpander::new(&macros, &defaults)
+            .expand_module(&mut program)
+            .expect("macros expand");
+        program
     }
 
     fn pure_names(src: &str) -> HashSet<Symbol> {
@@ -286,6 +334,54 @@ mod tests {
         let pure =
             pure_names("fn down(n : i32) -> i32 { if n == 0 { return 0; } return down(n - 1); }");
         assert!(!pure.contains("down"));
+    }
+
+    #[test]
+    fn an_mlir_block_inside_unsafe_counts_only_with_the_clause() {
+        // The compiler does not verify a block inside `unsafe { }`, so one that stores through a
+        // pointer it makes up can write anywhere, and the loop must not split.
+        let without = pure_names(
+            "fn poke(x : f32) -> f32 {
+                 unsafe { mlir!( inputs : (), dialects : [\"llvm\"]) {
+                   %p = arith.constant 0 : i64
+                   %q = llvm.inttoptr %p : i64 to !llvm.ptr
+                   %one = arith.constant 1.0 : f32
+                   llvm.store %one, %q : f32, !llvm.ptr
+                   macro.yield
+                 } };
+                 return x;
+             }",
+        );
+        assert!(!without.contains("poke"));
+        let with = pure_names(
+            "fn fence(x : f32) -> f32 {
+                 unsafe { mlir!( inputs : (), dialects : [\"llvm\"], ensures : [writes_only()]) {
+                   llvm.fence release
+                   macro.yield
+                 } };
+                 return x;
+             }",
+        );
+        // The clause says the block writes no memory, which is what the contract check trusts.
+        assert!(with.contains("fence"));
+    }
+
+    #[test]
+    fn a_local_whose_type_has_a_drop_does_not_count() {
+        let program = parse(
+            "struct Noisy { n : i32 }
+             impl Noisy { fn drop(self : &mut Noisy) -> void { println!(\"{}\", self.n); } }
+             fn noisy(x : i32) -> i32 { let s = Noisy { n : x }; return x; }",
+        );
+        let decls = Decls::new(&program.structs, &program.enums).with_drop_impls(&program.impls);
+        let funcs: Vec<_> = program
+            .functions
+            .iter()
+            .map(|f| (f.name.clone(), f))
+            .collect();
+        let pure = functions_writing_only_their_frame(funcs.into_iter(), &decls, &|_| false);
+        // Dropping `s` runs `drop`, which prints.
+        assert!(!pure.contains("noisy"));
     }
 
     #[test]

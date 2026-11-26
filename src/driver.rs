@@ -1951,6 +1951,9 @@ impl CompilerDriver {
             for m in &mut mods {
                 let mut scratch = LocalWorkerState::new(session.clone());
                 let mut checker = TypeChecker::new(&env, &mut scratch);
+                // The first check recorded how each `spawn` loop runs, and the lowering reads
+                // that record. This pass only annotates, so it keeps it.
+                checker.keep_recorded_splits = true;
                 for f in &mut m.functions {
                     checker.check_function(f);
                 }

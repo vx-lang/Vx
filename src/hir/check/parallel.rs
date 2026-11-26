@@ -47,9 +47,30 @@ impl crate::hir::TypeChecker<'_> {
     /// call in it is to another such function. The scalar intrinsics that the compiler already
     /// trusts without reading a body count too.
     pub(crate) fn spawn_pure(&self, name: &str) -> bool {
-        self.mono.spawn_pure.contains(name)
-            || self.env.spawn_pure.contains(name)
-            || parallel_pure_call(name)
+        self.mono.spawn_pure.contains(name) || self.spawn_pure_before_checking(name)
+    }
+
+    /// The same question answered only from the facts frozen before any body was checked, plus
+    /// the scalar intrinsics that need no body. A `spawn` split is decided from this answer: the
+    /// bodies of a program can be checked in any order, and a decision that changed with that
+    /// order would let one code generator disagree with the warning.
+    ///
+    /// A checked body names an instance with a `$` and the types or topologies it was made for
+    /// (`exp_helper$topology$...`), and a method with the receiver first (`f32$neg_infinity`),
+    /// while the program may write the same method as a path (`f32::neg_infinity`). The fact is
+    /// recorded under the receiver-first spelling, so every spelling of the name is asked about.
+    /// That is sound because a source body whose parameter is a type parameter, or whose
+    /// parameter reaches memory, is never in the set.
+    pub(crate) fn spawn_pure_before_checking(&self, name: &str) -> bool {
+        let base = name.split_once('$').map_or(name, |(base, _)| base);
+        [
+            name,
+            base,
+            &name.replace("::", "$"),
+            &base.replace("::", "$"),
+        ]
+        .into_iter()
+        .any(|n| parallel_pure_call(n) || self.env.spawn_pure.contains(n))
     }
 
     /// Record, on every `spawn` region of `body`, how its loop runs, and warn (W1033) for a
@@ -61,8 +82,10 @@ impl crate::hir::TypeChecker<'_> {
     pub(crate) fn record_spawn_splits(&mut self, body: &mut [Statement]) {
         let mut found = Vec::new();
         {
-            // The purity fact is frozen before any body is checked, so this only reads it.
-            let pure = |name: &str| self.spawn_pure(name);
+            // The purity fact is frozen before any body is checked, so this only reads it, and
+            // reads nothing that grows as bodies are checked: the driver checks some bodies a
+            // second time and the answer has to be the same both times.
+            let pure = |name: &str| self.spawn_pure_before_checking(name);
             crate::syntax::visit_exprs_mut(body, &mut |e| {
                 let Expr::SpawnOn(sp) = e else {
                     return;
@@ -458,6 +481,22 @@ fn two_level(stmts: &[Statement], pure: &dyn Fn(&str) -> bool) -> Result<TwoLeve
         .threads
         .sort_by_key(|s| (s.line, s.column, s.length, s.expansion));
     walker.threads.dedup();
+    // The code generator names a loop by comparing its span with the plan's, so a loop that
+    // shares a span with another would take that loop's marks too: a `Span::default()` from a
+    // span the compiler made, or one span for two loops a macro produced. Nothing here can tell
+    // those loops apart, so the region keeps the serial shape rather than guess.
+    let mut plan_spans = walker.threads.clone();
+    plan_spans.push(f.span);
+    if plan_spans.contains(&Span::default())
+        || plan_spans.iter().filter(|s| **s == f.span).count() > 1
+    {
+        return Err(Blocker {
+            why: "two loops of this region have the same source position, so the plan cannot \
+                  name them apart"
+                .to_string(),
+            span: f.span,
+        });
+    }
     let coop = if walker.coop_trips.is_empty() {
         0
     } else {

@@ -1,0 +1,96 @@
+//===- spawn_loop_writing_the_float_limits_splits.vx --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each loop of a `spawn` region fills a row with negative infinity, one written as
+// `f32::neg_infinity()` and one as `-f32::infinity()`, and the same for `f64`. Every pass writes
+// its own row, so each loop splits across threads: the body of each of these four functions in
+// `core::num` is one `mlir!` block that returns a constant, so the compiler shows that it writes
+// only its own variables, and a call no longer keeps a loop on one thread.
+//
+// The program also runs, so the checks are about the values as well as the IR: 64 rows of `-inf`
+// from the `f32` loop, and `-inf` from the `f64` one.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FLAT --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=LEGACY --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s --run 2>&1 | FileCheck %s --check-prefix=RUNS --implicit-check-not=Error --implicit-check-not=Warning
+
+// FLAT-LABEL: func.func @rows_of_negative_infinity_f64
+// FLAT: vx_parallel_trip = 64 : i64
+// FLAT-LABEL: func.func @rows_of_negative_infinity_f32
+// FLAT: vx_parallel_trip = 64 : i64
+// FLAT-LABEL: func.func @one_row_of_minus_infinity_f64
+// FLAT: vx_parallel_trip = 64 : i64
+// FLAT-LABEL: func.func @one_row_of_minus_infinity_f32
+// FLAT: vx_parallel_trip = 64 : i64
+
+// LEGACY-LABEL: func.func @rows_of_negative_infinity_f64
+// LEGACY: vx_parallel_trip = 64 : i64
+// LEGACY-LABEL: func.func @rows_of_negative_infinity_f32
+// LEGACY: vx_parallel_trip = 64 : i64
+// LEGACY-LABEL: func.func @one_row_of_minus_infinity_f64
+// LEGACY: vx_parallel_trip = 64 : i64
+// LEGACY-LABEL: func.func @one_row_of_minus_infinity_f32
+// LEGACY: vx_parallel_trip = 64 : i64
+
+// RUNS-COUNT-64: -inf
+// RUNS-COUNT-64: -inf
+// RUNS: -inf
+// RUNS: -inf
+import core::num;
+
+fn rows_of_negative_infinity_f32() -> void {
+  let mut o = Tensor<f32, [64, 1], Memory::CPU_DRAM>::new();
+  spawn on(Topology::CPU) {
+    for r in 0..64 {
+      o[r][0] = f32::neg_infinity();
+    }
+  }
+  for r in 0..64 {
+    println!("{}", o[r][0]);
+  }
+}
+
+fn one_row_of_minus_infinity_f32() -> f32 {
+  let mut o = Tensor<f32, [64, 1], Memory::CPU_DRAM>::new();
+  spawn on(Topology::CPU) {
+    for r in 0..64 {
+      o[r][0] = -f32::infinity();
+    }
+  }
+  return o[63][0];
+}
+
+fn rows_of_negative_infinity_f64() -> void {
+  let mut o = Tensor<f64, [64, 1], Memory::CPU_DRAM>::new();
+  spawn on(Topology::CPU) {
+    for r in 0..64 {
+      o[r][0] = f64::neg_infinity();
+    }
+  }
+  for r in 0..64 {
+    println!("{}", o[r][0]);
+  }
+}
+
+fn one_row_of_minus_infinity_f64() -> f64 {
+  let mut o = Tensor<f64, [64, 1], Memory::CPU_DRAM>::new();
+  spawn on(Topology::CPU) {
+    for r in 0..64 {
+      o[r][0] = -f64::infinity();
+    }
+  }
+  return o[63][0];
+}
+
+fn main() -> i32 {
+  rows_of_negative_infinity_f32();
+  rows_of_negative_infinity_f64();
+  println!("{}", one_row_of_minus_infinity_f32());
+  println!("{}", one_row_of_minus_infinity_f64());
+  return 0;
+}

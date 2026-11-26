@@ -2,6 +2,7 @@
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
+//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -10,10 +11,9 @@
 // numbers, returns a number, and every call in it is to another such helper. `exp_helper` wraps
 // `math.exp` in an `mlir!` block and takes only `f32`, so the launch splits.
 //
-// A helper that takes a tensor can write what another pass writes, so a loop that calls it stays
-// on one thread. That loop says nothing: a `&mut` argument is memory that another pass may write,
-// which is the shape the program asked for. (A loop that stays serial although every write is its
-// own gets the warning, W1033, which the spawn-on warning test covers.)
+// `grow_helper` has the same arguments and the same result, and its loop stays on one thread,
+// because its body calls a method, which the compiler does not read. The two loops differ only
+// in what the callee's body does, so the pair is about purity and not about the arguments.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=SPLIT --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=SPLIT --implicit-check-not=Error
@@ -25,10 +25,12 @@
 // SPLIT: func.call @exp_helper
 // SPLIT: } {arch = "nvptx64", topology_name = "GPU[0]", {{.*}}vx_parallel_trip = 64 : i64}
 
-// SERIAL-LABEL: func.func @fill_through_a_writer
+// SERIAL-LABEL: func.func @fill_through_a_grower
 // SERIAL: vx.spawn topology(500) {
-// SERIAL: func.call @add_through_a_tensor
-// SERIAL: } {arch = "nvptx64", topology_name = "GPU[0]", {{.*}}}
+// SERIAL: func.call @grow_helper
+// SERIAL-NOT: vx_parallel_trip
+// SERIAL: func.func @grow_helper
+import core::num;
 
 fn exp_helper(x : f32) on Topology::Any -> f32 {
   return mlir!( inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
@@ -37,9 +39,8 @@ fn exp_helper(x : f32) on Topology::Any -> f32 {
   };
 }
 
-fn add_through_a_tensor(t : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, r : i32) on Topology::Any -> void {
-  t[r][0] = t[r][0] + 1.0;
-  return;
+fn grow_helper(x : f32) on Topology::Any -> f32 {
+  return x.exp();
 }
 
 fn fill_with_exp_helper() -> f32 {
@@ -52,11 +53,11 @@ fn fill_with_exp_helper() -> f32 {
   return transfer(o, Memory::CPU_DRAM)[0][0];
 }
 
-fn fill_through_a_writer() -> f32 {
+fn fill_through_a_grower() -> f32 {
   let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..64 {
-      add_through_a_tensor(&mut o, r);
+      o[r][0] = grow_helper(o[r][0]);
     }
   }
   return transfer(o, Memory::CPU_DRAM)[0][0];
@@ -72,7 +73,7 @@ ensures writes_only()
 
 fn main() -> i32 {
   print(fill_with_exp_helper());
-  print(fill_through_a_writer());
+  print(fill_through_a_grower());
   print(quiet_through_a_helper());
   return 0;
 }

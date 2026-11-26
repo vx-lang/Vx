@@ -7,12 +7,12 @@
 //===----------------------------------------------------------------------===//
 // An `across` loop calls `add_one`, which runs on any topology, takes a tensor and has no
 // contract. The compiler makes a copy of `add_one` for the GPU. The error names `add_one`, not
-// that copy, and it says which contract makes the call legal: `add_one` may not be shown to
-// write only its own variables, so a `writes_only` contract is what the reader can add.
+// that copy, and it says which contracts make the call legal: `writes_only()` for a function
+// that writes no memory, and `reads_only(lim)` for this one, which only reads `lim`.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E6032] at {{.*}}a_call_in_an_across_loop_to_a_function_on_any_topology.vx:27:27: the call to `add_one` writes memory that another pass can see, or the compiler cannot show that it writes only its own variables. If it writes no memory, say `ensures writes_only()`. Write its work in the loop
+// CHECK: Error[E6032] at {{.*}}a_call_in_an_across_loop_to_a_function_on_any_topology.vx:27:27: the call to `add_one` writes memory that another pass can see, or the compiler cannot show that it writes only its own variables. If `add_one` writes no memory, give it `ensures writes_only()`. If it only reads a tensor parameter `t`, give it `ensures reads_only(t)`. Or write its work in the loop
 
 fn add_one(x : i32, lim : &Tensor<i32, [64]>) on Topology::Any -> i32 {
   return x + 1 + lim[0];

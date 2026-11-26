@@ -860,11 +860,11 @@ impl Proof<'_> {
                                 self.templates.contains(t)
                             });
                         format!(
-                            "the call to `{}` writes memory that another pass can see, or the \
-                             compiler cannot show that it writes only its own variables. If it \
-                             writes no memory, say `ensures writes_only()`. Write its work in \
-                             the loop",
-                            name
+                            "the call to `{name}` writes memory that another pass can see, or the \
+                             compiler cannot show that it writes only its own variables. If \
+                             `{name}` writes no memory, give it `ensures writes_only()`. If it \
+                             only reads a tensor parameter `t`, give it `ensures reads_only(t)`. \
+                             Or write its work in the loop"
                         )
                     };
                     self.fail(why, fc.span);

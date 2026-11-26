@@ -1,0 +1,51 @@
+//===- call_to_a_helper_the_compiler_cannot_read_keeps_the_loop_serial.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A pass calls `grow`, whose body calls a method that the compiler does not read, so it cannot
+// show that `grow` writes only its own variables. The loop stays on one thread and W1033 says
+// so. Both code generators have to agree on that: the flat path once warned and then emitted
+// `vx_parallel_trip` anyway, because it asked the question a second time with other facts.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FLAT
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=LEGACY
+//
+// FLAT: this `spawn` loop runs on one thread: it calls `grow`, which the compiler cannot show writes nothing
+// FLAT-LABEL: func.func @fill
+// FLAT: vx.spawn topology(500) {
+// FLAT-NOT: vx_parallel_trip
+// FLAT-LABEL: func.func @after_the_region
+//
+// LEGACY: this `spawn` loop runs on one thread: it calls `grow`, which the compiler cannot show writes nothing
+// LEGACY-LABEL: func.func @fill
+// LEGACY: vx.spawn topology(500) {
+// LEGACY-NOT: vx_parallel_trip
+// LEGACY-LABEL: func.func @after_the_region
+import core::num;
+
+fn grow(x : f32) on Topology::GPU -> f32 {
+  return x.exp();
+}
+
+fn fill() -> f32 {
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      o[r][0] = grow(o[r][0]);
+    }
+  }
+  return transfer(o, Memory::CPU_DRAM)[0][0];
+}
+
+fn after_the_region(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn main() -> i32 {
+  print(fill());
+  return after_the_region(1);
+}
