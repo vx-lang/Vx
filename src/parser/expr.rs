@@ -1483,9 +1483,15 @@ impl<'a> Parser<'a> {
                             },
                         })
                     }
-                    TokenType::Tasks => self.parse_task_block(TaskBlockKind::Tasks, &token)?,
+                    // Like `unsafe`, a `tasks` or `spawn` block returns before the postfix loop
+                    // below. A `(` or `[` on the next line then starts a new statement.
+                    TokenType::Tasks => {
+                        let expr = self.parse_task_block(TaskBlockKind::Tasks, &token)?;
+                        return Ok(self.wrap_try(expr));
+                    }
                     TokenType::Spawn if self.check(&TokenType::LeftBrace) => {
-                        self.parse_task_block(TaskBlockKind::Spawn, &token)?
+                        let expr = self.parse_task_block(TaskBlockKind::Spawn, &token)?;
+                        return Ok(self.wrap_try(expr));
                     }
                     TokenType::Spawn => {
                         self.consume(&TokenType::On, "Expected 'on' or '{' after 'spawn'")?;
@@ -1517,7 +1523,7 @@ impl<'a> Parser<'a> {
                             stmts.append(&mut self.pending_stmts);
                         }
                         self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                        Expr::SpawnOn(SpawnOnExpr {
+                        let expr = Expr::SpawnOn(SpawnOnExpr {
                             top,
                             stmts,
                             ret: ret_expr,
@@ -1528,7 +1534,8 @@ impl<'a> Parser<'a> {
                                 expansion: self.expansion(),
                             },
                             arrivals: None,
-                        })
+                        });
+                        return Ok(self.wrap_try(expr));
                     }
                     TokenType::Unknown('"') => {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
