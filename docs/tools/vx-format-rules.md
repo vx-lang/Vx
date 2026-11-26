@@ -78,6 +78,8 @@ The engine does not schedule the roots of a switched-off rule.
 Their code gets the formatting it would get if the rule did not exist.
 
 The renderer requires each original content token exactly once, in source order.
+The one exception is the comma before the `}` of a struct literal.
+A layout can leave it out with `Document::Remove`, and the final validator accepts the output with or without it.
 The final validator also checks token spelling and grammatical adjacency.
 A macro call retains its original bytes, but its line takes the indentation of the code around it.
 A layout must put a whole macro call in one `Preserve` or `Region` document.

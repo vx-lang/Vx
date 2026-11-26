@@ -370,6 +370,7 @@ impl<'source> SourceFileView<'source> {
             });
         }
         self.find_struct_literals(&records, &to_source);
+        self.removable.sort_unstable();
         self.find_matches(&records, &to_source);
         self.find_if_values(&records, &to_source);
     }
@@ -410,7 +411,7 @@ impl<'source> SourceFileView<'source> {
                     own.push(field.clone());
                 }
             }
-            let commas = own
+            let commas: Vec<Option<TokenId>> = own
                 .iter()
                 .map(|field| {
                     self.next_significant(field.end)
@@ -423,6 +424,9 @@ impl<'source> SourceFileView<'source> {
                 .find(|index| !trivia(&self.tokens[*index].token.kind))
                 .expect("a struct literal starts with its name")
                 + 1;
+            if let Some(Some(TokenId(comma))) = commas.last() {
+                self.removable.push(*comma);
+            }
             self.struct_literals.push(StructLiteralView {
                 name: tokens.start..name_end,
                 tokens,

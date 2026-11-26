@@ -61,6 +61,9 @@ pub enum Document {
         bytes: Range<usize>,
         indent_level: usize,
     },
+    /// A token that the layout leaves out. Only a comma before the `}` of a struct literal can
+    /// be left out, as `SourceFileView::removable` says.
+    Remove(TokenId),
     /// `child` must fit on one line of at most `width` columns. Use it inside the one-line
     /// alternative of a `Choice`, which then falls back to its other alternative.
     MaxWidth {
@@ -95,7 +98,11 @@ impl Document {
             Self::WithWidth { child, .. }
             | Self::WithShape { child, .. }
             | Self::MaxWidth { child, .. } => child.has_region(),
-            Self::Token(_) | Self::Space | Self::Line { .. } | Self::Preserve { .. } => false,
+            Self::Token(_)
+            | Self::Remove(_)
+            | Self::Space
+            | Self::Line { .. }
+            | Self::Preserve { .. } => false,
         }
     }
 
@@ -103,6 +110,7 @@ impl Document {
         match self {
             Self::Token(id) => Some(source.token_text(*id).chars().count()),
             Self::Space => Some(1),
+            Self::Remove(_) => Some(0),
             Self::Line { .. } => None,
             Self::Concat(children) => children.iter().try_fold(0usize, |width, child| {
                 width.checked_add(child.flat_width(source)?)
@@ -417,6 +425,13 @@ impl Renderer<'_, '_> {
                 if rendered.contains('\n') || rendered.chars().count() > *width {
                     return Err("A one-line layout does not fit its width".into());
                 }
+                return Ok(());
+            }
+            Document::Remove(id) => {
+                if !self.source.is_removable(*id) {
+                    return Err("A layout left out a token that must stay".into());
+                }
+                out.tokens.push(*id);
                 return Ok(());
             }
             Document::Region {

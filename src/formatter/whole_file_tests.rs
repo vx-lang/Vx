@@ -591,3 +591,20 @@ fn a_block_that_holds_a_macro_call_on_several_lines_keeps_its_lines() {
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(result.text, input);
 }
+
+#[test]
+fn a_short_unsafe_block_with_a_macro_call_stays_on_one_line() {
+    let input = "fn main() -> i32 {\n  unsafe { let bad = ptr[1]; print!(bad); }\n  return 0;\n}\n";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, input);
+}
+
+#[test]
+fn a_short_unsafe_block_is_measured_from_the_start_of_its_line() {
+    // Without `  match `, the block would fit in 80 columns.
+    let input = "fn main() -> i32 {\n  match TcpListener::bind(network, unsafe {\n    &String::from_c_str(\"127.0.0.1:41786\")\n  }) {\n    x => 1\n  }\n  return 0;\n}\n";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, input);
+}

@@ -32,18 +32,18 @@ fn an_if_value_with_a_statement_keeps_its_lines() {
 
 #[test]
 fn an_if_value_wider_than_its_limit_keeps_its_lines() {
+    // By default, only the line width limits an `if` value, so this one goes on one line.
     let body = "  let w = if a_long_condition > another_one { first_value } else { second };";
-    let expected = in_main(
-        "  let w = if a_long_condition > another_one {\n    first_value\n  } else {\n    second\n  };",
-    );
-    assert_eq!(format_body(body, &FormatConfig::default()), expected);
-    let wide = FormatConfig {
-        single_line_if_else_max_width: 80,
+    assert_eq!(format_body(body, &FormatConfig::default()), in_main(body));
+    let narrow = FormatConfig {
+        single_line_if_else_max_width: 50,
         ..FormatConfig::default()
     };
     assert_eq!(
-        format_body(body, &wide),
-        in_main("  let w = if a_long_condition > another_one { first_value } else { second };")
+        format_body(body, &narrow),
+        in_main(
+            "  let w = if a_long_condition > another_one {\n    first_value\n  } else {\n    second\n  };"
+        )
     );
 }
 
@@ -52,6 +52,7 @@ fn an_if_value_in_a_call_and_in_a_struct_field_is_joined() {
     let body = "  let p = Point { x: if c {\n    1\n  } else {\n    2\n  } };\n  return pick(if c { 1 } else { 2 });";
     assert_eq!(
         format_body(body, &FormatConfig::default()),
+        // The braces of the `if` keep the struct literal on several lines.
         in_main(
             "  let p = Point {\n    x: if c { 1 } else { 2 }\n  };\n  return pick(if c { 1 } else { 2 });"
         )
@@ -110,5 +111,20 @@ fn the_code_after_an_if_value_counts_toward_the_line_width() {
     assert_eq!(
         format_body(body, &config),
         in_main("  let v = f(if c {\n    1\n  } else {\n    2\n  }, 123456789012345);")
+    );
+}
+
+#[test]
+fn an_if_value_with_a_struct_literal_in_a_branch_keeps_its_lines() {
+    let body = "  let p = if c {\n    Point { x: 1 }\n  } else {\n    q\n  };";
+    assert_eq!(format_body(body, &FormatConfig::default()), in_main(body));
+}
+
+#[test]
+fn an_if_value_with_macro_calls_in_its_branches_is_joined() {
+    let body = "  let v = if n > 0 {\n    vec![ 1 ]\n  } else {\n    vec![ 2 ]\n  };";
+    assert_eq!(
+        format_body(body, &FormatConfig::default()),
+        in_main("  let v = if n > 0 { vec![ 1 ] } else { vec![ 2 ] };")
     );
 }

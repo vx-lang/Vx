@@ -1706,11 +1706,15 @@ impl<'a> Parser<'a> {
             }
         }
         // For the formatter: an `if` value that can stay on one line, as in
-        // `if c { 1 } else { 0 }`, with one value and no statement in each branch.
+        // `if c { 1 } else { 0 }`, with one value and no statement in each branch. A macro call
+        // such as `vec![1]` can be the value too.
         let one_value = |block: &[Statement]| {
             matches!(
                 block,
                 [Statement::ExprStmt(ExprStmtStmt {
+                    has_semi: false,
+                    ..
+                })] | [Statement::MacroCall(crate::syntax::stmt::MacroCallStmt {
                     has_semi: false,
                     ..
                 })]

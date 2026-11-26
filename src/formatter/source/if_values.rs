@@ -44,13 +44,31 @@ impl NodeFormatter for IfValueFormatter {
         };
         // The base formatting gives each branch lines of its own.
         let expanded = region(view.tokens.clone());
-        // A comment ends its line, so an `if` that holds one cannot be on one line.
-        if view.tokens.clone().any(|index| {
+        // A comment ends its line, so an `if` that holds one cannot be on one line. A branch
+        // with a block, a statement, an `if`, a `match` or a `return` keeps its lines too.
+        let comment = |index: usize| {
             matches!(
                 source.tokens[index].token.kind,
                 TokenType::Comment(_) | TokenType::DocComment(_)
             )
-        }) {
+        };
+        let complex = |index: usize| {
+            matches!(
+                source.tokens[index].token.kind,
+                TokenType::LeftBrace
+                    | TokenType::RightBrace
+                    | TokenType::Semicolon
+                    | TokenType::If
+                    | TokenType::Match
+                    | TokenType::Return
+            )
+        };
+        if view.tokens.clone().any(comment)
+            || view
+                .branches
+                .iter()
+                .any(|(_, value, _)| value.clone().any(complex))
+        {
             return Ok(expanded);
         }
         let mut flat = vec![

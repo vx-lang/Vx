@@ -45,40 +45,91 @@ impl NodeFormatter for StructLiteralFormatter {
             bytes: context.source.token_bytes(tokens),
             indent_level,
         };
-        // A comment between the fields ends its line, so the rule cannot move what follows it.
-        // Leave such a literal, and one with no fields, to the base formatting.
-        if view.fields.is_empty() || has_comment_between_fields(context.source, view) {
+        if view.fields.is_empty() {
             return Ok(region(view.tokens.clone(), shape.indent_level));
         }
         let name = region(view.name.clone(), shape.indent_level);
         let inner = shape.indent_level + 1;
+        let source = context.source;
+        // The comments between `from` and `to`, outside the fields. A comment stays on its line:
+        // after the code before it, or on a line of its own.
+        let comments = |from: usize, to: usize, indent_level: usize| {
+            let mut documents = Vec::new();
+            for index in from..to {
+                if !is_comment(&source.tokens[index].token.kind) {
+                    continue;
+                }
+                let own_line = matches!(
+                    &source.tokens[index - 1].token.kind,
+                    TokenType::Whitespace(text) if text.contains('\n')
+                );
+                documents.push(if own_line {
+                    Document::Line { indent_level }
+                } else {
+                    Document::Space
+                });
+                documents.push(Document::Token(super::TokenId(index)));
+            }
+            documents
+        };
+
+        // A comment before a comma, or before the `{`, has no place in the layout below.
+        let mut gaps: Vec<Range<usize>> = Vec::new();
+        gaps.push(view.open.0 + 1..view.fields[0].start);
+        for (index, (field, comma)) in view.fields.iter().zip(&view.commas).enumerate() {
+            let after = comma.map_or(field.end, |comma| comma.0 + 1);
+            let next = view
+                .fields
+                .get(index + 1)
+                .map_or(view.close.0, |next| next.start);
+            gaps.push(after..next);
+        }
+        let misplaced = view.tokens.clone().any(|index| {
+            is_comment(&source.tokens[index].token.kind)
+                && !view.fields.iter().any(|field| field.contains(&index))
+                && !gaps.iter().any(|gap| gap.contains(&index))
+        });
+        if misplaced {
+            return Ok(region(view.tokens.clone(), shape.indent_level));
+        }
 
         let mut expanded = vec![name.clone(), Document::Space, Document::Token(view.open)];
+        let mut gap_start = view.open.0 + 1;
         for (field, comma) in view.fields.iter().zip(&view.commas) {
+            expanded.extend(comments(gap_start, field.start, inner));
             expanded.push(Document::Line {
                 indent_level: inner,
             });
             expanded.push(region(field.clone(), inner));
             expanded.extend(comma.map(Document::Token));
+            gap_start = comma.map_or(field.end, |comma| comma.0 + 1);
         }
+        expanded.extend(comments(gap_start, view.close.0, inner));
         expanded.push(Document::Line {
             indent_level: shape.indent_level,
         });
         expanded.push(Document::Token(view.close));
         let expanded = Document::Concat(expanded);
-        // The rule keeps every token, so a trailing comma stays. Only the layout with one field
-        // on each line has a place for it.
-        if view.commas.last().is_some_and(Option::is_some) {
+        // A line comment ends its line, so a literal with a comment between its fields cannot be
+        // on one line.
+        if has_comment_between_fields(source, view) || holds_a_block(source, view) {
             return Ok(expanded);
         }
 
+        // On one line, the literal has no comma before its `}`. With one field on each line, it
+        // keeps the comma that it has.
+        let last = view.fields.len() - 1;
         let mut fields = Vec::new();
         for (index, (field, comma)) in view.fields.iter().zip(&view.commas).enumerate() {
             if index > 0 {
                 fields.push(Document::Space);
             }
             fields.push(region(field.clone(), shape.indent_level));
-            fields.extend(comma.map(Document::Token));
+            fields.extend(comma.map(if index == last {
+                Document::Remove
+            } else {
+                Document::Token
+            }));
         }
         let flat = Document::Concat(vec![
             name,
@@ -99,11 +150,26 @@ impl NodeFormatter for StructLiteralFormatter {
     }
 }
 
+fn is_comment(kind: &TokenType<'_>) -> bool {
+    matches!(kind, TokenType::Comment(_) | TokenType::DocComment(_))
+}
+
+/// Whether a `{` inside the literal opens something other than a struct literal with fields,
+/// such as a block or `PhantomData<T> {}`. Such a literal keeps one field on each line.
+fn holds_a_block(source: &SourceFileView<'_>, view: &StructLiteralView) -> bool {
+    (view.open.0 + 1..view.close.0).any(|index| match source.tokens[index].token.kind {
+        TokenType::LeftBrace => !source
+            .struct_literals
+            .iter()
+            .any(|other| other.open.0 == index && !other.fields.is_empty()),
+        TokenType::Semicolon => true,
+        _ => false,
+    })
+}
+
 fn has_comment_between_fields(source: &SourceFileView<'_>, view: &StructLiteralView) -> bool {
     view.tokens.clone().any(|index| {
-        matches!(
-            source.tokens[index].token.kind,
-            TokenType::Comment(_) | TokenType::DocComment(_)
-        ) && !view.fields.iter().any(|field| field.contains(&index))
+        is_comment(&source.tokens[index].token.kind)
+            && !view.fields.iter().any(|field| field.contains(&index))
     })
 }

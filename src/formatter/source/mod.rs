@@ -180,6 +180,9 @@ pub struct SourceFileView<'a> {
     pub if_values: Vec<IfValueView>,
     pub gaps: Vec<ConstrainedGap>,
     pub warnings: Vec<CoverageWarning>,
+    /// The tokens that formatting may leave out, sorted: the comma before the `}` of each struct
+    /// literal. A struct literal on one line has no such comma.
+    pub removable: Vec<usize>,
     matching: Vec<Option<usize>>,
 }
 
@@ -226,6 +229,10 @@ impl<'a> SourceFileView<'a> {
         end > 0 && self.macros[end - 1].tokens.contains(&token.0)
     }
 
+    pub fn is_removable(&self, token: TokenId) -> bool {
+        self.removable.binary_search(&token.0).is_ok()
+    }
+
     pub fn is_excluded(&self, bytes: &Range<usize>) -> bool {
         let first = self
             .exclusions
@@ -261,17 +268,21 @@ impl<'a> SourceFileView<'a> {
             .iter()
             .filter(|token| !matches!(token.token.kind, TokenType::Whitespace(_) | TokenType::Eof))
             .collect();
-        if original.len() != actual.len() {
-            return Err("Formatting changed the number of source tokens".into());
-        }
         let mut positions = vec![None; range.len()];
-        for ((id, before), after) in original.iter().zip(&actual) {
-            if before.token.kind != after.token.kind
-                || self.text[before.bytes.clone()] != output[after.bytes.clone()]
-            {
+        let mut after = actual.iter().peekable();
+        for (id, before) in &original {
+            let same = after.peek().is_some_and(|after| {
+                before.token.kind == after.token.kind
+                    && self.text[before.bytes.clone()] == output[after.bytes.clone()]
+            });
+            if same {
+                positions[*id - range.start] = after.next().map(|after| after.bytes.clone());
+            } else if !self.is_removable(TokenId(*id)) {
                 return Err("Formatting changed a source token".into());
             }
-            positions[*id - range.start] = Some(after.bytes.clone());
+        }
+        if after.next().is_some() {
+            return Err("Formatting changed the number of source tokens".into());
         }
         let gap_start = self.gaps.partition_point(|gap| gap.left.0 < range.start);
         for gap in self.gaps[gap_start..]
@@ -396,6 +407,7 @@ impl<'a> SourceFileView<'a> {
             if_values: Vec::new(),
             gaps: Vec::new(),
             warnings: Vec::new(),
+            removable: Vec::new(),
         }
     }
 }

@@ -14,8 +14,8 @@ indent = 2
 max_width = 100
 fn_signature_width = 100
 space_before_colon = false
-struct_lit_width = 18
-single_line_if_else_max_width = 50
+struct_lit_width = 40
+single_line_if_else_max_width = 100
 
 [format.rules]
 function_headers = true
@@ -51,10 +51,10 @@ This setting does not change colon spacing in function bodies or struct declarat
 The added spaces count toward `fn_signature_width`.
 
 `struct_lit_width` sets how wide the fields of a struct literal may be, for the literal to stay on one line.
-It defaults to 18% of `max_width`, as in Rustfmt, and must not be greater than `max_width`.
+It defaults to 40% of `max_width` and must not be greater than `max_width`.
 
 `single_line_if_else_max_width` sets how wide an `if` value may be, for it to stay on one line.
-It defaults to 50% of `max_width`, as in Rustfmt, and must not be greater than `max_width`.
+It defaults to `max_width`, so by default only the width of the line limits an `if` value.
 
 ## Formatting rules
 
@@ -109,7 +109,7 @@ indent = 2
 max_width = 100
 space_before_colon = false
 # Unset, these widths follow max_width: fn_signature_width is max_width,
-# struct_lit_width is 18% of it, and single_line_if_else_max_width is 50% of it.
+# struct_lit_width is 40% of it, and single_line_if_else_max_width is 100% of it.
 
 [format.rules]
 function_headers = true
@@ -244,8 +244,13 @@ return Wide {
 };
 ```
 
-A literal with a comma after its last field always has one field on each line, because the formatter keeps every token.
-A literal with a comment between its fields gets the base formatting.
+The code after the literal on the same line counts toward `max_width`.
+A literal on one line has no comma after its last field.
+A literal with one field on each line keeps the comma after its last field, if it has one.
+A literal stays on several lines when it holds a `{` that does not start a struct literal with fields.
+Examples are a block such as `unsafe { ... }` and an empty literal such as `PhantomData<T> {}`.
+A literal with a comment between its fields gets one field on each line, and each comment stays on its line.
+A literal with a comment before a comma, or before its `{`, gets the base formatting.
 The rule formats a struct literal inside a field value the same way.
 The base formatting formats the field values themselves.
 
@@ -270,14 +275,21 @@ A match with a comment before its `{`, or between an arm and its comma, gets the
 
 ## If values
 
-An `if` where a value goes stays on one line when each branch holds one value, and the `if` fits in `single_line_if_else_max_width`:
+An `if` where a value goes stays on one line when each branch holds one value, the `if` fits in `single_line_if_else_max_width`, and the line fits in `max_width`:
 
 ```text
 let a = if c > 0 { 1 } else { 0 };
 ```
 
 A value goes after `=`, `(`, `,`, `:`, `return`, or `=>`.
-An `if` statement, an `if` with a statement in a branch, an `else if`, and an `if` with a comment get the base formatting, which gives each branch lines of its own.
+A macro call such as `vec![1]` can be the value of a branch.
+The base formatting gives each branch lines of its own in these cases:
+
+- an `if` statement,
+- an `if` with a statement in a branch,
+- an `else if`,
+- an `if` with a comment,
+- an `if` with a block, an `if`, a `match` or a `return` in a branch.
 
 ## Extending the formatter
 

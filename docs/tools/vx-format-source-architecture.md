@@ -71,6 +71,7 @@ It delegates parameter lists, parameters, and types.
 Bodies retain existing formatting through the bounded legacy adapter.
 
 `Document` supports original tokens, spaces, lines, concatenation, width reservations, layout alternatives, exact source copies, and regions.
+`Document::Remove` leaves out a token, and only the comma before the `}` of a struct literal can be left out.
 A region is source code that the engine formats the normal way, inside a rule's layout.
 `Shape` supplies column, indentation, indentation width, and available width.
 The renderer chooses flat or expanded layouts within the parent's budget.
@@ -114,6 +115,7 @@ This deliberately corrects the old renderer's reindentation of those lines.
 The document renderer checks token order, complete source ownership, and preserved child provenance.
 The full-file validator runs after every rendering operation.
 It checks token kinds, spelling, grammatical adjacency, and exact excluded or macro bytes.
+It accepts a struct literal's comma before `}` as present or left out.
 A validation failure is a bug in the formatter, so the formatter stops with an `internal formatter error`.
 This way `--check` cannot pass on a file that the formatter did not check.
 Token equality alone cannot establish safety for shifts or embedded macro languages.

@@ -13,13 +13,21 @@ const UNIT: &str = "\u{0}formatted elsewhere";
 /// The same as `UNIT`, for a unit whose source ends with whitespace, such as a function header
 /// before its `{`.
 const UNIT_ENDING_IN_SPACE: &str = "\u{0}formatted elsewhere, then a space";
+/// The same as `UNIT`, for a macro call on one line. Its width is the width of its text.
+const MACRO_CALL: &str = "\u{0}a macro call";
 /// The same as `UNIT`, for a macro call that spans several lines. A block that holds it is
 /// already on several lines, as it would be with the tokens of the call in its place.
 const MACRO_CALL_ON_SEVERAL_LINES: &str = "\u{0}a macro call on several lines";
 
 fn is_unit(kind: &TokenType<'_>) -> bool {
     matches!(kind, TokenType::Identifier(text)
-        if *text == UNIT || *text == UNIT_ENDING_IN_SPACE || *text == MACRO_CALL_ON_SEVERAL_LINES)
+        if *text == UNIT || *text == UNIT_ENDING_IN_SPACE || *text == MACRO_CALL
+            || *text == MACRO_CALL_ON_SEVERAL_LINES)
+}
+
+/// Whether the width of the unit is known only after a rule lays it out.
+fn has_unknown_width(kind: &TokenType<'_>) -> bool {
+    is_unit(kind) && !matches!(kind, TokenType::Identifier(text) if *text == MACRO_CALL)
 }
 
 fn breaks_a_line(kind: &TokenType<'_>) -> bool {
@@ -73,6 +81,8 @@ pub(super) fn render(
                             UNIT_ENDING_IN_SPACE
                         } else if macro_call && source.text[unit.clone()].contains('\n') {
                             MACRO_CALL_ON_SEVERAL_LINES
+                        } else if macro_call {
+                            MACRO_CALL
                         } else {
                             UNIT
                         },
@@ -100,7 +110,7 @@ pub(super) fn render(
         return Err("A unit does not end at a source token".into());
     }
     let mut unit_index = 0;
-    let tokens = adjust_spacing(normalize_and_expand_blocks(input));
+    let tokens = adjust_spacing(normalize_and_expand_blocks(input, state.column));
     let mut tokens = tokens.iter().peekable();
     let mut output = String::new();
     while let Some(token) = tokens.next() {
@@ -174,7 +184,8 @@ fn emit(text: &str, state: &mut RenderState, output: &mut String) {
     state.emitted(text);
 }
 
-fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
+/// `start_column` is the column of the first token, where the code before it on the line ended.
+fn normalize_and_expand_blocks(mut tokens: Vec<Token>, start_column: usize) -> Vec<Token> {
     // Pass 1a: Ensure spaces before `{`
     let mut spaced_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 10);
     for token in &tokens {
@@ -248,14 +259,17 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                     .any(|t| matches!(t.kind, TokenType::Comment(_) | TokenType::DocComment(_)));
                 // A unit's width is known only after a rule lays it out, so the length test
                 // below cannot measure it.
-                let holds_unit = tokens[lb_idx..=rb_idx].iter().any(|t| is_unit(&t.kind));
+                let holds_unit = tokens[lb_idx..=rb_idx]
+                    .iter()
+                    .any(|t| has_unknown_width(&t.kind));
                 if is_unsafe_block && !holds_comment && !holds_unit {
                     // Try to measure the total length if we collapsed it to a single line
-                    let mut collapsed_len = 0;
+                    // With no line break before the block, its line starts before these tokens.
+                    let mut collapsed_len = start_column;
                     for j in (0..new_tokens.len()).rev() {
                         if let TokenType::Whitespace(ws) = new_tokens[j].kind {
                             if let Some(pos) = ws.rfind('\n') {
-                                collapsed_len += ws.len() - pos - 1;
+                                collapsed_len = collapsed_len - start_column + ws.len() - pos - 1;
                                 break;
                             } else {
                                 collapsed_len += new_tokens[j].length;
