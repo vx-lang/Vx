@@ -485,9 +485,13 @@ rejected non-UTF-8 arguments before the program ran. Now <code>vxc</code> keeps 
 <ul>
 <li><strong>Exit codes.</strong> <code>main</code> returns an <code>i32</code>, while the process
 keeps 8 bits (<a href="https://github.com/vx-lang/Vx/issues/4031">#4031</a>).</li>
-<li><strong>Environment variables.</strong> A program reads an environment variable via an
-<code>extern</code> call to <code>getenv</code>, which is trusted code. The old
-<code>vx_env_args_count</code> and <code>vx_env_arg</code> functions also still exist behind
+<li><strong>Environment variables.</strong> <em>Update: closed later the same day.</em> When this
+post went up, a program read an environment variable by calling <code>getenv</code> through
+<code>extern</code>, and an <code>extern</code> call is trusted code.
+<a href="https://github.com/vx-lang/Vx/pull/4102">#4102</a> made reading a variable need a
+capability. <code>Root</code> gained a third field, <code>env : Environment</code>, and a function
+needs an <code>&amp;Environment</code> to call <code>env.var(&amp;name)</code>. The old functions
+for the arguments, <code>vx_env_args_count</code> and <code>vx_env_arg</code>, still exist behind
 <code>extern</code>.</li>
 <li><strong>Processes and native code.</strong> <code>std</code> has no function to start a
 process, and native code runs only via <code>extern</code>. Each feature will require a capability
