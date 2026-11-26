@@ -900,13 +900,25 @@ pub fn to_source(e: &Expr) -> Option<String> {
         }
         Expr::UnaryOp(u) => match u.op {
             UnaryOp::Not => format!("!({})", to_source(&u.expr)?),
-            UnaryOp::Neg => format!("-{}", to_source(&u.expr)?),
+            UnaryOp::Neg => format!("-{}", operand_source(&u.expr)?),
             UnaryOp::Try => format!("{}?", to_source(&u.expr)?),
         },
         Expr::MemberAccess(m) => format!("{}.{}", to_source(&m.base)?, m.member),
         Expr::IndexAccess(i) => format!("{}[{}]", to_source(&i.base)?, to_source(&i.index)?),
-        Expr::AsCast(c) => format!("{} as {}", to_source(&c.expr)?, c.target_ty),
+        Expr::AsCast(c) => format!("{} as {}", operand_source(&c.expr)?, c.target_ty),
         _ => return None,
+    })
+}
+
+/// `e` as the operand of `-` or `as`. It is in parentheses when `e` is a binary operation,
+/// a comparison, a logical operation or a cast. Without them, `-(x as i64)` would read as `(-x) as i64`.
+fn operand_source(e: &Expr) -> Option<String> {
+    let text = to_source(e)?;
+    Some(match e {
+        Expr::BinaryOp(_) | Expr::RelationalOp(_) | Expr::LogicalOp(_) | Expr::AsCast(_) => {
+            format!("({text})")
+        }
+        _ => text,
     })
 }
 
