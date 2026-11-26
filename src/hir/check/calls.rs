@@ -3237,7 +3237,10 @@ impl<'a> TypeChecker<'a> {
             let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn(_))));
             let wanted = usize::from(dynamic) + usize::from(fills);
             if args.len() != wanted {
-                let why = if fills {
+                let why = if fills && dynamic {
+                    "a run-time extent is not in the type, so `::fill` takes the shape and then \
+                     the value: `::fill([n, m], v)`"
+                } else if fills {
                     "`::fill` takes the value to write into every element"
                 } else if wanted == 0 {
                     "a Tensor's shape is part of its type, so the constructor takes no arguments"

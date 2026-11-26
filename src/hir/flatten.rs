@@ -5819,7 +5819,9 @@ impl<'r> Lowerer<'r> {
         let written = fc.type_args.as_ref()?.first()?;
         // `Tensor<T, [d0, d1]>::uninit()` writes the element and shape in the type and takes no
         // arguments, so there is nothing to recover from the call. With a `?` in the type the
-        // one argument is the full shape, and the `?` positions take their extents from it.
+        // first argument is the full shape, and the `?` positions take their extents from it.
+        // `::fill` takes the value as its last argument: `::fill(v)` or `::fill([n, 2], v)`.
+        let fills = fc.name.as_ref() == "Tensor::fill";
         if let crate::syntax::Type::Tensor(el, dims, placement) = written {
             if matches!(el, ElementType::Generic(_)) {
                 return None;
@@ -5837,7 +5839,9 @@ impl<'r> Lowerer<'r> {
             let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
                 let written_shape = match fc.args.first() {
-                    Some(Expr::Array(arr)) if fc.args.len() == 1 => Some(&arr.elements),
+                    Some(Expr::Array(arr)) if fc.args.len() == 1 + usize::from(fills) => {
+                        Some(&arr.elements)
+                    }
                     _ => None,
                 };
                 for (i, d) in dims.iter().enumerate() {
@@ -5893,8 +5897,8 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
             }
             // `::fill(v)` writes `v` into every element, where `::new()` writes a zero.
-            if fc.name.as_ref() == "Tensor::fill" {
-                let v = self.lower_expr(fc.args.first()?).ok()?;
+            if fills {
+                let v = self.lower_expr(fc.args.last()?).ok()?;
                 self.emit_effect(Opcode::TensorFill, buf.reg, v.reg, 0);
             }
             return Some(buf);
