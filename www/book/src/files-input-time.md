@@ -45,6 +45,13 @@ is the number of bytes before the first bad one.
 `parse_int` stops at the first byte that is not a digit. So `"12abc"` gives 12, and `"abc"`
 gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
+`i64::parse(&v, from, to)` reads the decimal integer in bytes `from` to `to` of a `Vec<u8>`, with
+no `unsafe`. It allows one `+` or `-` before the digits, and nothing else. `u64::parse` allows only
+a `+`. `f64::parse` and `f32::parse` read a float, such as `1.5`, `-2e10`, `inf` or `NaN`. Each
+gives a `Result`. Its `Err` holds a `ParseNumberError`: `Empty`, `Invalid` or `OutOfRange`. A
+range that is not inside `v` stops the program. `to_string()` on an `f32` or an `f64` gives the
+fewest digits that read back as the same value, as in `0.1`.
+
 ## The command line
 
 A `main` written `fn main(root : Root, args : Vec<String>) -> i32` gets the words of its command
