@@ -2151,9 +2151,8 @@ impl<'r> Lowerer<'r> {
             // *local* that lives in a slot (`&v` where `v` is a struct slot, or `&x` where `x` is an
             // address-taken scalar demoted to a slot by the pre-pass, #230) yields the slot's
             // `!llvm.ptr` — the pointer a `&Vec<T>` method receives so `v.len()` lowers (#242), or the
-            // `&i32` a `pick(a : &i32, ..)` argument passes. A tensor can be slotted too. Any
-            // tensor slot holds the tensor, not the tensor's address, and that case reads the
-            // memref out of the slot below.
+            // `&i32` a `pick(a : &i32, ..)` argument passes. A tensor can be slotted too, and the
+            // read below gives the tensor for it.
             Expr::Borrow(b) => {
                 if let Expr::Identifier(id) = &*b.expr {
                     if let Some(Binding::Slot { reg, ty }) = self.scope.get(&id.name).cloned() {
