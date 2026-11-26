@@ -324,6 +324,11 @@ To open a connection or to bind an address, a call needs the right to use the ne
 function that gets no `&Network` cannot open a connection. A connection that `accept` gives needs
 no other right.
 
+`UnixStream::connect(&root.network, &path)` connects to a Unix-domain socket, whose address is
+the path of a socket file. `UnixListener::bind` makes one and `accept` takes its connections. A
+`UnixStream` has the same `read`, `write`, `read_exact` and `write_all` as a `TcpStream`. They
+take the network right, because a connection to a local server is a connection too.
+
 The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
 The length of the vector is the size of the buffer. Each type also has methods that take raw
 pointers. Their names end in `_c_str` or `_raw`.

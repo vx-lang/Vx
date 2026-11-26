@@ -1,0 +1,134 @@
+//===- a_unix_socket_carries_bytes_both_ways.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `UnixListener` listens on a socket file, and a `UnixStream` connects to it. Both take the
+// network right. The server task reads 5 bytes and sends them back with one more. A `select`
+// waits for the answer, and gets it before its deadline. The client also connects to a path with no socket, and binds a path
+// that is in use.
+//
+// RUN: rm -f %t.sock
+// RUN: vxc %s -- %t.sock 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: rm -f %t.sock
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s -- %t.sock 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}server read hello{{$}}
+// CHECK: {{^}}select gave 0, the stream, before its deadline{{$}}
+// CHECK: {{^}}client read hello!{{$}}
+// CHECK: {{^}}the file descriptor is a number above 2: true{{$}}
+// CHECK: {{^}}a path with no socket: an error of the system{{$}}
+// CHECK: {{^}}a path in use: InUse{{$}}
+
+import core::result;
+import core::time;
+import std::net;
+import std::root;
+import std::string;
+import std::sync::select;
+import std::vec;
+
+fn bytes(s : *const i8) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  let mut i = 0i64;
+  while unsafe { s[i] } != 0i8 {
+    v.push(unsafe { s[i] } as u8);
+    i = i + 1i64;
+  }
+  return v;
+}
+
+fn zeros(len : i32) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  for _i in 0..len {
+    v.push(0u8);
+  }
+  return v;
+}
+
+fn kind(e : NetError) -> *const i8 {
+  match e {
+    NetError::InUse => {
+      return "InUse";
+    }
+    NetError::Os(_n) => {
+      return "an error of the system";
+    }
+    _ => {
+      return "another error";
+    }
+  }
+}
+
+/// Read 5 bytes and send them back with a `!`.
+fn serve(listener : &mut UnixListener) -> Result<u64, NetError> {
+  let mut conn = listener.accept()?;
+  let mut got = zeros(5);
+  let _n = conn.read_exact(&mut got)?;
+  println!("server read {}", String::from_utf8(&got).unwrap());
+  got.push(33u8);
+  return conn.write_all(&got);
+}
+
+fn talk(network : &Network, path : &String) -> Result<u64, NetError> {
+  let mut conn = UnixStream::connect(network, path)?;
+  let _w = conn.write_all(&bytes("hello"))?;
+  let limit = Deadline::after(Duration::from_secs(10));
+  match select2(&conn, &limit) {
+    Result<i32, SelectError>::Ok(i) => {
+      if limit.is_ready() {
+        println!("select gave {}, at its deadline", i);
+      } else {
+        println!("select gave {}, the stream, before its deadline", i);
+      }
+    }
+    Result<i32, SelectError>::Err(_e) => {
+      println!("select was cancelled");
+    }
+  }
+  let mut answer = zeros(6);
+  let _n = conn.read_exact(&mut answer)?;
+  println!("client read {}", String::from_utf8(&answer).unwrap());
+  println!("the file descriptor is a number above 2: {}", conn.fd() > 2);
+  return Result<u64, NetError>::Ok(0u64);
+}
+
+fn main(root : Root, args : Vec<String>) -> i32 {
+  // The test runner also runs the program with no words.
+  if args.len() < 2 {
+    return 0;
+  }
+  let path = args.get_ref(1);
+  let mut listener = UnixListener::bind(&root.network, path).unwrap();
+  tasks {
+    spawn {
+      let _served = serve(&mut listener);
+    };
+    match talk(&root.network, path) {
+      Result::Ok(_n) => {}
+      Result::Err(e) => {
+        println!("talk failed: {}", kind(e));
+      }
+    }
+  };
+  let mut missing = path.to_bytes();
+  missing.push(120u8);
+  match UnixStream::connect(&root.network, &String::from_utf8(&missing).unwrap()) {
+    Result::Ok(_c) => {
+      println!("a path with no socket: connected");
+    }
+    Result::Err(e) => {
+      println!("a path with no socket: {}", kind(e));
+    }
+  }
+  match UnixListener::bind(&root.network, path) {
+    Result::Ok(_l) => {
+      println!("a path in use: bound");
+    }
+    Result::Err(e) => {
+      println!("a path in use: {}", kind(e));
+    }
+  }
+  return 0;
+}
