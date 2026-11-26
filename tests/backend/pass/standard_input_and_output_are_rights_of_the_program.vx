@@ -1,0 +1,91 @@
+//===- standard_input_and_output_are_rights_of_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Root` holds the rights to read standard input and to write to standard output. The package
+// `tests` reads and writes frames with them and has no trusted code. A `select` waits on
+// standard input.
+//
+// In the first run, the input comes 0.5 seconds after the first `select` ended. The program makes
+// the file `%t.ready` then, because vxc prints its output only when it ends. So the first `select`
+// gives 1, for its deadline. The second one waits, and gives 0 for the input before its own
+// deadline.
+// RUN: rm -f %t.ready
+// RUN: (for i in $(seq 400); do test -e %t.ready && break; sleep 0.05; done; sleep 0.5; printf '\002hi\003abc') | vxc --package tests=tests --no-trusted-code tests %s -- %t.ready 2>&1 | FileCheck %s --check-prefix=LATE --implicit-check-not=Error
+// LATE: {{^}}first select gave 1{{$}}
+// LATE-NEXT: {{^}}second select gave 0 before its deadline{{$}}
+// LATE-NEXT: {{^}}frame [hi]{{$}}
+// LATE-NEXT: {{^}}frame [abc]{{$}}
+// LATE-NEXT: {{^}}end of input{{$}}
+//
+// In the second run, the input is there at once, and its frame says 5 bytes but holds 2.
+// RUN: printf '\005ab' | vxc --package tests=tests --no-trusted-code tests %s -- %t.short 2>&1 | FileCheck %s --check-prefix=SHORT --implicit-check-not=Error
+// SHORT: {{^}}first select gave 0{{$}}
+// SHORT-NEXT: {{^}}second select gave 0 before its deadline{{$}}
+// SHORT: {{^}}the input ended inside a frame{{$}}
+
+import core::result;
+import core::time;
+import std::fs;
+import std::io;
+import std::root;
+import std::string;
+import std::sync::select;
+import std::vec;
+import tests::modules::a_package_that_reads_and_writes_frames;
+
+fn index(r : Result<i32, SelectError>) -> i32 {
+  match r {
+    Result<i32, SelectError>::Ok(i) => {
+      return i;
+    }
+    Result<i32, SelectError>::Err(_e) => {
+      return -1;
+    }
+  }
+}
+
+fn main(root : Root, args : Vec<String>) -> i32 {
+  let mut input = root.stdin;
+  let mut out = root.stdout;
+  let soon = Deadline::after(Duration::from_millis(50));
+  println!("first select gave {}", index(select2(&input, &soon)));
+  // The test runner also runs the program with no words and no input.
+  if args.len() > 1 {
+    let _ready = File::open(&root.files, args.get_ref(1), OpenMode::ReadWriteCreate);
+  }
+  let late = Deadline::after(Duration::from_secs(10));
+  let second = index(select2(&input, &late));
+  if late.is_ready() {
+    println!("second select gave {} at its deadline", second);
+  } else {
+    println!("second select gave {} before its deadline", second);
+  }
+  loop {
+    match read_frame(&mut input) {
+      Result::Ok(body) => {
+        if body.len() == 0 {
+          println!("end of input");
+          return 0;
+        }
+        print!("frame [");
+        let _w = write_frame(&mut out, &body);
+        println!("]");
+      }
+      Result::Err(e) => {
+        match e {
+          StdioError::EndOfInput => {
+            println!("the input ended inside a frame");
+          }
+          _ => {
+            println!("another error");
+          }
+        }
+        return 0;
+      }
+    }
+  }
+}

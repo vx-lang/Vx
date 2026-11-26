@@ -196,23 +196,45 @@ with the signal SIGBUS.
 
 ## Standard input and output
 
-`std::io` has three functions. `stdin_read(buffer, len)` reads up to `len` bytes of standard input
-and gives the count. 0 means the end of the input. `stdout_write` and `stderr_write` write bytes to
-standard output and standard error. This loop counts the lines of the input:
+Reading standard input and writing to standard output and error are rights, as files are. `main`
+gets them in `root.stdin`, a `Stdin`, `root.stdout`, a `Stdout`, and `root.stderr`, a `Stderr`.
+Only `std::io` can make them, so a library reads or writes them only when its caller passes them.
+
+- `input.read(&mut buffer)` reads up to `buffer.len()` bytes and gives the count in a `Result`.
+  0 means the end of the input.
+- `input.read_exact(&mut buffer)` fills all of `buffer`. It gives `StdioError::EndOfInput` when
+  the input ends first.
+- `out.write_all(&bytes)` writes all of the bytes. They keep their order with `print!`.
+- A `select` can wait on a `Stdin`, as it waits on a socket.
+
+`println!` and `print!` do not need the right yet. The older `unsafe` functions `stdin_read`,
+`stdout_write` and `stderr_write` take a raw pointer and a length. This loop counts the lines of
+the input:
 
 ```vx
+import core::result;
 import std::io;
+import std::root;
+import std::vec;
 
-fn main() -> i32 {
-  let mut byte : u8 = 0;
+fn main(root : Root) -> i32 {
+  let mut input = root.stdin;
+  let mut byte = Vec<u8>::new();
+  byte.push(0u8);
   let mut lines = 0;
   loop {
-    let n = unsafe { stdin_read((&mut byte) as *mut u8, 1) };
-    if n == 0 {
-      break;
-    }
-    if byte == 10 {
-      lines = lines + 1;
+    match input.read(&mut byte) {
+      Result::Ok(n) => {
+        if n == 0 {
+          break;
+        }
+        if byte.get(0) == 10u8 {
+          lines = lines + 1;
+        }
+      }
+      Result::Err(_e) => {
+        break;
+      }
     }
   }
   println!("{} lines", lines);
