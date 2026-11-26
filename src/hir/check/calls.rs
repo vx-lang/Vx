@@ -3118,6 +3118,70 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// The shape of `Tensor<T, [?, 4]>::new([n, 4])` is a list in brackets with one extent for
+    /// each dimension, and a fixed dimension gets the extent of the type. The code generators
+    /// make the tensor from the list, so any other list gives a tensor that its type misreads.
+    fn check_run_time_shape(&mut self, ty: &Type, shape: &Expr) {
+        let Type::Tensor(_, dims, _) = ty else {
+            return;
+        };
+        let code = crate::diagnostic::DiagnosticCode::E3070;
+        let at = |e: &Expr| Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span()));
+        let Expr::Array(list) = shape else {
+            self.errors.error_with_code(
+                code,
+                format!(
+                    "write the shape of `{ty}` as a list of extents in brackets, such as `[n, m]`"
+                ),
+                at(shape),
+            );
+            return;
+        };
+        if list.elements.len() != dims.len() {
+            let count =
+                |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+            self.errors.error_with_code(
+                code,
+                format!(
+                    "`{ty}` has {}, so its shape needs {}, one for each dimension. This shape \
+                     has {}",
+                    count(dims.len(), "dimension"),
+                    count(dims.len(), "extent"),
+                    count(list.elements.len(), "extent")
+                ),
+                at(shape),
+            );
+            return;
+        }
+        let mut env = HashMap::new();
+        for scope in &self.consteval.env {
+            for (k, v) in scope {
+                env.insert(k.clone(), v.clone());
+            }
+        }
+        for (i, (dim, extent)) in dims.iter().zip(&list.elements).enumerate() {
+            // An extent of the type that does not evaluate is a run-time value, such as `k` in
+            // `Tensor<f32, [?, k]>`, so the checker cannot compare it.
+            let Some(want) = dim.as_static().and_then(|e| self.eval_expr(e, &env)) else {
+                continue;
+            };
+            if self.eval_expr(extent, &env).as_ref() != Some(&want) {
+                let want = match want {
+                    Value::Int(n) => n.to_string(),
+                    other => format!("{other:?}"),
+                };
+                self.errors.error_with_code(
+                    code,
+                    format!(
+                        "dimension {i} of `{ty}` has the extent {want}, so write {want} for it \
+                         in the shape"
+                    ),
+                    at(extent),
+                );
+            }
+        }
+    }
+
     pub(crate) fn resolve_intrinsic_function(
         &mut self,
         resolved_name: &str,
@@ -3168,6 +3232,9 @@ impl<'a> TypeChecker<'a> {
                 self.errors.push(format!(
                     "'{resolved_name}' expects {wanted} argument(s): {why}"
                 ));
+            }
+            if let (true, Some(shape)) = (dynamic, args.first()) {
+                self.check_run_time_shape(ty, shape);
             }
             // `unsafe` is where a program says it writes every element of `::uninit()` storage
             // before reading it, so the call is what an `unsafe` block around it is for (W1010).
