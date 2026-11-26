@@ -75,9 +75,9 @@ struct Files {
   invariant true,
 }
 
-/// The file right of the program, for `std::root`. Unsafe because a second `Files` gives the
-/// right to code that did not get it.
-pub unsafe fn files_of_the_program() -> Files {
+/// The file right of the program, for `std::root`. Only `std` can call it, because a second
+/// `Files` gives the right to code that did not get it.
+pkg unsafe fn files_of_the_program() -> Files {
   return Files {};
 }
 
