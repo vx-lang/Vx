@@ -227,6 +227,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_copies_check_the_whole_tile_once.vx", // needs --machine
         "optimizations/pass/lane_matmul_sums_in_registers_take_no_shared_memory.vx", // needs --machine
         "optimizations/pass/lane_matmul_sums_in_simdgroup_matrices_take_no_threadgroup_memory.vx", // needs --machine
+        "optimizations/pass/block_matmul_that_accumulates_gives_each_sum_once.vx", // needs --machine
         "optimizations/pass/a_tile_copied_into_a_row_of_a_tensor_parameter.vx", // needs --machine
         "optimizations/pass/lane_stores_of_neighbouring_bf16_join_into_one.vx", // needs --machine
         "optimizations/pass/lane_matmul_result_goes_from_registers_to_the_tensor.vx", // needs --machine
