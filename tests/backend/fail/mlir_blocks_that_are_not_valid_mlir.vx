@@ -10,7 +10,10 @@
 // `i64` as an `i32`. `gpu` is an unknown op in a function that a GPU kernel calls. `input` takes
 // a tensor of 8 values as a memref of 4. `op` is also compiled with `-j`. Each block is in
 // `unsafe`, because outside `unsafe` the check of safe blocks refuses a block that does not parse
-// (E8016).
+// (E8016). `no_yield`, `no_yield_value` and `no_yield_after_loop` end without `macro.yield`. The
+// error says what to add. `no_yield` has no `returns`, and `no_yield_value` has `returns : i32`.
+// `inner_region` ends with `macro.yield`, but an `scf.execute_region` inside it has no `scf.yield`.
+// This error is the message of MLIR, because the block does end with `macro.yield`.
 //
 // REQUIRES: flat-codegen
 // RUN: split-file %s %t
@@ -19,10 +22,19 @@
 // RUN: not vxc %t/types.vx 2>&1 | FileCheck %s --check-prefix=TYPES --implicit-check-not='Internal Error'
 // RUN: not vxc %t/input.vx 2>&1 | FileCheck %s --check-prefix=INPUT --implicit-check-not='Internal Error'
 // RUN: not vxc %t/gpu.vx --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=GPU --implicit-check-not='Internal Error'
+// RUN: not vxc %t/no_yield.vx 2>&1 | FileCheck %s --check-prefix=NO-YIELD --implicit-check-not='no terminator'
+// RUN: not vxc %t/no_yield_value.vx 2>&1 | FileCheck %s --check-prefix=NO-YIELD-VALUE --implicit-check-not='no terminator'
+// RUN: not vxc %t/no_yield_after_loop.vx 2>&1 | FileCheck %s --check-prefix=NO-YIELD-LOOP --implicit-check-not='no terminator'
+// RUN: not vxc %t/inner_region.vx 2>&1 | FileCheck %s --check-prefix=INNER --implicit-check-not='does not end with'
 // OP: The `mlir!` block at line 2, column 26 is not valid MLIR: custom op 'arith.no_such_op' is unknown
 // TYPES: The `mlir!` block at line 3, column 26 is not valid MLIR: use of value '%a' expects different type than prior uses: 'i32' vs 'i64'
 // INPUT: The `mlir!` block at line 2, column 26 takes its input `%t` as `memref<4xf32>`, but the value is a `memref<8xf32>`: 'memref.cast' op operand type 'memref<8xf32>' and result type 'memref<4xf32>' are cast incompatible
 // GPU: The `mlir!` block at line 2, column 26 is not valid MLIR: custom op 'nvvm.no.such.op' is unknown
+
+// NO-YIELD: The `mlir!` block at line 2, column 19 does not end with `macro.yield`. A block with no `returns` ends with a bare `macro.yield`. A block with `returns` ends with `macro.yield` and the value to return, such as `macro.yield %r : i32`.
+// NO-YIELD-VALUE: The `mlir!` block at line 2, column 26 does not end with `macro.yield`. A block with no `returns` ends with a bare `macro.yield`. A block with `returns` ends with `macro.yield` and the value to return, such as `macro.yield %r : i32`.
+// NO-YIELD-LOOP: The `mlir!` block at line 2, column 19 does not end with `macro.yield`. A block with no `returns` ends with a bare `macro.yield`.
+// INNER: The `mlir!` block at line 2, column 26 is not valid MLIR: block with no terminator, has
 
 //--- op.vx
 fn f() -> i32 {
@@ -82,4 +94,60 @@ pub fn run(o : &mut Tensor<i32, [?], Memory::HBM>) -> void {
 
 fn main() -> i32 {
   return 0;
+}
+
+//--- no_yield.vx
+fn double(x : i32) -> void {
+  unsafe { mlir!( inputs : (%a = x : i32), dialects : ["arith"]) {
+      %b = arith.addi %a, %a : i32
+    } };
+  return;
+}
+
+fn main() -> i32 {
+  double(1);
+  return 0;
+}
+
+//--- no_yield_value.vx
+fn f() -> i32 {
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["arith"]) {
+      %b = arith.constant 0 : i32
+    } };
+}
+
+fn main() -> i32 {
+  return f();
+}
+
+//--- no_yield_after_loop.vx
+fn run(x : i32) -> void {
+  unsafe { mlir!( inputs : (%a = x : i32), dialects : ["arith", "scf"]) {
+      %lo = arith.constant 0 : index
+      %hi = arith.constant 4 : index
+      %st = arith.constant 1 : index
+      scf.for %i = %lo to %hi step %st {
+        %b = arith.addi %a, %a : i32
+      }
+    } };
+  return;
+}
+
+fn main() -> i32 {
+  run(1);
+  return 0;
+}
+
+//--- inner_region.vx
+fn f() -> i32 {
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["arith", "scf"]) {
+      %r = scf.execute_region -> i32 {
+        %c = arith.constant 0 : i32
+      }
+      macro.yield %r : i32
+    } };
+}
+
+fn main() -> i32 {
+  return f();
 }
