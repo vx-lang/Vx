@@ -5,7 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::cmp;
 import core::default;
+import core::hash::traits;
 import core::iter::traits;
 import core::marker;
 import core::mem;
@@ -356,6 +358,35 @@ impl<T> Default for Vec<T> {
   /// An empty `Vec`, as `new` makes.
   fn default() -> Vec<T> {
     return Vec<T>::new ();
+  }
+}
+
+/// Two vectors are equal when they have the same length and equal elements in the same order.
+impl<T : PartialEq> PartialEq for Vec<T> {
+  fn eq(self : &Vec<T>, other : &Vec<T>) -> bool {
+    if self.len != other.len {
+      return false;
+    }
+    for i in 0..self.len {
+      if !self.get_ref(i).eq(other.get_ref(i)) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
+
+impl<T : Eq> Eq for Vec<T> {}
+
+/// The length, and then each element, as Rust hashes a slice. So `[1, 2]` and `[1]` then `[2]`
+/// in one hasher do not hash the same.
+impl<T : Hash> Hash for Vec<T> {
+  fn hash<H : Hasher>(self : &Vec<T>, state : &mut H) -> i32 {
+    let _length = state.write_usize(self.len as usize);
+    for i in 0..self.len {
+      let _element = self.get_ref(i).hash(state);
+    }
+    return 0;
   }
 }
 

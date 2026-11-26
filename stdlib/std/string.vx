@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 import core::cmp;
+import core::hash::traits;
 import core::ops;
 import core::num;
 import core::ptr;
@@ -161,6 +162,19 @@ impl PartialEq for String {
 }
 
 impl Eq for String {}
+
+/// The bytes, and then the byte 0xff, as Rust hashes a `str`. So "ab" then "c" and "a" then "bc"
+/// in one hasher do not hash the same.
+impl Hash for String {
+  fn hash<H : Hasher>(self : &String, state : &mut H) -> i32 {
+    let n = self.len();
+    let p = unsafe { vx_string_bytes(self.ptr) };
+    for i in 0..n {
+      let _byte = state.write_u8(unsafe { p[i] });
+    }
+    return state.write_u8(255u8);
+  }
+}
 
 impl Drop for String {
   fn drop(self : &mut String) -> void {
