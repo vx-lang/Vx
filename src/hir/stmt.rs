@@ -2624,9 +2624,22 @@ impl<'a> TypeChecker<'a> {
             None => rhs.clone(),
         };
         let renamed = self.name_the_old_value(lhs, &lhs_ty);
+        // As in a `let`: a call that can change an argument gives no equation, because a later
+        // proof would evaluate the call again with the new value.
+        let changes_an_argument = matches!(crate::syntax::bare_unsafe_value(&assigned),
+            Expr::FunctionCall(c) if c.args.iter().any(|a| self.call_may_change_argument(a)));
         let new_fact = renamed
             .as_ref()
+            .filter(|_| !changes_an_argument)
             .and_then(|names| Self::fact_of_an_assignment(lhs, &assigned, names));
+        // `x = f(x)`: the `x` in the argument is the old value.
+        let call_result = match (op, &*lhs, &renamed) {
+            (None, Expr::Identifier(id), Some(names)) => Some((
+                id.name.clone(),
+                hir::prover::substitute_names(crate::syntax::bare_unsafe_value(rhs), names),
+            )),
+            _ => None,
+        };
         // A write to an integer field keeps the facts about the other fields.
         let field_fact = match renamed {
             Some(_) => None,
@@ -2662,6 +2675,9 @@ impl<'a> TypeChecker<'a> {
         }
         self.consteval.constraints.extend(new_fact);
         self.consteval.constraints.extend(field_fact.flatten());
+        if let Some((name, value)) = call_result {
+            self.keep_call_result_ensures(&name, &value);
+        }
         if let Expr::Identifier(id) = lhs {
             self.note_pointer_value(id.name.as_ref(), pointer);
         }
