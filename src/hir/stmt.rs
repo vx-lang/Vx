@@ -854,9 +854,29 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 } else {
+                    // `Some(..)` has no type arguments of its own, so it needs the type spelled.
+                    let bare_some = matches!(
+                        expr,
+                        Expr::FunctionCall(c)
+                            if c.name.as_ref() == "Some" && c.owner_type_args.is_none()
+                    ) || matches!(
+                        expr,
+                        Expr::EnumVariant(v)
+                            if v.enum_name.as_ref() == "Option"
+                                && v.variant_name.as_ref() == "Some"
+                                && v.type_args.as_ref().is_none_or(|a| a.is_empty())
+                    );
+                    let bare_some = bare_some
+                        && matches!(&*ann, Type::GenericInstance(base, _)
+                        if matches!(&**base, Type::Enum(n, _) | Type::Struct(n, _) if n.as_ref() == "Option"));
+                    let hint = if bare_some {
+                        format!(". Write `{ann}::Some(value)`")
+                    } else {
+                        String::new()
+                    };
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3001,
-                        format!("'{name}' is declared {ann} but its initializer is {ty}"),
+                        format!("'{name}' is declared {ann} but its initializer is {ty}{hint}"),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
