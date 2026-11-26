@@ -1,0 +1,64 @@
+//===- block_matmul_that_accumulates_gives_each_sum_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tile matmul that adds its product to sums that are already in memory, in
+// the code of a block of 128 lanes. The lanes of the block make 4 warps, and
+// each warp of the `mma.sync` path must add its own band of 16 rows: a warp
+// that adds a band of another warp reads what that warp stored, and the sum of
+// that row grows by one product each time. So every row of the sum gets one
+// product of the loop, and the test fails when a row has more.
+//
+// The bands are a fact of the kernel, so the MLIR says them: the loop over the
+// rows starts at the row of the warp (`tid.x / 32 * 16`) and steps over all
+// the warps of the block (`blockDim.x / 32 * 16`). A run without a GPU checks
+// the MLIR; a run on an A100 checks the sums.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-mlir 2>/dev/null | vx-opt --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+pub fn accumulate(out : &mut Tensor<f32, [2, 128, 8], Memory::HBM>, weights : &Tensor<bf16, [16, 8], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..2 across blocks {
+      let mut sa = unsafe { Tensor<bf16, [128, 16], Memory::SMEM>::uninit() };
+      for i in 0..128 across lanes {
+        for k in 0..16 {
+          sa[i][k] = 1.0;
+        }
+      }
+      for _step in 0..8 {
+        out[blk] = out[blk] + (sa as f32) @ (weights as f32);
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut d_out = transfer(Tensor<f32, [2, 128, 8]>::fill(0.0), Memory::HBM);
+  let d_weights = transfer(Tensor<bf16, [16, 8]>::fill(1.0), Memory::HBM);
+  accumulate(&mut d_out, &d_weights);
+  let h_out = transfer(d_out, Memory::CPU_DRAM);
+  let mut all = 0.0;
+  for b in 0..2 {
+    for i in 0..128 {
+      for j in 0..8 {
+        all = all + h_out[b][i][j];
+      }
+    }
+  }
+  println!("first {} last {} sum of all {}", h_out[0][0][0], h_out[1][127][7], all);
+  return 0;
+}
+
+// MLIR-LABEL: func.func @{{.*}}accumulate
+// The rows loop of the block: one warp starts at its own row, and steps over
+// the rows of all the warps of the block.
+// MLIR: {{%[a-z0-9._]+}} = arith.divui {{%thread_id_x[0-9_]*}}, {{%c32[0-9_]*}} : index
+// MLIR-NOT: scf.for {{%[a-z0-9._]+}} = {{%c0[0-9_]*}} to {{%c128[0-9_]*}} step {{%c16[0-9_]*}} {
+// MLIR: scf.for {{%[a-z0-9._]+}} = {{%[a-z0-9._]+}} to {{%c128[0-9_]*}} step {{%[a-z0-9._]+}} {
+// CHECK: {{^}}first 128 last 128 sum of all 262144{{$}}

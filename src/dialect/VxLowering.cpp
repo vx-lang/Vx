@@ -4988,10 +4988,12 @@ static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
       // -- no transpose; the fp8 wgmma takes no transpose operands.
       std::string scaleD = (i == 0) ? "0" : "1";
       bool fp8 = mma.kStep == 32;
+      size_t descAIdx = 2 * regsPerTile;
+      size_t descBIdx = 2 * regsPerTile + 1;
       std::string text = "wgmma.mma_async.sync.aligned." + mma.kind + " {" +
-                         regList + "}, $" + std::to_string(regsPerTile) +
-                         ", $" + std::to_string(regsPerTile + 1) + ", " +
-                         scaleD + ", 1, 1" + (fp8 ? ";" : ", 0, 0;");
+                         regList + "}, $" + std::to_string(descAIdx) + ", $" +
+                         std::to_string(descBIdx) + ", " + scaleD + ", 1, 1" +
+                         (fp8 ? ";" : ", 0, 0;");
       auto type = LLVM::LLVMStructType::getLiteral(
           ctx, SmallVector<Type>(regsPerTile, f32));
       Value packed = b.create<LLVM::InlineAsmOp>(
@@ -5802,15 +5804,26 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                    ValueRange{ij.first, ij.second});
     }
   };
+
   if (fragments) {
-    // Each piece of the accumulator is one matrix of the lane: the unrolled
-    // loop gives it the slot that `moveLaneFragments` moves.
     for (int64_t top = 0; top < m; top += 16)
       for (int64_t left = 0; left < n; left += 8)
         piece(b, loc, index(top), index(left), (top / 16) * (n / 8) + left / 8);
     return;
   }
-  b.create<scf::ForOp>(loc, zero, index(m), index(16), ValueRange{},
+
+  Value outerLb = zero;
+  Value outerStep = index(16);
+  if (!op.getSubgroup()) {
+    Value blockDimX =
+        b.create<gpu::BlockDimOp>(loc, b.getIndexType(), gpu::Dimension::x);
+    Value numWarps = b.create<arith::DivUIOp>(loc, blockDimX, index(32));
+    Value warp = b.create<arith::DivUIOp>(loc, tid, index(32));
+    outerLb = b.create<arith::MulIOp>(loc, warp, index(16));
+    outerStep = b.create<arith::MulIOp>(loc, numWarps, index(16));
+  }
+
+  b.create<scf::ForOp>(loc, outerLb, index(m), outerStep, ValueRange{},
                        [&](OpBuilder &nb, Location l, Value top, ValueRange) {
                          nb.create<scf::ForOp>(l, zero, index(n), index(8),
                                                ValueRange{},

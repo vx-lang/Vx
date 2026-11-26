@@ -758,9 +758,9 @@ bool Printer::laneMatmul(Operation *o) {
   // A matmul in the code of a subgroup loop runs on the lanes of one
   // SIMD-group. In the code of a loop of blocks, each SIMD-group of the block
   // would compute the whole tile, and with `accumulate` two of them would read
-  // and write the same accumulator: a race. The id of the SIMD-group is not in
-  // the signature of the kernel, so no split over the SIMD-groups is
-  // available, and the code generator declines the kernel.
+  // and write the same accumulator: a race. Apple GPU lowering does not split
+  // block-level tile matmuls across SIMD-groups, so `laneMatmul` fails the
+  // kernel here.
   if (!o->hasAttr("subgroup"))
     return fail(o, "a tile matmul in the code of a loop of blocks, which the "
                    "SIMD-groups of an Apple GPU cannot split");
