@@ -42,6 +42,8 @@ extern {
   pub fn vx_string_with_len(len : i64) -> *mut i8;
   /// The bytes of a string made by `vx_string_with_len`, writable.
   pub fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8;
+  /// The bytes of a string, for reading only.
+  pkg fn vx_string_bytes(ptr : *mut i8) -> *const u8;
 }
 
 /// A growable, owned string, held by the Rust core behind an opaque pointer.
@@ -128,6 +130,16 @@ impl String {
   /// The length in bytes, not in characters: this counts UTF-8 code units.
   pub fn len(self : &String) -> i32 {
     return unsafe { vx_string_len(self.ptr) };
+  }
+
+  /// A copy of the bytes of the string, in a new `Vec<u8>`.
+  pub fn to_bytes(self : &String) -> Vec<u8> {
+    let n = self.len();
+    let mut out = Vec<u8>::with_capacity(n);
+    // The Rust core keeps the `n` bytes of the string at this pointer.
+    let p = unsafe { vx_string_bytes(self.ptr) };
+    let _copied = unsafe { out.extend_from_raw(p, n) };
+    return out;
   }
 
   /// A NUL-terminated copy of the contents.

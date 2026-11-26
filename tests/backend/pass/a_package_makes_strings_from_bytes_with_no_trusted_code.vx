@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `String::from_utf8` and `String::from_bytes` are safe, so the package `tests` calls them with
-// no `unsafe` block, and `--no-trusted-code tests` allows the program.
+// `String::from_utf8`, `String::from_bytes` and `to_bytes` are safe, so the package `tests`
+// calls them with no `unsafe` block, and `--no-trusted-code tests` allows the program.
 //
 // RUN: vxc --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
 // RUN: vxc --package tests=tests --no-trusted-code tests --legacy-codegen %s 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -15,6 +15,8 @@
 // 255 is never UTF-8. 195 starts a two-byte letter, so "h" and then a lone 195 is UTF-8 up to 1.
 // CHECK: {{^}}first bad byte -1 2 1{{$}}
 // CHECK: {{^}}first bytes [hi] [h] [] []{{$}}
+// `to_bytes` gives back each byte, the 0 byte and both bytes of a letter too.
+// CHECK: {{^}}bytes back 3: 104 0 105 3: 104 195 169 0:{{$}}
 
 import std::string;
 import std::vec;
@@ -28,6 +30,13 @@ fn bytes(a : i32, b : i32, c : i32) -> Vec<u8> {
     }
   }
   return v;
+}
+
+fn print_bytes(v : &Vec<u8>) -> void {
+  print!(" {}:", v.len());
+  for b in v.iter() {
+    print!(" {}", *b);
+  }
 }
 
 fn main() -> i32 {
@@ -45,5 +54,12 @@ fn main() -> i32 {
   let c = first_bytes(&hi, 3);
   let d = first_bytes(&cut_letter, 2);
   println!("first bytes [{}] [{}] [{}] [{}]", a, b, c, d);
+
+  let letter = bytes(104, 195, 169);
+  print!("bytes back");
+  print_bytes(&bytes_back(&zero_in_the_middle));
+  print_bytes(&bytes_back(&letter));
+  print_bytes(&bytes_back(&empty));
+  println!("");
   return 0;
 }
