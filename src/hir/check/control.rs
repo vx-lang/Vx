@@ -1240,6 +1240,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let types = variant.1.as_ref()?;
+        // An earlier error, such as the use of a moved variable, made the matched type
+        // unknown. The payload is then unknown too, not the enum's own `T`.
+        if *matched == Type::Unknown {
+            return Some(vec![Type::Unknown; types.len()]);
+        }
         Some(types.iter().map(|t| t.substitute(&mapping)).collect())
     }
 
