@@ -4104,8 +4104,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             name,
             args,
             type_args,
+            by_the_compiler,
             ..
         } = self;
+        // `t.transpose([1, 0])` arrives here as a call to `transpose` that the code generator
+        // wrote (see `MethodCallExpr`). A call that the program wrote goes to the program's own
+        // function of that name, when it has one.
+        let tensor_method = *by_the_compiler || !gen.functions.contains_key(name);
         if matches!(name.as_ref(), "Verified" | "Distinct" | "DisjointRanges") {
             return gen.generate_expr(&args[0], block);
         }
@@ -4421,9 +4426,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((alloc_val, tensor_ty, block));
         }
 
-        if name.as_ref() == "reshape"
-            || **name == *"transpose"
-            || (**name == *"pad" && args.len() == 2 && matches!(args[1], Expr::Array(_)))
+        if tensor_method
+            && (name.as_ref() == "reshape"
+                || **name == *"transpose"
+                || (**name == *"pad" && args.len() == 2 && matches!(args[1], Expr::Array(_))))
         {
             // `memref.cast` cannot reshape or permute data (it only changes
             // static/dynamic/ranked info), so model these as buffer views:
@@ -4592,14 +4598,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((out_val, tgt_ty, block));
         }
 
-        if name.as_ref() == "clone" && args.len() == 1 {
+        if tensor_method && name.as_ref() == "clone" && args.len() == 1 {
             return lower_clone_call(gen, block, &args[0]);
         }
 
         // `t.as_ptr()` / `t.as_mut_ptr()` on a tensor: its data pointer as a bare `!llvm.ptr`.
-        // A method of that name on anything else was renamed by the checker before it got here,
-        // so a bare `as_ptr` with one argument is always the tensor intrinsic.
-        if matches!(name.as_ref(), "as_ptr" | "as_mut_ptr") && args.len() == 1 {
+        // A method of that name on anything else was renamed by the checker before it got here.
+        if tensor_method && matches!(name.as_ref(), "as_ptr" | "as_mut_ptr") && args.len() == 1 {
             let (val, val_ty, block) = gen.generate_expr(&args[0], block)?;
             let ty_text = val_ty.to_string();
             // `(&mut c[0][0]).as_mut_ptr()`: a borrow is already the element's address.
@@ -4640,11 +4645,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((ptr, gen.ptr_ty, block));
         }
 
-        if name.as_ref() == "map" {
+        if tensor_method && name.as_ref() == "map" {
             return lower_map_call(gen, block, args);
         }
 
-        if name.as_ref() == "reduce" && args.len() == 3 {
+        if tensor_method && name.as_ref() == "reduce" && args.len() == 3 {
             return lower_reduce_call(gen, block, args);
         }
 
@@ -5109,6 +5114,8 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
         } = self;
         let mut new_args = vec![*base.clone()];
         new_args.extend(args.clone());
+        // The compiler wrote this call. So it stays the method of the tensor when the program
+        // has a function of the same name.
         gen.generate_expr(
             &Expr::FunctionCall(FunctionCallExpr {
                 owner_type_args: None,
@@ -5116,7 +5123,7 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
                 type_args: None,
                 args: new_args,
                 span: *span,
-                by_the_compiler: false,
+                by_the_compiler: true,
             }),
             block,
         )

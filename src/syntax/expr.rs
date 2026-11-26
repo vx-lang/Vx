@@ -230,7 +230,8 @@ pub struct FunctionCallExpr {
     pub args: Vec<Expr>,
     pub span: Span,
     /// The compiler wrote this call, as `c_str_equals` for `s == "hi"`. The program did not, so
-    /// the check of visibility skips it (docs/lang/visibility.md, section 4, rule 4).
+    /// the check of visibility skips it (docs/lang/visibility.md, section 4, rule 4). The AST
+    /// code generator also writes `transpose(t, [1, 0])` for the method `t.transpose([1, 0])`.
     pub by_the_compiler: bool,
 }
 impl FunctionCallExpr {
