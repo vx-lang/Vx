@@ -94,8 +94,17 @@ impl<'a> TypeChecker<'a> {
                                     if !self.speculating {
                                         self.errors.error_with_code(
                                             crate::diagnostic::DiagnosticCode::E3009,
-                                            format!("Enum variant {}::{} expects {} payload arguments, got {}", actual_enum_name, variant, exp_types.len(), expr_payload.len()),
-                                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                            format!(
+                                                "Enum variant {}::{} expects {} value{}, got {}",
+                                                actual_enum_name,
+                                                variant,
+                                                exp_types.len(),
+                                                if exp_types.len() == 1 { "" } else { "s" },
+                                                expr_payload.len()
+                                            ),
+                                            Some(crate::diagnostic::SourceSpan::from_ast_span(
+                                                span,
+                                            )),
                                         );
                                     }
                                 } else {
