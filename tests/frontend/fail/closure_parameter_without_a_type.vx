@@ -1,0 +1,39 @@
+//===- closure_parameter_without_a_type.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A closure parameter needs a type. The error says so and shows the type that the callee wants.
+// `map` wants an `i64` for its only parameter. `two` wants an `i32` for its second parameter.
+// `apply` writes its parameter as the closure type `| i64 | -> i64`, and wants an `i64`.
+// CHECK: Error[E3003]
+// CHECK-SAME: argument 1 of 'Option<i64>::map' is a closure whose parameter 1 has no type
+// CHECK-SAME: A closure parameter needs a type. Write parameter 1 as `name : i64`
+// CHECK: Error[E3003]
+// CHECK-SAME: argument 1 of 'two' is a closure whose parameter 2 has no type
+// CHECK-SAME: Write parameter 2 as `name : i32`
+// CHECK: Error[E3003]
+// CHECK-SAME: argument 1 of 'apply' is a closure whose parameter 1 has no type
+// CHECK-SAME: Write parameter 1 as `name : i64`
+import core::ops;
+import core::option;
+
+fn two(f : Closure2<i64, i32, i64>) -> i64 {
+  return 0i64;
+}
+
+fn apply(f : | i64 | -> i64) -> i64 {
+  return f(1i64);
+}
+
+fn main() -> i32 {
+  let o = Option<i64>::Some(3i64);
+  let _p = o.map(|x| x + 1i64);
+  let _q = two(|x : i64, y| x);
+  let _r = apply(|x| x + 1i64);
+  return 0;
+}

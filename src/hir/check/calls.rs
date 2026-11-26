@@ -1985,6 +1985,9 @@ impl<'a> TypeChecker<'a> {
                         continue;
                     }
                 }
+                if self.refuse_untyped_closure_parameter(callee, i, param_ty, &arg_ty, span) {
+                    continue;
+                }
                 let got = match (&args[i], &arg_ty, param_ty) {
                     (Expr::Identifier(id), Type::Struct(n, _), Type::Closure(..))
                         if n.starts_with("Closure_") =>
@@ -2011,6 +2014,61 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+    }
+
+    /// E3003: a closure literal with a parameter that has no type cannot match a closure
+    /// parameter, so say that the closure needs the type. Gives `true` when it reported.
+    /// It stays silent when the parameter is not a closure with the same number of parameters.
+    fn refuse_untyped_closure_parameter(
+        &mut self,
+        callee: &str,
+        i: usize,
+        param_ty: &Type,
+        arg_ty: &Type,
+        span: &crate::syntax::Span,
+    ) -> bool {
+        // A closure literal is a `Closure_N` struct, or a `Type::Closure` when the callee wrote
+        // its parameter as a closure type such as `| i64 | -> i64`.
+        let closure_params = match arg_ty {
+            Type::Closure(params, _) => params,
+            Type::Struct(closure, _) => match self.mono.closure_signatures.get(closure) {
+                Some((params, _)) => params,
+                None => return false,
+            },
+            _ => return false,
+        };
+        let Some(untyped) = closure_params.iter().position(|t| *t == Type::Unknown) else {
+            return false;
+        };
+        // Only a parameter that takes a closure with as many parameters as this one is
+        // fixed by giving the closure parameter a type. Other mismatches keep the usual error.
+        let wanted = match param_ty {
+            Type::Closure(args, _) if args.len() == closure_params.len() => args.get(untyped),
+            Type::GenericInstance(inner, args)
+                if matches!(&**inner, Type::Struct(n, _) if n.starts_with("Closure"))
+                    && args.len() == closure_params.len() + 1 =>
+            {
+                args.get(untyped)
+            }
+            _ => None,
+        };
+        let Some(wanted) = wanted else {
+            return false;
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3003,
+            format!(
+                "argument {} of '{}' is a closure whose parameter {} has no type. A closure \
+                 parameter needs a type. Write parameter {} as `name : {}`",
+                i + 1,
+                callee,
+                untyped + 1,
+                untyped + 1,
+                wanted
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+        true
     }
 
     /// E6003: a generic parameter that names no memory, `Tensor<T, [4]>`, matches a tensor in
