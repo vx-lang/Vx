@@ -1,0 +1,55 @@
+//===- a_reference_from_a_match_follows_the_borrow_rules.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `match` on a reference gives each name a reference into the matched value. Such a name
+// borrows that value, so the borrow rules apply to it as to any reference.
+
+import std::vec;
+
+// The matched reference is used while `x` still borrows from it.
+// CHECK-DAG: Error[E4002] at {{.*}}.vx:[[@LINE+4]]:8: Cannot access 'o' because it is mutably borrowed
+fn use_the_value_while_a_name_borrows_it(o : &mut Option<i32>) -> void {
+  match o {
+    Option::Some(x) => {
+      *o = Option<i32>::None;
+      *x = 1;
+    }
+    Option::None => {}
+  }
+}
+
+// A `match` on a `&` gives `&` names, so nothing can write through them.
+// CHECK-DAG: Error[E4006] at {{.*}}.vx:[[@LINE+4]]:7: this assigns through `x`, which is a shared reference
+fn write_through_a_shared_name(o : &Option<i32>) -> void {
+  match o {
+    Option::Some(x) => {
+      *x = 1;
+    }
+    Option::None => {}
+  }
+}
+
+// `x` points into `o`, a variable of this function.
+// CHECK-DAG: Error[E4005] at {{.*}}.vx:[[@LINE+5]]:7: this returns a value that points into this function's stack frame
+fn return_a_name_that_points_into_a_local() -> &i32 {
+  let o = Option<i32>::Some(3);
+  match &o {
+    Option::Some(x) => {
+      return x;
+    }
+    Option::None => {}
+  }
+  abort();
+}
+
+// CHECK: 3 error(s) emitted
+
+fn main() -> i32 {
+  return 0;
+}

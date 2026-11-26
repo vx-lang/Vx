@@ -1,0 +1,41 @@
+//===- a_string_literal_is_its_bytes_and_a_nul.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The compiler knows that "hi" is 2 bytes and a NUL, 3 bytes in all, and no more. A cast keeps
+// that only between pointers to integers of the same width.
+
+import core::result;
+import std::string;
+
+// The fourth byte may not exist.
+// CHECK-DAG: Error[E8006] at {{.*}}.vx:[[@LINE+3]]:9: this call to 'String::from_bytes' may not meet its precondition `valid(p, n)`
+// CHECK-DAG: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:9: this call to 'String::from_bytes' may not meet its precondition `initialized(p, n)`
+fn one_byte_past_the_nul() -> i32 {
+  match String::from_bytes("hi" as *const u8, 4) {
+    Result::Ok(s) => {
+      return s.len();
+    }
+    Result::Err(_e) => {
+      return -1;
+    }
+  }
+}
+
+// A `u16` is 2 bytes, so a cast to `*const u16` would read the bytes two at a time.
+// CHECK-DAG: Error at {{.*}}.vx:[[@LINE+2]]:3: Unsupported cast: cannot cast from `*const i8` to `*const u16`
+fn wider_elements() -> i32 {
+  let _p = "abcd" as *const u16;
+  return 0;
+}
+
+// CHECK: 3 error(s) emitted
+
+fn main() -> i32 {
+  return one_byte_past_the_nul() + wider_elements();
+}

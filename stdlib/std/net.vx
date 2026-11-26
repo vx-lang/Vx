@@ -71,9 +71,9 @@ struct Network {
   invariant true,
 }
 
-/// The network right of the program, for `std::root`. Unsafe because a second `Network` gives
-/// the right to code that did not get it.
-pub unsafe fn network_of_the_program() -> Network {
+/// The network right of the program, for `std::root`. Only `std` can call it, because a second
+/// `Network` gives the right to code that did not get it.
+pkg unsafe fn network_of_the_program() -> Network {
   return Network {};
 }
 

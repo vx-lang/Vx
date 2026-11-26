@@ -1,0 +1,37 @@
+//===- number_branch_of_an_if_must_fit_the_other_branch_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A branch of an `if` that is only a number takes the type of the other branch.
+// The number must still fit that type: `-1` does not fit a `u32`, and `300` does not fit a `u8`.
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E3045] at {{.*}}.vx:19:5: -1 does not fit `u32`{{$}}
+// CHECK: Error[E3045] at {{.*}}.vx:28:5: 300 does not fit `u8`{{$}}
+// CHECK: 2 error(s) emitted
+
+fn minus_one_as_u32(c : bool, u : u32) -> u32 {
+  let r = if c {
+    u
+  } else {
+    -1
+  };
+  return r;
+}
+
+fn too_big_for_u8(c : bool, u : u8) -> u8 {
+  let r = if c {
+    u
+  } else {
+    300
+  };
+  return r;
+}
+
+fn main() -> i32 {
+  print(minus_one_as_u32(false, 3u32));
+  print(too_big_for_u8(false, 3u8));
+  return 0;
+}

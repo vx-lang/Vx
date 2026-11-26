@@ -822,6 +822,12 @@ impl<'a> Parser<'a> {
         call_name: &mut String,
         parsed_type_args: Option<Vec<Type>>,
     ) -> ParseResult<'a, Expr> {
+        if self.check(&TokenType::LeftAngle) {
+            return Err(self.error(
+                "Vx writes type arguments without '::', as in `Vec<i32>::new()` \
+                 and not `Vec::<i32>::new()`",
+            ));
+        }
         let variant_line = self.peek().line;
         let variant_column = self.peek().column;
         let variant = match self.advance().kind.clone() {
@@ -1037,11 +1043,7 @@ impl<'a> Parser<'a> {
                     },
                 });
             }
-            let expr = Expr::Match(MatchExpr {
-                expr: Box::new(expr),
-                arms,
-                span: match_span,
-            });
+            let expr = Expr::Match(MatchExpr::new(Box::new(expr), arms, match_span));
             return Ok(self.wrap_try(expr));
         }
 
@@ -1481,9 +1483,15 @@ impl<'a> Parser<'a> {
                             },
                         })
                     }
-                    TokenType::Tasks => self.parse_task_block(TaskBlockKind::Tasks, &token)?,
+                    // Like `unsafe`, a `tasks` or `spawn` block returns before the postfix loop
+                    // below. A `(` or `[` on the next line then starts a new statement.
+                    TokenType::Tasks => {
+                        let expr = self.parse_task_block(TaskBlockKind::Tasks, &token)?;
+                        return Ok(self.wrap_try(expr));
+                    }
                     TokenType::Spawn if self.check(&TokenType::LeftBrace) => {
-                        self.parse_task_block(TaskBlockKind::Spawn, &token)?
+                        let expr = self.parse_task_block(TaskBlockKind::Spawn, &token)?;
+                        return Ok(self.wrap_try(expr));
                     }
                     TokenType::Spawn => {
                         self.consume(&TokenType::On, "Expected 'on' or '{' after 'spawn'")?;
@@ -1515,7 +1523,7 @@ impl<'a> Parser<'a> {
                             stmts.append(&mut self.pending_stmts);
                         }
                         self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                        Expr::SpawnOn(SpawnOnExpr {
+                        let expr = Expr::SpawnOn(SpawnOnExpr {
                             top,
                             stmts,
                             ret: ret_expr,
@@ -1526,7 +1534,8 @@ impl<'a> Parser<'a> {
                                 expansion: self.expansion(),
                             },
                             arrivals: None,
-                        })
+                        });
+                        return Ok(self.wrap_try(expr));
                     }
                     TokenType::Unknown('"') => {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
@@ -1614,11 +1623,12 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
+                let span = expr.span();
                 expr = Expr::IndirectCall(IndirectCallExpr {
                     callee: Box::new(expr),
                     args,
                     target_func_ty: None,
-                    span: Span::default(),
+                    span,
                 });
             } else if self.check(&TokenType::LeftBracket) {
                 // The `[` token, so a diagnostic about the index points at it.
@@ -1867,8 +1877,6 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
             ..
         }) = expr
         {
@@ -1920,8 +1928,6 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
             ..
         }) = expr
         {
@@ -1940,8 +1946,6 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
             ..
         }) = expr
         {

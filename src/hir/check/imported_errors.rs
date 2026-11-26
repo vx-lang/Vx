@@ -9,9 +9,10 @@
 // Type errors in the functions of an imported module.
 //
 // The program is compiled together with the modules it imports, and their functions are
-// type-checked too. An error in one of them is reported only if the program uses that function.
-// An imported function with an error that nothing uses is not reported, and it is not compiled
-// either, because the code generator cannot compile a function with a type error.
+// type-checked too. A module outside the standard library reports every error, as a Rust crate
+// does: a package that `--package` names, or a file of the program. In a module of the standard
+// library, an error is reported only if the program uses that function. Such a function with an
+// error that nothing uses is not compiled either, because the code generator cannot compile it.
 //
 //===----------------------------------------------------------------------===//
 use crate::diagnostic::{Diagnostic, DiagnosticLevel};
@@ -54,14 +55,25 @@ pub fn used_functions_with_errors<'a>(
 }
 
 /// The errors found in an imported function, with the function and module named in each, since
-/// the line numbers refer to the module's file, not the program's.
-pub fn errors_to_report(found: Vec<Diagnostic>, module: &str, function: &str) -> Vec<Diagnostic> {
+/// the line numbers refer to the module's file, not the program's. `used` says whether the
+/// program uses the function, and the message says so too.
+pub fn errors_to_report(
+    found: Vec<Diagnostic>,
+    module: &str,
+    function: &str,
+    used: bool,
+) -> Vec<Diagnostic> {
+    let used = if used {
+        " and used by this program"
+    } else {
+        ""
+    };
     found
         .into_iter()
         .filter(|d| d.level == DiagnosticLevel::Error)
         .map(|mut d| {
             d.message = Cow::Owned(format!(
-                "in `{function}`, imported from `{module}` and used by this program: {}",
+                "in `{function}`, imported from `{module}`{used}: {}",
                 d.message
             ));
             d

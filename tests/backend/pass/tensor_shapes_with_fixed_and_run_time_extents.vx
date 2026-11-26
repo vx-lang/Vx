@@ -1,0 +1,52 @@
+//===- tensor_shapes_with_fixed_and_run_time_extents.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor type can mix run-time and fixed extents. `::new` and `::uninit` take one extent for
+// each dimension, and a fixed dimension gets the extent of the type: a number, a module `const`
+// or a const generic parameter. A variable in the type, such as `k`, is a run-time extent.
+//
+// EXPECT: number=3 4 7
+// EXPECT: const=2 4 9
+// EXPECT: generic=5 6 8
+// EXPECT: uninit=2 4 1
+// EXPECT: variable=3 4 6
+
+const W : i32 = 4;
+
+fn width(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn rows<const C : i32>(n : i32) -> i32 {
+  let mut t = Tensor<i32, [?, C]>::new([n, C]);
+  t[n - 1][C - 1] = 8;
+  println!("generic={} {} {}", t.extent(0), t.extent(1), t[n - 1][C - 1]);
+  return 0;
+}
+
+fn main() -> i32 {
+  let n = 3;
+  let mut a = Tensor<i32, [?, 4]>::new([n, 4]);
+  a[2][3] = 7;
+  println!("number={} {} {}", a.extent(0), a.extent(1), a[2][3]);
+  let mut b = Tensor<i32, [?, W]>::new([2, W]);
+  b[1][3] = 9;
+  println!("const={} {} {}", b.extent(0), b.extent(1), b[1][3]);
+  rows<6>(5);
+  let mut u = unsafe { Tensor<i32, [?, 4]>::uninit([2, 4]) };
+  for i in 0..2 {
+    for j in 0..4 {
+      u[i][j] = 1;
+    }
+  }
+  println!("uninit={} {} {}", u.extent(0), u.extent(1), u[1][3]);
+  let k = width(3);
+  let mut v = Tensor<i32, [?, k]>::new([n, k]);
+  v[2][3] = 6;
+  println!("variable={} {} {}", v.extent(0), v.extent(1), v[2][3]);
+  return 0;
+}

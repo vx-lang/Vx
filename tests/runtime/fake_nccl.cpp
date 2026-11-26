@@ -7,11 +7,14 @@
 //===----------------------------------------------------------------------===//
 //
 // The NCCL functions that runtime/vx_collective.h calls. Each one writes its
-// arguments to `fake_nccl_calls` and moves no data, so that
-// tests/runtime/collective_test.cpp can check them with no GPU.
+// arguments to `fake_nccl_calls`, so that tests/runtime/collective_test.cpp
+// can check them with no GPU. Only an all-gather of bytes in a job of two
+// ranks moves data: it waits for both ranks, as NCCL does, and gives each rank
+// the bytes of both.
 //
 //===----------------------------------------------------------------------===//
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
 #include <mutex>
@@ -75,6 +78,7 @@ int ncclCommDestroy(void *) {
 
 static int record(const char *name, const void *input, void *output,
                   size_t count, int type, int op, void *stream) {
+  std::lock_guard<std::mutex> guard(lock);
   fake_nccl_calls.last = name;
   fake_nccl_calls.input = input;
   fake_nccl_calls.output = output;
@@ -90,9 +94,40 @@ int ncclAllReduce(const void *input, void *output, size_t count, int type,
   return record("ncclAllReduce", input, output, count, type, op, stream);
 }
 
+// The two ranks of a job at an all-gather of bytes (type 0).
+static std::mutex gather_lock;
+static std::condition_variable gather_done;
+static const void *gather_input[2];
+static void *gather_output[2];
+static int gather_arrived = 0;
+static int gather_round = 0;
+
 int ncclAllGather(const void *input, void *output, size_t count, int type,
-                  void *, void *stream) {
-  return record("ncclAllGather", input, output, count, type, -1, stream);
+                  void *comm, void *stream) {
+  const int r = record("ncclAllGather", input, output, count, type, -1, stream);
+  const int i = (int)((char *)comm - comms);
+  if (r || type != 0 || fake_nccl_calls.init_nranks[i] != 2) {
+    return r;
+  }
+  std::unique_lock<std::mutex> guard(gather_lock);
+  const int rank = fake_nccl_calls.init_ranks[i];
+  const int round = gather_round;
+  gather_input[rank] = input;
+  gather_output[rank] = output;
+  if (++gather_arrived < 2) {
+    gather_done.wait(guard, [&] { return gather_round != round; });
+    return 0;
+  }
+  for (int to = 0; to < 2; ++to) {
+    for (int from = 0; from < 2; ++from) {
+      memmove((char *)gather_output[to] + from * count, gather_input[from],
+              count);
+    }
+  }
+  gather_arrived = 0;
+  ++gather_round;
+  gather_done.notify_all();
+  return 0;
 }
 
 const char *ncclGetErrorString(int r) {

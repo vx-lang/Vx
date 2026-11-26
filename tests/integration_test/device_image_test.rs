@@ -45,9 +45,12 @@ fn corpus(name: &str) -> PathBuf {
 /// Compile a corpus program to LLVM IR, which is where the dispatch payload has
 /// become a global and the device image with it.
 fn emit_llvm(name: &str) -> String {
-    let path = corpus(name);
+    emit_llvm_of(&corpus(name))
+}
+
+fn emit_llvm_of(path: &Path) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
-        .arg(&path)
+        .arg(path)
         .arg("--emit-llvm")
         .output()
         .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
@@ -835,6 +838,97 @@ fn a_kernel_with_an_assert_reports_it_through_a_flag() {
         Some(Ok(())) => {}
         Some(Err(report)) => panic!("spirv-val rejected the module:\n{report}"),
         None => println!("spirv-val is not installed, so the module was not validated"),
+    }
+}
+
+/// A program with `count` regions on a SPIR-V device. Every second region has an
+/// `assert`, so its kernel is larger than the others.
+fn kernels_of_two_sizes(count: usize) -> String {
+    let mut program = String::from(
+        r#"import core::num;
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 63 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [8]>::uninit() };
+  for i in 0..8 {
+    a[i] = i as f32;
+  }
+  let ga = transfer(a, Memory::DEV_HBM);
+"#,
+    );
+    let mut regions = String::new();
+    let mut sums = String::from("  let mut sum = 0.0;\n");
+    for k in 0..count {
+        program += &format!(
+            "  let mut g{k} = transfer(unsafe {{ Tensor<f32, [8]>::uninit() }}, Memory::DEV_HBM);\n"
+        );
+        let body = if k % 2 == 1 {
+            format!(
+                "assert(ga[i] >= 0.0, \"a negative input {k}\");\n      \
+                 g{k}[i] = ga[i].clamp({k}.0, {k}.0 + 1.0);"
+            )
+        } else {
+            format!("g{k}[i] = ga[i] - {k}.0;")
+        };
+        regions += &format!(
+            "  spawn on(Topology::Dev) {{\n    for i in 0..8 {{\n      {body}\n    }}\n  }}\n"
+        );
+        sums +=
+            &format!("  let o{k} = transfer(g{k}, Memory::CPU_DRAM);\n  sum = sum + o{k}[7];\n");
+    }
+    program + &regions + &sums + "  println!(\"{}\", sum);\n  return 0;\n}\n"
+}
+
+/// LLVM 22's SPIR-V backend kept the ids that it gave to the blocks of a kernel, by
+/// the address of the kernel's `MachineFunction` (llvm/llvm-project#160613). A later
+/// kernel at the same address took those ids, so its image defined an id twice. This
+/// needs kernels of different sizes. Before the fix, about 85% of the compiles of
+/// these 32 kernels had such an image, and each compile gave different images. So
+/// three compiles must give the same images, and `spirv-val` must accept them.
+#[test]
+fn kernels_of_two_sizes_get_the_same_valid_spirv_images_in_each_compile() {
+    const COUNT: usize = 32;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("kernels_of_two_sizes.vx");
+    std::fs::write(&path, kernels_of_two_sizes(COUNT)).unwrap();
+    let images = || -> Vec<Vec<u8>> {
+        let ir = emit_llvm_of(&path);
+        (0..COUNT)
+            .map(|k| {
+                let payload = payload_bytes(&ir, &format!("vx_npu_kernel_{k}"));
+                assert!(
+                    payload.windows(13).any(|w| w == b"format=spirv\0"),
+                    "kernel {k} has no SPIR-V image"
+                );
+                payload_section(&payload).to_vec()
+            })
+            .collect()
+    };
+    let first = images();
+    for (k, image) in first.iter().enumerate() {
+        if let Some(Err(report)) = spirv_val(image) {
+            panic!("spirv-val rejected the image of kernel {k}:\n{report}");
+        }
+    }
+    for _ in 0..2 {
+        let again = images();
+        for k in 0..COUNT {
+            assert!(
+                again[k] == first[k],
+                "the image of kernel {k} changed in another compile"
+            );
+        }
     }
 }
 

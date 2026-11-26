@@ -1,0 +1,111 @@
+//===- code_points_of_utf8_text_and_their_classes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `std::unicode` decodes the code points of UTF-8 text and tells letters, numbers and white
+// space apart.
+//
+// The classes are checked for every code point. Python's `unicodedata` (Unicode 16.0.0) gives
+// how many letters (general category L), numbers (N) and White_Space code points there are,
+// and the sum of their code points modulo 2^32.
+// EXPECT: letters 141028 2356027370
+// EXPECT: numbers 1911 110651895
+// EXPECT: white space 25 141586
+//
+// Each line of the decode part is a byte sequence, and then what `decode_at` gives at its start.
+// EXPECT: h: 104 in 1 bytes
+// EXPECT: e with an accent: 233 in 2 bytes
+// EXPECT: the largest 3-byte code point: 65535 in 3 bytes
+// EXPECT: the last code point before the surrogates: 55295 in 3 bytes
+// EXPECT: the first code point after the surrogates: 57344 in 3 bytes
+// EXPECT: the largest code point: 1114111 in 4 bytes
+// EXPECT: a surrogate: not UTF-8
+// EXPECT: a 2-byte form of a 1-byte code point: not UTF-8
+// EXPECT: a 3-byte form of a 2-byte code point: not UTF-8
+// EXPECT: a 4-byte form of a 3-byte code point: not UTF-8
+// EXPECT: a code point after the largest one: not UTF-8
+// EXPECT: a byte that only continues a code point: not UTF-8
+// EXPECT: a code point that the text cuts: not UTF-8
+// EXPECT: a 3-byte start with a 1-byte code point after it: not UTF-8
+// EXPECT: an index after the end: not UTF-8 at 9
+
+import core::result;
+import std::string;
+import std::unicode;
+import std::vec;
+
+fn bytes(a : i32, b : i32, c : i32, d : i32) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  for x in [a, b, c, d] {
+    if x >= 0 {
+      v.push(x as u8);
+    }
+  }
+  return v;
+}
+
+fn show(what : *const i8, v : &Vec<u8>) -> void {
+  match decode_at(v, 0) {
+    Result::Ok(d) => {
+      println!("{}: {} in {} bytes", what, d.code, d.len);
+    }
+    Result::Err(_e) => {
+      println!("{}: not UTF-8", what);
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut letters = 0;
+  let mut letter_sum : u32 = 0u32;
+  let mut numbers = 0;
+  let mut number_sum : u32 = 0u32;
+  let mut spaces = 0;
+  let mut space_sum : u32 = 0u32;
+  let mut c : u32 = 0u32;
+  while c <= 1114111u32 {
+    if is_letter(c) {
+      letters = letters + 1;
+      letter_sum = letter_sum.wrapping_add(c);
+    }
+    if is_number(c) {
+      numbers = numbers + 1;
+      number_sum = number_sum.wrapping_add(c);
+    }
+    if is_white_space(c) {
+      spaces = spaces + 1;
+      space_sum = space_sum.wrapping_add(c);
+    }
+    c = c + 1u32;
+  }
+  println!("letters {} {}", letters, letter_sum);
+  println!("numbers {} {}", numbers, number_sum);
+  println!("white space {} {}", spaces, space_sum);
+
+  show("h", &bytes(104, -1, -1, -1));
+  show("e with an accent", &bytes(195, 169, -1, -1));
+  show("the largest 3-byte code point", &bytes(239, 191, 191, -1));
+  show("the last code point before the surrogates", &bytes(237, 159, 191, -1));
+  show("the first code point after the surrogates", &bytes(238, 128, 128, -1));
+  show("the largest code point", &bytes(244, 143, 191, 191));
+  show("a surrogate", &bytes(237, 160, 128, -1));
+  show("a 2-byte form of a 1-byte code point", &bytes(192, 128, -1, -1));
+  show("a 3-byte form of a 2-byte code point", &bytes(224, 128, 128, -1));
+  show("a 4-byte form of a 3-byte code point", &bytes(240, 128, 128, 128));
+  show("a code point after the largest one", &bytes(244, 144, 128, 128));
+  show("a byte that only continues a code point", &bytes(128, -1, -1, -1));
+  show("a code point that the text cuts", &bytes(226, 130, -1, -1));
+  show("a 3-byte start with a 1-byte code point after it", &bytes(226, 65, 65, -1));
+  match decode_at(&bytes(104, 105, -1, -1), 9) {
+    Result::Ok(_d) => {
+      println!("an index after the end: decoded");
+    }
+    Result::Err(e) => {
+      println!("an index after the end: not UTF-8 at {}", e.valid_up_to);
+    }
+  }
+  return 0;
+}

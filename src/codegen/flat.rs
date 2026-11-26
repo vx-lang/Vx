@@ -271,7 +271,7 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
             let mut shape = Vec::with_capacity(dims.len());
             for d in dims {
                 shape.push(match d {
-                    Dim::Dyn => DYN_DIM.to_string(),
+                    Dim::Dyn(_) => DYN_DIM.to_string(),
                     _ => d.literal()?.parse::<i64>().ok()?.to_string(),
                 });
             }
@@ -1681,8 +1681,8 @@ pub fn parse_emitted_module<'c>(
 fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String> {
     let mut parts = location.trim_end_matches(')').rsplit(':');
     let _column = parts.next()?;
-    let line: usize = parts.next()?.parse().ok()?;
-    let before: Vec<&str> = text.lines().take(line.checked_sub(1)?).collect();
+    let error_line: usize = parts.next()?.parse().ok()?;
+    let before: Vec<&str> = text.lines().take(error_line.checked_sub(1)?).collect();
     for l in before.into_iter().rev() {
         if l.starts_with(MLIR_BLOCK_END) {
             return None;
@@ -1694,6 +1694,22 @@ fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String>
         let (column, input) = rest.split_once(' ').unwrap_or((rest, ""));
         let block = format!("The `mlir!` block at line {line}, column {column}");
         let Some(input) = input.strip_prefix("input ") else {
+            // MLIR gives this message for every block without a last instruction, also for
+            // the inner region of an operation. The wrapper has a `return` in place of the
+            // `macro.yield`. When no `return` follows the line of the error, the block itself
+            // has no `macro.yield`.
+            let yield_follows = text
+                .lines()
+                .skip(error_line)
+                .take_while(|l| !l.starts_with(MLIR_BLOCK_END))
+                .any(|l| l.trim() == "return" || l.trim_start().starts_with("return "));
+            if message.starts_with("block with no terminator") && !yield_follows {
+                return Some(format!(
+                    "{block} does not end with `macro.yield`. A block with no `returns` ends \
+                     with a bare `macro.yield`. A block with `returns` ends with `macro.yield` \
+                     and the value to return, such as `macro.yield %r : i32`."
+                ));
+            }
             return Some(format!("{block} is not valid MLIR: {message}"));
         };
         let mut fields = input.split(" | ");

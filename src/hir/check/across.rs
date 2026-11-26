@@ -227,7 +227,9 @@ fn bound_names(stmts: &[Statement]) -> HashSet<String> {
             _ => {}
         }
     }
-    fn walk(stmts: &[Statement], out: &mut HashSet<String>) {
+    // The names that the statements of one block bind, and the statements of its loops. It does
+    // not look into expressions: `visit_exprs` below reaches each nested block once.
+    fn statements(stmts: &[Statement], out: &mut HashSet<String>) {
         for s in stmts {
             match s {
                 Statement::LetDecl(l) => {
@@ -235,35 +237,35 @@ fn bound_names(stmts: &[Statement]) -> HashSet<String> {
                 }
                 Statement::ForLoop(f) => {
                     out.insert(f.iter.to_string());
-                    walk(&f.body, out);
+                    statements(&f.body, out);
                 }
-                Statement::Loop(l) => walk(&l.body, out),
+                Statement::Loop(l) => statements(&l.body, out),
                 _ => {}
             }
         }
-        crate::syntax::visit_exprs(stmts, &mut |e| match e {
-            Expr::If(i) => {
-                walk(&i.then_block, out);
-                if let Some(b) = &i.else_block {
-                    walk(b, out);
-                }
-            }
-            Expr::Match(m) => m.arms.iter().for_each(|a| {
-                pattern(&a.pattern, out);
-                walk(&a.body, out);
-            }),
-            Expr::UnsafeBlock(b) => walk(&b.stmts, out),
-            Expr::ComptimeBlock(b) => walk(&b.stmts, out),
-            Expr::SpawnOn(b) => walk(&b.stmts, out),
-            Expr::TaskBlock(b) => walk(&b.stmts, out),
-            Expr::Closure(c) => c.params.iter().for_each(|(n, _)| {
-                out.insert(n.as_ref().to_string());
-            }),
-            _ => {}
-        });
     }
     let mut out = HashSet::new();
-    walk(stmts, &mut out);
+    statements(stmts, &mut out);
+    crate::syntax::visit_exprs(stmts, &mut |e| match e {
+        Expr::If(i) => {
+            statements(&i.then_block, &mut out);
+            if let Some(b) = &i.else_block {
+                statements(b, &mut out);
+            }
+        }
+        Expr::Match(m) => m.arms.iter().for_each(|a| {
+            pattern(&a.pattern, &mut out);
+            statements(&a.body, &mut out);
+        }),
+        Expr::UnsafeBlock(b) => statements(&b.stmts, &mut out),
+        Expr::ComptimeBlock(b) => statements(&b.stmts, &mut out),
+        Expr::SpawnOn(b) => statements(&b.stmts, &mut out),
+        Expr::TaskBlock(b) => statements(&b.stmts, &mut out),
+        Expr::Closure(c) => c.params.iter().for_each(|(n, _)| {
+            out.insert(n.as_ref().to_string());
+        }),
+        _ => {}
+    });
     out
 }
 

@@ -182,6 +182,13 @@ macro_rules! instantiate_string_ffi {
             unsafe { s.as_mut_vec().as_mut_ptr() }
         }
 
+        /// The string's bytes, for reading only.
+        #[no_mangle]
+        pub extern "C" fn vx_string_bytes(ptr: *mut std::ffi::c_void) -> *const u8 {
+            assert!(!ptr.is_null(), "vx_string_bytes: null string");
+            unsafe { (*(ptr as *mut String)).as_ptr() }
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_string_from_c_str(
             c_str: *const std::ffi::c_char,
@@ -192,6 +199,86 @@ macro_rules! instantiate_string_ffi {
             let c_str = unsafe { std::ffi::CStr::from_ptr(c_str) };
             let s: Box<String> = Box::new(c_str.to_string_lossy().into_owned());
             Box::into_raw(s) as *mut std::ffi::c_void
+        }
+
+        /// A copy of a NUL-terminated C string, or null when its bytes are not UTF-8.
+        /// `vx_string_from_c_str` replaces such bytes instead.
+        #[no_mangle]
+        pub extern "C" fn vx_string_try_from_c_str(
+            c_str: *const std::ffi::c_char,
+        ) -> *mut std::ffi::c_void {
+            if c_str.is_null() {
+                return vx_string_new();
+            }
+            let c_str = unsafe { std::ffi::CStr::from_ptr(c_str) };
+            match c_str.to_str() {
+                Ok(text) => Box::into_raw(Box::new(text.to_owned())) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+
+        /// A copy of the `len` bytes at `ptr`, or null when they are not UTF-8. It copies a
+        /// 0 byte like any other byte.
+        #[no_mangle]
+        pub extern "C" fn vx_string_try_from_bytes(
+            ptr: *const u8,
+            len: i64,
+        ) -> *mut std::ffi::c_void {
+            assert!(
+                !ptr.is_null() && len >= 0,
+                "vx_string_try_from_bytes: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes) {
+                Ok(text) => Box::into_raw(Box::new(text.to_owned())) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+
+        /// How many of the `len` bytes at `ptr` are UTF-8 before the first byte that is not.
+        #[no_mangle]
+        pub extern "C" fn vx_utf8_valid_up_to(ptr: *const u8, len: i64) -> i64 {
+            assert!(
+                !ptr.is_null() && len >= 0,
+                "vx_utf8_valid_up_to: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes) {
+                Ok(_) => len,
+                Err(e) => e.valid_up_to() as i64,
+            }
+        }
+
+        /// Read the `len` bytes at `ptr` as a float, as Rust's `str::parse` does, and write it
+        /// to `out`. Gives 0 for a number, 1 for no bytes and 2 for text that is not a number.
+        fn vx_parse_float<T: std::str::FromStr>(ptr: *const u8, len: i64, out: *mut T) -> i32 {
+            if len == 0 {
+                return 1;
+            }
+            assert!(
+                !ptr.is_null() && len > 0 && !out.is_null(),
+                "vx_parse_float: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes).map(str::parse::<T>) {
+                Ok(Ok(value)) => {
+                    unsafe { out.write(value) };
+                    0
+                }
+                _ => 2,
+            }
+        }
+
+        /// `vx_parse_float` for an `f64`.
+        #[no_mangle]
+        pub extern "C" fn vx_parse_f64(ptr: *const u8, len: i64, out: *mut f64) -> i32 {
+            vx_parse_float(ptr, len, out)
+        }
+
+        /// `vx_parse_float` for an `f32`. It rounds the text to `f32` once, not to `f64` first.
+        #[no_mangle]
+        pub extern "C" fn vx_parse_f32(ptr: *const u8, len: i64, out: *mut f32) -> i32 {
+            vx_parse_float(ptr, len, out)
         }
 
         #[no_mangle]
@@ -920,7 +1007,12 @@ macro_rules! instantiate_stdio_ffi {
                 return 0;
             }
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
-            std::io::Write::write(&mut std::io::stdout(), buf_slice).unwrap_or(0) as u64
+            let mut out = std::io::stdout().lock();
+            let taken = std::io::Write::write(&mut out, buf_slice).unwrap_or(0) as u64;
+            // `print!` flushes after each write too. Nothing flushes this buffer when a Vx
+            // program ends, so the bytes after the last newline would be lost.
+            let _ = std::io::Write::flush(&mut out);
+            taken
         }
 
         #[no_mangle]

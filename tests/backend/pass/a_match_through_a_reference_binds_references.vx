@@ -1,0 +1,172 @@
+//===- a_match_through_a_reference_binds_references.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on a reference gives each name in a pattern a reference to its part of the value.
+// A write through a `&mut` name changes the value in place, and `match *r` still gives copies.
+// The flat code generator compiles each function, so it prints no "declined" line.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}add one 5{{$}}
+// CHECK: {{^}}a field 2 3{{$}}
+// CHECK: {{^}}two payloads 6 8{{$}}
+// CHECK: {{^}}a generic enum 10{{$}}
+// CHECK: {{^}}read only 7 1{{$}}
+// CHECK: {{^}}the arm's value 7{{$}}
+// CHECK: {{^}}a copy 9 8{{$}}
+// CHECK: {{^}}as_mut and as_ref 21 21{{$}}
+
+import std::vec;
+
+struct Conn {
+  count : i32,
+  id : i32,
+}
+
+enum Shape {
+  Rect(i32, i32),
+  Dot,
+}
+
+enum Maybe<T> {
+  Has(T),
+  Empty,
+}
+
+fn add_one(o : &mut Option<i32>) -> void {
+  match o {
+    Option::Some(x) => {
+      *x = *x + 1;
+    }
+    Option::None => {}
+  }
+}
+
+fn count_up(o : &mut Option<Conn>) -> void {
+  match o {
+    Option::Some(c) => {
+      c.count = c.count + 1;
+    }
+    Option::None => {}
+  }
+}
+
+fn double(s : &mut Shape) -> void {
+  match s {
+    Shape::Rect(w, h) => {
+      *w = *w * 2;
+      *h = *h * 2;
+    }
+    Shape::Dot => {}
+  }
+}
+
+fn clear<T>(m : &mut Maybe<T>, empty : T) -> void {
+  match m {
+    Maybe::Has(v) => {
+      *v = empty;
+    }
+    Maybe::Empty => {}
+  }
+}
+
+// `c` is a `&Conn`, so reading its fields copies nothing.
+fn id_of(o : &Option<Conn>) -> i32 {
+  match o {
+    Option::Some(c) => {
+      return c.id;
+    }
+    Option::None => {
+      return 0;
+    }
+  }
+}
+
+// An arm's value is a name of the pattern, so the `match` gives a reference.
+fn width_or(s : &Shape, other : &i32) -> &i32 {
+  let r = match s {
+    Shape::Rect(w, _) => {
+      w
+    }
+    Shape::Dot => {
+      other
+    }
+  };
+  return r;
+}
+
+// `match *o` copies the payload, so a change to the copy leaves `o` as it was.
+fn plus_one_copy(o : &Option<i32>) -> i32 {
+  match *o {
+    Option::Some(v) => {
+      let mut w = v;
+      w = w + 1;
+      return w;
+    }
+    Option::None => {
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Option<i32>::Some(4);
+  add_one(&mut a);
+  println!("add one {}", a.unwrap());
+
+  let mut c = Option<Conn>::Some(Conn {
+    count : 1, id : 3
+  });
+  count_up(&mut c);
+  let id = id_of(&c);
+  println!("a field {} {}", c.unwrap().count, id);
+
+  let mut s = Shape::Rect(3, 4);
+  double(&mut s);
+  match s {
+    Shape::Rect(w, h) => {
+      println!("two payloads {} {}", w, h);
+    }
+    Shape::Dot => {}
+  }
+
+  let mut m = Maybe<i32>::Has(5);
+  clear(&mut m, 10);
+  match m {
+    Maybe::Has(v) => {
+      println!("a generic enum {}", v);
+    }
+    Maybe::Empty => {}
+  }
+
+  let k = Option<Conn>::Some(Conn {
+    count : 7, id : 1
+  });
+  match &k {
+    Option::Some(r) => {
+      println!("read only {} {}", r.count, id_of(&k));
+    }
+    Option::None => {}
+  }
+
+  let seven = Shape::Rect(7, 1);
+  let zero = 0;
+  println!("the arm's value {}", *width_or(&seven, &zero));
+
+  let eight = Option<i32>::Some(8);
+  println!("a copy {} {}", plus_one_copy(&eight), eight.unwrap());
+
+  let mut n = Option<i32>::Some(20);
+  match n.as_mut() {
+    Option::Some(x) => {
+      *x = *x + 1;
+    }
+    Option::None => {}
+  }
+  println!("as_mut and as_ref {} {}", n.unwrap(), *n.as_ref().unwrap());
+  return 0;
+}

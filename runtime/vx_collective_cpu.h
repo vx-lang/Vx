@@ -73,6 +73,20 @@ void vx_collective_all_gather_bf16(const uint16_t *input, uint16_t *output,
                                            "vx_collective_all_gather_bf16"));
 }
 
+void *vx_peer_buffer_create(int64_t bytes) {
+  void *buffer = nullptr;
+  vx_collective_cpu_check(vx_one_rank.peer_buffer_create(bytes, &buffer));
+  return buffer;
+}
+
+void vx_peer_buffer_pointers(void *buffer, uint64_t *out) {
+  vx_collective_cpu_check(vx_one_rank.peer_buffer_pointers(buffer, out));
+}
+
+void vx_peer_buffer_destroy(void *buffer) {
+  vx_collective_cpu_check(vx_one_rank.peer_buffer_destroy(buffer));
+}
+
 } // extern "C"
 
 #endif // VX_COLLECTIVE_CPU_H

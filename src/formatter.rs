@@ -33,7 +33,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
         return content.to_string();
     }
 
-    let tokens = normalize_and_expand_blocks(tokens);
+    let tokens = normalize_and_expand_blocks(tokens, indent_spaces);
     let tokens = adjust_spacing(tokens);
     emit_formatted_string(tokens, indent_spaces, content.len())
 }
@@ -117,7 +117,57 @@ fn mlir_block(tokens: &[Token], start: usize) -> Option<(usize, usize)> {
     ))
 }
 
-fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
+/// Counts the indentation level that `emit_formatted_string` gives a line, with the same rules:
+/// one level for each open `{`, and for each open `[` whose line ends after it.
+#[derive(Default)]
+struct IndentLevel {
+    scanned: usize,
+    level: usize,
+    brackets: Vec<bool>,
+}
+
+impl IndentLevel {
+    /// Counts the brackets in `tokens[self.scanned..end]`. The tokens before `end` must not change.
+    fn advance(&mut self, tokens: &[Token], end: usize) {
+        assert!(
+            self.scanned <= end,
+            "the indentation was counted past this token"
+        );
+        for k in self.scanned..end {
+            match tokens[k].kind {
+                TokenType::LeftBrace => self.level += 1,
+                TokenType::RightBrace => self.level = self.level.saturating_sub(1),
+                TokenType::LeftBracket => {
+                    let rows_below = matches!(
+                        tokens.get(k + 1).map(|t| &t.kind),
+                        Some(TokenType::Whitespace(ws)) if ws.contains('\n')
+                    );
+                    self.level += rows_below as usize;
+                    self.brackets.push(rows_below);
+                }
+                TokenType::RightBracket => {
+                    let rows_below = self.brackets.pop() == Some(true);
+                    self.level = self.level.saturating_sub(rows_below as usize);
+                }
+                _ => {}
+            }
+        }
+        self.scanned = end;
+    }
+
+    /// The level of a line that starts with `line`, after `advance` counted the lines above it.
+    /// A line that starts with a `}`, or with the `]` of a multi-line array, is one level out.
+    fn level_of_line(&self, line: &[Token]) -> usize {
+        let closes = match line.first().map(|t| &t.kind) {
+            Some(TokenType::RightBrace) => true,
+            Some(TokenType::RightBracket) => self.brackets.last() == Some(&true),
+            _ => false,
+        };
+        self.level.saturating_sub(closes as usize)
+    }
+}
+
+fn normalize_and_expand_blocks(mut tokens: Vec<Token>, indent_spaces: usize) -> Vec<Token> {
     // Pass 1a: Ensure spaces before `{`
     let mut spaced_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 10);
     for token in &tokens {
@@ -157,6 +207,7 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
 
     // Pass 1c: Process blocks (collapsing `unsafe` or expanding others)
     let mut new_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 20);
+    let mut indent = IndentLevel::default();
     let mut i = 0;
     while i < tokens.len() {
         if let TokenType::LeftBrace = tokens[i].kind {
@@ -190,20 +241,23 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                     .iter()
                     .any(|t| matches!(t.kind, TokenType::Comment(_) | TokenType::DocComment(_)));
                 if is_unsafe_block && !holds_comment {
-                    // Try to measure the total length if we collapsed it to a single line
-                    let mut collapsed_len = 0;
-                    for j in (0..new_tokens.len()).rev() {
-                        if let TokenType::Whitespace(ws) = new_tokens[j].kind {
-                            if let Some(pos) = ws.rfind('\n') {
-                                collapsed_len += ws.len() - pos - 1;
-                                break;
-                            } else {
-                                collapsed_len += new_tokens[j].length;
-                            }
-                        } else {
-                            collapsed_len += new_tokens[j].length;
-                        }
-                    }
+                    // Measure the line as the emitter writes it: with the indentation it gives,
+                    // not the indentation of the input. Else the result depends on the input.
+                    let line_start = new_tokens
+                        .iter()
+                        .rposition(
+                            |t| matches!(t.kind, TokenType::Whitespace(ws) if ws.contains('\n')),
+                        )
+                        .map_or(0, |k| k + 1);
+                    indent.advance(&new_tokens, line_start);
+                    let line = &new_tokens[line_start..];
+                    // The emitter drops the spaces at the start of a line.
+                    let first = line
+                        .iter()
+                        .position(|t| !matches!(t.kind, TokenType::Whitespace(_)))
+                        .unwrap_or(line.len());
+                    let mut collapsed_len = indent.level_of_line(&line[first..]) * indent_spaces;
+                    collapsed_len += line[first..].iter().map(|t| t.length).sum::<usize>();
                     for t in &tokens[lb_idx..=rb_idx] {
                         if let TokenType::Whitespace(ws) = t.kind {
                             if ws.contains('\n') {
@@ -632,5 +686,35 @@ mod tests {
         let expected = "if a > 0 {\n  x = 1;\n} else {\n  x = 0;\n}";
         let formatted = format_file(input, 2);
         assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn the_indentation_of_the_input_does_not_change_which_unsafe_blocks_go_on_one_line() {
+        // Each program is already formatted. A joined `unsafe` block makes a line of 79
+        // characters. A block on three lines would make a line of 80 or 81 characters if joined.
+        let programs = [
+            // Indented inside two `{`.
+            "fn decode(tokenizer_ptr : *mut i8, token : i32, next : i32) -> i32 {\n  if token > 0 {\n    let piece : *mut i8 = unsafe {\n      vx_decode_token(tokenizer_ptr, token, next)\n    };\n  }\n  return 0;\n}",
+            // Indented inside a `{` and a multi-line array.
+            "fn main() -> i32 {\n  let a : Tensor<i64, [2]> = [\n    unsafe { read_the_first_value_that_the_pointer_points_to_in_memory(p, q) },\n    2\n  ];\n  return 0;\n}",
+            "fn main() -> i32 {\n  let a : Tensor<i64, [2]> = [\n    unsafe {\n      read_the_second_value_that_the_pointer_points_to_in_memory(p, q)\n    },\n    2\n  ];\n  return 0;\n}",
+            // A line that starts with `}` is one level less indented than the line above it.
+            "fn pick(k : i32, p : *mut i8) -> i32 {\n  match k {\n    0 => {\n      return 1;\n    }, _ => unsafe { write_the_value_that_the_pointer_points_to_in_memory(p) },\n  }\n  return 0;\n}",
+        ];
+        for program in programs {
+            assert_eq!(format_file(program, 2), program);
+            for indentation in ["", "          "] {
+                let reindented: Vec<String> = program
+                    .lines()
+                    .map(|line| format!("{indentation}{}", line.trim_start()))
+                    .collect();
+                assert_eq!(
+                    format_file(&reindented.join("\n"), 2),
+                    program,
+                    "input indented with {} spaces",
+                    indentation.len()
+                );
+            }
+        }
     }
 }

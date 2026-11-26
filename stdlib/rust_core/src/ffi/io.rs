@@ -261,6 +261,74 @@ impl Poller {
     }
 }
 
+/// The status that a call of `std/io.vx` gives for `e`: -1 for a cancel, -2 when the reader of
+/// the output closed it, or the error number of the system. `std/io.vx` reads the same numbers.
+fn stdio_status(e: &std::io::Error) -> i32 {
+    if e.get_ref().is_some_and(|x| x.is::<Cancelled>()) {
+        return -1;
+    }
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        return -2;
+    }
+    e.raw_os_error().filter(|&n| n > 0).unwrap_or(libc::EIO)
+}
+
+/// Read up to `len` bytes of standard input into `buffer`, and put how many arrived in `*out`.
+/// 0 bytes means that the input ended. A task parks until standard input can be read, so a
+/// cancel stops the wait. The read goes to the file itself, with no buffer in between, so a
+/// `select` on standard input sees every byte that a read can take.
+///
+/// # Safety
+/// `buffer` must have room for `len` bytes, and `out` must point at a `u64`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_stdin_read_some(buffer: *mut u8, len: u64, out: *mut u64) -> i32 {
+    assert!(!buffer.is_null() && !out.is_null() && len <= isize::MAX as u64);
+    unsafe { *out = 0 };
+    if len == 0 {
+        return 0;
+    }
+    loop {
+        if !wait_ready(libc::STDIN_FILENO, false) {
+            return stdio_status(&std::io::Error::other(Cancelled));
+        }
+        let n = unsafe { libc::read(libc::STDIN_FILENO, buffer.cast(), len as usize) };
+        if n >= 0 {
+            unsafe { *out = n as u64 };
+            return 0;
+        }
+        let e = std::io::Error::last_os_error();
+        if !matches!(
+            e.kind(),
+            std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+        ) {
+            return stdio_status(&e);
+        }
+    }
+}
+
+/// Write all `len` bytes of `buffer` to standard error when `to_stderr` is 1, else to standard
+/// output, and flush them. It writes through the same buffer as `print!`, so the two keep their
+/// order.
+///
+/// # Safety
+/// `buffer` must have `len` bytes to read.
+#[no_mangle]
+pub unsafe extern "C" fn vx_stdio_write_all(to_stderr: i32, buffer: *const u8, len: u64) -> i32 {
+    assert!(!buffer.is_null() && len <= isize::MAX as u64);
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
+    let written = if to_stderr == 1 {
+        let mut err = std::io::stderr().lock();
+        std::io::Write::write_all(&mut err, bytes).and_then(|()| std::io::Write::flush(&mut err))
+    } else {
+        let mut out = std::io::stdout().lock();
+        std::io::Write::write_all(&mut out, bytes).and_then(|()| std::io::Write::flush(&mut out))
+    };
+    match written {
+        Ok(()) => 0,
+        Err(e) => stdio_status(&e),
+    }
+}
+
 /// 1 when a read of `fd` does not wait: bytes or a connection arrived, or the peer closed the
 /// socket, or it has an error. Else 0.
 #[no_mangle]

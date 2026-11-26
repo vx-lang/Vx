@@ -1,0 +1,73 @@
+//===- a_package_that_parses_numbers.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with no trusted code. It reads numbers from bytes and prints them, and it prints
+// each float with `to_string`.
+
+import core::result;
+import std::string;
+import std::vec;
+
+fn show_error(e : ParseNumberError) -> void {
+  match e {
+    ParseNumberError::Empty => {
+      println!("empty");
+    }
+    ParseNumberError::Invalid => {
+      println!("invalid");
+    }
+    ParseNumberError::OutOfRange => {
+      println!("out of range");
+    }
+  }
+}
+
+pub fn show_i64(bytes : &Vec<u8>, from : i32, to : i32) -> void {
+  match i64::parse(bytes, from, to) {
+    Result::Ok(n) => {
+      println!("{}", n);
+    }
+    Result::Err(e) => {
+      show_error(e);
+    }
+  }
+}
+
+pub fn show_u64(bytes : &Vec<u8>, from : i32, to : i32) -> void {
+  match u64::parse(bytes, from, to) {
+    Result::Ok(n) => {
+      println!("{}", n);
+    }
+    Result::Err(e) => {
+      show_error(e);
+    }
+  }
+}
+
+pub fn show_f64(bytes : &Vec<u8>, from : i32, to : i32) -> void {
+  match f64::parse(bytes, from, to) {
+    Result::Ok(x) => {
+      let text = x.to_string();
+      println!("{}", text);
+    }
+    Result::Err(e) => {
+      show_error(e);
+    }
+  }
+}
+
+pub fn show_f32(bytes : &Vec<u8>, from : i32, to : i32) -> void {
+  match f32::parse(bytes, from, to) {
+    Result::Ok(x) => {
+      let text = x.to_string();
+      println!("{}", text);
+    }
+    Result::Err(e) => {
+      show_error(e);
+    }
+  }
+}
