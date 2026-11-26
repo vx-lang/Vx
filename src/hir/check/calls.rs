@@ -3885,6 +3885,9 @@ impl<'a> TypeChecker<'a> {
             .entry(Self::generic_body_key(template))
             .or_default();
         self.errors.drop_warnings_already_given(start, given);
+        if let Some(kept) = &mut self.kept_from_probe {
+            kept.extend(self.errors.inner.drain(start..));
+        }
     }
 
     /// `generic_method` of `ib`, instantiated at `mapping` for the receiver type `base_ty`,

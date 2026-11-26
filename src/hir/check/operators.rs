@@ -539,6 +539,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `operand_type` of `e`, with the diagnostics of the probe dropped. A function body that
+    /// the probe checks for the first time keeps its diagnostics, because no later check
+    /// repeats that body.
+    pub(crate) fn operand_type_without_diagnostics(&mut self, e: &Expr) -> Type {
+        let start = self.errors.len();
+        let outer = self.kept_from_probe.replace(Vec::new());
+        let ty = self.operand_type(e);
+        self.errors.inner.truncate(start);
+        let kept = std::mem::replace(&mut self.kept_from_probe, outer).expect("set above");
+        match &mut self.kept_from_probe {
+            Some(outer) => outer.extend(kept),
+            None => self.errors.inner.extend(kept),
+        }
+        ty
+    }
+
     /// The type of an operator's left operand, worked out without checking it: the quick
     /// probe, then the left side of a nested operator, then a call's declared return type.
     /// Only what is left is checked, as a copy, so a long chain of operators on numbers is
