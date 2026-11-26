@@ -917,6 +917,7 @@ impl CompilerDriver {
         crate::syntax::Program {
             module_path: crate::symbol::Symbol::from(NATIVE_HOST_MODULE),
             package: None,
+            standard_library: false,
             file: None,
             item_macros: Vec::new(),
             memories: vec![crate::syntax::MemoryDecl {
@@ -1145,6 +1146,7 @@ impl CompilerDriver {
             item_macros: Vec::new(),
             module_path: "<interfaces>".into(),
             package: None,
+            standard_library: false,
             file: None,
             imports: Vec::new(),
             macros: Vec::new(),
@@ -1325,11 +1327,12 @@ impl CompilerDriver {
         // instantiations land in `monomorphized_functions`, and the method/generic calls in the
         // emitted bodies are rewritten to those instance names. Generic functions were already
         // dropped from `other_asts`; generic *methods* are instantiated on demand by these calls.
-        // Keep each imported function's errors apart, and report only those of the functions
-        // the program uses. See `imported_errors`.
+        // Keep each imported function's errors apart. Report all of them for a module outside
+        // the standard library, and only those of the functions the program uses for a module
+        // of the standard library. See `imported_errors`.
         let mut errors_by_function: std::collections::BTreeMap<
             String,
-            (String, Vec<crate::diagnostic::Diagnostic>),
+            (String, bool, Vec<crate::diagnostic::Diagnostic>),
         > = std::collections::BTreeMap::new();
         for p in modules.iter_mut() {
             for f in &mut p.functions {
@@ -1338,8 +1341,10 @@ impl CompilerDriver {
                     checker.check_function(f);
                     let found: Vec<_> = checker.errors.inner.drain(before..).collect();
                     if found.iter().any(|d| d.level == DiagnosticLevel::Error) {
-                        errors_by_function
-                            .insert(f.name.to_string(), (p.module_path.to_string(), found));
+                        errors_by_function.insert(
+                            f.name.to_string(),
+                            (p.module_path.to_string(), p.standard_library, found),
+                        );
                     }
                 }
             }
@@ -1350,13 +1355,14 @@ impl CompilerDriver {
             &checker.traffic.capacity_summaries,
             &with_errors,
         );
-        for (name, (module, found)) in errors_by_function {
-            if used.contains(&name) {
+        for (name, (module, standard_library, found)) in errors_by_function {
+            let is_used = used.contains(&name);
+            if is_used || !standard_library {
                 checker
                     .errors
                     .inner
                     .extend(crate::hir::check::imported_errors::errors_to_report(
-                        found, &module, &name,
+                        found, &module, &name, is_used,
                     ));
             }
         }

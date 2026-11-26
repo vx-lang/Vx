@@ -2128,6 +2128,7 @@ impl<'a> Parser<'a> {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             file: None,
             package: None,
+            standard_library: false,
             item_macros,
             imports,
             macros,

@@ -1,0 +1,18 @@
+//===- errors_in_functions_of_a_package_that_nothing_calls.vx - Vx Compiler *- Vx -*-===//
+// RUN: not vxc --package tests=tests --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: not vxc --package tests=tests -j 4 --emit-mlir %s 2>&1 | FileCheck %s
+import tests::modules::library_with_type_errors;
+
+fn main() -> i32 {
+  return add_one(41);
+}
+
+// The program uses only `add_one`. The library is in a package that `--package` names, so vxc
+// reports the type error of every function in it, as Rust does for a crate. The messages do not
+// say "used by this program", because the program does not use these functions.
+// unused_functions_with_type_errors_in_the_standard_library.vx imports the same library as a
+// part of the standard library, where these errors stay hidden.
+// CHECK-DAG: Error[E2002] at {{.*}}library_with_type_errors.vx:30:10: in `calls_a_missing_function`, imported from `tests::modules::library_with_type_errors`: Undefined function 'missing_function'
+// CHECK-DAG: Error[E2002] at {{.*}}library_with_type_errors.vx:25:26: in `calls_wrong_field`, imported from `tests::modules::library_with_type_errors`: Undefined function 'no_such_function'
+// CHECK-DAG: Error at {{.*}}library_with_type_errors.vx:20:3: in `wrong_field`, imported from `tests::modules::library_with_type_errors`: Struct 'Point' has no field 'y'
+// CHECK: 3 error(s) emitted

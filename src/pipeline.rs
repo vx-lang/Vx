@@ -1416,9 +1416,10 @@ pub fn report_warnings(warnings: &[crate::diagnostic::Diagnostic]) {
     }
 }
 
-/// The errors to report from the imported modules' functions: those of the functions the
-/// program uses. An unused function with an error is removed from `modules`, together with the
-/// generic instances checking it created, because the code generator cannot compile it. See
+/// The errors to report from the imported modules' functions: all of them for a module outside
+/// the standard library, and those of the functions the program uses for a module of the
+/// standard library. An unused function with an error is removed from `modules`, together with
+/// the generic instances checking it created, because the code generator cannot compile it. See
 /// `imported_errors`.
 fn imported_errors_to_report(
     modules: &mut [VxModule],
@@ -1452,12 +1453,16 @@ fn imported_errors_to_report(
         .iter_mut()
         .filter(|c| with_errors.contains(&c.function))
     {
-        let module = modules[c.module_idx].module_path.to_string();
-        if used.contains(&c.function) {
+        let module = &modules[c.module_idx];
+        let is_used = used.contains(&c.function);
+        let reported = is_used || !module.standard_library;
+        let module = module.module_path.to_string();
+        if reported {
             errors.extend(crate::hir::check::imported_errors::errors_to_report(
                 c.diagnostics.inner.clone(),
                 &module,
                 &c.function,
+                is_used,
             ));
         } else {
             c.monomorphs.clear();
