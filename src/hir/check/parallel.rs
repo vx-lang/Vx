@@ -1739,18 +1739,20 @@ impl ParallelScan {
         self.note(name);
         self.captured_written.insert(name.to_string());
         if !self.owns_row(indices) {
-            return self.refuse_write(
-                &format!(
-                    "the compiler cannot show that each pass of the loop over `{}` writes a \
-                     different element of `{name}`",
-                    self.iv
+            let iv = &self.iv;
+            let why = match (&self.affine, indices.last()) {
+                (Some((bq, k)), Some(first)) if self.pass_row(first) => format!(
+                    "each block runs the loop over `{iv}`, so all blocks write the same rows of \
+                     `{name}`. A row such as `{bq} * {k} + {iv}` is different in each block"
                 ),
-                at,
-            );
+                _ => format!(
+                    "the compiler cannot show that each pass of the loop over `{iv}` writes a \
+                     different element of `{name}`"
+                ),
+            };
+            return self.refuse_write(&why, at);
         }
-        if let Some(first) = indices.last() {
-            self.record_row(name, first, at);
-        }
+        self.record_row(name, indices, at);
         self.captured_write_columns
             .entry(name.to_string())
             .or_default()
@@ -1759,8 +1761,18 @@ impl ParallelScan {
     }
 
     /// Note which row of `name` an access the current pass owns goes to; see `row_keys`.
-    fn record_row(&mut self, name: &str, first: &Expr, at: Span) {
-        if let Some(key) = index_key(first, &self.iv) {
+    fn record_row(&mut self, name: &str, indices: &[&Expr], at: Span) {
+        let Some(first) = indices.last() else {
+            return;
+        };
+        if let Some(mut key) = index_key(first, &self.iv) {
+            // `c[j][i][2]` and `c[j][3][i]` keep the blocks apart in different places. Block 3
+            // and block 2 both reach `c[j][3][2]`, so the two accesses get different keys.
+            if !self.affine_first(first) && !self.block_row_write(indices) {
+                if let Some(pos) = self.block_column(indices) {
+                    key = format!("{key}@{pos}");
+                }
+            }
             let keys = self.row_keys.entry(name.to_string()).or_default();
             keys.insert(key);
             if keys.len() > 1 {
@@ -1826,16 +1838,38 @@ impl ParallelScan {
     }
 
     /// Whether the index chain `indices` (outermost-last, as `target` collects it) names a row
-    /// the current iteration owns: first index the IV, or one of the two-level ownership forms.
+    /// the current iteration owns. In a loop of threads, the row must also depend on the block.
     fn owns_row(&self, indices: &[&Expr]) -> bool {
         let Some(first) = indices.last() else {
             return false;
         };
+        if self.affine.is_some() {
+            // Each block runs the loop of threads, so a row that only `iv` picks is a row of
+            // every block. A later index that is the variable of the loop over blocks, as in
+            // `c[j][i]`, keeps the blocks apart.
+            return self.affine_first(first)
+                || self.block_row_write(indices)
+                || (self.pass_row(first) && self.block_column(indices).is_some());
+        }
+        self.pass_row(first)
+    }
+
+    /// In a loop of threads, the position (0 for the row) of the first index after the row that
+    /// is the variable of the loop over blocks.
+    fn block_column(&self, indices: &[&Expr]) -> Option<usize> {
+        let (bq, _) = self.affine.as_ref()?;
+        let row = indices.len().checked_sub(1)?;
+        (0..row)
+            .rev()
+            .find(|&k| matches!(indices[k], Expr::Identifier(id) if *id.name == **bq))
+            .map(|k| row - k)
+    }
+
+    /// Whether `first`, the first index, is a different row on each pass of the loop over `iv`.
+    fn pass_row(&self, first: &Expr) -> bool {
         matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv)
             || self.offset_first(first)
             || self.group_first(first)
-            || self.affine_first(first)
-            || self.block_row_write(indices)
     }
 
     /// A tensor from outside the region that the loop writes and that a pass reaches at a row
@@ -2024,9 +2058,7 @@ impl ParallelScan {
                 // A row of a tensor from outside the region that this iteration may not own.
                 if !self.declared.contains(&*id.name) {
                     if self.owns_row(&indices) {
-                        if let Some(first) = indices.last() {
-                            self.record_row(&id.name, first, e.span());
-                        }
+                        self.record_row(&id.name, &indices, e.span());
                     } else {
                         self.captured_nonown_read
                             .entry(id.name.to_string())
