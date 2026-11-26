@@ -293,6 +293,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Vx has no `if let` and no `while let`. Tell the programmer to write a `match`.
+    pub(crate) fn reject_let_condition(&self, keyword: &str) -> ParseResult<'a, ()> {
+        let token = self.peek();
+        if token.kind == TokenType::Let {
+            return Err(self.error_at(
+                token,
+                &format!("Vx has no `{keyword} let`. Use a `match` with a `_` arm instead"),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn parse_token_tree(&mut self) -> ParseResult<'a, TokenTree> {
         let peek = self.peek();
         match &peek.kind {

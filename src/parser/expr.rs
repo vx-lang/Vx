@@ -1675,6 +1675,7 @@ impl<'a> Parser<'a> {
         let if_span = self.next_span();
         self.advance();
         let is_comptime = self.match_token(&TokenType::Comptime);
+        self.reject_let_condition("if")?;
         let cond = self.parse_expr_before_block()?;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut then_block = Vec::new();
