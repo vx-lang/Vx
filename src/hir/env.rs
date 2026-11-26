@@ -702,6 +702,10 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// While a probe runs whose diagnostics the checker drops: the diagnostics of each function
+    /// body that the probe checks for the first time. No later check repeats that body, so the
+    /// checker keeps them.
+    pub(crate) kept_from_probe: Option<Vec<crate::diagnostic::Diagnostic>>,
     /// The `for` loops around the expression being checked, innermost last.
     pub(crate) unroll_candidates: Vec<UnrollCandidate>,
     /// Identifiers already reported as unreadable from the active topology, so the indexing of
@@ -870,6 +874,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            kept_from_probe: None,
             unroll_candidates: Vec::new(),
             unreadable_reported: Default::default(),
             device_spawn: None,
