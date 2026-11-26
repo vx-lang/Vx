@@ -35,13 +35,14 @@ The default matches the output of `vx-format'."
 (defconst vx-keywords
   '("across" "as" "assert" "break" "comptime" "continue" "else" "ensures"
     "enum" "extern" "fn" "for" "grad" "if" "impl" "import" "in" "invariant"
-    "jvp" "let" "loop" "macro_rules" "match" "mut" "on" "requires" "return"
-    "safe" "self" "spawn" "struct" "tasks" "trait" "transfer" "type" "unroll"
-    "unsafe" "vjp" "where" "while")
+    "jvp" "let" "loop" "macro_rules" "match" "mut" "on" "pub" "requires"
+    "return" "safe" "self" "spawn" "struct" "tasks" "trait" "transfer"
+    "transfer_async" "type" "unroll" "unsafe" "vjp" "where" "while")
   "Keywords of Vx, as listed in src/lexer.rs, plus `self'.")
 
 (defconst vx-builtin-types
-  '("Topology" "Memory" "Ref" "Verified" "Pinned" "HardwareState")
+  '("Topology" "Memory" "Ref" "Verified" "Distinct" "DisjointRanges" "Pinned"
+    "HardwareState")
   "Type names that the Vx lexer treats as keywords.")
 
 (defconst vx-primitive-types
