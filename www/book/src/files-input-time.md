@@ -35,6 +35,12 @@ parsed 124
 `println!` moves a `String` argument ([Vx#3235](https://github.com/vx-lang/Vx/issues/3235)). So the
 program gets the length before it prints `greeting`.
 
+`String::from_utf8(&v)` copies the bytes of a `Vec<u8>`, and `String::from_bytes(p, n)` copies
+the `n` bytes at the raw pointer `p`. Neither one needs `unsafe`. But a call of `from_bytes` in
+safe code must prove that `p` points at `n` bytes, as `v.as_mut_ptr()` and `v.len()` do. Both
+give a `Result`. Its `Err` holds a `Utf8Error` when the bytes are not UTF-8, and `e.valid_up_to`
+is the number of bytes before the first bad one.
+
 `parse_int` stops at the first byte that is not a digit. So `"12abc"` gives 12, and `"abc"`
 gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 

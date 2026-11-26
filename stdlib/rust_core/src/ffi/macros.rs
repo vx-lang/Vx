@@ -210,6 +210,38 @@ macro_rules! instantiate_string_ffi {
             }
         }
 
+        /// A copy of the `len` bytes at `ptr`, or null when they are not UTF-8. It copies a
+        /// 0 byte like any other byte.
+        #[no_mangle]
+        pub extern "C" fn vx_string_try_from_bytes(
+            ptr: *const u8,
+            len: i64,
+        ) -> *mut std::ffi::c_void {
+            assert!(
+                !ptr.is_null() && len >= 0,
+                "vx_string_try_from_bytes: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes) {
+                Ok(text) => Box::into_raw(Box::new(text.to_owned())) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+
+        /// How many of the `len` bytes at `ptr` are UTF-8 before the first byte that is not.
+        #[no_mangle]
+        pub extern "C" fn vx_utf8_valid_up_to(ptr: *const u8, len: i64) -> i64 {
+            assert!(
+                !ptr.is_null() && len >= 0,
+                "vx_utf8_valid_up_to: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes) {
+                Ok(_) => len,
+                Err(e) => e.valid_up_to() as i64,
+            }
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_string_push_c_str(
             ptr: *mut std::ffi::c_void,
