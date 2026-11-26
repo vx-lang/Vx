@@ -1,0 +1,20 @@
+//===- copy_end_needs_the_select_import.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t.copy_end()` gives a source of `select`, so a program that calls it without
+// `import std::sync::select` gets an error that names the import.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E2002] at {{.*}}.vx:[[@LINE+5]]:{{[0-9]+}}: `copy_end` on a token needs `import std::sync::select`
+// CHECK-NOT: copy_end_at
+
+fn main() -> i32 {
+  let t = transfer_async(Tensor<f32, [4]>::fill(1.0), Memory::GPU_HBM);
+  let _e = t.copy_end();
+  let _x = t.wait();
+  return 0;
+}

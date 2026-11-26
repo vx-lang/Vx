@@ -1,0 +1,31 @@
+//===- a_program_cannot_call_main.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Only the runtime starts `main`. This `main` takes a `Root`, so each start makes a new `Root`.
+// `helper` gets no capability, and a call of `main` would give it every capability of the
+// program. `main` as a value is the same error.
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn apply(f : fn() -> i32) -> i32 {
+  return f();
+}
+
+fn helper() -> i32 {
+  // CHECK: Error[E5004] at {{.*}}a_program_cannot_call_main.vx:[[@LINE+1]]:10: A program cannot call `main` or use it as a value
+  return main();
+}
+
+fn pass_main() -> i32 {
+  // CHECK: Error[E5004] at {{.*}}a_program_cannot_call_main.vx:[[@LINE+1]]:16: A program cannot call `main` or use it as a value
+  return apply(main);
+}
+
+fn main(root : Root) -> i32 {
+  println!("main has a Root");
+  return helper() + pass_main();
+}
+// CHECK: 2 error(s) emitted

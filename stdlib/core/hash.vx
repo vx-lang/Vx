@@ -122,7 +122,7 @@ struct FxHasher {
 }
 
 impl FxHasher {
-  fn new() -> FxHasher {
+  pub fn new() -> FxHasher {
     return FxHasher {
       acc : 0u64
     };
@@ -151,7 +151,7 @@ struct SipState {
 impl Copy for SipState {}
 
 /// One SipRound. Taken and returned by value because four results do not fit a return.
-fn sip_round(s : SipState) -> SipState {
+pub fn sip_round(s : SipState) -> SipState {
   let mut v0 : u64 = s.v0;
   let mut v1 : u64 = s.v1;
   let mut v2 : u64 = s.v2;
@@ -190,7 +190,7 @@ struct SipHasher13 {
 }
 
 impl SipHasher13 {
-  fn with_keys(k0 : u64, k1 : u64) -> SipHasher13 {
+  pub fn with_keys(k0 : u64, k1 : u64) -> SipHasher13 {
     return SipHasher13 {
       v0 : k0 ^ 8317987319222330741u64,
       v1 : k1 ^ 7237128888997146477u64,
@@ -202,7 +202,7 @@ impl SipHasher13 {
     };
   }
 
-  fn new() -> SipHasher13 {
+  pub fn new() -> SipHasher13 {
     return SipHasher13::with_keys(0u64, 0u64);
   }
 }
@@ -256,7 +256,7 @@ impl Hasher for SipHasher13 {
 
 /// Hashes the seconds and then the nanoseconds. It is here and not in `core::time`, so that
 /// `core::ops`, which imports `core::time` for `Drop::wait_limit`, does not load `core::num`.
-impl Hash for Duration {
+extern impl Hash for Duration {
   fn hash<H : Hasher>(self : &Duration, state : &mut H) -> i32 {
     let _secs = state.write_u64(self.secs);
     return state.write_u32(self.nanos);

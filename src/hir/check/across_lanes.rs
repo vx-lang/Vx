@@ -16,21 +16,42 @@ use crate::syntax::stmt::Statement;
 use crate::syntax::{Expr, Span};
 use std::collections::HashSet;
 
-/// Whether `s` holds an `across` loop, a lane reduction, a lane copy or a lane matmul at any
-/// depth. Every lane of the block or the subgroup must get to each of them.
+/// The `mlir!` block with `threads : N` that `s` is, as `let x = mlir!(..)` or a statement of its
+/// own, alone or in an `unsafe` block. Every thread of the threadgroup runs it.
+pub(crate) fn threadgroup_block(s: &Statement) -> Option<&crate::syntax::expr::InlineMlirExpr> {
+    let e = match s {
+        Statement::LetDecl(l) => &l.expr,
+        Statement::ExprStmt(e) => &e.expr,
+        _ => return None,
+    };
+    match e {
+        Expr::InlineMlir(m) if m.threads.is_some() => Some(m),
+        Expr::UnsafeBlock(b) => match (b.stmts.as_slice(), b.ret.as_deref()) {
+            ([], Some(Expr::InlineMlir(m))) if m.threads.is_some() => Some(m),
+            ([only], None) => threadgroup_block(only),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `s` holds an `across` loop, a lane reduction, a lane copy, a lane matmul or an `mlir!`
+/// block with `threads` at any depth. Every lane of the block or the subgroup must get to each of
+/// them.
 pub(crate) fn holds_across(s: &Statement) -> bool {
     use crate::hir::check::lanes;
     let mut found = false;
     visit_stmts(std::slice::from_ref(s), &mut |s| {
-        found |= match s {
-            Statement::ForLoop(f) => f.across.is_some(),
-            Statement::LetDecl(l) => lanes::bare_lanes_call(&l.expr).is_some(),
-            Statement::ExprStmt(e) => lanes::bare_lane_statement(&e.expr).is_some(),
-            Statement::Assign(a) => {
-                lanes::lane_matmul(a).is_some() || lanes::next_copy(a).is_some()
-            }
-            _ => false,
-        };
+        found |= threadgroup_block(s).is_some()
+            || match s {
+                Statement::ForLoop(f) => f.across.is_some(),
+                Statement::LetDecl(l) => lanes::bare_lanes_call(&l.expr).is_some(),
+                Statement::ExprStmt(e) => lanes::bare_lane_statement(&e.expr).is_some(),
+                Statement::Assign(a) => {
+                    lanes::lane_matmul(a).is_some() || lanes::next_copy(a).is_some()
+                }
+                _ => false,
+            };
     });
     found
 }
@@ -51,8 +72,25 @@ pub(crate) fn visit_stmts(stmts: &[Statement], f: &mut dyn FnMut(&Statement)) {
 }
 
 /// The blocks of the `if`, `match` and `unsafe` expressions in `s`, a `let` or an expression
-/// statement, at any depth.
+/// statement. When `s` is one of these, they are its own blocks, and a walk of each block finds
+/// the blocks inside it. A block inside a lane loop is then not one of the blocks of `s`.
 fn expr_blocks(s: &Statement) -> Vec<Vec<Statement>> {
+    let e = match s {
+        Statement::LetDecl(l) => &l.expr,
+        Statement::ExprStmt(e) => &e.expr,
+        _ => return Vec::new(),
+    };
+    match e {
+        Expr::If(i) => {
+            return std::iter::once(i.then_block.clone())
+                .chain(i.else_block.clone())
+                .collect()
+        }
+        Expr::Match(m) => return m.arms.iter().map(|a| a.body.clone()).collect(),
+        Expr::UnsafeBlock(b) => return vec![b.stmts.clone()],
+        _ => {}
+    }
+    // A block deeper in an expression, as in `let x = 1 + if c { .. } else { .. };`.
     let mut blocks: Vec<Vec<Statement>> = Vec::new();
     let mut each = |e: &Expr| match e {
         Expr::If(i) => {
@@ -65,11 +103,7 @@ fn expr_blocks(s: &Statement) -> Vec<Vec<Statement>> {
         Expr::UnsafeBlock(b) => blocks.push(b.stmts.clone()),
         _ => {}
     };
-    match s {
-        Statement::LetDecl(l) => crate::syntax::visit_expr(&l.expr, &mut each),
-        Statement::ExprStmt(e) => crate::syntax::visit_expr(&e.expr, &mut each),
-        _ => {}
-    }
+    crate::syntax::visit_expr(e, &mut each);
     blocks
 }
 
@@ -245,6 +279,29 @@ pub(crate) fn runs_on_lane0(part: &[Statement], lane0: &mut HashSet<String>) -> 
     on_lane0
 }
 
+/// Where the stretch of `stmts` that starts at `start` ends: before the next statement that holds
+/// an `across` loop. The `let`s at the start of a stretch that are not `mut`, write nothing and
+/// read no name in `lane0` make a stretch of their own. So every lane has their values, even when
+/// the code after them writes memory and runs on lane 0.
+pub(crate) fn stretch_end(stmts: &[Statement], start: usize, lane0: &HashSet<String>) -> usize {
+    let every_lane = |s: &Statement| {
+        matches!(s, Statement::LetDecl(l) if !l.is_mut)
+            && !holds_across(s)
+            && !runs_on_lane0(std::slice::from_ref(s), &mut lane0.clone())
+    };
+    let mut i = start;
+    while i < stmts.len() && every_lane(&stmts[i]) {
+        i += 1;
+    }
+    if i > start {
+        return i;
+    }
+    while i < stmts.len() && !holds_across(&stmts[i]) {
+        i += 1;
+    }
+    i
+}
+
 /// The names that only lane 0 has after `stmts` in the code of a level, which start as `lane0`.
 fn lane0_after(stmts: &[Statement], lane0: &mut HashSet<String>) {
     let mut i = 0;
@@ -255,9 +312,7 @@ fn lane0_after(stmts: &[Statement], lane0: &mut HashSet<String>) {
             continue;
         }
         let start = i;
-        while i < stmts.len() && !holds_across(&stmts[i]) {
-            i += 1;
-        }
+        i = stretch_end(stmts, start, lane0);
         runs_on_lane0(&stmts[start..i], lane0);
     }
 }
@@ -270,8 +325,7 @@ pub(crate) fn lane0_after_holder(s: &Statement, lane0: &mut HashSet<String>) {
         Statement::ForLoop(f) => *lane0 = lane0_in_loop(&f.body, lane0),
         Statement::Loop(l) => *lane0 = lane0_in_loop(&l.body, lane0),
         _ => {
-            // Any one of the blocks may run. `expr_blocks` also gives each block inside another
-            // one, and its walk from `before` can only add names.
+            // Any one of the blocks may run.
             let before = lane0.clone();
             for b in &expr_blocks(s) {
                 let mut after = before.clone();

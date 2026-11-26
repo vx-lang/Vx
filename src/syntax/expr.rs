@@ -229,6 +229,10 @@ pub struct FunctionCallExpr {
     pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
     pub span: Span,
+    /// The compiler wrote this call, as `c_str_equals` for `s == "hi"`. The program did not, so
+    /// the check of visibility skips it (docs/lang/visibility.md, section 4, rule 4). The AST
+    /// code generator also writes `transpose(t, [1, 0])` for the method `t.transpose([1, 0])`.
+    pub by_the_compiler: bool,
 }
 impl FunctionCallExpr {
     pub fn new(name: Symbol, type_args: Option<Vec<Type>>, args: Vec<Expr>, span: Span) -> Self {
@@ -238,6 +242,15 @@ impl FunctionCallExpr {
             type_args,
             args,
             span,
+            by_the_compiler: false,
+        }
+    }
+
+    /// A call that the compiler writes, not the program.
+    pub fn by_the_compiler(name: Symbol, args: Vec<Expr>, span: Span) -> Self {
+        Self {
+            by_the_compiler: true,
+            ..Self::new(name, None, args, span)
         }
     }
 }
@@ -599,6 +612,9 @@ pub struct StructInitExpr {
     /// whose identity isn't a plain module symbol. Lets consumers (e.g. the flat-HIR lowerer) map the
     /// construction to its registry layout without re-resolving the name (#199).
     pub type_id: Option<crate::gid::TypeId>,
+    /// True for a literal that the checker writes, such as the `Location` of a `Caller` argument.
+    /// The parser never sets it, so E8014 can let the compiler build a type with an invariant.
+    pub made_by_the_compiler: bool,
     pub span: Span,
 }
 impl StructInitExpr {
@@ -607,6 +623,7 @@ impl StructInitExpr {
             name,
             fields,
             type_id: None,
+            made_by_the_compiler: false,
             span,
         }
     }
@@ -1081,15 +1098,33 @@ pub struct MatchArm {
     pub span: Span,
 }
 
+impl MatchArm {
+    /// True if the arm's body has a `let` of `name`, as in `Some(v) => { let v = v as f32; v }`.
+    /// That `let` hides the payload, so the arm's value may have another type.
+    pub fn body_declares(&self, name: &str) -> bool {
+        self.body
+            .iter()
+            .any(|s| matches!(s, Statement::LetDecl(l) if l.name.as_ref() == name))
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchExpr {
     pub expr: Box<Expr>,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// The checker sets it when the matched value is a reference. Each name in a pattern then
+    /// binds a reference to its part of the value, not a copy of it.
+    pub binds_references: bool,
 }
 impl MatchExpr {
     pub fn new(expr: Box<Expr>, arms: Vec<MatchArm>, span: Span) -> Self {
-        Self { expr, arms, span }
+        Self {
+            expr,
+            arms,
+            span,
+            binds_references: false,
+        }
     }
 }
 
@@ -1200,6 +1235,9 @@ pub struct InlineMlirExpr {
     pub dialects: Vec<String>,
     /// What the block writes, as `atomic(t)` clauses. Not evaluated, so visitors skip them.
     pub ensures: Vec<Expr>,
+    /// `threads : N`: every thread of a threadgroup of at least `N` runs the block. `None` for a
+    /// block that runs as the code around it runs.
+    pub threads: Option<u32>,
     pub block_str: String,
     pub span: Span,
 }
@@ -1824,6 +1862,7 @@ impl Expr {
                     type_args: substituted_type_args,
                     args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
                     span: e.span,
+                    by_the_compiler: e.by_the_compiler,
                 })
             }
             Expr::IndirectCall(e) => Expr::IndirectCall(IndirectCallExpr {
@@ -1919,6 +1958,7 @@ impl Expr {
                         .map(|(n, ex)| (n.clone(), ex.substitute(mapping)))
                         .collect(),
                     type_id: e.type_id,
+                    made_by_the_compiler: e.made_by_the_compiler,
                     span: e.span,
                 })
             }
@@ -1955,6 +1995,7 @@ impl Expr {
                     })
                     .collect(),
                 span: e.span,
+                binds_references: e.binds_references,
             }),
             Expr::Grad(e) => Expr::Grad(GradExpr {
                 target_fn: e.target_fn.clone(),
@@ -2090,6 +2131,7 @@ impl Expr {
                     .map(|t| substitute_mlir_returns(t, mapping)),
                 dialects: e.dialects.clone(),
                 ensures: e.ensures.iter().map(|ex| ex.substitute(mapping)).collect(),
+                threads: e.threads,
                 block_str: substitute_words(&e.block_str, mapping),
                 span: e.span,
             }),

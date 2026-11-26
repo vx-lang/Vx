@@ -40,7 +40,7 @@ const KNOWN_BROKEN: &[(&str, &str)] = &[];
 fn the_backend_corpus_emits_object_files() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let dir = root.join("tests/backend/pass");
-    let out = std::env::temp_dir().join("vx_emit_obj_gate");
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx_emit_obj_gate");
     std::fs::create_dir_all(&out).unwrap();
 
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -131,7 +131,7 @@ fn autodiff_programs_emit_object_files() {
         return;
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let out = std::env::temp_dir().join("vx_emit_obj_autodiff");
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx_emit_obj_autodiff");
     std::fs::create_dir_all(&out).unwrap();
     let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("tests/backend/pass/autodiff"))
         .expect("tests/backend/pass/autodiff is missing")

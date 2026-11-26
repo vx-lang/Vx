@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Type invariants: `struct Vec<T> invariant self.len <= self.capacity { .. }`. Only the module
-// that declares such a type can change its fields, so the invariant holds in each other module.
+// Type invariants: `struct Vec<T> { .., invariant len <= capacity }`. Only the module that
+// declares such a type can change its fields, so the invariant holds in each other module.
 // docs/discussions/type_invariants.md has the design.
 //
 //===----------------------------------------------------------------------===//
@@ -93,6 +93,78 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Each struct with an invariant that a value of `ty` holds: the type itself, a type argument,
+    /// a field or a payload at any depth, or a value behind a reference. Not a value behind a raw
+    /// pointer, because a read through one is `unsafe`.
+    pub(crate) fn invariant_types_held_by(&self, ty: &Type) -> Vec<&'a StructDecl> {
+        let mut found = Vec::new();
+        self.collect_invariant_types(ty, &mut std::collections::HashSet::new(), &mut found);
+        found
+    }
+
+    fn collect_invariant_types(
+        &self,
+        ty: &Type,
+        seen: &mut std::collections::HashSet<crate::symbol::Symbol>,
+        found: &mut Vec<&'a StructDecl>,
+    ) {
+        match ty {
+            Type::Borrow { inner, .. } | Type::Ref(inner, _) => {
+                self.collect_invariant_types(inner, seen, found)
+            }
+            Type::GenericInstance(base, args) => {
+                self.collect_invariant_types(base, seen, found);
+                for a in args {
+                    self.collect_invariant_types(a, seen, found);
+                }
+            }
+            Type::Struct(name, _) | Type::Enum(name, _) if seen.insert(name.clone()) => {
+                if let Some(decl) = self.env.structs.get(name).copied() {
+                    if !decl.invariants.is_empty() {
+                        found.push(decl);
+                    }
+                    for (_, t) in &decl.fields {
+                        self.collect_invariant_types(t, seen, found);
+                    }
+                } else if let Some(decl) = self.env.enums.get(name).copied() {
+                    for t in decl.variants.iter().flat_map(|(_, p)| p.iter().flatten()) {
+                        self.collect_invariant_types(t, seen, found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// E8014 for an `mlir!` block that makes a value of a type with an invariant of another
+    /// module, or a value that holds a value of that type. The block makes the value without the
+    /// functions of that module, as a struct literal does. `unsafe` does not change this.
+    pub(crate) fn check_mlir_block_module(&mut self, returns: &Type, span: &Span) {
+        if self.speculating {
+            return;
+        }
+        let held = self.invariant_types_held_by(returns);
+        let Some(decl) = held.into_iter().find(|d| d.place.file != self.errors.file) else {
+            return;
+        };
+        let name = &decl.name;
+        let makes = match returns.to_string() == name.as_ref() {
+            true => format!("this `mlir!` block makes a value of `{name}`"),
+            false => format!(
+                "this `mlir!` block makes a value of `{returns}`, which holds a value of `{name}`"
+            ),
+        };
+        let message = format!(
+            "{makes}. `{name}` has an invariant, so only code in `{}` can make a value of `{name}`",
+            Self::module_file_name(decl)
+        );
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E8014,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// E8014 for a struct literal of a type with an invariant that another module declares.
     pub(crate) fn check_struct_literal_module(&mut self, name: &str, span: &Span) {
         let Some(decl) = self.env.structs.get(name).copied() else {
@@ -101,9 +173,13 @@ impl<'a> TypeChecker<'a> {
         if self.speculating || decl.invariants.is_empty() || decl.place.file == self.errors.file {
             return;
         }
+        let article = match name.chars().next() {
+            Some('A' | 'E' | 'I' | 'O' | 'U' | 'a' | 'e' | 'i' | 'o' | 'u') => "an",
+            _ => "a",
+        };
         let message = format!(
-            "this struct literal builds a `{name}`. `{name}` has an invariant, so only code in \
-             `{}` can build it from its fields",
+            "this struct literal builds {article} `{name}`. `{name}` has an invariant, so only code \
+             in `{}` can build it from its fields",
             Self::module_file_name(decl)
         );
         self.errors.error_with_code(
@@ -194,15 +270,17 @@ impl<'a> TypeChecker<'a> {
             )),
             _ => Err((
                 e.span(),
-                "an invariant can use `self` and its fields, numbers, operators, `as` and \
-                 the pointer clauses `valid`, `initialized` and `overlaps`"
-                    .to_string(),
+                format!(
+                    "an invariant can use the fields of `{}` at any depth, numbers, operators, \
+                     `as` and the pointer clauses `valid`, `initialized` and `overlaps`",
+                    decl.name
+                ),
             )),
         }
     }
 
     /// The type of the place `e` in an invariant of `decl`: `None` for `self`, and the type of
-    /// the field for a field of `self` at any depth.
+    /// the field for a field at any depth. The parser writes each field `lo` as `self.lo`.
     fn invariant_place_type(
         &self,
         decl: &StructDecl,
@@ -213,8 +291,8 @@ impl<'a> TypeChecker<'a> {
             Expr::Identifier(id) => Err((
                 id.span,
                 format!(
-                    "it names `{}`, and an invariant can name only `self` and its fields",
-                    id.name
+                    "it names `{}`, and an invariant can name only the fields of `{}`",
+                    id.name, decl.name
                 ),
             )),
             Expr::MemberAccess(m) => {
@@ -251,7 +329,17 @@ impl<'a> TypeChecker<'a> {
                     )),
                 }
             }
-            _ => unreachable!("only a place reaches here"),
+            // The base of a field or an element is not a field, as in `make().a`.
+            _ => {
+                self.check_invariant_expr(decl, e)?;
+                Err((
+                    e.span(),
+                    format!(
+                        "it reads a part of a value that is not a field of `{}`",
+                        decl.name
+                    ),
+                ))
+            }
         }
     }
 }

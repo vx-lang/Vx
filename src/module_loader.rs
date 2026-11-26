@@ -219,12 +219,76 @@ impl ModuleLoader {
             }
         }
         self.rename_clashes(&mut programs)?;
+        self.name_packages(&mut programs);
         Ok(programs)
+    }
+
+    /// A `main` that takes a `Root` makes the `Root` of the program, so only a file that `vxc`
+    /// compiles can declare one. An imported file that declares one is an error.
+    fn refuse_a_root_main_outside_the_program(
+        &self,
+        programs: &[Program],
+    ) -> Result<(), ModuleError> {
+        for program in programs {
+            if self.roots.contains(&program.module_path)
+                || !program
+                    .functions
+                    .iter()
+                    .any(crate::parser::decl::makes_the_root)
+            {
+                continue;
+            }
+            let file = match self.paths.get(&program.module_path) {
+                Some(path) => path.display().to_string(),
+                None => program.module_path.to_string(),
+            };
+            return Err(ModuleError::Resolution(format!(
+                "{file} declares `fn main(root : Root)`, but only a file that vxc compiles can \
+                 declare it. Such a `main` makes the `Root` of the program"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Give each module its package: the `--package` that its import path starts with, `std` or
+    /// the first name of the import path for a module of the standard library, or the empty
+    /// name for a file of the program itself. A module whose file is not known gets none, so a
+    /// `pkg fn` in it is visible only to its own file.
+    fn name_packages(&self, programs: &mut [Program]) {
+        let canonical = |p: &Path| fs::canonicalize(p).ok();
+        let std_roots: Vec<(PathBuf, bool)> = (self.std_roots.iter())
+            .filter_map(|r| Some((canonical(r)?, r.file_name() == Some("std".as_ref()))))
+            .collect();
+        for program in programs {
+            program.standard_library = false;
+            let Some(file) = (self.paths.get(&program.module_path)).and_then(|p| canonical(p))
+            else {
+                program.package = None;
+                continue;
+            };
+            let path: Vec<&str> = program.module_path.as_ref().split("::").collect();
+            let in_package =
+                path.len() > 1 && self.packages.iter().any(|(name, _)| name == path[0]);
+            let package = if in_package {
+                path[0]
+            } else if let Some((_, is_std)) = std_roots.iter().find(|(r, _)| file.starts_with(r)) {
+                program.standard_library = true;
+                if *is_std {
+                    "std"
+                } else {
+                    path[0]
+                }
+            } else {
+                ""
+            };
+            program.package = Some(package.into());
+        }
     }
 
     /// Parse again each module that declares or sees a name another module also declares, with
     /// that name renamed where it is not the declaration the whole compile keeps.
     fn rename_clashes(&self, programs: &mut [Program]) -> Result<(), ModuleError> {
+        self.refuse_a_root_main_outside_the_program(programs)?;
         let plan =
             crate::name_clashes::plan(programs, &self.roots).map_err(ModuleError::Resolution)?;
         for program in programs.iter_mut() {
@@ -278,6 +342,7 @@ impl ModuleLoader {
         );
         let mut programs: Vec<Program> = self.loaded_modules.values().cloned().collect();
         self.rename_clashes(&mut programs)?;
+        self.name_packages(&mut programs);
         Ok(programs)
     }
 

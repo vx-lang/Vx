@@ -1,0 +1,29 @@
+//===- run_jobs_with_no_tasks_stops_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `run_jobs` with at most 0 tasks could never run a job, so it stops the program with a message,
+// and does not return.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s --implicit-check-not="after run_jobs"
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not="after run_jobs"
+// CHECK: {{^}}run_jobs: the number of tasks must be at least 1{{$}}
+
+import core::result;
+import std::sync::jobs;
+import std::vec;
+
+fn double(job : &i64) -> i64 {
+  return *job * 2;
+}
+
+fn main() -> i32 {
+  let mut numbers = Vec<i64>::new();
+  numbers.push(1);
+  let r : Result<Vec<i64>, RunJobsError> = run_jobs(&numbers, 0, double);
+  println!("after run_jobs: {}", r.is_ok());
+  return 0;
+}

@@ -212,6 +212,20 @@ def Vx_BarrierOp : Vx_Op<"barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
     let assemblyFormat = "attr-dict";
 }
 
+// A hint for the scheduler of the Apple GPU, which an `mlir!` block can write
+// between its simdgroup loads and its multiplies. It orders no memory. NOT
+// Pure, so that nothing moves or removes it before the Metal printer.
+def Vx_SubgroupScheduleBarrierOp : Vx_Op<"subgroup_schedule_barrier",
+                                         [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "The threads of a subgroup meet here. No memory is ordered.";
+    let description = [{
+        The Metal printer writes `simdgroup_barrier(mem_flags::mem_none)`. Every
+        other code generator drops the op. Every thread of the subgroup must
+        reach it.
+    }];
+    let assemblyFormat = "attr-dict";
+}
+
 // The op of a lane routine. Each one has two expansions, and each expansion
 // writes its code before the op. The caller then erases the op.
 def Vx_LaneOpInterface : OpInterface<"LaneOpInterface"> {
@@ -290,6 +304,24 @@ def Vx_LaneMatmulOp : Vx_Op<"lane_matmul", [MemoryEffects<[MemRead, MemWrite]>,
     let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$rhs,
                      UnitAttr:$accumulate, UnitAttr:$subgroup,
                      UnitAttr:$serial, UnitAttr:$subgroup_row);
+}
+
+// `lanes::matmul_scaled` in the code of a subgroup, or of a block of `lanes` lanes.
+// `acc` is an `f32` matrix, `lhs` and `rhs` are `f4E2M1FN` matrices, and
+// `lhs_scale` and `rhs_scale` hold the scale of each block of k: both `f8E4M3FN`
+// (NVFP4) or both `f8E8M0FNU` (MXFP4). Each element (i, j) of `acc` gets the sum
+// over k of lhs[i][k] * lhs_scale[i][k / B] * rhs[k][j] * rhs_scale[k / B][j],
+// from 0 and in the order of k, and then its old value. B is the k size of `lhs`
+// over the k size of `lhs_scale`. An `f8E4M3FN` scale counts without its sign
+// bit, as the tensor core reads it. The device clone gives the elements to the
+// lanes of the subgroup or the block, and the host lowering and `serial`
+// compute them in loops.
+def Vx_LaneMatmulScaledOp : Vx_Op<"lane_matmul_scaled", [MemoryEffects<[MemRead, MemWrite]>,
+        DeclareOpInterfaceMethods<Vx_LaneOpInterface, ["expandInKernel"]>]> {
+    let summary = "A matmul of tiles with block scales, with the lanes of a block or a subgroup.";
+    let arguments = (ins AnyMemRef:$acc, AnyMemRef:$lhs, AnyMemRef:$lhs_scale,
+                     AnyMemRef:$rhs, AnyMemRef:$rhs_scale, I64Attr:$lanes,
+                     UnitAttr:$subgroup, UnitAttr:$serial, UnitAttr:$subgroup_row);
 }
 
 // `lanes::copy_async`: the lanes of a block copy the tile of `source` at `place`
@@ -371,6 +403,18 @@ def Vx_LaneScaleRowsOp : Vx_Op<"lane_scale_rows", [MemoryEffects<[MemRead, MemWr
     let arguments = (ins AnyMemRef:$tile, AnyMemRef:$scale, I64Attr:$lanes,
                      UnitAttr:$serial, UnitAttr:$subgroup,
                      UnitAttr:$subgroup_row);
+}
+
+// `lanes::prefetch`: the lanes of a block, or of the subgroup with `subgroup`,
+// ask for a part of `source` to come into the L2 cache. `bounds` is the place of
+// the part and then its shape, each with one number for each dimension of
+// `source`. It reads no value. The write effect keeps the folder from erasing it.
+def Vx_LanePrefetchOp : Vx_Op<"lane_prefetch", [MemoryEffects<[MemRead, MemWrite]>,
+        DeclareOpInterfaceMethods<Vx_LaneOpInterface>]> {
+    let summary = "Ask for a part of a tensor to come into the L2 cache.";
+    let arguments = (ins AnyMemRef:$source,
+                     Variadic<AnySignlessInteger>:$bounds, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
 }
 
 // Waits until the copy of `token` ends, and then for every lane of the block,

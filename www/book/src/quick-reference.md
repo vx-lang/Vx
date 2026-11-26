@@ -17,7 +17,9 @@ when writing Vx with Rust habits.
 - `const N : i64 = 4;` is a value known while compiling. The type is required.
 - `fn add(a : i64, b : i64) -> i64 { .. }`. Parameter and return types are required, and a
   function with no result returns `void`.
-- `struct Point { x : i64, y : i64 }`, built with `Point { x : 1, y : 2 }`.
+- `struct Point { x : i64, y : i64 }`, built with `Point { x : 1, y : 2 }`. Directly before a
+  block, as in the condition of an `if`, put a struct literal in parentheses:
+  `if (Point { x : 1, y : 2 }).x > 0 { .. }`. There, `if ok {}` is a name and an empty block.
 - `enum Shape { Square(i64), Rect(i64, i64) }`, built with `Shape::Square(3)`.
 - `trait Describe { fn size(self : &Self) -> i64; }`. A trait method can have a default body.
 - `impl Point { .. }` and `impl Describe for Shape { .. }`. Each method writes its receiver's
@@ -44,6 +46,9 @@ when writing Vx with Rust habits.
 - `Tensor<f32, [2, 3]>`: the shape is part of the type. `?` is a size known only at run time,
   `Tensor<f32, [?, ?]>`, read with `t.extent(0)`. A third argument names the memory it lives in:
   `Tensor<f32, [4], Memory::NPU_HBM>`. Arrays are tensors: `let a : Tensor<f32, [3]> = [1.0, 2.0, 3.0];`.
+- `?n` names a run-time extent of a parameter: in `fn f(t : &Tensor<f32, [?n]>) -> usize requires
+  n % 4 == 0`, the body and the contracts read `n` as a `usize`. Each `?n` of a function is one
+  extent, and a call must show the `requires`.
 - `Option<T>` and `Result<T, E>` (`import core::option;`, `import core::result;`), `Vec<T>`
   (`import std::vec;`), `Box<T>` (`import std::box;`).
 - A function that never returns has the type `-> !`, like `panic("..")`.

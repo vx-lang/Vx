@@ -699,23 +699,24 @@ impl<'a> Parser<'a> {
                 type_args: parsed_type_args,
                 args,
                 span,
+                by_the_compiler: false,
             }))
         } else if self.check(&TokenType::LeftBrace) {
-            let is_struct_init = matches!(
-                (
-                    self.tokens.get(self.pos).map(|t| &t.kind),
-                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
-                ),
-                (Some(TokenType::LeftBrace), Some(TokenType::RightBrace), _)
-                    | (
-                        Some(TokenType::LeftBrace),
-                        Some(TokenType::Identifier(_)),
-                        Some(TokenType::Colon),
-                    )
+            let after = |n: usize| self.tokens.get(self.pos + n).map(|t| &t.kind);
+            let has_fields = matches!(
+                (after(1), after(2)),
+                (Some(TokenType::Identifier(_)), Some(TokenType::Colon))
             );
-
-            if is_struct_init {
+            let empty = after(1) == Some(&TokenType::RightBrace);
+            let before_block = self.block_follows_here();
+            // A block cannot start with `name :`, so this can only be a struct literal.
+            if has_fields && before_block {
+                return Err(self.error(&format!(
+                    "a struct literal cannot come directly before a block. Put it in \
+                     parentheses: `({call_name} {{ .. }})`"
+                )));
+            }
+            if (has_fields || empty) && !before_block {
                 self.advance(); // consume '{'
                 let mut fields = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -745,6 +746,7 @@ impl<'a> Parser<'a> {
                     name: call_name.into(),
                     fields,
                     type_id: None,
+                    made_by_the_compiler: false,
                     span,
                 }))
             } else if self.match_token(&TokenType::DoubleColon) {
@@ -803,6 +805,7 @@ impl<'a> Parser<'a> {
             type_args: Some(vec![ty]),
             args,
             span,
+            by_the_compiler: false,
         }))
     }
 
@@ -825,6 +828,12 @@ impl<'a> Parser<'a> {
         call_name: &mut String,
         parsed_type_args: Option<Vec<Type>>,
     ) -> ParseResult<'a, Expr> {
+        if self.check(&TokenType::LeftAngle) {
+            return Err(self.error(
+                "Vx writes type arguments without '::', as in `Vec<i32>::new()` \
+                 and not `Vec::<i32>::new()`",
+            ));
+        }
         let variant_line = self.peek().line;
         let variant_column = self.peek().column;
         let variant = match self.advance().kind.clone() {
@@ -1045,11 +1054,7 @@ impl<'a> Parser<'a> {
                     },
                 });
             }
-            let expr = Expr::Match(MatchExpr {
-                expr: Box::new(expr),
-                arms,
-                span: match_span,
-            });
+            let expr = Expr::Match(MatchExpr::new(Box::new(expr), arms, match_span));
             return Ok(self.wrap_try(expr));
         }
 
@@ -1129,6 +1134,74 @@ impl<'a> Parser<'a> {
                     type_args: None,
                     args: vec![inner],
                     span: Span::default(),
+                    by_the_compiler: false,
+                })
+            }
+            // `Distinct::check(t)` and `DisjointRanges::check(t)` check the values of `t` and
+            // call `core::distinct`.
+            TokenType::Distinct | TokenType::DisjointRanges
+                if self.peek_n(1).kind == TokenType::DoubleColon =>
+            {
+                let claim = if peeked_token.kind == TokenType::Distinct {
+                    "Distinct"
+                } else {
+                    "DisjointRanges"
+                };
+                self.advance();
+                self.advance();
+                match &self.advance().kind {
+                    TokenType::Identifier(s) if *s == "check" => {}
+                    _ => return Err(self.error(&format!("Expected 'check' after '{claim}::'"))),
+                }
+                self.consume(
+                    &TokenType::LeftParen,
+                    &format!("Expected '(' after {claim}::check"),
+                )?;
+                let mut args = Vec::new();
+                if !self.check(&TokenType::RightParen) {
+                    args.push(self.parse_expr()?);
+                    while self.match_token(&TokenType::Comma) {
+                        args.push(self.parse_expr()?);
+                    }
+                }
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                self.uses_distinct_check = true;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: format!("{claim}::check").into(),
+                    type_args: None,
+                    args,
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
+                    by_the_compiler: false,
+                })
+            }
+            TokenType::Distinct | TokenType::DisjointRanges => {
+                let name = if peeked_token.kind == TokenType::Distinct {
+                    "Distinct"
+                } else {
+                    "DisjointRanges"
+                };
+                self.advance();
+                self.consume(&TokenType::LeftParen, &format!("Expected '(' after {name}"))?;
+                let inner = self.parse_expr()?;
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
+                    name: name.to_string().into(),
+                    type_args: None,
+                    args: vec![inner],
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                        expansion: self.expansion(),
+                    },
+                    by_the_compiler: false,
                 })
             }
             TokenType::Grad => {
@@ -1249,6 +1322,7 @@ impl<'a> Parser<'a> {
                                     .map(|(i, e)| (format!("_{i}").into(), e))
                                     .collect(),
                                 type_id: None,
+                                made_by_the_compiler: false,
                                 span: Span::default(),
                             })
                         } else {
@@ -1283,7 +1357,12 @@ impl<'a> Parser<'a> {
                                 name: s.to_string().into(),
                                 token_tree,
                                 block_tree,
-                                span: Span::default(),
+                                span: crate::syntax::Span {
+                                    line: token.line,
+                                    column: token.column,
+                                    length: token.length,
+                                    expansion: self.expansion(),
+                                },
                             })
                         } else {
                             let span = crate::syntax::Span {
@@ -1415,9 +1494,15 @@ impl<'a> Parser<'a> {
                             },
                         })
                     }
-                    TokenType::Tasks => self.parse_task_block(TaskBlockKind::Tasks, &token)?,
+                    // Like `unsafe`, a `tasks` or `spawn` block returns before the postfix loop
+                    // below. A `(` or `[` on the next line then starts a new statement.
+                    TokenType::Tasks => {
+                        let expr = self.parse_task_block(TaskBlockKind::Tasks, &token)?;
+                        return Ok(self.wrap_try(expr));
+                    }
                     TokenType::Spawn if self.check(&TokenType::LeftBrace) => {
-                        self.parse_task_block(TaskBlockKind::Spawn, &token)?
+                        let expr = self.parse_task_block(TaskBlockKind::Spawn, &token)?;
+                        return Ok(self.wrap_try(expr));
                     }
                     TokenType::Spawn => {
                         self.consume(&TokenType::On, "Expected 'on' or '{' after 'spawn'")?;
@@ -1449,7 +1534,7 @@ impl<'a> Parser<'a> {
                             stmts.append(&mut self.pending_stmts);
                         }
                         self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                        Expr::SpawnOn(SpawnOnExpr {
+                        let expr = Expr::SpawnOn(SpawnOnExpr {
                             top,
                             stmts,
                             ret: ret_expr,
@@ -1460,7 +1545,8 @@ impl<'a> Parser<'a> {
                                 expansion: self.expansion(),
                             },
                             arrivals: None,
-                        })
+                        });
+                        return Ok(self.wrap_try(expr));
                     }
                     TokenType::Unknown('"') => {
                         return Err(self.error_at(&token, super::UNCLOSED_STRING))
@@ -1548,11 +1634,12 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
+                let span = expr.span();
                 expr = Expr::IndirectCall(IndirectCallExpr {
                     callee: Box::new(expr),
                     args,
                     target_func_ty: None,
-                    span: Span::default(),
+                    span,
                 });
             } else if self.check(&TokenType::LeftBracket) {
                 // The `[` token, so a diagnostic about the index points at it.
@@ -1585,7 +1672,7 @@ impl<'a> Parser<'a> {
         let if_span = self.next_span();
         self.advance();
         let is_comptime = self.match_token(&TokenType::Comptime);
-        let cond = self.parse_expr()?;
+        let cond = self.parse_expr_before_block()?;
         let then_start = self.pos;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut then_block = Vec::new();
@@ -1835,8 +1922,7 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Option::Some");
@@ -1887,8 +1973,7 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Option<i32>::Some");
@@ -1906,8 +1991,7 @@ mod tests {
             owner_type_args: _,
             name,
             args,
-            span: _,
-            type_args: _,
+            ..
         }) = expr
         {
             assert_eq!(name.as_ref(), "Vec<i32>::new");

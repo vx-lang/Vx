@@ -15,11 +15,11 @@
 // CHECK: image=
 
 fn thread_id() on Topology::Device -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
-    %t = gpu.thread_id x
-    %r = "arith.index_cast"(%t) : (index) -> i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+      %t = gpu.thread_id x
+      %r = "arith.index_cast"(%t) : (index) -> i32
+      macro.yield %r : i32
+    } };
 }
 
 pub fn copy_half(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {

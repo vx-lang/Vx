@@ -10,17 +10,17 @@
 // and needs no `return` after it. Each one reports the line of its call, through its `Caller`.
 
 /// Stops the program: code that should never run did.
-fn unreachable(at : Caller) -> ! {
+pub fn unreachable(at : Caller) -> ! {
   panic("internal error: entered unreachable code", at);
 }
 
 /// Stops the program: this code is not written yet.
-fn todo(at : Caller) -> ! {
+pub fn todo(at : Caller) -> ! {
   panic("not yet implemented", at);
 }
 
 /// Stops the program: this case is not supported.
-fn unimplemented(at : Caller) -> ! {
+pub fn unimplemented(at : Caller) -> ! {
   panic("not implemented", at);
 }
 
@@ -30,6 +30,8 @@ struct Location {
   file : *const i8,
   line : i32,
   column : i32,
+
+  invariant true,
 }
 
 // A `Location` is three numbers, so it can be given to many calls.
@@ -37,7 +39,7 @@ impl Copy for Location {}
 
 impl Location {
   /// The place of this call: `let l = Location::here();`.
-  fn here(at : Caller) -> Location {
+  pub fn here(at : Caller) -> Location {
     return at.location;
   }
 }

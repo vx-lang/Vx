@@ -1,0 +1,21 @@
+//===- main.vx - Vx Compiler -----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The imported module declares C's `puts`, so a Vx function named `puts` gets another name. A C
+// program calls an `extern fn` by its name, so a `extern fn puts` is an error.
+//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s
+// CHECK: main.vx:[[@LINE+3]]: the exported function `puts` cannot keep its name, because the C function `puts` has that name. Choose another name
+import tests::frontend::fail::an_extern_fn_with_the_name_of_a_c_function::c_puts;
+
+extern fn puts(_s : *const i8) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

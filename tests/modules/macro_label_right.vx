@@ -1,0 +1,25 @@
+//===- macro_label_right.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares a struct `Right` and a macro `label` that gives it a method `label`.
+// macro_label_left.vx declares a macro with the same name.
+
+struct Right {
+  x : i64,
+}
+
+macro_rules label {
+  ($t : ident) => {
+    impl $t {
+      pub fn label(self : &Self) -> i64 {
+        return 2i64;
+      }
+    }
+  };
+}
+
+label!(Right);

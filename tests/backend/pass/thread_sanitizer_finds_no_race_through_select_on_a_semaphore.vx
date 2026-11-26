@@ -1,0 +1,92 @@
+//===- thread_sanitizer_finds_no_race_through_select_on_a_semaphore.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `select` on a `Semaphore` watches it, and must stop the watch before it returns. A task
+// takes the one permit and gives it back 100 times, and holds it for 1 millisecond each time.
+// The main code waits for a free permit with `select2` 100 times. After each `select2`, it calls
+// `scribble`, whose frame reuses the stack of the `select2`. A drop of a `Permit` that woke an
+// old `select2` would race with the writes of `scribble`, and ThreadSanitizer must report no
+// race.
+//
+// REQUIRES: thread-sanitizer
+// RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// RUN: env VX_TASK_RUNTIME=shared vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// CHECK: {{^}}select2 gave the semaphore 100 times{{$}}
+// CHECK-NEXT: {{^}}scribble gave {{[0-9]+}}{{$}}
+
+import core::time;
+import std::sync::select;
+import std::sync::semaphore;
+import std::time;
+
+struct Words {
+  a : i64,
+  b : i64,
+  c : i64,
+  d : i64,
+  e : i64,
+  f : i64,
+  g : i64,
+  h : i64,
+}
+
+fn fill(w : &mut Words, v : i64) -> void {
+  w.a = v;
+  w.b = v;
+  w.c = v;
+  w.d = v;
+  w.e = v;
+  w.f = v;
+  w.g = v;
+  w.h = v;
+}
+
+/// Plain writes to a frame at the depth of the frame of `select2`.
+fn scribble(v : i64) -> i64 {
+  let mut w = Words {
+    a : 0, b : 0, c : 0, d : 0, e : 0, f : 0, g : 0, h : 0
+  };
+  fill(&mut w, v);
+  return w.a + w.h;
+}
+
+fn hold_and_give_back(s : &Semaphore, count : i64) -> void {
+  for _k in 0..count {
+    match s.acquire() {
+      Result<Permit, AcquireError>::Ok(_permit) => {
+        sleep(Duration::from_millis(1));
+      }
+      Result<Permit, AcquireError>::Err(_) => {}
+    }
+  }
+}
+
+fn main() -> i32 {
+  let s = Semaphore::new(1);
+  let limit = Deadline::after(Duration::from_secs(10));
+  let mut gave : i64 = 0;
+  let mut scribbled : i64 = 0;
+  tasks {
+    spawn {
+      hold_and_give_back(&s, 100);
+    };
+    for k in 0i64..100i64 {
+      match select2(&s, &limit) {
+        Result<i32, SelectError>::Ok(i) => {
+          if i == 0 {
+            gave = gave + 1;
+          }
+        }
+        Result<i32, SelectError>::Err(_) => {}
+      }
+      scribbled = scribbled + scribble(k);
+    }
+  };
+  println!("select2 gave the semaphore {} times", gave);
+  println!("scribble gave {}", scribbled);
+  return 0;
+}

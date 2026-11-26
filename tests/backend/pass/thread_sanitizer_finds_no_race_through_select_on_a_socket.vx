@@ -1,0 +1,153 @@
+//===- thread_sanitizer_finds_no_race_through_select_on_a_socket.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `select` on a listener puts the listener on the list of the I/O poller, and it must take
+// it off before it returns. Here 50 calls of `select2` on a listener and a channel return for
+// the channel, and one more call returns at the time limit of `within`. After each call,
+// `scribble` writes to a frame that reuses the stack of the `select2`. Then a client connects,
+// so the listener gets ready. A poller that still had the listener on its list would write to
+// an old `select2` frame then, and ThreadSanitizer must report no race.
+//
+// The port number is fixed, because `std::net` cannot give the port of a listener yet.
+//
+// REQUIRES: thread-sanitizer
+// RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// RUN: env VX_TASK_RUNTIME=shared vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// CHECK: {{^}}select2 gave the channel 50 times{{$}}
+// CHECK-NEXT: {{^}}within: Cancelled{{$}}
+// CHECK-NEXT: {{^}}accept got the client{{$}}
+// CHECK-NEXT: {{^}}scribble gave {{[0-9]+}}{{$}}
+
+import core::result;
+import core::time;
+import std::net;
+import std::string;
+import std::sync::channel;
+import std::sync::select;
+import std::sync::wait;
+import std::time;
+
+fn address(s : *const i8) -> String {
+  return unsafe { String::from_c_str(s) };
+}
+
+struct Words {
+  a : i64,
+  b : i64,
+  c : i64,
+  d : i64,
+  e : i64,
+  f : i64,
+  g : i64,
+  h : i64,
+}
+
+fn fill(w : &mut Words, v : i64) -> void {
+  w.a = v;
+  w.b = v;
+  w.c = v;
+  w.d = v;
+  w.e = v;
+  w.f = v;
+  w.g = v;
+  w.h = v;
+}
+
+/// Plain writes to a frame at the depth of the frame of `select2`.
+fn scribble(v : i64) -> i64 {
+  let mut w = Words {
+    a : 0, b : 0, c : 0, d : 0, e : 0, f : 0, g : 0, h : 0
+  };
+  fill(&mut w, v);
+  return w.a + w.h;
+}
+
+/// Sends `count` values, 2 milliseconds apart, so that most `select2` calls wait.
+fn send_slowly(tx : Sender<i64>, count : i64) -> void {
+  for k in 0..count {
+    sleep(Duration::from_millis(2));
+    let _sent = tx.send(k);
+  }
+}
+
+fn say(what : *const i8, r : Result<i32, SelectError>) -> void {
+  match r {
+    Result<i32, SelectError>::Ok(i) => {
+      println!("{}: index {}", what, i);
+    }
+    Result<i32, SelectError>::Err(_) => {
+      println!("{}: Cancelled", what);
+    }
+  }
+}
+
+fn connect(network : &Network) -> void {
+  match TcpStream::connect(network, &address("127.0.0.1:41784")) {
+    Result<TcpStream, NetError>::Ok(_s) => {}
+    Result<TcpStream, NetError>::Err(_e) => {
+      println!("connect: Error");
+    }
+  }
+}
+
+fn serve(network : &Network, listener : TcpListener) -> void {
+  let mut l = listener;
+  let (tx, rx) = channel<i64>(1);
+  // The task sends on a clone, so the channel stays open after it ends.
+  let sender = tx.clone();
+  let mut channel_won : i64 = 0;
+  let mut scribbled : i64 = 0;
+  tasks {
+    spawn {
+      send_slowly(sender, 50);
+    };
+    for k in 0i64..50i64 {
+      match select2(&l, &rx) {
+        Result<i32, SelectError>::Ok(i) => {
+          if i == 1 {
+            channel_won = channel_won + 1;
+            let _v = rx.try_recv();
+          }
+        }
+        Result<i32, SelectError>::Err(_) => {}
+      }
+      scribbled = scribbled + scribble(k);
+    }
+  };
+  println!("select2 gave the channel {} times", channel_won);
+  within(Duration::from_millis(100), || -> void {
+    say("within", select2(&l, &rx));
+  });
+  scribbled = scribbled + scribble(50);
+  connect(network);
+  // The poller sees the connection during the sleep.
+  sleep(Duration::from_millis(100));
+  scribbled = scribbled + scribble(51);
+  match l.accept() {
+    Result<TcpStream, NetError>::Ok(_s) => {
+      println!("accept got the client");
+    }
+    Result<TcpStream, NetError>::Err(_e) => {
+      println!("accept: Error");
+    }
+  }
+  println!("scribble gave {}", scribbled);
+  drop(tx);
+}
+
+fn main(root : Root) -> i32 {
+  let network = &root.network;
+  match TcpListener::bind(network, &address("127.0.0.1:41784")) {
+    Result<TcpListener, NetError>::Ok(listener) => {
+      serve(network, listener);
+    }
+    Result<TcpListener, NetError>::Err(_e) => {
+      println!("bind: Error");
+    }
+  }
+  return 0;
+}

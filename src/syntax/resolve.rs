@@ -158,7 +158,7 @@ impl Type {
             Type::Tensor(_, dims, top) => {
                 for dim in dims.iter_mut().filter_map(|d| match d {
                     Dim::Static(e) => Some(e),
-                    Dim::Dyn => None,
+                    Dim::Dyn(_) => None,
                 }) {
                     dim.resolve_names(scope);
                 }
@@ -175,6 +175,8 @@ impl Type {
             Type::Ref(inner, _)
             | Type::Borrow { inner, .. }
             | Type::Verified(inner)
+            | Type::Distinct(inner)
+            | Type::DisjointRanges(inner)
             | Type::Pinned(inner, _) => {
                 inner.resolve_names(scope);
             }

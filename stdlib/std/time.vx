@@ -16,13 +16,13 @@ import core::time;
 
 extern {
   /// The Rust core behind `Instant::now`.
-  fn vx_clock_ns() -> i64;
-  /// The Rust core behind `sleep`.
-  fn vx_sleep(ns : i64)->i32;
+  pub fn vx_clock_ns() -> i64;
+  /// The Rust core behind `sleep_until`.
+  pub fn vx_sleep_until(deadline : i64) -> i32;
   /// The Rust core behind `unix_timestamp`.
-  fn vx_unix_timestamp() -> f64;
+  pub fn vx_unix_timestamp() -> f64;
   /// The Rust core behind `bench_report`.
-  fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32;
+  pub fn vx_bench_report(name : *const i8, unit : *const i8, value : f32) -> i32;
 }
 
 /// A reading of a clock that never goes back, for measuring how long something took. Only the
@@ -35,19 +35,19 @@ impl Copy for Instant {}
 
 impl Instant {
   /// The clock now.
-  fn now() -> Instant {
+  pub fn now() -> Instant {
     return Instant {
       ns: unsafe { vx_clock_ns() }
     };
   }
 
   /// How long ago `self` was.
-  fn elapsed(self : &Instant) -> Duration {
+  pub fn elapsed(self : &Instant) -> Duration {
     return Instant::now().duration_since(self);
   }
 
   /// How long after `earlier` this reading is, or zero when `earlier` is the later one.
-  fn duration_since(self : &Instant, earlier : &Instant) -> Duration {
+  pub fn duration_since(self : &Instant, earlier : &Instant) -> Duration {
     if self.ns <= earlier.ns {
       return Duration::zero();
     }
@@ -55,7 +55,7 @@ impl Instant {
   }
 
   /// The reading `d` after this one, or `None` when the clock cannot hold it.
-  fn checked_add(self : &Instant, d : &Duration) -> Option<Instant> {
+  pub fn checked_add(self : &Instant, d : &Duration) -> Option<Instant> {
     let ns = d.as_nanos_i64();
     if ns > 9223372036854775807 - self.ns {
       return Option<Instant>::None;
@@ -66,14 +66,14 @@ impl Instant {
   }
 
   /// A reading that the clock never reaches. A wait with it as its deadline has no time limit.
-  fn never() -> Instant {
+  pub fn never() -> Instant {
     return Instant {
       ns: 9223372036854775807
     };
   }
 
   /// The reading in nanoseconds, as the runtime takes a deadline.
-  fn as_nanos_i64(self : &Instant) -> i64 {
+  pub fn as_nanos_i64(self : &Instant) -> i64 {
     return self.ns;
   }
 }
@@ -107,15 +107,88 @@ impl PartialOrd for Instant {
   }
 }
 
-/// Pause this task for at least `d`. It may be longer. It is never shorter. Other tasks can run on
-/// the thread of the task while it sleeps.
-fn sleep(d : Duration) -> i32 {
-  return unsafe { vx_sleep(d.as_nanos_i64()) };
+/// Pause this task for at least `d`. It may be longer. A cancel of the `tasks` block, or the limit
+/// of `within` or of a `drop`, ends the sleep early. The sleep is a wait: in the shared runtime,
+/// other tasks run on the thread of the task while it sleeps. Gives `true` when the whole time
+/// passed, and `false` when the sleep ended early or the task was already cancelled.
+pub fn sleep(d : Duration) -> bool {
+  match Instant::now().checked_add(&d) {
+    Option<Instant>::Some(at) => {
+      return sleep_until(at);
+    }
+    Option<Instant>::None => {
+      return sleep_until(Instant::never());
+    }
+  }
+}
+
+/// `sleep` until the clock reaches `deadline`. Gives `true` at the deadline, and `false` when a
+/// cancel or a limit ended the sleep early, as `sleep` does.
+pub fn sleep_until(deadline : Instant) -> bool {
+  return unsafe { vx_sleep_until(deadline.ns) } != 0;
+}
+
+/// A timer for periodic work. Tick `k` is due `k` periods after `Interval::new`, so a late tick
+/// does not move the ticks after it.
+///
+/// When the work takes longer than a period, ticks are missed. Then the next `tick` gives the
+/// latest due tick at once, and skips the older ones. The ticks after it are due on time again. A
+/// burst of all the missed ticks would give more work to a program that is already late.
+struct Interval {
+  start : Instant,
+  period_ns : i64,
+  // The number of the last tick that `tick` gave, or 0 before the first.
+  last : i64,
+}
+
+impl Interval {
+  /// An `Interval` whose first tick is due `period` from now. `period` must be longer than zero.
+  pub fn new(period : Duration) -> Interval {
+    let ns = period.as_nanos_i64();
+    assert(ns > 0, "Interval::new: the period must be longer than zero");
+    return Interval {
+      start: Instant::now(),
+      period_ns: ns,
+      last: 0
+    };
+  }
+
+  /// The time between two ticks.
+  pub fn period(self : &Interval) -> Duration {
+    return Duration::from_nanos(self.period_ns as u64);
+  }
+
+  /// Waits for the next tick, and gives the time when the tick was due. A late tick comes at once.
+  /// Gives `None` when a cancel of the `tasks` block, or the limit of `within`, ended the wait.
+  pub fn tick(self : &mut Interval) -> Option<Instant> {
+    let mut k = self.last + 1;
+    // The number of the latest tick that is due now.
+    let latest = (Instant::now().ns - self.start.ns) / self.period_ns;
+    if latest > k {
+      k = latest;
+    }
+    let at = self.due(k);
+    if !sleep_until(at) {
+      return Option<Instant>::None;
+    }
+    self.last = k;
+    return Option<Instant>::Some(at);
+  }
+
+  /// The time when tick `k` is due, or `Instant::never()` when the clock cannot hold it.
+  pub fn due(self : &Interval, k : i64) -> Instant {
+    if self.period_ns > (9223372036854775807 - self.start.ns) / k {
+      return Instant::never();
+    }
+    return Instant {
+      ns: self.start.ns + self.period_ns * k
+    };
+  }
 }
 
 /// Seconds since the Unix epoch, as an `f64`. Wall-clock time, so it can move backwards
 /// when the system clock is adjusted. `Instant` is the one to measure a duration with.
-fn unix_timestamp() -> f64 {
+pub fn unix_timestamp() -> f64 {
   return unsafe { vx_unix_timestamp() };
 }
 
@@ -130,6 +203,6 @@ fn unix_timestamp() -> f64 {
 /// Report a benchmark measurement in the form the harness collects.
 ///
 /// Unsafe because `name` and `unit` must point at NUL-terminated strings.
-unsafe fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32 {
+pub unsafe fn bench_report(name : *const i8, unit : *const i8, value : f32) -> i32 {
   return unsafe { vx_bench_report(name, unit, value) };
 }

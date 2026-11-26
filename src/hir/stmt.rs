@@ -367,6 +367,11 @@ impl<'a> TypeChecker<'a> {
                 Some(ty) if self.type_can_hold_reference(&ty) => ty,
                 _ => continue,
             };
+            // `info.text = text_of(&u)` with `info : &mut Info` stores a `Vec<u8>` in `info`.
+            // The stored value cannot hold a reference, so `info` keeps no borrow of `u`.
+            if !self.type_can_hold_reference(&self.check_expr_type_probe(&lhs)) {
+                continue;
+            }
             let depth = self.scope_depth_of(&holder);
             let mut borrowed = Vec::new();
             crate::syntax::visit_expr(&rhs, &mut |e| {
@@ -872,7 +877,23 @@ impl<'a> TypeChecker<'a> {
                 self.place_for_let(name, &ty, &context, span);
             }
             self.shadow_borrows(name);
-            self.insert(name.to_string(), ty.clone());
+            // A reference is valid no longer than the variable that holds it. So `alias` in
+            // `let mut alias = &mut outside` in an inner block can later take a borrow there.
+            let held = match ty.clone() {
+                Type::Borrow {
+                    inner,
+                    mem_space,
+                    is_mut,
+                    region_id,
+                } => Type::Borrow {
+                    inner,
+                    mem_space,
+                    is_mut,
+                    region_id: region_id.max(self.scopes.len()),
+                },
+                other => other,
+            };
+            self.insert(name.to_string(), held);
             let depth = self.current_scope_depth();
             if from_literal {
                 self.literal_typed_lets.insert(name.to_string(), depth);
@@ -892,7 +913,7 @@ impl<'a> TypeChecker<'a> {
         // The region's device has to represent what the body builds. A type annotation, or a
         // type inferred from an untyped literal, has no expression that carries it, so the
         // binding is checked here. Expression types are checked as they are typed.
-        if self.active_space_declares_dtypes {
+        if self.active_device_declares_dtypes {
             self.check_type_element_types_in_active_region(&binding_ty, &context, span, span);
         }
 
@@ -988,12 +1009,23 @@ impl<'a> TypeChecker<'a> {
         // `y == y + 1` would be false. Each change of a `let mut` ends its facts. Its fact
         // must be one that the prover can model, so that no new program warns.
         let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
-        if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
+        if matches!(value, Expr::StructInit(_)) {
+            let place = Expr::Identifier(IdentifierExpr {
+                name: name.clone(),
+                span: Span::default(),
+            });
+            let ty = self.lookup(name.as_ref()).map(|(t, _)| t.clone());
+            let facts = ty.map(|ty| self.facts_of_a_struct_literal(&place, &ty, &value, name));
+            self.consteval.constraints.extend(facts.unwrap_or_default());
+        } else if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
             // A call can change its arguments. Re-evaluating it in a later proof would use
             // their new values, not the values from when the result was returned.
             let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
                 if c.args.iter().any(|a| self.call_may_change_argument(a)));
-            if !changes_an_argument {
+            // A fact reads each variable as it is after the `let`. A variable that the value
+            // read before a call in the value changed it had another value at the read.
+            let read_before_a_change = self.variables_read_before_a_change(&value);
+            if !changes_an_argument && read_before_a_change.is_empty() {
                 let id_expr = Expr::Identifier(IdentifierExpr {
                     name: name.clone(),
                     span: Span::default(),
@@ -1011,6 +1043,65 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The facts of the struct literal `value` of type `ty` at `place`: `place.f == e` for each
+    /// field `f` of an integer type, when the prover can model `e`. A field that is a struct
+    /// literal gives the facts of its own fields. A value that names `root` gives no fact: in
+    /// `let c = Counter { n : c.n + 1i32, .. }`, the `c` on the right is the earlier `c`.
+    fn facts_of_a_struct_literal(
+        &self,
+        place: &Expr,
+        ty: &Type,
+        value: &Expr,
+        root: &str,
+    ) -> Vec<Expr> {
+        let Expr::StructInit(si) = value else {
+            return Vec::new();
+        };
+        let (name, args) = match ty {
+            Type::Struct(n, _) => (n.clone(), Vec::new()),
+            Type::GenericInstance(b, a) => match &**b {
+                Type::Struct(n, _) => (n.clone(), a.clone()),
+                _ => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+        let mut facts = Vec::new();
+        for (field, e) in &si.fields {
+            let Some(field_ty) = self.struct_field_type(&name, &args, field) else {
+                continue;
+            };
+            let member = Expr::MemberAccess(MemberAccessExpr::new(
+                Box::new(place.clone()),
+                field.clone(),
+                Span::default(),
+            ));
+            let e = crate::syntax::bare_unsafe_value(e);
+            if matches!(e, Expr::StructInit(_)) {
+                facts.extend(self.facts_of_a_struct_literal(&member, &field_ty, e, root));
+                continue;
+            }
+            let integer = matches!(field_ty,
+                Type::Scalar(t) if t.int_bits().is_some() && t != ElementType::Bool);
+            // As in a `let`, a call that can change its arguments gives no fact.
+            let changes_an_argument = matches!(e, Expr::FunctionCall(c)
+                if c.args.iter().any(|a| self.call_may_change_argument(a)));
+            if integer
+                && hir::prover::is_modelled(e)
+                && !crate::hir::check::raw::expr_mentions(e, root)
+                && !changes_an_argument
+            {
+                facts.push(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(member),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(e.clone()),
+                    span: Span::default(),
+                    operand_ty: None,
+                }));
+            }
+        }
+        facts
+    }
+
     /// Whether a call can change the value behind the argument `arg`: a `&mut` or a pointer.
     fn call_may_change_argument(&self, arg: &Expr) -> bool {
         matches!(arg, Expr::Borrow(b) if b.is_mut)
@@ -1020,13 +1111,111 @@ impl<'a> TypeChecker<'a> {
             )
     }
 
+    /// The variables that `value` read before a call inside `value` changed them. In
+    /// `first(read(&c), halve(&mut c))`, `read` gets the old `c`. A fact made from the text of
+    /// `value` reads the new `c`, so a fact that names one of these variables can be false.
+    fn variables_read_before_a_change(&self, value: &Expr) -> Vec<String> {
+        let mut order = ReadsAndChanges::default();
+        self.note_reads_and_changes(value, &mut order);
+        order.read_before_a_change
+    }
+
+    /// Adds the reads and the changes of `e` to `order`, in the order in which `e` runs.
+    fn note_reads_and_changes(&self, e: &Expr, order: &mut ReadsAndChanges) {
+        match e {
+            Expr::Identifier(id) => order.read.push(id.name.to_string()),
+            Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
+            }
+            Expr::BinaryOp(b) => {
+                self.note_reads_and_changes(&b.lhs, order);
+                self.note_reads_and_changes(&b.rhs, order);
+            }
+            Expr::RelationalOp(r) => {
+                self.note_reads_and_changes(&r.lhs, order);
+                self.note_reads_and_changes(&r.rhs, order);
+            }
+            Expr::LogicalOp(l) => {
+                self.note_reads_and_changes(&l.lhs, order);
+                self.note_reads_and_changes(&l.rhs, order);
+            }
+            Expr::IndexAccess(ix) => {
+                self.note_reads_and_changes(&ix.base, order);
+                self.note_reads_and_changes(&ix.index, order);
+            }
+            Expr::UnaryOp(u) => self.note_reads_and_changes(&u.expr, order),
+            Expr::Borrow(b) => self.note_reads_and_changes(&b.expr, order),
+            Expr::Dereference(d) => self.note_reads_and_changes(&d.expr, order),
+            Expr::MemberAccess(m) => self.note_reads_and_changes(&m.base, order),
+            Expr::AsCast(c) => self.note_reads_and_changes(&c.expr, order),
+            Expr::EnumVariant(v) => {
+                for x in v.payload.iter().flatten() {
+                    self.note_reads_and_changes(x, order);
+                }
+            }
+            Expr::FunctionCall(c) => {
+                let params = self.call_param_types(c.name.as_ref(), e);
+                self.note_a_call(None, &c.args, params.as_deref(), order);
+            }
+            // The check of the `let` turned each method call that it found into a call of the
+            // function of the method. A method call that stays is of a built-in method.
+            Expr::MethodCall(m) => self.note_a_call(Some(&m.base), &m.args, None, order),
+            // Any other expression can read and change each variable.
+            _ => {
+                order
+                    .read_before_a_change
+                    .extend(order.read.iter().cloned());
+                order.unknown_read = true;
+            }
+        }
+    }
+
+    /// A call reads its receiver and its arguments from left to right. Then it changes each
+    /// variable that it can write through. It cannot write through the argument of a `&`
+    /// parameter. `params` has the parameter types, when the checker knows them.
+    fn note_a_call(
+        &self,
+        receiver: Option<&Expr>,
+        args: &[Expr],
+        params: Option<&[Type]>,
+        order: &mut ReadsAndChanges,
+    ) {
+        let mut changed = Vec::new();
+        if let Some(receiver) = receiver {
+            self.note_reads_and_changes(receiver, order);
+            // The method can take `&mut self` when the receiver is a `let mut` or a `&mut`.
+            let root = Self::arg_reborrow_base(receiver).map(|(root, _)| root);
+            let can_change = self.call_may_change_argument(receiver)
+                || root.as_ref().is_none_or(|root| self.is_mutable(root));
+            changed.extend(root.filter(|_| can_change));
+        }
+        for (i, arg) in args.iter().enumerate() {
+            self.note_reads_and_changes(arg, order);
+            let param = params.and_then(|p| p.get(i));
+            let reads_only = matches!(param, Some(Type::Borrow { is_mut: false, .. }));
+            if !reads_only && self.call_may_change_argument(arg) {
+                changed.extend(Self::arg_reborrow_base(arg).map(|(root, _)| root));
+            }
+        }
+        for root in &changed {
+            // The `&mut` in the call reads the variable once. Any other read came before.
+            let reads = order.read.iter().filter(|r| *r == root).count();
+            let by_this_call = changed.iter().filter(|r| *r == root).count();
+            if reads > by_this_call || order.unknown_read {
+                order.read_before_a_change.push(root.clone());
+            }
+        }
+    }
+
     /// A returned number keeps its postconditions even when a later call changes an input
     /// buffer. The equation `name == call(args)` does not: a later proof evaluates the call
-    /// again with the new buffer.
+    /// again with the new buffer. A postcondition is not kept when it names a variable that the
+    /// call read before a call in an argument changed it.
     fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
-        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+        let value = crate::syntax::bare_unsafe_value(value);
+        let Expr::FunctionCall(call) = value else {
             return;
         };
+        let read_before_a_change = self.variables_read_before_a_change(value);
         let Some((params, return_type, ensures)) = self.declared_callee(&call.name) else {
             return;
         };
@@ -1036,15 +1225,21 @@ impl<'a> TypeChecker<'a> {
             .filter(|arg| self.call_may_change_argument(arg))
             .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
             .collect();
-        let mut names: HashMap<_, _> = params
-            .iter()
-            .map(|(p, _)| p.clone())
-            .zip(
+        let mut names = self
+            .callee_extent_values(params, &call.args, &mut |extent| {
+                Expr::Identifier(IdentifierExpr {
+                    name: format!("$extent_{name}_{extent}").into(),
+                    span: Span::default(),
+                })
+            })
+            .values;
+        names.extend(
+            params.iter().map(|(p, _)| p.clone()).zip(
                 call.args
                     .iter()
                     .map(|a| crate::hir::prover::without_borrow(a).clone()),
-            )
-            .collect();
+            ),
+        );
         names.insert(
             "return".into(),
             Expr::Identifier(IdentifierExpr {
@@ -1063,6 +1258,7 @@ impl<'a> TypeChecker<'a> {
             .filter(|e| {
                 !changed
                     .iter()
+                    .chain(&read_before_a_change)
                     .any(|root| crate::hir::check::raw::expr_mentions(e, root))
             })
             .collect();
@@ -1382,6 +1578,10 @@ impl<'a> TypeChecker<'a> {
                         Type::Scalar(ElementType::I64)
                     }
                 }
+                // An element of a tensor of rank 2 or more is a row.
+                Type::Tensor(el_ty, dims, top) if dims.len() > 1 => {
+                    Type::Tensor(el_ty, dims[1..].to_vec(), top)
+                }
                 Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
                 // A scalar iterable is an integer range (`a..b`); the induction variable takes
                 // the range's element type, so `for i in 0..10` binds `i: i32` and code like
@@ -1396,9 +1596,6 @@ impl<'a> TypeChecker<'a> {
             self.drops_bind_loop_item(iter, body, &iter_ty);
         }
         self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
-
-        // Prove invariants hold on entry, then assume them inside the loop
-        let prev_constraints_len = self.consteval.constraints.len();
 
         // A range loop constrains its induction variable: `for i in a..b` gives
         // `a <= i && i < b` for the body. Recorded as prover facts so bounds obligations
@@ -1422,12 +1619,16 @@ impl<'a> TypeChecker<'a> {
             name: iter.clone().into(),
             span: Span::default(),
         });
-        // `for i in a..b` runs as `let mut i = a; while i < b { ..; i = i + 1; }`, so each
-        // invariant holds for `i == a` when the loop starts, and for `i + 1` after a pass.
+        // `for i in a..b` runs as `let mut i = a; let end = b; while i < end { ..; i = i + 1; }`,
+        // so each invariant holds for `i == a` when the loop starts, and for `i + 1` after a pass.
         let range = match &**iterable {
             Expr::Range(r) => Some((self.fold_raw_extent(&r.start), self.fold_raw_extent(&r.end))),
             _ => None,
         };
+        let range = range.map(|(lo, hi)| (lo, self.name_the_end_of_a_range(hi, iter)));
+        // The facts of the loop sit above this length, so the truncation after the loop drops
+        // them. The fact that names the end stays, for the facts after the loop.
+        let prev_constraints_len = self.consteval.constraints.len();
         let mut first = Vec::new();
         if let Some((lo, hi)) = range.as_ref().filter(|(lo, _)| usable(lo)) {
             first.push(Expr::RelationalOp(RelationalOpExpr {
@@ -1977,6 +2178,44 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A new name `$end_N` for the end `b` of `for var in a..b`. The loop reads `b` once, and the
+    /// name has the range of the type of `var`, so `i < b` keeps `i + 1` from wrapping also when
+    /// `b` is a call or a `let` with no range fact. `$end_N == b` is a fact as a `let` would give.
+    fn name_the_end_of_a_range(&mut self, end: Expr, var: &str) -> Expr {
+        if matches!(end, Expr::Number(_)) {
+            return end;
+        }
+        let int = match self.lookup(var).map(|(t, _)| t.clone()) {
+            Some(Type::Scalar(e)) if e.int_bits().is_some() && e != ElementType::Bool => e,
+            _ => return end,
+        };
+        let name: crate::symbol::Symbol = format!("$end_{}", self.end_values.len()).into();
+        self.end_values.push(int);
+        let named = Expr::Identifier(IdentifierExpr {
+            name: name.clone(),
+            span: Span::default(),
+        });
+        // In `for i in 0..i`, the end is the outer `i`, which a fact here would confuse with `var`.
+        // A call can change its arguments, and a later proof would read their new values.
+        let changes_an_argument = matches!(&end, Expr::FunctionCall(c)
+            if c.args.iter().any(|a| self.call_may_change_argument(a)));
+        if crate::hir::prover::is_modelled(&end)
+            && !crate::hir::check::raw::expr_mentions(&end, var)
+            && !changes_an_argument
+        {
+            self.consteval
+                .constraints
+                .push(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(named.clone()),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(end),
+                    span: Span::default(),
+                    operand_ty: None,
+                }));
+        }
+        named
+    }
+
     /// A new name for the value of the integer variable `var` where its loop ends.
     fn exit_value_of(&mut self, var: &str) -> Option<Expr> {
         let int = match self.lookup(var)?.0.clone() {
@@ -2487,9 +2726,27 @@ impl<'a> TypeChecker<'a> {
             None => rhs.clone(),
         };
         let renamed = self.name_the_old_value(lhs, &lhs_ty);
+        // As in a `let`: a call that can change an argument gives no equation, because a later
+        // proof would evaluate the call again with the new value.
+        let changes_an_argument = matches!(crate::syntax::bare_unsafe_value(&assigned),
+            Expr::FunctionCall(c) if c.args.iter().any(|a| self.call_may_change_argument(a)));
         let new_fact = renamed
             .as_ref()
+            .filter(|_| !changes_an_argument)
             .and_then(|names| Self::fact_of_an_assignment(lhs, &assigned, names));
+        // `x = f(x)`: the `x` in the argument is the old value.
+        let call_result = match (op, &*lhs, &renamed) {
+            (None, Expr::Identifier(id), Some(names)) => Some((
+                id.name.clone(),
+                hir::prover::substitute_names(crate::syntax::bare_unsafe_value(rhs), names),
+            )),
+            _ => None,
+        };
+        // A write to an integer field keeps the facts about the other fields.
+        let field_fact = match renamed {
+            Some(_) => None,
+            None => self.name_the_old_value_of_a_field(lhs, &lhs_ty, &assigned),
+        };
 
         // A fact the prover holds about the assigned variable stops being true here. A write to
         // a field, an element or through a pointer drops every fact about the variable.
@@ -2514,11 +2771,15 @@ impl<'a> TypeChecker<'a> {
                 self.note_a_change_behind(root.to_string());
             } else if let Some(names) = &renamed {
                 self.pointer_facts_name_the_old_value(root.as_ref(), names);
-            } else {
+            } else if field_fact.is_none() {
                 self.note_a_change_to_variable(root.to_string());
             }
         }
         self.consteval.constraints.extend(new_fact);
+        self.consteval.constraints.extend(field_fact.flatten());
+        if let Some((name, value)) = call_result {
+            self.keep_call_result_ensures(&name, &value);
+        }
         if let Expr::Identifier(id) = lhs {
             self.note_pointer_value(id.name.as_ref(), pointer);
         }
@@ -2858,13 +3119,6 @@ impl<'a> TypeChecker<'a> {
             name: "return".to_string().into(),
             span: *span,
         });
-        let return_eq = Expr::RelationalOp(RelationalOpExpr {
-            lhs: Box::new(return_ident),
-            op: RelationalOp::Eq,
-            rhs: Box::new(expr.clone()),
-            span: *span,
-            operand_ty: None,
-        });
         // A `match` or an `if` whose branches all return makes no value. The parser writes a
         // `match` at the end of a body as such a `return`.
         let makes_no_value = crate::syntax::is_never_ty(&ty)
@@ -2883,8 +3137,21 @@ impl<'a> TypeChecker<'a> {
         let ensures = self.consteval.current_ensures.clone();
         if !ensures.is_empty() && !self.speculating {
             let facts = self.consteval.constraints.len();
+            // A struct literal gives the fact of each field, such as `return.n == 0`.
             if !makes_no_value {
-                self.consteval.constraints.push(return_eq);
+                let return_facts = match crate::syntax::bare_unsafe_value(expr) {
+                    value @ Expr::StructInit(_) => {
+                        self.facts_of_a_struct_literal(&return_ident, return_type, value, "return")
+                    }
+                    _ => vec![Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(return_ident),
+                        op: RelationalOp::Eq,
+                        rhs: Box::new(expr.clone()),
+                        span: *span,
+                        operand_ty: None,
+                    })],
+                };
+                self.consteval.constraints.extend(return_facts);
             }
             for ens in &ensures {
                 if !self.prove_expr(ens) {
@@ -2946,7 +3213,7 @@ impl<'a> TypeChecker<'a> {
                 if is_verified {
                     self.errors
                         .push(format!("Contract violated for Verified return type: {}", m));
-                } else {
+                } else if self.consteval.uncertain_branch_depth == 0 {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E8002,
                         format!("Comptime assert failed: {}", m),
@@ -3024,8 +3291,16 @@ impl<'a> TypeChecker<'a> {
                         })
                         .collect();
                 if let Some((params, return_type, ensures)) = callee {
-                    let mut names: HashMap<crate::symbol::Symbol, Expr> =
-                        params.iter().map(|(p, _)| p.clone()).zip(args).collect();
+                    let call_index = *calls;
+                    let mut names = self
+                        .callee_extent_values(params, &c.args, &mut |extent| {
+                            Expr::Identifier(IdentifierExpr {
+                                name: format!("$extent_{call_index}_{extent}").into(),
+                                span: c.span,
+                            })
+                        })
+                        .values;
+                    names.extend(params.iter().map(|(p, _)| p.clone()).zip(args));
                     names.insert("return".into(), result.clone());
                     for ens in ensures
                         .iter()
@@ -3112,7 +3387,14 @@ impl<'a> TypeChecker<'a> {
                 Expr::Identifier(id) => params
                     .iter()
                     .find(|(name, _)| *name == id.name)
-                    .map(|(_, ty)| ty.clone()),
+                    .map(|(_, ty)| ty.clone())
+                    .or_else(|| {
+                        // An extent name, `n` of `?n`, is a `usize`.
+                        crate::syntax::types::extent_names(params)
+                            .iter()
+                            .any(|(n, _, _)| *n == id.name)
+                            .then_some(Type::Scalar(ElementType::USize))
+                    }),
                 Expr::MemberAccess(m) => {
                     let mut base = declared_type(checker, &m.base, params, return_type)?;
                     while let Type::Borrow { inner, .. }
@@ -3181,6 +3463,14 @@ impl<'a> TypeChecker<'a> {
                 .and_then(|i| self.exit_values.get(i));
             return Some((int.expect("each `$exit_N` has a type").clone(), true));
         }
+        // The same for the end of a `for` loop over a range.
+        if let Some(end) = n.strip_prefix("$end_") {
+            let int = end
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| self.end_values.get(i));
+            return Some((int.expect("each `$end_N` has a type").clone(), true));
+        }
         let (ty, ranged) = if n == "return" {
             (self.current_return_type.clone()?, false)
         } else {
@@ -3191,7 +3481,9 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .find(|(p, _)| p.as_ref() == n);
             let hidden = self.declared_vars.iter().any(|(v, _)| v.as_ref() == n);
-            let ranged = param.is_some_and(|(_, p)| *p == ty) && !hidden;
+            // An extent name is never hidden: no variable can have its name.
+            let ranged = (param.is_some_and(|(_, p)| *p == ty) && !hidden)
+                || self.extent_homes.contains_key(n);
             (ty, ranged)
         };
         match ty {
@@ -3632,7 +3924,7 @@ impl<'a> TypeChecker<'a> {
                 name,
                 type_args,
                 args,
-                span: _,
+                ..
             }) => {
                 // Ignored on purpose: the checker has already instantiated the call and
                 // substituted the arguments into the body, so `sort<4>` arrives with its
@@ -3787,7 +4079,7 @@ impl<'a> TypeChecker<'a> {
             name,
             type_args: None,
             args,
-            span: _,
+            ..
         } = call
         else {
             return None;
@@ -4340,6 +4632,17 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
+/// What an expression did up to one point as it runs.
+#[derive(Default)]
+struct ReadsAndChanges {
+    /// The variable of each read up to this point, in order.
+    read: Vec<String>,
+    /// An expression that the checker cannot look into ran, and it can read each variable.
+    unknown_read: bool,
+    /// The variables that a call changed after the expression read them.
+    read_before_a_change: Vec<String>,
+}
+
 /// The type definitions `TypeChecker::type_can_carry_mut_reference` looks through, apart from the
 /// rest of the checker so the comptime interpreter's worker thread can ask the same question.
 #[derive(Clone, Copy)]
@@ -4360,9 +4663,11 @@ impl MutReferenceTypes<'_> {
             match ty {
                 Type::Borrow { inner, is_mut, .. } => *is_mut || visit(types, inner, seen),
                 Type::Pointer(inner, _, is_mut) => *is_mut || visit(types, inner, seen),
-                Type::Ref(inner, _) | Type::Verified(inner) | Type::Pinned(inner, _) => {
-                    visit(types, inner, seen)
-                }
+                Type::Ref(inner, _)
+                | Type::Verified(inner)
+                | Type::Distinct(inner)
+                | Type::DisjointRanges(inner)
+                | Type::Pinned(inner, _) => visit(types, inner, seen),
                 Type::GenericInstance(base, args) => {
                     visit(types, base, seen) || args.iter().any(|arg| visit(types, arg, seen))
                 }

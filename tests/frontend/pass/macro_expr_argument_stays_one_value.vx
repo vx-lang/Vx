@@ -1,0 +1,36 @@
+//===- macro_expr_argument_stays_one_value.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `expr` argument of a macro is one value, as in Rust. The operators that the macro writes
+// around it cannot take a part of it. `square!(a + b)` is 9, not `a + b * a + b`, which is 5.
+// `neg!(m as i64)` negates the `i64`, so it is 2147483648. Without the grouping it is
+// `(-m) as i64`, and `-m` overflows in `i32` to -2147483648.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: {{^}}9{{$}}
+// CHECK-NEXT: {{^}}2147483648{{$}}
+
+macro_rules square {
+  ($x:expr) => {
+    $x * $x
+  };
+}
+
+macro_rules neg {
+  ($e:expr) => {
+    -$e
+  };
+}
+
+fn main() -> i32 {
+  let a : i32 = 1;
+  let b : i32 = 2;
+  println!("{}", square!(a + b));
+  let m : i32 = -2147483647 - 1;
+  println!("{}", neg!(m as i64));
+  return 0;
+}

@@ -31,19 +31,19 @@ trait Build<T> {
   fn make(v : T) -> Self;
 }
 
-impl Build<i32> for i64 {
+extern impl Build<i32> for i64 {
   fn make(v : i32) -> i64 {
     return 1;
   }
 }
 
-impl Build<u8> for i64 {
+extern impl Build<u8> for i64 {
   fn make(v : u8) -> i64 {
     return 2;
   }
 }
 
-impl Build<u16> for i64 {
+extern impl Build<u16> for i64 {
   fn make(v : u16) -> i64 {
     return 3;
   }

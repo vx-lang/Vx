@@ -94,6 +94,9 @@ pub struct GlobalAstEnv<'a> {
     pub functions:
         HashMap<crate::symbol::Symbol, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
     pub syntax_functions: HashMap<crate::symbol::Symbol, &'a Function>,
+    /// The package of each file, from the items written in it. A `pkg fn` is visible to
+    /// the files of its package.
+    pub file_packages: HashMap<crate::symbol::Symbol, crate::symbol::Symbol>,
     /// Bodies the compile-time evaluator can run, owned rather than borrowed.
     ///
     /// The resolution env is built from signature-stripped modules, so a non-generic function
@@ -158,6 +161,10 @@ pub struct GlobalAstEnv<'a> {
     /// Top-level `const` items of every module, by name. A use of one is replaced by its value
     /// where the checker resolves the name.
     pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
+    /// Where to report the code that a macro of another file wrote, by the file of the call.
+    pub macro_call_sites: crate::diagnostic::MacroCallSites,
+    /// The files of the modules of `core` and `std`, which declare the built-in types.
+    pub library_files: std::collections::HashSet<crate::symbol::Symbol>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -174,6 +181,7 @@ impl<'a> GlobalAstEnv<'a> {
             impls: HashMap::new(),
             functions: HashMap::new(),
             syntax_functions: HashMap::new(),
+            file_packages: HashMap::new(),
             comptime_bodies: HashMap::new(),
             generic_functions: HashMap::new(),
             memories: HashMap::new(),
@@ -189,7 +197,36 @@ impl<'a> GlobalAstEnv<'a> {
             decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
+            macro_call_sites: Default::default(),
+            library_files: Default::default(),
         };
+        let mut macro_call_sites = HashMap::new();
+        for module in modules {
+            if let Some(file) = &module.file {
+                let path = module.module_path.as_ref();
+                let library = ["core", "std"]
+                    .iter()
+                    .any(|l| path == *l || path.starts_with(&format!("{l}::")));
+                if library {
+                    env.library_files.insert(file.clone());
+                }
+                if module.macro_call_sites.iter().any(Option::is_some) {
+                    macro_call_sites.insert(file.clone(), module.macro_call_sites.clone());
+                }
+            }
+        }
+        for module in modules {
+            let methods = module.impls.iter().flat_map(|i| i.methods.iter());
+            let functions = module.functions.iter().chain(methods);
+            let places = functions.map(|f| (&f.file, &f.package));
+            let places = places.chain(module.externs.iter().map(|e| (&e.file, &e.package)));
+            for (file, package) in places {
+                if let (Some(file), Some(package)) = (file, package) {
+                    env.file_packages.insert(file.clone(), package.clone());
+                }
+            }
+        }
+        env.macro_call_sites = std::sync::Arc::new(macro_call_sites);
 
         // Where each trait impl was first written, to report a second one for the same type.
         let mut impl_modules: HashMap<String, (crate::symbol::Symbol, &ImplBlock)> = HashMap::new();
@@ -642,11 +679,11 @@ pub struct TypeChecker<'a> {
     /// Something that needs `unsafe` was checked since the innermost written `unsafe` block
     /// began. If it stays false, that block warns (W1010).
     pub(crate) unsafe_op_seen: bool,
+    /// The device the code being checked runs on. Change it with `set_active_topology`.
     pub(crate) active_topology: Topology,
-    pub(crate) active_memory: MemorySpace,
-    /// Whether the device that owns `active_memory` declares `dtypes:`. Set whenever the
-    /// space changes, so the per-expression check costs a bool read outside a region.
-    pub(crate) active_space_declares_dtypes: bool,
+    /// Whether `active_topology` declares `dtypes:`, so that the check of each expression
+    /// costs one bool read outside a region.
+    pub(crate) active_device_declares_dtypes: bool,
     /// Statements already reported for an element type inside a device region, as
     /// `(line, column, element type)`.
     pub(crate) region_element_reports:
@@ -686,6 +723,9 @@ pub struct TypeChecker<'a> {
     /// on every pass. Otherwise the variables that the condition reads: an arm that changes one
     /// can end the loop.
     pub(crate) cancel_loops: Vec<Option<Vec<String>>>,
+    /// The names that `?n` gives the run-time extents of the parameters of the function being
+    /// checked: for each, the parameter whose extent it is first, and the axis.
+    pub(crate) extent_homes: HashMap<crate::symbol::Symbol, (crate::symbol::Symbol, usize)>,
     /// The function being checked is the `drop` of a `Drop` impl, for W1036.
     pub(crate) in_drop: bool,
     /// The function being checked is the `wait_limit` of a `Drop` impl, for W1036.
@@ -746,6 +786,9 @@ pub struct TypeChecker<'a> {
     /// The integer type of each value of the variable of a `for` loop where the loop ends, as
     /// `$exit_N`. Each loop gets its own name, so the facts of two loops over `i` do not meet.
     pub(crate) exit_values: Vec<ElementType>,
+    /// The integer type of the end of each `for` loop over a range, as `$end_N`. A loop reads its
+    /// end once, so the name holds that value also after the body changes the variables of `b`.
+    pub(crate) end_values: Vec<ElementType>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -781,6 +824,13 @@ pub struct TypeChecker<'a> {
     /// The shape of the tile of each `lanes::copy` out of shared memory, by the position of its
     /// call.
     pub(crate) lane_copies_out: HashMap<crate::syntax::Span, Vec<u64>>,
+    /// The tensors in a `scope: thread` space that the code of a block makes outside its lane
+    /// loops, with the position of each `let` and the type of the tensor. Each one must be a tile
+    /// of sums that stays in the registers of the subgroups (check/subgroup_registers.rs).
+    pub(crate) block_register_tiles: Vec<(String, crate::syntax::Span, crate::syntax::Type)>,
+    /// Each index into a register tensor with the variable of an `across` loop: the tensor, the
+    /// variable and the position of the index.
+    pub(crate) across_register_indices: Vec<(String, String, crate::syntax::Span)>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -793,18 +843,17 @@ impl<'a> TypeChecker<'a> {
         // descriptors and transfer edges. No global registry -- the graph is the per-compilation,
         // lock-free carrier the parallel pipeline shares by `&`.
         let transfer_cost_graph = &env.transfer_cost_graph;
-        let active_memory = transfer_cost_graph.default_memory_for(&Topology::CPU);
-        let active_space_declares_dtypes = transfer_cost_graph
-            .owning_topology(&active_memory)
-            .ok()
-            .and_then(|top| transfer_cost_graph.descriptor(&top.kind()))
-            .and_then(|desc| desc.dtypes.as_ref())
-            .is_some();
+        let active_device_declares_dtypes = transfer_cost_graph
+            .descriptor(&Topology::CPU.kind())
+            .is_some_and(|desc| desc.dtypes.is_some());
         Self {
             env,
             worker,
             scopes: vec![HashMap::new()],
-            errors: crate::diagnostic::DiagnosticsVec::new(),
+            errors: crate::diagnostic::DiagnosticsVec {
+                macro_call_sites: env.macro_call_sites.clone(),
+                ..crate::diagnostic::DiagnosticsVec::new()
+            },
             in_unsafe_block: false,
             tokens: Vec::new(),
             closure_body_next: false,
@@ -816,8 +865,7 @@ impl<'a> TypeChecker<'a> {
             trusted: None,
             borrow_clause_errors: std::collections::HashSet::new(),
             active_topology: Topology::CPU,
-            active_memory,
-            active_space_declares_dtypes,
+            active_device_declares_dtypes,
             region_element_reports: std::collections::HashSet::new(),
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
@@ -828,6 +876,7 @@ impl<'a> TypeChecker<'a> {
             indexed_name: None,
             value_unused: false,
             cancel_loops: Vec::new(),
+            extent_homes: HashMap::new(),
             in_drop: false,
             in_wait_limit: false,
             within_depth: 0,
@@ -852,6 +901,7 @@ impl<'a> TypeChecker<'a> {
             fact_change_frames: Vec::new(),
             old_values: Vec::new(),
             exit_values: Vec::new(),
+            end_values: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
@@ -867,14 +917,15 @@ impl<'a> TypeChecker<'a> {
             traffic: Default::default(),
             lane_reductions: HashMap::new(),
             lane_copies_out: HashMap::new(),
+            block_register_tiles: Vec::new(),
+            across_register_indices: Vec::new(),
         }
     }
 
-    /// Change the space the code being checked runs in, keeping the derived `dtypes:` flag
-    /// in step with it.
-    pub(crate) fn set_active_memory(&mut self, space: MemorySpace) {
-        self.active_space_declares_dtypes = self.space_declares_dtypes(&space);
-        self.active_memory = space;
+    /// Change the device the code being checked runs on, and keep the `dtypes:` flag in step.
+    pub(crate) fn set_active_topology(&mut self, device: Topology) {
+        self.active_device_declares_dtypes = self.declared_dtypes(&device).is_some();
+        self.active_topology = device;
     }
 
     pub fn push_scope(&mut self) {
@@ -1023,6 +1074,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
+        self.refuse_a_variable_with_an_extent_name(&name);
         // A new variable of this name: a move of the old one, or of its fields, says nothing
         // about it.
         if let Some(moved) = self.borrow.moved_vars.last_mut() {
@@ -1588,7 +1640,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
                     match (dim1, dim2) {
-                        (Dim::Dyn, _) => {}
+                        (Dim::Dyn(_), _) => {}
                         (Dim::Static(Expr::Identifier(id)), Dim::Static(Expr::Number(n))) => {
                             let extent = Type::Generic(n.value.clone(), None);
                             if !Self::bind_dim(&id.name, extent, mapping) {
@@ -1601,7 +1653,7 @@ impl<'a> TypeChecker<'a> {
                                 return false;
                             }
                         }
-                        (Dim::Static(Expr::Identifier(_)), Dim::Dyn) => return false,
+                        (Dim::Static(Expr::Identifier(_)), Dim::Dyn(_)) => return false,
                         _ if dim1 != dim2 => return false,
                         _ => {}
                     }
@@ -1976,7 +2028,8 @@ impl<'a> TypeChecker<'a> {
 
         Some(Function {
             is_unsafe: generic_func.is_unsafe,
-            is_pub: generic_func.is_pub,
+            visibility: generic_func.visibility,
+            exported: generic_func.exported,
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,
@@ -1999,6 +2052,7 @@ impl<'a> TypeChecker<'a> {
             doc_comment: generic_func.doc_comment.clone(),
             span: generic_func.span,
             file: generic_func.file.clone(),
+            package: generic_func.package.clone(),
         })
     }
 
@@ -2006,7 +2060,42 @@ impl<'a> TypeChecker<'a> {
         path.replace("/", "_").replace(".", "_")
     }
 
+    /// The names that the tensor dimensions in `t` use.
+    fn dimension_names(t: &Type, out: &mut Vec<crate::symbol::Symbol>) {
+        match t {
+            Type::Tensor(_, dims, _) => {
+                for d in dims.iter().filter_map(|d| d.as_static()) {
+                    crate::syntax::expr::visit_expr(d, &mut |e| {
+                        if let Expr::Identifier(id) = e {
+                            out.push(id.name.clone());
+                        }
+                    });
+                }
+            }
+            Type::Pointer(i, ..)
+            | Type::Ref(i, _)
+            | Type::Pinned(i, _)
+            | Type::Verified(i)
+            | Type::Distinct(i)
+            | Type::DisjointRanges(i)
+            | Type::Borrow { inner: i, .. } => Self::dimension_names(i, out),
+            Type::GenericInstance(b, args) => {
+                Self::dimension_names(b, out);
+                args.iter().for_each(|a| Self::dimension_names(a, out));
+            }
+            Type::Function(ps, r, _) | Type::Closure(ps, r) => {
+                ps.iter().for_each(|a| Self::dimension_names(a, out));
+                Self::dimension_names(r, out);
+            }
+            _ => {}
+        }
+    }
+
     pub fn check_function(&mut self, func: &mut Function) {
+        // Before the return for a generic function: its instances have no const parameters.
+        let file = std::mem::replace(&mut self.errors.file, func.file.clone());
+        self.warn_extent_names_that_hide(&func.params, &func.generics, func.span);
+        self.errors.file = file;
         if !func.generics.is_empty() {
             return;
         }
@@ -2041,6 +2130,8 @@ impl<'a> TypeChecker<'a> {
                     | Type::Ref(i, _)
                     | Type::Pinned(i, _)
                     | Type::Verified(i)
+                    | Type::Distinct(i)
+                    | Type::DisjointRanges(i)
                     | Type::Borrow { inner: i, .. } => walk(i, out),
                     Type::GenericInstance(b, args) => {
                         walk(b, out);
@@ -2167,15 +2258,46 @@ impl<'a> TypeChecker<'a> {
         let prev_in_unsafe_fn = std::mem::replace(&mut self.in_unsafe_fn, func.is_unsafe);
         let prev_written_unsafe = std::mem::take(&mut self.in_written_unsafe_block);
         let prev_unsafe_op_seen = std::mem::take(&mut self.unsafe_op_seen);
+        // A generic body is checked at its first call, inside the caller's scopes. The body must
+        // not see the caller's variables, so only the base scope stays.
+        let outer_scopes = self.scopes.split_off(1);
+        let outer_moved = self.borrow.moved_vars.split_off(1);
+        let outer_mutable = self.borrow.mutable_vars.split_off(1);
+        let outer_bound = self.borrow.bound_behind_ref.split_off(1);
+        let outer_consteval = self.consteval.env.split_off(1);
+        // Nor is the body inside a closure of the caller, so its variables are not captures.
+        let outer_closure_depths = std::mem::take(&mut self.mono.closure_depths);
+        let outer_captures = std::mem::take(&mut self.mono.closure_captures_stack);
+        let outer_capture_uses = std::mem::take(&mut self.mono.closure_capture_uses);
+        // The transfer tokens of the caller are waited in the caller. The body starts again at
+        // the depth of the base scope, so the end of one of its scopes could look like theirs.
+        let outer_tokens = std::mem::take(&mut self.tokens);
         self.push_scope();
+        // A dimension in the signature can name a variable of the caller, as `n` in
+        // `Tensor<f32, [n, m]>`. The body sees that variable, and what is known about its value.
+        let mut dims = Vec::new();
+        for (_, t) in &func.params {
+            Self::dimension_names(t, &mut dims);
+        }
+        Self::dimension_names(&func.return_type, &mut dims);
+        for name in dims {
+            if let Some(v) = outer_scopes.iter().rev().find_map(|s| s.get(&name)) {
+                self.scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), v.clone());
+            }
+            if let Some(v) = outer_consteval.iter().rev().find_map(|s| s.get(&name)) {
+                self.consteval
+                    .env
+                    .last_mut()
+                    .unwrap()
+                    .insert(name, v.clone());
+            }
+        }
 
         let prev_top = self.active_topology.clone();
-        let prev_mem = self.active_memory.clone();
-        self.active_topology = func.topology.clone();
-        let mem = self
-            .transfer_cost_graph
-            .default_memory_for(&self.active_topology);
-        self.set_active_memory(mem);
+        self.set_active_topology(func.topology.clone());
 
         // Record the parameter set and clear per-function provenance state for the
         // return-escape analysis (#243). Saved/restored so nested checks (closures) don't
@@ -2209,6 +2331,8 @@ impl<'a> TypeChecker<'a> {
         // The drop frames too, so that a raw pointer in a generic callee does not make the
         // caller count as a function that uses raw pointers.
         let prev_drops = std::mem::take(&mut self.borrow.drops);
+        // The extent names of a caller do not reach the body of a function that it calls.
+        let prev_extent_homes = std::mem::take(&mut self.extent_homes);
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
             // A token that the caller passes must be waited by the function.
@@ -2216,6 +2340,7 @@ impl<'a> TypeChecker<'a> {
             self.borrow.current_params.insert(name.clone(), ty.clone());
             self.set_mutable(name.as_ref(), func.mut_params.contains(name));
         }
+        self.declare_extent_names(&func.params);
         // Inside a transfer lowering, the raw:: primitives may only touch tiles the
         // transfer was given -- record the parameter names they are allowed to name.
         if self.seam.lowering_edge.is_some() {
@@ -2307,6 +2432,12 @@ impl<'a> TypeChecker<'a> {
                 }
             });
         }
+        // A contract about an extent, `n` of `?n`, is about the parameter of the extent.
+        for (extent, p, _) in crate::syntax::types::extent_names(&func.params) {
+            if in_contracts.contains(&extent) {
+                in_contracts.push(func.params[p].0.clone());
+            }
+        }
         for (param_name, _) in &func.params {
             let name_str: &str = param_name.as_ref();
             if !name_str.starts_with('_')
@@ -2365,6 +2496,10 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // The code generators read the extent where the body names it.
+        self.rewrite_extent_names(&mut func.body);
+        self.extent_homes = prev_extent_homes;
+
         // W1033: a `spawn` loop that runs on one thread although its passes could run at once.
         if !self.speculating {
             self.warn_serial_spawn_loops(&func.body);
@@ -2382,6 +2517,20 @@ impl<'a> TypeChecker<'a> {
         self.refuse_a_returned_channel_end(&func.return_type);
 
         self.pop_scope();
+        assert_eq!(self.scopes.len(), 1, "a function body left a scope open");
+        self.scopes.extend(outer_scopes);
+        self.borrow.moved_vars.extend(outer_moved);
+        self.borrow.mutable_vars.extend(outer_mutable);
+        self.borrow.bound_behind_ref.extend(outer_bound);
+        self.consteval.env.extend(outer_consteval);
+        self.mono.closure_depths = outer_closure_depths;
+        self.mono.closure_captures_stack = outer_captures;
+        self.mono.closure_capture_uses = outer_capture_uses;
+        assert!(
+            self.tokens.is_empty(),
+            "a function body left a transfer token in the list"
+        );
+        self.tokens = outer_tokens;
         self.traffic.memory_placements = prev_placements;
         self.traffic.call_sites = prev_call_sites;
         self.traffic.channel_rooms = prev_channel_rooms;
@@ -2394,8 +2543,7 @@ impl<'a> TypeChecker<'a> {
         self.consteval.constraints = prev_constraints;
         self.fact_change_frames = prev_fact_change_frames;
         self.pointer_facts_leave_body(prev_pointer_state);
-        self.active_topology = prev_top;
-        self.set_active_memory(prev_mem);
+        self.set_active_topology(prev_top);
         self.borrow.current_params = prev_params;
         self.borrow.ref_provenance = prev_provenance;
         self.borrow.store_targets = prev_store_targets;

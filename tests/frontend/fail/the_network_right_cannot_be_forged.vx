@@ -1,0 +1,42 @@
+//===- the_network_right_cannot_be_forged.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A `Network` is the right to use the network. Only `std::net` can make one, and a program gets
+// one in its `Root`. Code in another file cannot:
+// - copy a `Network` with an `impl Copy` (E3066),
+// - make a `Network` with a struct literal (E8014),
+// - get the network right of the program, even in `unsafe`: only `std` can call
+//   `network_of_the_program` (E5005),
+// - connect without a `&Network` (E3010).
+import std::net;
+import std::string;
+
+impl Copy for Network {}
+
+fn forged() -> Network {
+  return Network {};
+}
+
+fn taken() -> Network {
+  return unsafe { network_of_the_program() };
+}
+
+fn without_a_right(addr : &String) -> i32 {
+  let _stream = TcpStream::connect(addr);
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E3066] at {{.*}}.vx:20:1: `impl Copy for Network` is in `the_network_right_cannot_be_forged.vx`, and `net.vx` declares `Network`
+// CHECK: Error[E8014] at {{.*}}.vx:23:10: this struct literal builds a `Network`. `Network` has an invariant, so only code in `net.vx` can build it
+// CHECK: Error[E5005] at {{.*}}.vx:27:19: `network_of_the_program` is `pkg` in `net.vx`, so only the package `std` can call it
+// CHECK: Error[E3010] at {{.*}}.vx:31:17: Function 'TcpStream::connect' expects 2 arguments, got 1

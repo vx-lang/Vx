@@ -76,6 +76,16 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
 - Each tensor is one buffer over the pages that it touches, made with no copy.
   Its sizes and strides go in a buffer of 32-bit words, so `index` is 32 bits,
   and the runtime refuses a tensor of 2^31 elements or more.
+- A transfer to GPU memory gets pages with one buffer for their whole life. A
+  Metal residency set keeps those buffers resident, so a command buffer does
+  not make them resident again.
+- A transfer to GPU memory of a view of a read-only, shared mapping of a file
+  makes no copy, when the view starts on a page. The runtime makes one private
+  mapping of the file, and gives the tensor its pages of it. So a model can map
+  its weight file, and the GPU reads the weights from the file cache. A write
+  to the tensor copies only the page that it changes, and the file keeps its
+  bytes. `tests/optimizations/pass/apple_gpu_reads_a_mapped_file_with_no_copy.vx`
+  shows the steps.
 - `VX_METAL=0`, or `vx_metal_set_enabled(0)` on one thread, runs the CPU copy
   of each kernel on the same memory instead.
 - The GPU flushes a subnormal `f32` to 0, and the CPU copy does too, so the two
@@ -101,9 +111,28 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   atomic on a 64-bit integer or a float, and an atomic on memory of one thread are compile errors
   that give the reason. The Apple GPU has 64-bit atomics only for min and max, and they do not
   give the old value.
-- Not yet: dynamic shared memory and `vector` ops. Each is a compile
-  error that names the op. Kernels for two GPU architectures in one program
-  are a compile error too.
+- An `mlir!` block in a kernel can use vectors of 2, 3 or 4 elements: `vector.load`,
+  `vector.store`, `vector.bitcast`, `extract`, `insert`, `broadcast`, `fma`, `reduction`, and
+  `arith` on vectors. A load or a store with an `alignment` of the vector's size uses the type,
+  such as `float4`. Without it, the packed type reads at any address. The memref's type must say
+  that its last stride is 1.
+- An `mlir!` block can also use the simdgroup matrices of 8 x 8 elements of `f16` or `f32`:
+  `gpu.subgroup_mma_load_matrix` (with `transpose`), `_store_matrix`, `_compute` and
+  `_constant_matrix`, from device or shared memory. `leadDimension = 0` is the row stride of a
+  memref of 2 dimensions, so the stride can be a value at run time. `gpu.subgroup_reduce` of a
+  scalar or a vector is `simd_sum` and the other functions of a SIMD-group.
+- A loop of constant bounds with at most 16 passes gets `#pragma clang loop unroll(full)`, as in
+  llama.cpp's kernels. The Metal compiler does not unroll such a loop by itself.
+- Before printing, an access to shared memory at an index `x + c`, with a number `c`, becomes an
+  access at `c` of a view that starts at `x` (`splitSharedOffsets`). It prints as `(tile + o)[c]`,
+  so the Metal compiler puts `c` in the address. With `tile[x + c]` it computed each address, and
+  an expert product took 6% longer. Device memory keeps `p[..]`, which was faster there.
+- `vx.subgroup_schedule_barrier` in an `mlir!` block prints as
+  `simdgroup_barrier(mem_flags::mem_none)`: the threads of a SIMD-group meet there, and no memory
+  is ordered. It helps the Metal compiler schedule the loads before a simdgroup multiply. Other
+  code generators drop it.
+- Not yet: dynamic shared memory, and vectors or ops beyond the ones above. Each is a compile error
+  that names the op. Kernels for two GPU architectures in one program are a compile error too.
 
 **The Neural Engine.** On a Mac, CoreML runs some kernels placed on `Topology::NPU[i]` or
 `Topology::ANE`: a matmul or an affine map in a shape that has a compiled model. `build.rs`

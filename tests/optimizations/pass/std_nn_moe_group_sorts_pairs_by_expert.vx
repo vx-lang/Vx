@@ -1,0 +1,191 @@
+// `nn_moe_group` of `std::nn` groups the pairs of a mixture-of-experts layer by expert on the
+// GPU. A line says `ok` when the order, `starts` and `tile_expert` are the same as those of a
+// stable sort in a plain loop on the CPU, with each group padded to a multiple of `align` and
+// n + i at each position i with no pair. Then a kernel writes at the positions of the order:
+// block `b` writes `b` into element `order[b]`, and the `positions` line checks each element.
+//
+// The cases: 600 pairs in 3 blocks of the sort, with 5 experts. 1000 pairs, 125 tokens of 8, with
+// 160 experts, once with `align` 1 and once with 16. The ids are below 128, and none is 64, so
+// experts 64 and 128 to 159 get no pair. 300 pairs with 1 expert, so the order is 0 to 299.
+// 2600 pairs in 11 blocks, with half of them at one expert, once with `align` 1 and once with
+// 2. The sort reads `counts` eight rows at a time, so 11 rows take one step of eight and three of
+// one. Both cases have more than 1024 tiles, so a lane of the sort writes more than one tile.
+//
+// The first two runs use the CPU copy of the kernels, with both code generators. The third uses
+// the Apple GPU on a Mac, and the CPU copy elsewhere. The last checks that each of the three
+// kernels gets the name of its function in PTX, as a program that loads the PTX needs.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=PTX --input-file=%t.ptx
+//
+// PTX-DAG: .entry nn_moe_group_count(
+// PTX-DAG: .entry nn_moe_group_offsets(
+// PTX-DAG: .entry nn_moe_group_place(
+// CHECK: {{^}}600 pairs, 5 experts: ok{{$}}
+// CHECK-NEXT: {{^}}600 pairs, 5 experts, positions: ok{{$}}
+// CHECK-NEXT: {{^}}1000 pairs, 160 experts: ok{{$}}
+// CHECK-NEXT: {{^}}1000 pairs, 160 experts, positions: ok{{$}}
+// CHECK-NEXT: {{^}}1000 pairs, 160 experts, align 16: ok{{$}}
+// CHECK-NEXT: {{^}}1000 pairs, 160 experts, align 16, positions: ok{{$}}
+// CHECK-NEXT: {{^}}300 pairs, 1 expert: ok{{$}}
+// CHECK-NEXT: {{^}}300 pairs, 1 expert, positions: ok{{$}}
+// CHECK-NEXT: {{^}}2600 pairs, 40 experts, skewed: ok{{$}}
+// CHECK-NEXT: {{^}}2600 pairs, 40 experts, skewed, positions: ok{{$}}
+// CHECK-NEXT: {{^}}2600 pairs, 40 experts, skewed, align 2: ok{{$}}
+// CHECK-NEXT: {{^}}2600 pairs, 40 experts, skewed, align 2, positions: ok{{$}}
+import std::nn;
+
+/// Block `b` writes `b` into element `order[b]`, for each of the `room` positions.
+fn positions(at : &mut Tensor<i32, [?], Memory::HBM>, order : &Distinct<Tensor<i32, [?], Memory::HBM>>, room : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..room across blocks {
+      for l in 0..1 across lanes {
+        at[order[b]] = b + l;
+      }
+    }
+  }
+  return;
+}
+
+fn say(ok : bool) -> void {
+  if ok {
+    println!(": ok");
+  } else {
+    println!(": wrong");
+  }
+  return;
+}
+
+fn title(name : i32) -> void {
+  if name == 0 {
+    print!("600 pairs, 5 experts");
+  } else if name == 1 {
+    print!("1000 pairs, 160 experts");
+  } else if name == 2 {
+    print!("300 pairs, 1 expert");
+  } else if name == 3 {
+    print!("1000 pairs, 160 experts, align 16");
+  } else if name == 4 {
+    print!("2600 pairs, 40 experts, skewed");
+  } else {
+    print!("2600 pairs, 40 experts, skewed, align 2");
+  }
+  return;
+}
+
+fn check(name : i32, ids : Tensor<i32, [?]>, experts : i32, align : i32) -> void {
+  let n = ids.len();
+  let room = n + experts * (align - 1);
+  let tiles = (room + align - 1) / align;
+  // A stable sort by expert in a plain loop, with each group padded to a multiple of `align`.
+  let mut want = Tensor<i32, [?]>::new([room]);
+  let mut want_starts = Tensor<i32, [?]>::new([experts + 1]);
+  let mut want_tiles = Tensor<i32, [?]>::new([tiles]);
+  for i in 0..room {
+    want[i] = n + i;
+  }
+  for t in 0..tiles {
+    want_tiles[t] = -1;
+  }
+  let mut next = 0;
+  for e in 0..experts {
+    want_starts[e] = next;
+    let first = next;
+    for p in 0..n {
+      if ids[p] == e {
+        want[next] = p;
+        next = next + 1;
+      }
+    }
+    next = first + (next - first + align - 1) / align * align;
+    for t in first / align..next / align {
+      want_tiles[t] = e;
+    }
+  }
+  want_starts[experts] = next;
+
+  let on_gpu = transfer(ids, Memory::HBM);
+  let mut starts = transfer(Tensor<i32, [?]>::new([experts + 1]), Memory::HBM);
+  let tile_expert = transfer(Tensor<i32, [?]>::new([tiles]), Memory::HBM);
+  let blocks = (n + 255) / 256;
+  let mut counts = transfer(Tensor<i32, [?, ?]>::new([blocks, experts]), Memory::HBM);
+  let mut base = transfer(Tensor<i32, [?, ?]>::new([blocks, experts]), Memory::HBM);
+  let room_on_gpu = transfer(Tensor<i32, [?]>::new([room]), Memory::HBM);
+  let order = nn_moe_group(room_on_gpu, &mut counts, &mut base, &mut starts, &tile_expert, &on_gpu, experts, align);
+  let mut unset = Tensor<i32, [?]>::new([n + room]);
+  for i in 0..n + room {
+    unset[i] = -1;
+  }
+  let mut at = transfer(unset, Memory::HBM);
+  positions(&mut at, &order, room);
+
+  let got = transfer(order, Memory::CPU_DRAM);
+  let got_starts = transfer(starts, Memory::CPU_DRAM);
+  let got_tiles = transfer(tile_expert, Memory::CPU_DRAM);
+  let got_at = transfer(at, Memory::CPU_DRAM);
+  let mut same = got.len() == room;
+  for i in 0..room {
+    same = same && got[i] == want[i];
+  }
+  for e in 0..experts + 1 {
+    same = same && got_starts[e] == want_starts[e];
+  }
+  for t in 0..tiles {
+    same = same && got_tiles[t] == want_tiles[t];
+  }
+  let mut placed = true;
+  for i in 0..room {
+    placed = placed && got_at[want[i]] == i;
+  }
+  title(name);
+  say(same);
+  title(name);
+  print!(", positions");
+  say(placed);
+  return;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<i32, [?]>::new([600]);
+  for p in 0..600 {
+    a[p] = (p * 7) % 5;
+  }
+  check(0, a, 5, 1);
+
+  // Random experts from a linear congruential generator, in the upper half of its bits.
+  let mut b = Tensor<i32, [?]>::new([1000]);
+  let mut state : i64 = 12345;
+  for p in 0..1000 {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    b[p] = ((state / 65536) % 128) as i32;
+    if b[p] == 64 {
+      b[p] = 65;
+    }
+  }
+  let mut b16 = Tensor<i32, [?]>::new([1000]);
+  for p in 0..1000 {
+    b16[p] = b[p];
+  }
+  check(1, b, 160, 1);
+  check(3, b16, 160, 16);
+
+  let c = Tensor<i32, [?]>::new([300]);
+  check(2, c, 1, 1);
+
+  // Half of the pairs go to expert 3, and the others to experts 0 to 39 in turn.
+  let mut d = Tensor<i32, [?]>::new([2600]);
+  let mut d2 = Tensor<i32, [?]>::new([2600]);
+  for p in 0..2600 {
+    d[p] = 3;
+    if p % 2 == 1 {
+      d[p] = (p / 2) % 40;
+    }
+    d2[p] = d[p];
+  }
+  check(4, d, 40, 1);
+  check(5, d2, 40, 2);
+  return 0;
+}

@@ -481,6 +481,7 @@ impl TypeChecker<'_> {
     }
 
     fn check_tasks_block(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let unused = self.value_unused;
         if let Expr::TaskBlock(tb) = &*expr {
             find_ending_joins(
                 &tb.stmts,
@@ -524,6 +525,17 @@ impl TypeChecker<'_> {
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
         let fails_as = self.check_block_failures(&failures, &passed_up, &ty, &expr.span());
+        if unused && fails_as.is_some() && !self.speculating {
+            self.errors.warn(
+                DiagnosticCode::W1038,
+                format!(
+                    "this `tasks` block can fail, but nothing uses its value, a '{ty}'. When the \
+                     block fails, the code after it goes on, and nothing sees the error. Use the \
+                     value, as in `let r = tasks {{ .. }};`"
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span())),
+            );
+        }
         let has_value = matches!(&*expr, Expr::TaskBlock(tb) if tb.ret.is_some())
             && !crate::syntax::types::is_void_ty(&ty);
         let value_ty = has_value.then(|| ty.clone());
@@ -557,7 +569,10 @@ impl TypeChecker<'_> {
         }
         let block_err = result_parts(block_ty).map(|(_, e)| e);
         for f in failures {
-            if block_err.as_ref() != Some(&f.err) {
+            if !block_err
+                .as_ref()
+                .is_some_and(|e| self.is_assignable(e, &f.err))
+            {
                 self.task_error(
                     DiagnosticCode::E3060,
                     format!(
@@ -571,7 +586,10 @@ impl TypeChecker<'_> {
             }
         }
         for (err, at) in passed_up {
-            if block_err.as_ref() != Some(err) {
+            if !block_err
+                .as_ref()
+                .is_some_and(|e| self.is_assignable(e, err))
+            {
                 self.task_error(
                     DiagnosticCode::E3063,
                     format!(
@@ -636,7 +654,9 @@ impl TypeChecker<'_> {
                      `|..| -> Result<T, {err_ty}> {{ .. }}`"
                 ),
             )),
-            None if result_parts(&fn_ret).is_some_and(|(_, e)| e == err_ty) => None,
+            None if result_parts(&fn_ret).is_some_and(|(_, e)| self.is_assignable(&e, &err_ty)) => {
+                None
+            }
             None => Some((
                 DiagnosticCode::E3063,
                 format!(
@@ -1041,7 +1061,11 @@ impl TypeChecker<'_> {
         }
         let task_err = result_parts(ty).map(|(_, e)| e);
         for (err, at) in passed_up {
-            if *ty != Type::Unknown && task_err.as_ref() != Some(err) {
+            if *ty != Type::Unknown
+                && !task_err
+                    .as_ref()
+                    .is_some_and(|e| self.is_assignable(e, err))
+            {
                 self.task_error(
                     DiagnosticCode::E3063,
                     format!(

@@ -69,8 +69,113 @@ An index can also use `i / n` and `i % n`, where `i` is the variable of a loop i
 with the same rule for `n`. With `i` below 4 and `j` below 32, `(i / 2) * 32 + j` is at most 63.
 So `c[b * 64 + (i / 2) * 32 + j]` fixes `b`.
 
+The parts can also be parts of parts, with numbers that each divide the next. The result of a
+tensor core is an example: in a block of 128 lanes, lane `l` holds row `16 * (l / 32) + (l % 32) / 4` and the row 8 below it, at columns `2 * (l % 4)` and one more. The compiler cuts `l` into the
+digits `l % 4`, `(l % 32) / 4` and `l / 32`. It writes each part as a sum of these digits, so
+`l / 4` is `(l % 32) / 4 + 8 * (l / 32)`. The indices must fix every digit. Here the row fixes the
+two upper digits, and the column fixes `l % 4`, so the writes fix `l`.
+
+Two loops that come one after the other, such as a `for j in 0..2` in each of two `if` blocks,
+count as one loop when their ranges are the same numbers. So a write in one loop and a write in
+the other can use the same column `col + 8 * j`.
+
 The same check refuses a read of an element that another pass writes, a write to a variable from
 outside the loop, `println!`, and a call that can write through its argument.
+
+## Rows from a tensor of indices
+
+An index can also come from a tensor, as in `y[idx[b]]`. The compiler cannot see the values in
+`idx`, so two passes may get the same row, and the write is E6032. A mixture-of-experts layer in
+a language model needs this write: the kernel of each expert writes its results to the rows of its
+tokens.
+
+When no two elements of `idx` are equal, say so in its type:
+`Distinct<Tensor<i32, [?], Memory::HBM>>`. Then `idx[b]` fixes `b`, as `b` does.
+
+`Distinct::check(t)` makes a `Distinct` tensor. It reads the values of `t` on the CPU, and returns
+`Some` with a `Distinct` tensor when no two are equal, and `None` when two are. A program that
+matches on the result imports `core::option`. In this program, the rows 5, 1 and 6 pass the check
+and move to GPU memory. Then block `b` adds row `b` of `x` to row `rows[b]` of `y`
+(`book_gpu_rows_from_a_distinct_tensor.vx`):
+
+```rust
+{{#include ../../../tests/optimizations/pass/book_gpu_rows_from_a_distinct_tensor.vx:program}}
+```
+
+It prints `column 0: 1 3 1 1 1 2 4 1` and the same line for column 63.
+
+`Distinct::check(t)` takes `t` by value: a tensor with one dimension of `i32`, `i64`, `u32` or
+`u64`. It sorts a copy of the values and compares each value with the next, so it costs one sort
+on the CPU. When two values are equal, it returns `None` and drops `t`. It cannot read a tensor in
+GPU memory, so check the tensor first, and then `transfer` the `Distinct` tensor. A `transfer` of
+a `Distinct` tensor gives a `Distinct` tensor in the new memory.
+
+When the program made the values itself and knows that no two are equal, `unsafe { Distinct(t) }`
+makes a `Distinct` tensor with no check. It takes a tensor of integers with one dimension, and it
+moves `t`, so no other name can change the values. If two elements are equal, two passes write the
+same element. That is a data race, and Vx makes no promise about the result. This is why
+`Distinct(t)` needs `unsafe`.
+
+A function of the library can make the claim for its caller. `nn_moe_group` in `std::nn` groups
+the token-expert pairs of a mixture-of-experts layer by expert, on the GPU. It returns the grouped
+order as a `Distinct` tensor. Its `unsafe { Distinct(order) }` is inside the library, so the caller
+needs no check and no `unsafe`.
+
+The compiler adds one fact, that no two elements are equal, and checks everything else as before:
+
+- A `Distinct` tensor is read only. A write to one of its elements is E4006, because a write could
+  make two elements equal. `rows.len()` gives its length.
+- Only a parameter of the function counts. A `Distinct` local or field, or a parameter whose name
+  the function binds again, does not fix `b`. So write the kernel in a function that takes the
+  tensor as a parameter, as `add_to_rows` does.
+- `rows[e]` fixes what `e` fixes, so `rows[b / 2]` does not fix `b`. A read of `y[b]`, or of
+  `y[rows[b + 1]]`, in the same loop is still E6032, because another pass may write that row.
+- The other rules for an index still apply. `(rows[b] as i64) * 4 + (l as i64)`, with `l` below 4,
+  fixes `b`, as `b * 4 + l` does. With `i64` elements, `rows[b] * 4` can wrap, so two different
+  elements can give the same index, and the write is E6032.
+
+A `Distinct` tensor does not help when two passes add to the same row. In a mixture-of-experts
+layer, a token goes to several experts, and their results add into the row of the token. Use
+[atomics](#atomics-on-the-elements-of-a-tensor) for that, or a separate pass.
+
+## Rows from a table of ranges
+
+A block can also write a range of rows that a table gives it. The grouped matrix product of a
+mixture-of-experts layer is an example: a first kernel cuts the rows of each expert into tiles,
+and block `t` of a second kernel writes the rows of tile `t`. Distinct starts do not keep two
+blocks apart, because two ranges can overlap.
+
+When no two ranges overlap, say so in the type of the table:
+`DisjointRanges<Tensor<i32, [?, 2], Memory::HBM>>`. Row `t` holds range `t`: the start in
+`tiles[t][0]` and the end, one past the last row, in `tiles[t][1]`. Then a row `tiles[t][0] + r`
+fixes `t`, inside an `if` that keeps it below `tiles[t][1]`
+(`blocks_write_the_rows_of_disjoint_ranges.vx`):
+
+```rust
+{{#include ../../../tests/optimizations/pass/blocks_write_the_rows_of_disjoint_ranges.vx:program}}
+```
+
+The rules:
+
+- The index is `tiles[t][0]` plus a value that is never below zero, such as a lane index.
+- The `if` tests that index against `tiles[t][1]`, with the same `t`: `row < end`, `end > row`,
+  `row <= end - 1`, also as one side of `&&`. Only the writes in its `then` block count.
+- The index can be part of a larger one, as in `(start + r) * 2 + c` with `c` below 2.
+- The sum must not wrap. With `i32` ranges, cast the start and the lane index to `i64`, as above.
+  An `i32` sum `tiles[t][0] + r` is E6032.
+- A table is read only. A write to it is E4006, because a write could make two ranges overlap.
+  `tiles.len()` gives the number of ranges.
+- As for `Distinct`, only a parameter of the function counts.
+
+`DisjointRanges::check(t)` makes a table, as `Distinct::check` makes a `Distinct` tensor. It takes
+`t` by value: a tensor of shape `[?, 2]` of `i32`, `i64`, `u32` or `u64`, on the CPU. It returns
+`None` when two ranges overlap or a range ends before it starts. An empty range `[s, s)` overlaps a
+range that has `s` inside it, but not a range that starts or ends at `s`. The check sorts a copy of
+the ranges, so it costs one sort on the CPU.
+
+`unsafe { DisjointRanges(t) }` makes a table with no check. It takes a tensor of integers of shape
+`[?, 2]`, and it moves `t`. If two ranges overlap, two blocks write the same row. That is a data
+race, and Vx makes no promise about the result.
 
 ## A tile in shared memory
 
@@ -180,6 +285,69 @@ block or the subgroup sets a part of the tile, so it is faster than a loop on on
 Flash attention does this to its output sums between two matmuls. The sums of a tensor-core
 matmul can then stay in registers.
 
+`lanes::prefetch(&x, [i, j], [rows, cols])` asks for the part of `x` at `[i, j]`, with the shape
+`[rows, cols]`, to come into the L2 cache. The lanes of the block or the subgroup share its rows.
+It reads no value, so it never changes a result. The part stops at the ends of `x`. On an H100 or
+a later NVIDIA GPU, each row is one `cp.async.bulk.prefetch.L2`. On an older NVIDIA GPU, each line
+of 128 bytes is one `prefetch.L2`. On other GPUs and on the CPU, it does nothing.
+`tests/optimizations/pass/lane_prefetch_into_the_l2_cache.vx` is a complete program.
+
+A prefetch saves time only when other work runs between the prefetch and the reads of the part.
+A prefetch right before the reads costs time. On an H200, each block of a matrix-vector product
+prefetched the weight rows that it then read. The decode step of a language model got 4% slower
+than without the prefetch, with the kernels started early in both.
+
+## Sums in registers
+
+The sums of a matmul of tiles can be in `Memory::REG`, as a tile with a row for each subgroup:
+
+```rust
+let mut acc = unsafe { Tensor<f32, [4, 64, 64], Memory::REG>::uninit() };
+for w in 0..4 across subgroups {
+  lanes::fill(&mut acc[w], 0.0);
+  acc[w] = acc[w] + (sa[w] as f32) @ (sb as f32);
+  lanes::copy(c, &acc[w], [w * 64, 0]);
+}
+```
+
+Each lane holds its part of the row of its subgroup in its registers, so `acc` takes no shared
+memory. The compiler keeps the tile in registers, or it reports an error. It does not move the
+tile to memory. So each use takes the row of its subgroup, `acc[w]`, in one of these:
+
+- `lanes::fill`
+- `lanes::scale_rows`
+- a matmul that adds to it
+- `lanes::copy` out of it, into a tensor that is not in shared memory
+
+Another use, such as a read by the lanes, is an error (E6033). The part of each lane must fit in
+the `capacity` of `Memory::REG` (E6009). The compiler keeps at most 128 sums of a lane, which is a
+row of 64 x 64. On an NVIDIA GPU, the tile needs `mma.sync`, which `sm_80` and later have.
+
+A tile in `Memory::SMEM` with only these uses also stays in registers, but nothing guarantees it.
+When such a tile stays in shared memory, the compiler warns (W1037) and names the use that keeps
+it there. With both `Memory::REG` and `Memory::SMEM`, the assembler of NVIDIA (`ptxas`) can still
+move some registers to local memory.
+`tests/optimizations/pass/lane_matmul_sums_in_memory_reg_stay_in_registers.vx` is a complete
+program.
+
+## Starting a kernel early
+
+On an H100 or a later NVIDIA GPU, a kernel can start while the kernel before it on the stream
+still runs. This hides the time that each kernel takes to start and to end, which matters in a
+program of many short kernels, such as the decode step of a language model. It takes two settings:
+
+- `VX_GPU_PDL=1` when you compile. Each kernel for `sm_90` or later then waits for the kernels
+  before it (`griddepcontrol.wait`) before its first read or write of global memory. Before the
+  wait, the blocks can only compute values, fill shared memory and call `lanes::prefetch`. After a
+  launch in the usual way, the wait has nothing to wait for.
+- `VX_CUDA_PDL=1` when you run. Vx's runtime then launches each kernel that waits with
+  programmatic dependent launch. It needs a CUDA 12 driver or later.
+
+A kernel that waits does not read its buffers through the read-only cache (`ld.global.nc`), because
+the kernel before it may still write them. A program that launches the kernels of `--emit-ptx`
+itself finds `"waits_for_earlier_kernels": true` in the manifest of each kernel that waits
+(`docs/lang/abi.md`, section 3.5).
+
 ## Math functions in a kernel
 
 `x.exp()` and `x.tanh()` are exact, and on a GPU they compute in `f64`, which is slow. In a kernel
@@ -190,5 +358,8 @@ a few `f32` instructions. [Exact and fast math](exact-and-fast-math.md) explains
 
 - An NVIDIA GPU runs each feature of this chapter. The compiler generates PTX.
 - An Apple GPU runs block and lane loops, shared memory, and atomics on `i32` and `u32`.
+- An Intel GPU (`arch: spirv64`) runs block, subgroup and lane loops, shared memory and the lane
+  routines. Each kernel asks for subgroups of 32 lanes. It does not run `lanes::copy_async` and
+  `lanes::copy_rows_async` yet. A region with one of them gets no image, and the compiler says why.
 - Each kernel also has a copy for the CPU, which runs when there is no GPU. The threads of the host
   share the blocks. `VX_HOST_THREADS=n` sets their number.

@@ -1,0 +1,84 @@
+//===- lane_matmul_scaled_on_the_cpu.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::matmul_scaled(&mut acc[w], &a[w], &sa[w], &b[w], &sb[w])` adds to `acc[w]` the matmul
+// of two `f4e2m1` tiles, where each 16 values along k share one `f8e4m3` scale (NVFP4). `acc`
+// starts at 1, so the old value counts. Some scales of `b` are -1, and a scale counts without its
+// sign, as the tensor core reads it. A Python loop gave the expected values. With the sign kept,
+// they would be -4.25 27.375 -13.25 and 269.625. The kernel runs on the CPU here, with the flat
+// and the AST code generators.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/b200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/b200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/b200.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}-11.25 37.375 -27.25 sum 240.125{{$}}
+
+fn main() -> i32 {
+  let mut c = transfer(Tensor<f32, [2, 16, 8]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for blk in 0..1 across blocks {
+      let mut a = unsafe {
+        Tensor<f4e2m1, [2, 16, 64], Memory::SMEM>::uninit()
+      };
+      let mut sa = unsafe {
+        Tensor<f8e4m3, [2, 16, 4], Memory::SMEM>::uninit()
+      };
+      let mut b = unsafe {
+        Tensor<f4e2m1, [2, 64, 8], Memory::SMEM>::uninit()
+      };
+      let mut sb = unsafe {
+        Tensor<f8e4m3, [2, 4, 8], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..64 {
+              a[w][i][k] = (((i * 3 + k * 5 + w) % 13 - 6) as f32 * 0.5) as f4e2m1;
+            }
+            for q in 0..4 {
+              sa[w][i][q] = (((i + q * 3 + w) % 4) as f32 * 0.5 + 0.25) as f8e4m3;
+            }
+            for j in 0..8 {
+              acc[w][i][j] = 1.0;
+            }
+          }
+          for k2 in 0..2 {
+            let k = i * 2 + k2;
+            for j in 0..8 {
+              b[w][k][j] = (((k * 7 + j * 2 + w) % 9 - 4) as f32) as f4e2m1;
+            }
+          }
+          if i < 4 {
+            for j in 0..8 {
+              sb[w][i][j] = (((i * 5 + j + w) % 3) as f32 - 1.0) as f8e4m3;
+            }
+          }
+        }
+        lanes::matmul_scaled(&mut acc[w], &a[w], &sa[w], &b[w], &sb[w]);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c[w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  let h = transfer(c, Memory::CPU_DRAM);
+  let mut all = 0.0;
+  for w in 0..2 {
+    for i in 0..16 {
+      for j in 0..8 {
+        all = all + h[w][i][j];
+      }
+    }
+  }
+  println!("{} {} {} sum {}", h[0][0][0], h[1][15][7], h[0][7][3], all);
+  return 0;
+}

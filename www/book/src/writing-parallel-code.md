@@ -26,7 +26,8 @@ Most parallel programs have one of four shapes:
   borrow the input from the function around them, and `join()` gives each result. The first
   program of [Tasks and channels](tasks.md) has this shape.
 - **Workers take jobs.** When jobs take different times, an even split leaves some tasks idle.
-  Give each worker the next job number from an atomic counter instead.
+  Give each worker the next job number from an atomic counter instead. `run_jobs` does this
+  for you, as [Run jobs with at most `n` tasks](tasks.md#run-jobs-with-at-most-n-tasks) shows.
 - **A pipeline.** Each stage is a task, and a channel connects each stage to the next one. A full
   channel makes a fast stage wait for a slow one.
 
@@ -54,18 +55,23 @@ the same in each run.
 | The same work on each element of a tensor | an `across` loop in a `spawn on` region |
 | A sum, a maximum or a sort over the lanes of a block | `lanes::sum`, `lanes::max`, `lanes::sort` |
 | Many passes that add to the same element of a tensor | `atomic_fetch_add_u32` and the other atomics on elements |
+| Each pass writes at a row that a tensor gives it | a `Distinct` tensor of rows ([Rows from a tensor of indices](gpu.md#rows-from-a-tensor-of-indices)) |
+| Each pass writes the rows of a range that a table gives it | a `DisjointRanges` table ([Rows from a table of ranges](gpu.md#rows-from-a-table-of-ranges)) |
 | A copy into a tile while the lanes work | `lanes::copy_async` |
 | A copy of a tile to or from shared memory | `lanes::copy` |
 | The same value in each element of a tile in shared memory | `lanes::fill` |
 | Each row of a tile in shared memory times a value of its own | `lanes::scale_rows` |
+| A part of a tensor in the L2 cache before the lanes read it | `lanes::prefetch` |
 | A faster `exp` or `tanh` in a GPU kernel | `fast_exp`, `fast_tanh` ([Exact and fast math](exact-and-fast-math.md)) |
 | Work on several devices at the same time | a task for each device, with a `spawn on` in each task |
 | The result of one task | `join()` on its handle |
 | Values from many tasks | a channel |
 | A counter or a flag that tasks share | an atomic |
 | A change to more than one value at a time | a `Mutex` |
-| Values from more than one channel | a `Selector` |
+| Values from more than one channel, or a channel and a time limit | `select2` to `select6`, or a `Selector` |
 | A value that lives longer than its `tasks` block | an `Arc` |
+| At most `n` tasks that do one thing at the same time | a `Semaphore` |
+| The same work on each job of a list, with at most `n` tasks | `run_jobs` |
 
 Use a channel when you are not sure. A channel moves each value to one owner, so two tasks never
 change the same data. A task can borrow the locals of the function around it, so most programs
@@ -159,7 +165,9 @@ of each kernel, and the result must be the same as on the GPU.
 | a multi-thread tokio runtime | `VX_TASK_RUNTIME=shared`, with no change to the program |
 | `async fn` and `.await` | a normal function: `recv()`, `join()` and `lock()` wait in place |
 | `tokio::sync::mpsc` | `std::sync::channel` |
-| `tokio::select!` | `Selector` |
+| `tokio::select!` | `select2` to `select6` from `std::sync::select` |
+| `tokio::sync::Semaphore` | `std::sync::semaphore::Semaphore` |
+| a `JoinSet` with a `Semaphore` | `run_jobs` from `std::sync::jobs` |
 | `AtomicU64` with `Ordering::Relaxed` | `AtomicU64` with `AtomicOrdering::Relaxed` |
 
 Vx has no `async`. [Why Vx has no `async`](tasks.md#why-vx-has-no-async) explains this.
@@ -184,7 +192,7 @@ and atomics on `i32` and `u32`.
 
 ## Calling parallel Vx from C or Rust
 
-A `pub fn` can start tasks, and C or Rust can call it as any other `pub fn`. The program that
+An `extern fn` can start tasks, and C or Rust can call it as any other `extern fn`. The program that
 calls it starts no threads. Link the object with the Vx runtime library, `libvx_std_core`, which
 runs the tasks:
 
@@ -193,4 +201,4 @@ vxc work.vx --action emit-obj -o work.o
 cc host.c work.o -L"$HOME/.vx/current/lib" -lvx_std_core -Wl,-rpath,"$HOME/.vx/current/lib" -lpthread -lm -o host
 ```
 
-[Calling Vx from C](unsafe-and-ffi.md#calling-vx-from-c) says which types a `pub fn` can take.
+[Calling Vx from C](unsafe-and-ffi.md#calling-vx-from-c) says which types an `extern fn` can take.

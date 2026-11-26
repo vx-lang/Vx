@@ -13,23 +13,23 @@ struct Counter {
 }
 
 impl Counter {
-  fn bump(self : &mut Counter) -> i32 {
+  pub fn bump(self : &mut Counter) -> i32 {
     self.value = self.value + 1i64;
     return 0;
   }
 }
 
-struct Interval
-invariant 0i64 <= self.lo && self.lo <= self.hi
-{
+struct Interval {
   lo : i64,
   hi : i64,
   count : Counter,
   items : Vec<i64>,
+
+  invariant 0i64 <= lo && lo <= hi,
 }
 
 impl Interval {
-  fn new() -> Interval {
+  pub fn new() -> Interval {
     return Interval {
       lo : 0i64, hi : 1i64, count : Counter {
         value : 0i64
@@ -37,7 +37,7 @@ impl Interval {
     };
   }
 
-  fn widen(self : &mut Interval) -> i32 {
+  pub fn widen(self : &mut Interval) -> i32 {
     self.hi = self.hi + 1i64;
     self.count.bump();
     self.items.push(self.hi);

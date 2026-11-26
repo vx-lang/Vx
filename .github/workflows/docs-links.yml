@@ -5,16 +5,10 @@ name: Docs links
 # job covers the rest with lychee so a stale reference fails the PR that introduces it.
 #
 # Pull requests check local links only (--offline): a remote site going down must not fail
-# an unrelated PR. Push to main and the weekly schedule still hit remotes.
+# an unrelated PR. The weekly schedule checks remote links too.
 
 on:
   pull_request:
-    paths:
-      - '**/*.md'
-      - 'lychee.toml'
-      - '.github/workflows/docs-links.yml'
-  push:
-    branches: [ main ]
     paths:
       - '**/*.md'
       - 'lychee.toml'

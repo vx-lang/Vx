@@ -1,0 +1,40 @@
+//===- a_false_assert_on_every_path_is_a_compile_error.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A false assert that runs on every path is a compile error (E8002): in the body of a function,
+// in a branch whose condition the compiler knows is true, and in the only arm of a `match`.
+// pass/a_false_assert_in_a_branch_that_may_not_run_compiles.vx has the branches that may not run.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E8002] at {{.*}}.vx:[[@LINE+4]]:3: Comptime assert failed: in the body
+// CHECK: Error[E8002] at {{.*}}.vx:[[@LINE+10]]:5: Comptime assert failed: in a branch that runs
+// CHECK: Error[E8002] at {{.*}}.vx:[[@LINE+17]]:7: Comptime assert failed: in the only arm
+fn in_the_body() -> i32 {
+  assert(false, "in the body");
+  return 0;
+}
+
+fn in_a_branch_that_runs() -> i32 {
+  let v = 5;
+  if v > 1 {
+    assert(false, "in a branch that runs");
+  }
+  return 0;
+}
+
+fn in_the_only_arm(x : i32) -> i32 {
+  match x {
+    _ => {
+      assert(false, "in the only arm");
+    }
+  }
+  return 0;
+}
+
+fn main(argc : i32) -> i32 {
+  return in_the_body() + in_a_branch_that_runs() + in_the_only_arm(argc);
+}

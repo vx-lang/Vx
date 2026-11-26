@@ -611,7 +611,10 @@ impl<'a> TypeChecker<'a> {
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
             self.value_unused = unused;
+            let uncertain = (taken != Some(true)) as u32;
+            self.consteval.uncertain_branch_depth += uncertain;
             then_ty = self.check_expr_block(&mut if_expr.then_block, None, consume);
+            self.consteval.uncertain_branch_depth -= uncertain;
         }
         self.pop_scope();
         if named {
@@ -640,7 +643,10 @@ impl<'a> TypeChecker<'a> {
                 self.push_releasing_scope();
                 if !self.speculating {
                     self.value_unused = unused;
+                    let uncertain = (taken != Some(false)) as u32;
+                    self.consteval.uncertain_branch_depth += uncertain;
                     else_ty = self.check_expr_block(else_b, None, consume);
+                    self.consteval.uncertain_branch_depth -= uncertain;
                 }
                 self.pop_scope();
                 if named {
@@ -1137,6 +1143,33 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// The names of `pattern`, in a `match` on the reference `scrutinee`, are references into
+    /// the same value. So each one holds what `scrutinee` holds, as after `let x = scrutinee`.
+    fn hold_what_the_matched_reference_holds(&mut self, pattern: &Pattern, scrutinee: &Expr) {
+        if self.speculating {
+            return;
+        }
+        let mut bound = Vec::new();
+        pattern_names(pattern, &mut bound);
+        let provenance = self.ref_provenance_of(scrutinee);
+        let store_target = self.store_target_of(scrutinee);
+        for name in bound {
+            if let Expr::Identifier(from) = scrutinee {
+                self.borrow
+                    .copy_borrows(from.name.as_ref(), name.as_ref(), self.scopes.len());
+                self.reborrow_mut_variable(from.name.as_ref(), name.as_ref());
+            }
+            match provenance {
+                Some(p) => self.borrow.ref_provenance.insert(name.clone(), p),
+                None => self.borrow.ref_provenance.remove(name.as_ref()),
+            };
+            match store_target {
+                Some(t) => self.borrow.store_targets.insert(name.clone(), t),
+                None => self.borrow.store_targets.remove(name.as_ref()),
+            };
+        }
+    }
+
     pub(crate) fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
             Pattern::Identifier(name) => {
@@ -1153,7 +1186,22 @@ impl<'a> TypeChecker<'a> {
                         return;
                     };
                     for (i, p) in payloads.iter().enumerate() {
-                        let p_ty = types.get(i).cloned().unwrap_or(Type::Unknown);
+                        let mut p_ty = types.get(i).cloned().unwrap_or(Type::Unknown);
+                        // Through a reference, a name binds a reference to its part of the value.
+                        if let Type::Borrow {
+                            mem_space,
+                            is_mut,
+                            region_id,
+                            ..
+                        } = expr_ty
+                        {
+                            p_ty = Type::Borrow {
+                                inner: Box::new(p_ty),
+                                mem_space: mem_space.clone(),
+                                is_mut: *is_mut,
+                                region_id: (*region_id).max(self.scopes.len()),
+                            };
+                        }
                         self.bind_pattern_variables(p, &p_ty);
                     }
                 } else {
@@ -1192,6 +1240,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let types = variant.1.as_ref()?;
+        // An earlier error, such as the use of a moved variable, made the matched type
+        // unknown. The payload is then unknown too, not the enum's own `T`.
+        if *matched == Type::Unknown {
+            return Some(vec![Type::Unknown; types.len()]);
+        }
         Some(types.iter().map(|t| t.substitute(&mapping)).collect())
     }
 
@@ -1233,6 +1286,7 @@ impl<'a> TypeChecker<'a> {
             expr: subject,
             arms,
             span,
+            ..
         }) = expr
         else {
             return None;
@@ -1327,6 +1381,7 @@ impl<'a> TypeChecker<'a> {
                 expr: match_expr,
                 arms,
                 span: match_span,
+                binds_references,
             }) => {
                 // Matching a variable, or what a reference points at, reads it: only an arm
                 // that binds a value which has to move moves it (below). Any other scrutinee
@@ -1356,6 +1411,11 @@ impl<'a> TypeChecker<'a> {
                 let behind_ref = matches!(expr_ty, Type::Borrow { .. })
                     || matches!(&**match_expr, Expr::Identifier(id)
                         if self.is_bound_behind_ref(id.name.as_ref()));
+                // Only a pattern with payload names binds a part of the value.
+                *binds_references = matches!(expr_ty, Type::Borrow { .. })
+                    && arms.iter().any(|arm| {
+                        matches!(&arm.pattern, Pattern::EnumVariant(_, _, Some(parts)) if !parts.is_empty())
+                    });
                 // When only some arms move a part, the value may still be there after the
                 // `match`, as after an `if` that moves it in one branch.
                 let every_arm_moves = place
@@ -1394,6 +1454,7 @@ impl<'a> TypeChecker<'a> {
                 let matched_number = (integer && crate::hir::prover::is_modelled(match_expr))
                     .then(|| (**match_expr).clone());
                 let mut literals_above: Vec<Expr> = Vec::new();
+                let uncertain = (arms.len() > 1) as u32;
                 for (i, arm) in arms.iter_mut().enumerate() {
                     let literal_arm = self.expected_type.is_none()
                         && unsuffixed_number_tail(&mut arm.body).is_some_and(|n| n.ty.is_none());
@@ -1434,7 +1495,10 @@ impl<'a> TypeChecker<'a> {
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty, &arm.span);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
                     let mut takes_value = !place;
-                    if behind_ref {
+                    if *binds_references {
+                        self.hold_what_the_matched_reference_holds(&arm.pattern, match_expr);
+                        takes_value = false;
+                    } else if behind_ref {
                         self.mark_bound_behind_ref(&arm.pattern);
                         takes_value = false;
                     } else if place
@@ -1475,7 +1539,10 @@ impl<'a> TypeChecker<'a> {
 
                     let arm_ty = if !self.speculating {
                         self.value_unused = unused;
-                        self.check_expr_block(&mut arm.body, None, consume)
+                        self.consteval.uncertain_branch_depth += uncertain;
+                        let ty = self.check_expr_block(&mut arm.body, None, consume);
+                        self.consteval.uncertain_branch_depth -= uncertain;
+                        ty
                     } else {
                         Type::Struct("void".into(), None)
                     };
@@ -1670,6 +1737,8 @@ impl<'a> TypeChecker<'a> {
                 self.next_id += 1;
 
                 let cloned_params = e.params.clone();
+                // A `let` with a type makes the closure a value of that type, which copies.
+                let typed = self.expected_type.is_some();
                 // The `let` whose value this closure is. A `let` in the body changes the field.
                 let in_let = self
                     .let_closure
@@ -1727,6 +1796,8 @@ impl<'a> TypeChecker<'a> {
                 let in_within = self.within_bodies.contains(&e.span);
                 self.within_depth += usize::from(in_within);
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                // The body becomes a function of its own, so it reads its extents now.
+                self.rewrite_extent_names_in(&mut b);
                 self.within_depth -= usize::from(in_within);
                 self.consteval.constraints.truncate(outer_facts);
                 self.borrow.restore(outer_borrows);
@@ -1780,6 +1851,31 @@ impl<'a> TypeChecker<'a> {
                     captured_vars_map.into_iter().collect();
                 captured_vars.sort_by(|a, b| a.0.cmp(&b.0)); // Stable layout
 
+                // A body that moves a capture can run only once.
+                let moved_capture = captured_vars
+                    .iter()
+                    .find(|(name, ty)| {
+                        !matches!(ty, Type::Tensor(..)) && self.is_moved(name.as_ref())
+                    })
+                    .map(|(name, _)| name.clone());
+                if let Some(moved) = &moved_capture {
+                    self.mono
+                        .closures_that_run_once
+                        .insert(struct_name.clone().into(), moved.clone());
+                    // `std::sync::within` calls its body once.
+                    if !self.speculating && (in_let.is_none() || typed) && !in_within {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4017,
+                            format!(
+                                "this closure moves `{moved}`, a value that it captures, so it \
+                                 can run only once. Write it in a `let` with no type, and call \
+                                 it there"
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                        );
+                    }
+                }
+
                 // How the closure takes each capture: by value, or through `&` or `&mut` (C1 in
                 // docs/discussions/closures_that_change_captured_locals.md).
                 let borrows: HashMap<crate::symbol::Symbol, bool> = captured_vars
@@ -1796,6 +1892,14 @@ impl<'a> TypeChecker<'a> {
                         }
                     })
                     .collect();
+                if let Some((changed, _)) = captured_vars
+                    .iter()
+                    .find(|(name, _)| changed_in_body.contains(name.as_ref()))
+                {
+                    self.mono
+                        .closures_that_change_captures
+                        .insert(struct_name.clone().into(), changed.clone());
+                }
 
                 if !self.speculating {
                     // A closure whose body moves a capture takes it, so the code around the
@@ -1934,7 +2038,8 @@ impl<'a> TypeChecker<'a> {
 
                 let call_func = decl::Function {
                     is_unsafe: false,
-                    is_pub: false,
+                    visibility: crate::gid::Visibility::Private,
+                    exported: false,
                     name: func_name.clone().into(),
                     generics: vec![],
                     params: env_params,
@@ -1948,6 +2053,7 @@ impl<'a> TypeChecker<'a> {
                     doc_comment: None,
                     span: e.span,
                     file: self.errors.file.clone(),
+                    package: None,
                 };
 
                 self.mono.functions.push((call_func, 0));
@@ -2003,6 +2109,7 @@ impl<'a> TypeChecker<'a> {
                     name: struct_name.clone().into(),
                     fields,
                     type_id: None,
+                    made_by_the_compiler: true,
                     span: e.span,
                 });
 

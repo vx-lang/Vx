@@ -12,6 +12,36 @@
 
 use super::formatting::{ClauseKind, RecordedKind};
 use super::*;
+use crate::gid::Visibility;
+
+/// Turn the trailing expression of a function body, written without `;`, into `return <expr>`.
+/// A trait default method needs this as much as a normal function does.
+fn return_the_trailing_expression(body: &mut [Statement]) {
+    let Some(last) = body.last_mut() else {
+        return;
+    };
+    let Statement::ExprStmt(ExprStmtStmt {
+        expr,
+        has_semi,
+        span,
+    }) = last
+    else {
+        return;
+    };
+    // Two reasons a trailing expression is not the block's value: it produces nothing
+    // (an else-less `if`, an `unsafe` block with no trailing expression), or every path
+    // through it already returned.
+    if *has_semi
+        || crate::syntax::expr::yields_no_value(expr)
+        || crate::syntax::expr::diverges_on_every_path(expr)
+    {
+        return;
+    }
+    *last = Statement::Return(ReturnStmt {
+        expr: Some(expr.clone()),
+        span: *span,
+    });
+}
 
 impl<'a> Parser<'a> {
     pub(crate) fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
@@ -29,10 +59,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The parameters of a function. With `extent_names`, a tensor type of a parameter can name
+    /// its run-time extents, as `?n` does in `t : &Tensor<f32, [?n]>`.
     fn parse_comma_separated_params(
         &mut self,
+        extent_names: bool,
     ) -> ParseResult<'a, Vec<(crate::symbol::Symbol, Type)>> {
         let mut params: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
+        let mut name_tokens = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
                 let start = self.pos;
@@ -53,14 +87,43 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(&TokenType::Colon, "Expected ':'")?;
                 let type_start = self.pos;
-                let ty = self.parse_type()?;
+                let outer = std::mem::replace(&mut self.extent_names_allowed, extent_names);
+                let ty = self.parse_type();
+                self.extent_names_allowed = outer;
+                let ty = ty?;
+                let mut anywhere = Vec::new();
+                ty.all_extent_names(&mut anywhere);
+                let at_top =
+                    crate::syntax::types::extent_names(&[(name.clone().into(), ty.clone())]);
+                if anywhere.len() != at_top.len() {
+                    return Err(self.error_at(
+                        &name_token,
+                        &format!(
+                            "parameter `{name}`: a name such as `?{}` can stand only in the \
+                             tensor type of the parameter itself, as in `t : &Tensor<f32, [?n]>`",
+                            anywhere[0]
+                        ),
+                    ));
+                }
                 self.record(RecordedKind::ParameterType, type_start);
                 self.record(RecordedKind::Parameter, start);
                 params.push((name.into(), ty));
+                name_tokens.push(name_token);
 
                 if !self.match_token(&TokenType::Comma) {
                     break;
                 }
+            }
+        }
+        // An extent name is a variable of the body, as a parameter is.
+        for (extent, _, _) in crate::syntax::types::extent_names(&params) {
+            if let Some(i) = params.iter().position(|(p, _)| *p == extent) {
+                return Err(self.error_at(
+                    &name_tokens[i],
+                    &format!(
+                        "`?{extent}` names an extent, so no parameter can have the name `{extent}`"
+                    ),
+                ));
             }
         }
         Ok(params)
@@ -154,6 +217,46 @@ impl<'a> Parser<'a> {
         Ok(bound)
     }
 
+    /// `extern fn`: a function with a body that the object file exports to C.
+    pub(crate) fn at_extern_fn(&self) -> bool {
+        self.check(&TokenType::Extern) && matches!(self.peek_n(1).kind, TokenType::Fn)
+    }
+
+    /// `pub`, `pkg` or neither, before an item. `pkg` and `ws` are levels only before `fn`,
+    /// `unsafe`, `extern` or `safe`. So a call of a macro with either name can still start an
+    /// item, and a variable in a function body can have either name.
+    pub(crate) fn parse_visibility(&mut self) -> ParseResult<'a, Visibility> {
+        if self.match_token(&TokenType::Pub) {
+            if self.check(&TokenType::LeftParen) {
+                return Err(self.error(
+                    "Vx has no `pub(..)`. Write `pkg fn` for a function that each file of its \
+                     package can call",
+                ));
+            }
+            return Ok(Visibility::Public);
+        }
+        if self.at_level_word("pkg") {
+            self.advance();
+            return Ok(Visibility::Package);
+        }
+        if self.at_level_word("ws") {
+            return Err(self.error(
+                "`ws` needs a workspace group, and Vx has no manifest to declare one yet. Write \
+                 `pkg` or `pub`",
+            ));
+        }
+        Ok(Visibility::Private)
+    }
+
+    /// Whether the level `word`, such as `pkg`, starts an item here.
+    pub(crate) fn at_level_word(&self, word: &str) -> bool {
+        self.peek().kind == TokenType::Identifier(word)
+            && matches!(
+                self.peek_n(1).kind,
+                TokenType::Fn | TokenType::Unsafe | TokenType::Extern | TokenType::Safe
+            )
+    }
+
     /// Whether a function declaration starts here: `fn`, or `unsafe fn`.
     pub(crate) fn at_fn_start(&self) -> bool {
         self.check(&TokenType::Fn)
@@ -168,11 +271,13 @@ impl<'a> Parser<'a> {
         Ok(return_type)
     }
 
-    /// Each `requires` or `ensures` clause of a function, as `keyword` says.
+    /// Each `requires` or `ensures` clause of a function, as `keyword` says. With `block_follows`,
+    /// a `{` after a clause starts the body or a default body, not a struct literal.
     fn parse_contract_clauses(
         &mut self,
         keyword: &TokenType<'a>,
         kind: ClauseKind,
+        block_follows: bool,
     ) -> ParseResult<'a, Vec<Expr>> {
         let mut conditions = Vec::new();
         loop {
@@ -180,7 +285,12 @@ impl<'a> Parser<'a> {
             if !self.match_token(keyword) {
                 return Ok(conditions);
             }
-            conditions.push(self.parse_expr()?);
+            let condition = if block_follows {
+                self.parse_expr_before_block()?
+            } else {
+                self.parse_expr()?
+            };
+            conditions.push(condition);
             self.record(RecordedKind::Clause(kind), start);
         }
     }
@@ -188,7 +298,19 @@ impl<'a> Parser<'a> {
     pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
         // A top-level `pub fn` has its `pub` read before this, so one here is on a method.
         if self.check(&TokenType::Pub) {
-            return Err(self.error("`pub` on a method is not supported yet"));
+            return Err(self.error("`pub` is not allowed here"));
+        }
+        if self.check(&TokenType::Unsafe) {
+            let level = match &self.peek_n(1).kind {
+                TokenType::Pub => Some("pub"),
+                TokenType::Identifier("pkg") => Some("pkg"),
+                _ => None,
+            };
+            if let Some(level) = level {
+                return Err(self.error(&format!(
+                    "write `{level} unsafe fn`: `{level}` comes before `unsafe`"
+                )));
+            }
         }
         let start = self.pos;
         let is_unsafe = self.match_token(&TokenType::Unsafe);
@@ -208,10 +330,17 @@ impl<'a> Parser<'a> {
         let parameters_start = self.pos;
         self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
         self.mut_params.clear();
-        let params = self.parse_comma_separated_params()?;
+        let params = self.parse_comma_separated_params(true)?;
         let mut_params = std::mem::take(&mut self.mut_params);
         self.consume(&TokenType::RightParen, "Expected ')'")?;
         self.record(RecordedKind::ParameterList, parameters_start);
+        if name == "main" && takes_a_root_and_more(&params) {
+            return Err(self.error_at(
+                name_token,
+                "A `main` that takes a `Root` can take one more parameter only: the words of \
+                 the command line, as a `Vec<String>`",
+            ));
+        }
 
         let mut topology = Topology::CPU;
         let clause_start = self.pos;
@@ -238,8 +367,10 @@ impl<'a> Parser<'a> {
         }
         let return_type = self.parse_recorded_return_type()?;
 
-        let requires = self.parse_contract_clauses(&TokenType::Requires, ClauseKind::Requires)?;
-        let ensures = self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures)?;
+        let requires =
+            self.parse_contract_clauses(&TokenType::Requires, ClauseKind::Requires, true)?;
+        let ensures =
+            self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures, true)?;
 
         // `where Reachable<A, B> [, Reachable<C, D>]*` -- topology transfer constraints.
         //
@@ -287,27 +418,7 @@ impl<'a> Parser<'a> {
         let mut body = Vec::new();
         self.parse_function_body(&mut body)?;
 
-        // Transform implicit return
-        if let Some(Statement::ExprStmt(ExprStmtStmt {
-            expr,
-            has_semi,
-            span,
-        })) = body.last().cloned()
-        {
-            // Two reasons a trailing expression is not the block's value: it produces nothing
-            // (an else-less `if`, an `unsafe` block with no trailing expression), or every path
-            // through it already returned.
-            if !has_semi
-                && !crate::syntax::expr::yields_no_value(&expr)
-                && !crate::syntax::expr::diverges_on_every_path(&expr)
-            {
-                let lsyntax_idx = body.len() - 1;
-                body[lsyntax_idx] = Statement::Return(ReturnStmt {
-                    expr: Some(expr),
-                    span,
-                });
-            }
-        }
+        return_the_trailing_expression(&mut body);
 
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
         self.record(RecordedKind::FunctionDeclaration, start);
@@ -319,7 +430,8 @@ impl<'a> Parser<'a> {
 
         Ok(Function {
             is_unsafe,
-            is_pub: false,
+            visibility: crate::gid::Visibility::Private,
+            exported: false,
             name: name.into(),
             generics,
             params,
@@ -333,6 +445,7 @@ impl<'a> Parser<'a> {
             doc_comment: None,
             span,
             file: None,
+            package: None,
         })
     }
 
@@ -1159,24 +1272,52 @@ impl<'a> Parser<'a> {
 
         let generics = self.parse_generic_params()?;
 
-        let mut invariants = Vec::new();
-        while self.match_token(&TokenType::Invariant) {
-            invariants.push(self.parse_expr()?);
+        if self.check(&TokenType::Invariant) {
+            return Err(self.error(&format!(
+                "an invariant of a struct comes after its last field, inside the braces. Move \
+                 this invariant into the braces of `{name}`."
+            )));
         }
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut fields: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
+        let mut invariants = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            let f_name = self.expect_identifier("Expected field name")?;
-            self.consume(&TokenType::Colon, "Expected ':'")?;
-            let f_type = self.parse_type()?;
-            fields.push((f_name.into(), f_type));
+            if self.match_token(&TokenType::Invariant) {
+                let start = self.pos;
+                invariants.push(self.parse_expr()?);
+                self.refuse_self_in_invariant(start, &name)?;
+            } else {
+                if !invariants.is_empty() {
+                    return Err(self.error(&format!(
+                        "a field cannot come after an invariant. Put each field of `{name}` \
+                         before its first invariant."
+                    )));
+                }
+                let f_name = self.expect_identifier("Expected field name")?;
+                self.consume(&TokenType::Colon, "Expected ':'")?;
+                let f_type = self.parse_type()?;
+                fields.push((f_name.into(), f_type));
+            }
 
             if !self.match_token(&TokenType::Comma) {
                 break;
             }
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        // The checker reads a field of an invariant as `self.<field>`.
+        for invariant in &mut invariants {
+            crate::syntax::visit_expr_mut(invariant, &mut |e| {
+                if let Expr::Identifier(id) = e {
+                    if fields.iter().any(|(field, _)| *field == id.name) {
+                        let this = Expr::Identifier(IdentifierExpr::new("self".into(), id.span));
+                        let member =
+                            MemberAccessExpr::new(Box::new(this), id.name.clone(), id.span);
+                        *e = Expr::MemberAccess(member);
+                    }
+                }
+            });
+        }
 
         // Remove generic params from scope
         for _ in 0..generics.len() {
@@ -1194,6 +1335,36 @@ impl<'a> Parser<'a> {
             invariants,
             doc_comment: None,
         })
+    }
+
+    /// An invariant names the fields of its struct, so a written `self` is an error. `start` is
+    /// the position of the first token of the invariant.
+    fn refuse_self_in_invariant(&self, start: usize, struct_name: &str) -> ParseResult<'a, ()> {
+        let tokens = &self.tokens[start..self.pos];
+        for (i, token) in tokens.iter().enumerate() {
+            if token.kind != TokenType::Identifier("self") {
+                continue;
+            }
+            let field = match (tokens.get(i + 1), tokens.get(i + 2)) {
+                (Some(dot), Some(next)) if dot.kind == TokenType::Dot => match &next.kind {
+                    TokenType::Identifier(field) => Some(*field),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let message = match field {
+                Some(field) => format!(
+                    "an invariant names a field without `self`. Write `{field}`, not \
+                     `self.{field}`."
+                ),
+                None => format!(
+                    "an invariant cannot name `self`. It can name only the fields of \
+                     `{struct_name}`."
+                ),
+            };
+            return Err(self.error_at(token, &message));
+        }
+        Ok(())
     }
 
     pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<'a, EnumDecl> {
@@ -1287,6 +1458,7 @@ impl<'a> Parser<'a> {
             let decl_line = self.peek().line;
             let decl_column = self.peek().column;
             let start = self.pos;
+            let visibility = self.parse_visibility()?;
             let is_safe = self.match_token(&TokenType::Safe);
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = self.expect_identifier("Expected function name")?;
@@ -1312,13 +1484,14 @@ impl<'a> Parser<'a> {
 
             let parameters_start = self.pos;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
-            let params = self.parse_comma_separated_params()?;
+            let params = self.parse_comma_separated_params(false)?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.record(RecordedKind::ParameterList, parameters_start);
 
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_recorded_return_type()?;
-            let ensures = self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures)?;
+            let ensures =
+                self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures, false)?;
             self.record(RecordedKind::FunctionHeader, start);
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
             self.record(RecordedKind::FunctionDeclaration, start);
@@ -1327,6 +1500,7 @@ impl<'a> Parser<'a> {
             }
 
             externs.push(ExternDecl {
+                visibility,
                 name: name.into(),
                 is_safe,
                 memories,
@@ -1339,6 +1513,8 @@ impl<'a> Parser<'a> {
                     length: 0,
                     expansion: self.expansion(),
                 },
+                file: None,
+                package: None,
                 doc_comment,
             });
         }
@@ -1393,7 +1569,7 @@ impl<'a> Parser<'a> {
                 return Err(self.error("`unsafe fn` on a trait method is not supported yet"));
             }
             if self.check(&TokenType::Pub) {
-                return Err(self.error("`pub` on a method is not supported yet"));
+                return Err(self.error("a method of a trait needs no `pub`: each one is public"));
             }
             let start = self.pos;
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
@@ -1404,13 +1580,14 @@ impl<'a> Parser<'a> {
             let parameters_start = self.pos;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
             self.mut_params.clear();
-            let params = self.parse_comma_separated_params()?;
+            let params = self.parse_comma_separated_params(false)?;
             let mut_params = std::mem::take(&mut self.mut_params);
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.record(RecordedKind::ParameterList, parameters_start);
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_recorded_return_type()?;
-            let ensures = self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures)?;
+            let ensures =
+                self.parse_contract_clauses(&TokenType::Ensures, ClauseKind::Ensures, true)?;
             self.record(RecordedKind::FunctionHeader, start);
             // A trait method is either a requirement, ending in `;`, or a default, whose body
             // an impl inherits unless it writes its own.
@@ -1421,6 +1598,7 @@ impl<'a> Parser<'a> {
                     &TokenType::RightBrace,
                     "Expected '}' after trait method body",
                 )?;
+                return_the_trailing_expression(&mut body);
                 Some(body)
             } else {
                 self.consume(
@@ -1495,9 +1673,11 @@ impl<'a> Parser<'a> {
         // if we see `Identifier` followed by `for`, it's a trait. Otherwise it's a type.
         // Note: parse_type handles `Struct(name)`, which is an identifier!
         // We can just peek ahead.
+        let mut target_token = self.peek().clone();
         let parsed_type = self.parse_type()?;
         let target_type = if self.check(&TokenType::For) {
             self.advance(); // consume 'for'
+            target_token = self.peek().clone();
             if let Type::Struct(name, _) = parsed_type {
                 trait_name = Some(name);
             } else if let Type::GenericInstance(inner, args) = parsed_type {
@@ -1514,6 +1694,22 @@ impl<'a> Parser<'a> {
         } else {
             parsed_type
         };
+        // No method call finds a method of an impl for `&T` or `*mut T`.
+        if let Type::Borrow { inner, .. } | Type::Ref(inner, _) | Type::Pointer(inner, ..) =
+            &target_type
+        {
+            let header = match &trait_name {
+                Some(t) => format!("impl {t} for {inner}"),
+                None => format!("impl {inner}"),
+            };
+            return Err(self.error_at(
+                &target_token,
+                &format!(
+                    "an impl is for a type, not for a reference or a raw pointer to it. Write \
+                     `{header}`"
+                ),
+            ));
+        }
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
         let outer_self = self.impl_self.replace(target_type.clone());
@@ -1548,7 +1744,16 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            let pub_token = self.peek().clone();
+            let visibility = self.parse_visibility()?;
+            if visibility != Visibility::Private && trait_name.is_some() {
+                return Err(self.error_at(
+                    &pub_token,
+                    "a method of a trait impl needs no `pub`: the trait makes it public",
+                ));
+            }
             let mut method = self.parse_function()?;
+            method.visibility = visibility;
             method.doc_comment = doc_comment;
             // A method of a generic impl block has the block's parameters in scope, so the
             // method is generic too even when it declares none of its own. Saying so here is
@@ -1591,6 +1796,7 @@ impl<'a> Parser<'a> {
             assoc_bindings,
             copied_defaults: Vec::new(),
             is_unsafe: false,
+            is_extern: false,
         })
     }
 
@@ -1681,6 +1887,7 @@ impl<'a> Parser<'a> {
     /// an unparsed token tree -- because what it expands to is decided by the macro's rules,
     /// not by this parser.
     fn parse_item_macro_call(&mut self) -> ParseResult<'a, crate::syntax::stmt::MacroCallStmt> {
+        let span = self.next_span();
         let name = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             other => {
@@ -1699,7 +1906,7 @@ impl<'a> Parser<'a> {
             token_tree,
             block_tree,
             has_semi,
-            span: Span::default(),
+            span,
         })
     }
 
@@ -1777,7 +1984,19 @@ impl<'a> Parser<'a> {
                 imports.push(self.parse_import_decl()?);
             } else if self.check(&TokenType::MacroRules) {
                 macros.push(self.parse_macro_def()?);
-            } else if self.check(&TokenType::Extern) {
+            } else if self.check(&TokenType::Extern)
+                && matches!(self.peek_n(1).kind, TokenType::Unsafe)
+                && matches!(self.peek_n(2).kind, TokenType::Impl)
+            {
+                return Err(self.error("write `unsafe extern impl`, not `extern unsafe impl`"));
+            } else if self.check(&TokenType::Extern)
+                && matches!(self.peek_n(1).kind, TokenType::Impl)
+            {
+                self.advance();
+                let mut ib = self.parse_impl_block()?;
+                ib.is_extern = true;
+                impls.push(ib);
+            } else if self.check(&TokenType::Extern) && !self.at_extern_fn() {
                 let mut at = self.peek().clone();
                 let block = self.parse_extern_block()?;
                 // A C function keeps its name, so a Vx function cannot share it.
@@ -1802,6 +2021,16 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let mut ib = self.parse_impl_block()?;
                 ib.is_unsafe = true;
+                impls.push(ib);
+            } else if self.check(&TokenType::Unsafe)
+                && matches!(self.peek_n(1).kind, TokenType::Extern)
+                && matches!(self.peek_n(2).kind, TokenType::Impl)
+            {
+                self.advance();
+                self.advance();
+                let mut ib = self.parse_impl_block()?;
+                ib.is_unsafe = true;
+                ib.is_extern = true;
                 impls.push(ib);
             } else if self.check(&TokenType::Impl) {
                 // `impl Transfer<Memory::A, Memory::B> for Topology::X { ... }` is a transfer
@@ -1838,19 +2067,32 @@ impl<'a> Parser<'a> {
                 let mut c = self.parse_const_item()?;
                 c.doc_comment = doc_comment;
                 consts.push(c);
-            } else if self.at_fn_start() || self.check(&TokenType::Pub) {
+            } else if self.at_fn_start()
+                || self.check(&TokenType::Pub)
+                || self.at_level_word("pkg")
+                || self.at_level_word("ws")
+                || self.at_extern_fn()
+                || (self.check(&TokenType::Unsafe)
+                    && matches!(
+                        self.peek_n(1).kind,
+                        TokenType::Pub | TokenType::Identifier("pkg")
+                    ))
+            {
                 let start = self.peek().clone();
-                let is_pub = self.match_token(&TokenType::Pub);
-                if is_pub && !self.at_fn_start() {
-                    return Err(self.error("Expected 'fn' after 'pub'"));
+                let visibility = self.parse_visibility()?;
+                let has_level = visibility != Visibility::Private;
+                let exported = self.at_extern_fn() && self.match_token(&TokenType::Extern);
+                if (has_level || exported) && !self.at_fn_start() {
+                    return Err(self.error("Expected 'fn' after 'pub', 'pkg' or 'extern'"));
                 }
                 let mut f = self.parse_function()?;
                 // A generic function becomes one copy per type, each with its own name, so
                 // there is no single name to export.
-                if is_pub && !f.generics.is_empty() && !self.recording() {
-                    return Err(self.error_at(&start, "a generic function cannot be `pub` yet"));
+                if exported && !f.generics.is_empty() && !self.recording() {
+                    return Err(self.error_at(&start, "a generic function cannot be `extern`"));
                 }
-                f.is_pub = is_pub;
+                f.visibility = visibility;
+                f.exported = exported;
                 f.doc_comment = doc_comment;
                 // Vx has no overloading: a second `fn foo` replaced the first without a word.
                 let earlier = defined_at.get(&f.name).copied().or_else(|| {
@@ -1901,6 +2143,16 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "tuple".into()],
             });
         }
+        // `Distinct::check(t)` and `DisjointRanges::check(t)` call functions in `core::distinct`.
+        if self.uses_distinct_check
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "distinct"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "distinct".into()],
+            });
+        }
         // `==` with a string literal is a call of `core::c_str`'s `c_str_equals`, so it brings
         // that module with it. The module itself compares no literals, so it does not import
         // itself.
@@ -1919,9 +2171,20 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "c_str".into()],
             });
         }
+        if give_main_its_root(&mut functions)
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "std" && &*i.path[1] == "root"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["std".into(), "root".into()],
+            });
+        }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             file: None,
+            package: None,
+            standard_library: false,
             item_macros,
             imports,
             macros,
@@ -1935,6 +2198,8 @@ impl<'a> Parser<'a> {
             topologies,
             memories,
             transfer_impls,
+            macro_call_sites: Vec::new(),
+            no_trusted_code: None,
         })
     }
 
@@ -2043,6 +2308,82 @@ impl<'a> Parser<'a> {
         })
     }
 }
+/// `fn main(root : Root) -> i32` gets the capabilities of the program, and
+/// `fn main(root : Root, args : Vec<String>) -> i32` also gets the words of the command line.
+/// Its body becomes the function `main_with_root`. A generated `main` passes it the `Root` and
+/// the words from `std::root`. The generated `unsafe` blocks are not trusted code that a program
+/// wrote, so `vxc --audit` leaves them out. Returns whether `main` takes a `Root`.
+fn give_main_its_root(functions: &mut Vec<Function>) -> bool {
+    let takes_a_root = |f: &Function| {
+        f.name.as_ref() == "main" && matches!(&f.params[..], [(_, t)] | [(_, t), _] if is_a_root(t))
+    };
+    let Some(user) = functions.iter_mut().find(|f| takes_a_root(f)) else {
+        return false;
+    };
+    user.name = "main_with_root".into();
+    let span = user.span;
+    let mut main = Parser::parse_fn_from_str(if user.params.len() == 1 {
+        "fn main() -> i32 { return main_with_root(unsafe { root_of_the_program() }); }"
+    } else {
+        "fn main(argc : i32, argv : *mut *mut i8) -> i32 { \
+         return main_with_root(unsafe { root_of_the_program() }, \
+         unsafe { arguments_of_the_program(argc, argv) }); }"
+    });
+    main.span = span;
+    let Some(Statement::Return(ReturnStmt {
+        expr: Some(Expr::FunctionCall(call)),
+        ..
+    })) = main.body.first_mut()
+    else {
+        unreachable!("the generated `main` is one `return` of a call");
+    };
+    for arg in &mut call.args {
+        let Expr::UnsafeBlock(block) = arg else {
+            unreachable!("each argument of the generated call is an `unsafe` block");
+        };
+        block.generated = true;
+    }
+    functions.push(main);
+    true
+}
+
+fn is_a_root(t: &Type) -> bool {
+    matches!(t, Type::Struct(name, _) if name.as_ref() == "Root")
+}
+
+/// Whether `params` start with a `Root` and have more after it than one `Vec<String>`.
+fn takes_a_root_and_more(params: &[(crate::symbol::Symbol, Type)]) -> bool {
+    let is_the_command_line = |t: &Type| {
+        matches!(t, Type::GenericInstance(base, args)
+            if matches!(&**base, Type::Struct(v, _) if v.as_ref() == "Vec")
+                && matches!(args.as_slice(), [Type::Struct(s, _)] if s.as_ref() == "String"))
+    };
+    match params {
+        [(_, root), rest @ ..] if is_a_root(root) => match rest {
+            [] => false,
+            [(_, words)] => !is_the_command_line(words),
+            _ => true,
+        },
+        _ => false,
+    }
+}
+
+/// Whether `f` is the `main` that `give_main_its_root` writes, which makes the `Root` of the
+/// program.
+pub(crate) fn makes_the_root(f: &Function) -> bool {
+    let [Statement::Return(ReturnStmt {
+        expr: Some(Expr::FunctionCall(call)),
+        ..
+    })] = f.body.as_slice()
+    else {
+        return false;
+    };
+    f.name.as_ref() == "main"
+        && call.name.as_ref() == "main_with_root"
+        && !call.args.is_empty()
+        && (call.args.iter()).all(|a| matches!(a, Expr::UnsafeBlock(block) if block.generated))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2058,6 +2399,25 @@ mod tests {
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
         assert_eq!(program.functions[0].name.as_ref(), "main");
+    }
+
+    /// A `main` that takes a `Root` can take one more parameter: the words of the command line.
+    #[rstest]
+    #[case("fn main(root : Root) -> i32 { return 0; }", true)]
+    #[case("fn main(root : Root, args : Vec<String>) -> i32 { return 0; }", true)]
+    #[case("fn main(root : Root, count : i32) -> i32 { return 0; }", false)]
+    #[case("fn main(root : Root, args : Vec<i32>) -> i32 { return 0; }", false)]
+    #[case(
+        "fn main(root : Root, args : Vec<String>, n : i32) -> i32 { return 0; }",
+        false
+    )]
+    fn main_takes_a_root_and_only_the_command_line(#[case] input: &str, #[case] parses: bool) {
+        let tokens = Lexer::new(input).tokenize();
+        assert_eq!(
+            Parser::new(&tokens, input).parse().is_ok(),
+            parses,
+            "{input}"
+        );
     }
 
     #[test]
@@ -2164,13 +2524,9 @@ impl Transfer<Memory::L2, Memory::SMEM> for Topology::Dev {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         let mut program = parser.parse().unwrap();
-        // Mirror the driver: collect rules into the name-keyed map the expander takes.
-        let mut rules = std::collections::HashMap::new();
-        for mac in &program.macros {
-            rules.insert(mac.name.clone(), mac.rules.clone());
-        }
+        let macros = crate::parser::MacroTable::new(std::iter::once(&program));
         let defaults = crate::resolver::collect_trait_defaults(std::iter::once(&program));
-        let expander = crate::parser::MacroExpander::new(&rules, &defaults);
+        let expander = crate::parser::MacroExpander::new(&macros, &defaults);
         expander.expand_module(&mut program).unwrap();
         let body = format!("{:?}", program.transfer_impls[0].methods[0].body);
         assert!(
@@ -2248,7 +2604,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
             func.return_type,
             Type::Verified(Box::new(Type::Tensor(
                 ElementType::F32,
-                vec![Dim::Dyn, Dim::Dyn],
+                vec![Dim::Dyn(None), Dim::Dyn(None)],
                 None
             )))
         );
@@ -2305,7 +2661,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 ty,
                 &Some(Type::Tensor(
                     ElementType::F32,
-                    vec![Dim::Dyn, Dim::Dyn],
+                    vec![Dim::Dyn(None), Dim::Dyn(None)],
                     None
                 ))
             );
@@ -2313,8 +2669,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 owner_type_args: _,
                 name: func_name,
                 args,
-                span: _,
-                type_args: _,
+                ..
             }) = expr
             {
                 assert_eq!(func_name.as_ref(), "Tensor");
@@ -2735,7 +3090,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
             assert_eq!(
                 **inner,
-                Type::Tensor(ElementType::F32, vec![Dim::Dyn, Dim::Dyn], None)
+                Type::Tensor(ElementType::F32, vec![Dim::Dyn(None), Dim::Dyn(None)], None)
             );
         } else {
             panic!("Expected pointer return type");
@@ -2766,8 +3121,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 owner_type_args: _,
                 name,
                 args,
-                span: _,
-                type_args: _,
+                ..
             })) = expr
             {
                 assert_eq!(name.as_ref(), "vx_stdout_write");
@@ -2792,8 +3146,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 owner_type_args: _,
                 name,
                 args,
-                span: _,
-                type_args: _,
+                ..
             }) = expr
             {
                 assert_eq!(name.as_ref(), "vx_stderr_write");

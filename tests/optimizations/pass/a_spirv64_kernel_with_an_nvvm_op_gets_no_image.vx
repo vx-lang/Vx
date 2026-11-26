@@ -1,0 +1,61 @@
+//===- a_spirv64_kernel_with_an_nvvm_op_gets_no_image.vx ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two regions for an Intel GPU (`arch: spirv64`) call functions with an
+// `mlir!` block that only an NVIDIA GPU can run: an `nvvm` op, and a call of an
+// NVVM intrinsic. LLVM's SPIR-V backend stopped the compiler on both. Now each
+// region gets no image, and the warning names the op.
+//
+// RUN: vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not='LLVM ERROR'
+// CHECK-DAG: in `lane_ids` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it uses `nvvm.read.ptx.sreg.laneid`, which only an NVIDIA GPU has
+// CHECK-DAG: in `fast_exp` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it uses `llvm.nvvm.ex2.approx.ftz.f`, which only an NVIDIA GPU has
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+Topology Simd {
+  arch: spirv64,
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn lane_id() on Topology::Simd -> i32 {
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["nvvm"]) {
+      %r = nvvm.read.ptx.sreg.laneid : i32
+      macro.yield %r : i32
+    } };
+}
+
+fn exp2_ftz(v : f32) on Topology::Simd -> f32 {
+  return unsafe { mlir!( inputs : (%v = v : f32), returns : f32, dialects : ["llvm"]) {
+      %r = llvm.call_intrinsic "llvm.nvvm.ex2.approx.ftz.f"(%v) : (f32) -> f32
+      macro.yield %r : f32
+    } };
+}
+
+pub fn lane_ids(o : &mut Tensor<i32, [4], Memory::DEV_HBM>) -> void {
+  spawn on(Topology::Simd) {
+    o[0] = lane_id();
+  }
+  return;
+}
+
+pub fn fast_exp(o : &mut Tensor<f32, [4], Memory::DEV_HBM>, a : &Tensor<f32, [4], Memory::DEV_HBM>) -> void {
+  spawn on(Topology::Simd) {
+    for i in 0..4 {
+      o[i] = exp2_ftz(a[i]);
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,136 @@
+//===- thread_sanitizer_finds_no_race_through_select.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tasks send `Note`s, which hold their number in memory of their own. The main code takes
+// them with `select2`. After each `select2`, it calls `scribble`, whose frame reuses the stack
+// of the `select2`. A send that wrote to the waiter of a `select2` after it returned would race
+// with the writes of `scribble`, and ThreadSanitizer must report no race.
+//
+// REQUIRES: thread-sanitizer
+// RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// RUN: env VX_TASK_RUNTIME=shared vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// CHECK: {{^}}select2 took 400 notes with the sum 39800{{$}}
+// CHECK-NEXT: {{^}}scribble gave {{[0-9]+}}{{$}}
+
+import std::alloc;
+import std::sync::channel;
+import std::sync::select;
+
+struct Note {
+  number : *mut i64,
+}
+
+unsafe impl Send for Note {}
+
+fn note(v : i64) -> Note {
+  let p : *mut i64 = alloc(8, 8);
+  unsafe { p[0] = v; }
+  return Note {
+    number : p
+  };
+}
+
+fn read_and_free(n : Note) -> i64 {
+  let p = n.number;
+  let v = unsafe { p[0] };
+  let bytes : *mut i8 = p;
+  unsafe { dealloc(bytes, 8) };
+  return v;
+}
+
+fn send_notes(tx : Sender<Note>, count : i64) -> void {
+  for k in 0..count {
+    let _sent = tx.send(note(k));
+  }
+}
+
+struct Words {
+  a : i64,
+  b : i64,
+  c : i64,
+  d : i64,
+  e : i64,
+  f : i64,
+  g : i64,
+  h : i64,
+}
+
+fn fill(w : &mut Words, v : i64) -> void {
+  w.a = v;
+  w.b = v;
+  w.c = v;
+  w.d = v;
+  w.e = v;
+  w.f = v;
+  w.g = v;
+  w.h = v;
+}
+
+/// Plain writes to a frame at the depth of the frame of `select2`.
+fn scribble(v : i64) -> i64 {
+  let mut w = Words {
+    a : 0, b : 0, c : 0, d : 0, e : 0, f : 0, g : 0, h : 0
+  };
+  fill(&mut w, v);
+  return w.a + w.h;
+}
+
+/// The number of the note, or -1 when the channel is closed.
+fn value_of(got : Result<Note, TryRecvError>) -> i64 {
+  match got {
+    Result<Note, TryRecvError>::Ok(n) => {
+      return read_and_free(n);
+    }
+    Result<Note, TryRecvError>::Err(_) => {
+      return -1;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx_a, a) = channel<Note>(1);
+  let (tx_b, b) = channel<Note>(1);
+  let mut open_a = true;
+  let mut open_b = true;
+  let mut taken : i64 = 0;
+  let mut sum : i64 = 0;
+  let mut scribbled : i64 = 0;
+  tasks {
+    spawn {
+      send_notes(tx_a, 200);
+    };
+    spawn {
+      send_notes(tx_b, 200);
+    };
+    while open_a || open_b {
+      match select2(&when(open_a, &a), &when(open_b, &b)) {
+        Result<i32, SelectError>::Ok(i) => {
+          scribbled = scribbled + scribble(taken);
+          let mut v : i64 = -1;
+          if i == 0 {
+            v = value_of(a.try_recv());
+            open_a = v >= 0;
+          } else {
+            v = value_of(b.try_recv());
+            open_b = v >= 0;
+          }
+          if v >= 0 {
+            taken = taken + 1;
+            sum = sum + v;
+          }
+        }
+        Result<i32, SelectError>::Err(_) => {
+          open_a = false;
+          open_b = false;
+        }
+      }
+    }
+  };
+  println!("select2 took {} notes with the sum {}", taken, sum);
+  println!("scribble gave {}", scribbled);
+  return 0;
+}

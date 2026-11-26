@@ -1,0 +1,90 @@
+//===- lane_matmul_scaled_on_the_gpu.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On a B200, `lanes::matmul_scaled` runs as a loop on the 32 lanes of a subgroup. It has no
+// `mma` yet. For each k, a lane reads a byte of `a` and the scale of its block, k / 16. It clears
+// the sign bit of the scale, and does the same for `b`. After the k loop, the lane adds the old
+// value of `acc`. Then the lanes of the subgroup wait for each other. Both code generators give
+// this PTX.
+//
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/b200.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --implicit-check-not=mma < %t.ptx
+// RUN: env -u VX_GPU_CHIP vxc %s --legacy-codegen --host default --machine fleet/b200.vx --emit-ptx -o %t.ast.ptx
+// RUN: FileCheck %s --implicit-check-not=mma < %t.ast.ptx
+// CHECK-LABEL: .entry nvfp4_tiles(
+// CHECK: bar.warp.sync
+// CHECK: shr.u64 {{%rd[0-9]+}}, [[K:%rd[0-9]+]], 4;
+// CHECK: ld.shared.b8
+// CHECK: ld.shared.b8 [[SA:%rs?[0-9]+]],
+// CHECK: and.b32 {{%r[0-9]+}}, [[SA]], 127;
+// CHECK: ld.shared.b8
+// CHECK: ld.shared.b8 [[SB:%rs?[0-9]+]],
+// CHECK: and.b32 {{%r[0-9]+}}, [[SB]], 127;
+// CHECK: add.rn.f32 [[SUM:%r[0-9]+]], [[SUM]],
+// CHECK: setp.ne.b64 {{%p[0-9]+}}, [[K]], 64;
+// CHECK: ld.shared.b32 [[OLD:%r[0-9]+]],
+// CHECK: add.rn.f32 [[NEW:%r[0-9]+]], [[SUM]], [[OLD]];
+// CHECK: st.shared.b32 [{{%rd[0-9]+}}], [[NEW]];
+// CHECK: bar.warp.sync
+
+pub fn nvfp4_tiles(c : &mut Tensor<f32, [?, 2, 16, 8], Memory::HBM>, a : &Tensor<f4e2m1, [?, 64], Memory::HBM>, sa : &Tensor<f8e4m3, [?, 4], Memory::HBM>, b : &Tensor<f4e2m1, [64, 8], Memory::HBM>, sb : &Tensor<f8e4m3, [4, 8], Memory::HBM>, blocks : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..blocks across blocks {
+      let mut ta = unsafe {
+        Tensor<f4e2m1, [2, 16, 64], Memory::SMEM>::uninit()
+      };
+      let mut tsa = unsafe {
+        Tensor<f8e4m3, [2, 16, 4], Memory::SMEM>::uninit()
+      };
+      let mut tb = unsafe {
+        Tensor<f4e2m1, [2, 64, 8], Memory::SMEM>::uninit()
+      };
+      let mut tsb = unsafe {
+        Tensor<f8e4m3, [2, 4, 8], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe { Tensor<f32, [2, 16, 8], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for k in 0..64 {
+              ta[w][i][k] = a[blk * 32 + w * 16 + i][k];
+            }
+            for q in 0..4 {
+              tsa[w][i][q] = sa[blk * 32 + w * 16 + i][q];
+            }
+            for j in 0..8 {
+              acc[w][i][j] = 0.0;
+            }
+          }
+          for k2 in 0..2 {
+            for j in 0..8 {
+              tb[w][i * 2 + k2][j] = b[i * 2 + k2][j];
+            }
+          }
+          if i < 4 {
+            for j in 0..8 {
+              tsb[w][i][j] = sb[i][j];
+            }
+          }
+        }
+        lanes::matmul_scaled(&mut acc[w], &ta[w], &tsa[w], &tb[w], &tsb[w]);
+        for i in 0..32 across lanes {
+          if i < 16 {
+            for j in 0..8 {
+              c[blk][w][i][j] = acc[w][i][j];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

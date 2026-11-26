@@ -8,29 +8,47 @@
 import core::cmp;
 import core::ops;
 import core::num;
+import core::ptr;
+import core::result;
+import std::vec;
 
 extern {
   /// The Rust core behind `String::new`.
-  fn vx_string_new() -> *mut i8;
+  pub fn vx_string_new() -> *mut i8;
   /// The Rust core behind `String::from_c_str`.
-  fn vx_string_from_c_str(ptr : *const i8) -> *mut i8;
+  pub fn vx_string_from_c_str(ptr : *const i8) -> *mut i8;
+  /// A copy of a NUL-terminated C string, or null when its bytes are not UTF-8.
+  pkg fn vx_string_try_from_c_str(ptr : *const i8) -> *mut i8;
+  /// A copy of `len` bytes, or null when they are not UTF-8.
+  pkg fn vx_string_try_from_bytes(ptr : *const u8, len : i64) -> *mut i8;
+  /// How many of `len` bytes are UTF-8 before the first byte that is not.
+  pkg fn vx_utf8_valid_up_to(ptr : *const u8, len : i64) -> i64;
+  /// Rust's `parse` of `len` bytes as an `f64`, written to `out`. Gives 0 for a number, 1 for
+  /// no bytes and 2 for text that is not a number.
+  pkg fn vx_parse_f64(ptr : *const u8, len : i64, out : *mut f64) -> i32;
+  /// `vx_parse_f64` for an `f32`.
+  pkg fn vx_parse_f32(ptr : *const u8, len : i64, out : *mut f32) -> i32;
   /// The Rust core behind `String::push_c_str`.
-  fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
+  pub fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
   /// The Rust core behind `String::len`.
-  fn vx_string_len(ptr : *mut i8) -> i32;
+  pub fn vx_string_len(ptr : *mut i8) -> i32;
   /// The Rust core behind `==` on two strings: 1 when they hold the same bytes.
-  fn vx_string_eq(a : *mut i8, b : *mut i8) -> i32;
+  pub fn vx_string_eq(a : *mut i8, b : *mut i8) -> i32;
   /// Allocate a NUL-terminated copy and hand out its raw pointer. The caller owns it and
   /// releases it with `vx_string_free_c_str`; `String::as_c_str` does not, and leaks.
-  fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
-  /// Release what `vx_string_as_c_str` returned. Nothing in Vx calls this yet.
-  fn vx_string_free_c_str(ptr : *const i8) -> i32;
+  pub fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
+  /// `vx_string_as_c_str`, but null when the string holds a NUL byte. `std::net` uses it.
+  pub fn vx_string_try_as_c_str(ptr : *mut i8) -> *const i8;
+  /// Release what `vx_string_as_c_str` or `vx_string_try_as_c_str` returned.
+  pub fn vx_string_free_c_str(ptr : *const i8) -> i32;
   /// The Rust core behind `String::drop`.
-  fn vx_string_drop(ptr : *mut i8) -> i32;
+  pub fn vx_string_drop(ptr : *mut i8) -> i32;
   /// A string of `len` NUL bytes, for `to_string` to overwrite with digits.
-  fn vx_string_with_len(len : i64) -> *mut i8;
+  pub fn vx_string_with_len(len : i64) -> *mut i8;
   /// The bytes of a string made by `vx_string_with_len`, writable.
-  fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8;
+  pub fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8;
+  /// The bytes of a string, for reading only.
+  pkg fn vx_string_bytes(ptr : *mut i8) -> *const u8;
 }
 
 /// A growable, owned string, held by the Rust core behind an opaque pointer.
@@ -38,6 +56,13 @@ extern {
 /// Released when it is dropped.
 struct String {
   ptr : *mut i8,
+
+  invariant true,
+}
+
+/// Why bytes are not a `String`: the bytes from `valid_up_to` on are not UTF-8.
+struct Utf8Error {
+  valid_up_to : i32,
 }
 
 // The Rust core owns the text, and no method changes it through `&String`.
@@ -46,7 +71,7 @@ unsafe impl Sync for String {}
 
 impl String {
   /// An empty string.
-  fn new ()->String {
+  pub fn new ()->String {
     let ptr = unsafe { vx_string_new() };
     String {
       ptr:
@@ -58,7 +83,7 @@ impl String {
   ///
   /// Unsafe because nothing here checks that `c_str` is a valid pointer to a NUL-terminated
   /// run of bytes. The copy is owned by the new `String`; the argument is not taken.
-  unsafe fn from_c_str(c_str : *const i8) -> String {
+  pub unsafe fn from_c_str(c_str : *const i8) -> String {
     let ptr = unsafe { vx_string_from_c_str(c_str) };
     String {
       ptr:
@@ -66,14 +91,60 @@ impl String {
     }
   }
 
+  /// A copy of the `n` bytes at `p`, which must be UTF-8. It copies a 0 byte like any other.
+  ///
+  /// A call in safe code proves that `p` points at `n` bytes that hold values, for example
+  /// with `v.as_mut_ptr()` and `v.len()` of a `Vec<u8>`.
+  pub fn from_bytes(p : *const u8, n : i32) -> Result<String, Utf8Error>
+  requires valid(p, n)
+  requires initialized(p, n)
+  {
+    let ptr = unsafe { vx_string_try_from_bytes(p, n as i64) };
+    if is_null_mut(ptr) {
+      let good = unsafe { vx_utf8_valid_up_to(p, n as i64) };
+      return Result<String, Utf8Error>::Err(Utf8Error {
+        valid_up_to : good as i32
+      });
+    }
+    return Result<String, Utf8Error>::Ok(String {
+      ptr : ptr
+    });
+  }
+
+  /// A copy of the bytes of `bytes`, which must be UTF-8.
+  pub fn from_utf8(bytes : &Vec<u8>) -> Result<String, Utf8Error> {
+    return String::from_bytes(bytes.as_mut_ptr() as *const u8, bytes.len());
+  }
+
+  /// The string that `ptr` holds, such as one from `vx_string_with_len`.
+  ///
+  /// Unsafe because `ptr` must come from a string function of the Rust core, and no other value
+  /// may own it. The new `String` frees it when it drops.
+  pub unsafe fn from_raw(ptr : *mut i8) -> String {
+    String {
+      ptr:
+      ptr
+    }
+  }
+
   /// Append a NUL-terminated C string, with the same requirement `from_c_str` has.
-  unsafe fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
+  pub unsafe fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
     return unsafe { vx_string_push_c_str(self.ptr, c_str) };
   }
 
   /// The length in bytes, not in characters: this counts UTF-8 code units.
-  fn len(self : *mut String) -> i32 {
+  pub fn len(self : &String) -> i32 {
     return unsafe { vx_string_len(self.ptr) };
+  }
+
+  /// A copy of the bytes of the string, in a new `Vec<u8>`.
+  pub fn to_bytes(self : &String) -> Vec<u8> {
+    let n = self.len();
+    let mut out = Vec<u8>::with_capacity(n);
+    // The Rust core keeps the `n` bytes of the string at this pointer.
+    let p = unsafe { vx_string_bytes(self.ptr) };
+    let _copied = unsafe { out.extend_from_raw(p, n) };
+    return out;
   }
 
   /// A NUL-terminated copy of the contents.
@@ -82,7 +153,7 @@ impl String {
   /// raw pointer, so every call costs a copy that is never released: the matching
   /// `vx_string_free_c_str` is declared in the extern block and is not wrapped as a method
   /// here. Calling this in a loop grows the process without bound.
-  fn as_c_str(self : *mut String) -> *const i8 {
+  pub fn as_c_str(self : &String) -> *const i8 {
     return unsafe { vx_string_as_c_str(self.ptr) };
   }
 }
@@ -102,14 +173,15 @@ impl Drop for String {
   }
 }
 
-/// Stamps `to_string` for one integer width.
+/// Stamps `to_string` for one number type.
 ///
 /// One allocation of the exact length, filled in place by `core::num`'s `write_decimal`.
 macro_rules stamp_to_string {
   ($t : ident) => {
     impl $t {
-      /// This number in decimal, as an owned `String` the caller must `drop`.
-      fn to_string(self : $t) -> String {
+      /// This number in decimal, as Rust's `{}` prints it. A float gets the fewest digits that
+      /// read back as the same value, as in `0.1`, `-2` or `inf`.
+      pub fn to_string(self : $t) -> String {
         let ptr = unsafe { vx_string_with_len(self.decimal_len()) };
         unsafe { self.write_decimal(vx_string_as_mut_ptr(ptr), 0i64) };
         return String {
@@ -128,13 +200,152 @@ stamp_to_string!(u8);
 stamp_to_string!(u16);
 stamp_to_string!(u32);
 stamp_to_string!(u64);
+stamp_to_string!(f32);
+stamp_to_string!(f64);
+
+/// Why bytes are not a number of the type that `parse` makes.
+enum ParseNumberError {
+  // There are no bytes.
+  Empty,
+  // A byte is not part of a number of the type, or a sign has no digits after it.
+  Invalid,
+  // The number is too large or too small for the type.
+  OutOfRange,
+}
+
+/// Stop the program when `from..to` is not a range of the bytes of `bytes`, as `v[i]` does for
+/// an index out of range.
+fn check_byte_range(bytes : &Vec<u8>, from : i32, to : i32) -> void {
+  if from < 0 || from > to || to > bytes.len() {
+    panic("parse: the range from..to is not inside the bytes");
+  }
+}
+
+/// The value of the decimal digits in bytes `from..to` of `bytes`. A value above `limit` is
+/// `OutOfRange`.
+fn decimal_digits(bytes : &Vec<u8>, from : i32, to : i32, limit : u64)
+-> Result<u64, ParseNumberError> {
+  if from == to {
+    return Result<u64, ParseNumberError>::Err(ParseNumberError::Invalid);
+  }
+  let mut value = 0u64;
+  for i in from..to {
+    let b = bytes[i];
+    if b < 48u8 || b > 57u8 {
+      return Result<u64, ParseNumberError>::Err(ParseNumberError::Invalid);
+    }
+    let digit = (b - 48u8) as u64;
+    // `value * 10 + digit > limit`, written so that it cannot overflow.
+    if value > (limit - digit) / 10u64 {
+      return Result<u64, ParseNumberError>::Err(ParseNumberError::OutOfRange);
+    }
+    value = value * 10u64 + digit;
+  }
+  return Result<u64, ParseNumberError>::Ok(value);
+}
+
+/// The error for a status of `vx_parse_f64` or `vx_parse_f32` that is not 0.
+fn float_parse_error(status : i32) -> ParseNumberError {
+  if status == 1 {
+    return ParseNumberError::Empty;
+  }
+  return ParseNumberError::Invalid;
+}
+
+impl i64 {
+  /// The decimal integer in bytes `from..to` of `bytes`, as Rust's `parse` reads it: digits
+  /// with one `+` or `-` before them, and nothing else. A range that is not inside `bytes`
+  /// stops the program.
+  pub fn parse(bytes : &Vec<u8>, from : i32, to : i32) -> Result<i64, ParseNumberError> {
+    check_byte_range(bytes, from, to);
+    if from == to {
+      return Result<i64, ParseNumberError>::Err(ParseNumberError::Empty);
+    }
+    let negative = bytes[from] == 45u8;
+    let mut start = from;
+    if negative || bytes[from] == 43u8 {
+      start = from + 1;
+    }
+    // -2^63 fits, but 2^63 does not.
+    let mut limit = 9223372036854775807u64;
+    if negative {
+      limit = 9223372036854775808u64;
+    }
+    let magnitude = decimal_digits(bytes, start, to, limit)?;
+    if !negative {
+      return Result<i64, ParseNumberError>::Ok(magnitude as i64);
+    }
+    if magnitude == 9223372036854775808u64 {
+      return Result<i64, ParseNumberError>::Ok(-9223372036854775807i64 - 1i64);
+    }
+    return Result<i64, ParseNumberError>::Ok(0i64 - magnitude as i64);
+  }
+}
+
+impl u64 {
+  /// The decimal integer in bytes `from..to` of `bytes`, as Rust's `parse` reads it: digits
+  /// with one `+` before them, and nothing else. A range that is not inside `bytes` stops the
+  /// program.
+  pub fn parse(bytes : &Vec<u8>, from : i32, to : i32) -> Result<u64, ParseNumberError> {
+    check_byte_range(bytes, from, to);
+    if from == to {
+      return Result<u64, ParseNumberError>::Err(ParseNumberError::Empty);
+    }
+    let mut start = from;
+    if bytes[from] == 43u8 {
+      start = from + 1;
+    }
+    return decimal_digits(bytes, start, to, 18446744073709551615u64);
+  }
+}
+
+impl f64 {
+  /// The number in bytes `from..to` of `bytes`, as Rust's `parse` reads it: `1.5`, `-2e10`,
+  /// `.5`, `inf` or `NaN`, with no spaces. The result is the `f64` nearest to the text, so
+  /// `1e400` is `inf`. A range that is not inside `bytes` stops the program.
+  pub fn parse(bytes : &Vec<u8>, from : i32, to : i32) -> Result<f64, ParseNumberError> {
+    check_byte_range(bytes, from, to);
+    if from == to {
+      return Result<f64, ParseNumberError>::Err(ParseNumberError::Empty);
+    }
+    let mut value = 0.0f64;
+    let start = add(bytes.as_mut_ptr() as *const u8, from as usize);
+    let status = unsafe {
+      vx_parse_f64(start, (to - from) as i64, (&mut value) as *mut f64)
+    };
+    if status != 0 {
+      return Result<f64, ParseNumberError>::Err(float_parse_error(status));
+    }
+    return Result<f64, ParseNumberError>::Ok(value);
+  }
+}
+
+impl f32 {
+  /// `f64::parse` for an `f32`. The text is rounded to the nearest `f32` once, not to an `f64`
+  /// first.
+  pub fn parse(bytes : &Vec<u8>, from : i32, to : i32) -> Result<f32, ParseNumberError> {
+    check_byte_range(bytes, from, to);
+    if from == to {
+      return Result<f32, ParseNumberError>::Err(ParseNumberError::Empty);
+    }
+    let mut value = 0.0f32;
+    let start = add(bytes.as_mut_ptr() as *const u8, from as usize);
+    let status = unsafe {
+      vx_parse_f32(start, (to - from) as i64, (&mut value) as *mut f32)
+    };
+    if status != 0 {
+      return Result<f32, ParseNumberError>::Err(float_parse_error(status));
+    }
+    return Result<f32, ParseNumberError>::Ok(value);
+  }
+}
 
 // Returns the length of a null-terminated string
 /// The number of bytes before the NUL, found by scanning.
 ///
 /// Unsafe because it walks until it finds one: a pointer to bytes with no NUL runs off the
 /// end. `core::str` replaces this once a string literal carries its length (Vx#532).
-unsafe fn string_length(s: *const i8) -> i32 {
+pub unsafe fn string_length(s: *const i8) -> i32 {
   let mut len: i32 = 0;
   unsafe { loop { if s[len] == 0 { break; } len = len + 1; } }
   return len;
@@ -145,7 +356,7 @@ unsafe fn string_length(s: *const i8) -> i32 {
 ///
 /// The magnitude is the difference between the first bytes that differ, which callers should
 /// not read anything into beyond its sign. Unsafe for the reason `string_length` is.
-unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
+pub unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
   let mut i: i32 = 0;
   let mut result: i32 = 0;
   unsafe {
@@ -167,7 +378,7 @@ unsafe fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
 /// `"abc"` is 0 -- there is no way to tell that second case from a genuine zero. A leading `-`
 /// is not a sign, it is a stop. Nothing checks for overflow: a run longer than `i32` holds
 /// wraps. `core::str`'s `parse` replaces it (Vx#532).
-unsafe fn parse_int(s: *const i8) -> i32 {
+pub unsafe fn parse_int(s: *const i8) -> i32 {
   let mut val: i32 = 0;
   let mut i: i32 = 0;
   unsafe {

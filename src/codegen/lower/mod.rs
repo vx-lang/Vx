@@ -210,6 +210,7 @@ pub(crate) fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, St
         "f4E2M1FN" => Ok("f4E2M1FN"),
         "f8E4M3FN" => Ok("f8E4M3FN"),
         "f8E5M2" => Ok("f8E5M2"),
+        "f8E8M0FNU" => Ok("f8E8M0FNU"),
         "bf16" => Ok("bf16"),
         "f16" => Ok("f16"),
         "f32" => Ok("f32"),
@@ -660,11 +661,16 @@ pub(crate) fn integer_constant<'c>(
         .unwrap_or_else(|| panic!("integer literal out of range for {ty}: {text}"))
 }
 
+/// The address of the matched enum and the enum's type, for a `match` that binds references.
+pub type MatchedReference<'c> = (melior::ir::Value<'c, 'c>, syntax::Type);
+
+#[allow(clippy::too_many_arguments)]
 pub fn generate_match_chain<'c>(
     gen: &mut MeliorGenerator<'c>,
     arms: &[MatchArm],
     match_val: melior::ir::Value<'c, 'c>,
     _match_ty: melior::ir::Type<'c>,
+    matched_reference: Option<&MatchedReference<'c>>,
     block: melior::ir::BlockRef<'c, 'c>,
     merge_block: melior::ir::BlockRef<'c, 'c>,
     value_ty: Option<melior::ir::Type<'c>>,
@@ -843,6 +849,58 @@ pub fn generate_match_chain<'c>(
             let Pattern::Identifier(name) = pattern else {
                 continue;
             };
+            // Through a reference, the name is the address of the payload's slot.
+            if let Some((
+                address,
+                syntax::Type::Borrow {
+                    inner: enum_ty,
+                    is_mut,
+                    ..
+                },
+            )) = matched_reference
+            {
+                let payload = crate::codegen::lower::expr::variant_payload_type(
+                    gen,
+                    en,
+                    vn,
+                    position,
+                    Some(enum_ty),
+                )
+                .ok_or_else(|| {
+                    LowerError::from(format!("no payload type for {en}::{vn} at {position}"))
+                })?;
+                let gep = OperationBuilder::new("llvm.getelementptr", gen.loc())
+                    .add_attributes(&[
+                        (
+                            Identifier::new(gen.context, "rawConstantIndices"),
+                            melior::ir::attribute::DenseI32ArrayAttribute::new(
+                                gen.context,
+                                &[0, position as i32 + 1],
+                            )
+                            .into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "elem_type"),
+                            melior::ir::attribute::TypeAttribute::new(_match_ty).into(),
+                        ),
+                    ])
+                    .add_operands(&[*address])
+                    .add_results(&[gen.ptr_ty])
+                    .build()?;
+                let slot = then_block.append_operation(gep).result(0)?.into();
+                gen.ast_env.insert(
+                    name.to_string().into(),
+                    syntax::Type::Borrow {
+                        inner: Box::new(payload),
+                        mem_space: None,
+                        is_mut: *is_mut,
+                        region_id: 0,
+                    },
+                );
+                gen.note_shadow(name.as_ref());
+                gen.env.insert(name.to_string().into(), (slot, gen.ptr_ty));
+                continue;
+            }
             // The Vx type of the name, so a later `transfer` of it knows where its data is.
             match crate::codegen::lower::expr::variant_payload_type(gen, en, vn, position, None) {
                 Some(ty) => gen.ast_env.insert(name.to_string().into(), ty),
@@ -1004,6 +1062,7 @@ pub fn generate_match_chain<'c>(
         &arms[1..],
         match_val,
         _match_ty,
+        matched_reference,
         else_block,
         merge_block,
         value_ty,
@@ -1531,7 +1590,7 @@ pub(crate) fn pick_scalar_print<'c>(
         ("i128", false) => ("print_i128", None),
         // A `for` variable over a range is an `index` here.
         ("index", _) => ("print_i64", Some(("arith.index_cast", "i64"))),
-        ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16", _) => {
+        ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16", _) => {
             ("print_f32", Some(("arith.extf", "f32")))
         }
         ("f32", _) => ("print_f32", None),

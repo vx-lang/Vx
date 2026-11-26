@@ -256,7 +256,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {
-                    invariants.push(self.parse_expr()?);
+                    invariants.push(self.parse_expr_before_block()?);
                 }
                 self.consume(&TokenType::LeftBrace, "Expected '{' after loop")?;
                 let mut body = Vec::new();
@@ -278,10 +278,10 @@ impl<'a> Parser<'a> {
                     expansion: self.expansion(),
                 };
                 self.advance();
-                let cond = self.parse_expr()?;
+                let cond = self.parse_expr_before_block()?;
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {
-                    invariants.push(self.parse_expr()?);
+                    invariants.push(self.parse_expr_before_block()?);
                 }
                 self.consume(&TokenType::LeftBrace, "Expected '{' after while condition")?;
                 let mut while_body = Vec::new();
@@ -332,11 +332,11 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let iter = self.expect_identifier("Expected identifier after 'for'")?;
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
-                let iterable = self.parse_expr()?;
+                let iterable = self.parse_expr_before_block()?;
                 let across = self.parse_across_clause()?;
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {
-                    invariants.push(self.parse_expr()?);
+                    invariants.push(self.parse_expr_before_block()?);
                 }
                 self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                 let mut stmts = Vec::new();
@@ -407,7 +407,7 @@ impl<'a> Parser<'a> {
                         token_tree,
                         block_tree,
                         has_semi,
-                        span: Span::default(),
+                        span: token_span,
                     }));
                 }
                 // fallback to expression parsing

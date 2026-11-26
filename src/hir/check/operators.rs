@@ -358,6 +358,25 @@ impl<'a> TypeChecker<'a> {
             {
                 return target_ty;
             }
+            // A pointer to an integer to a pointer to an integer of the same width, as
+            // `"text" as *const u8`: the same bytes, read with the other sign.
+            (Type::Pointer(from, from_space, _), Type::Pointer(to, to_space, _))
+                if from_space == to_space
+                    && matches!(
+                        (from.as_ref(), to.as_ref()),
+                        (Type::Scalar(a), Type::Scalar(b)) if a.is_int_of_the_same_width(b)
+                    ) =>
+            {
+                return target_ty;
+            }
+            // Any pointer to `*const void` in the same memory: an address that no program can
+            // read through, as C's `void *`.
+            (Type::Pointer(_, from_space, _), Type::Pointer(to, to_space, _))
+                if matches!(to.as_ref(), Type::Struct(n, None) if n.as_ref() == "void")
+                    && from_space == to_space =>
+            {
+                return target_ty;
+            }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
                 if self.unsafe_is_missing() {
@@ -658,7 +677,7 @@ impl<'a> TypeChecker<'a> {
                 // did not typecheck, and the stdlib `copy` is a copy-*into*
                 // rather than a duplication. That is enough for a test and never
                 // enough for a model, whose weights are read once per token.
-                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, _top_r))) = (
+                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, top_r))) = (
                     Self::as_tensor_operand(&lhs_ty),
                     Self::as_tensor_operand(&rhs_ty),
                 ) {
@@ -709,10 +728,40 @@ impl<'a> TypeChecker<'a> {
                                     return Type::Unknown;
                                 }
                             }
+                            // In a device region, the product goes to the memory that its
+                            // target names, such as registers for sums in `Memory::REG`. Tiles in
+                            // two memories, such as weights in HBM and activations in shared
+                            // memory, need such a target: a default would hide a copy.
+                            let target = self
+                                .expected_type
+                                .as_ref()
+                                .and_then(Self::as_tensor_operand)
+                                .and_then(|(_, _, t)| t.clone())
+                                .filter(|_| self.device_spawn.is_some());
+                            let top = match (top_l, top_r) {
+                                _ if target.is_some() => target,
+                                (Some(l), Some(r))
+                                    if l.space != r.space && self.device_spawn.is_some() =>
+                                {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3004,
+                                        format!(
+                                            "the tiles of this `@` are in {} and in {}, so the \
+                                             product needs a target that names its memory; \
+                                             assign it to a tensor whose type names one",
+                                            l.as_written(),
+                                            r.as_written()
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                    return Type::Unknown;
+                                }
+                                _ => top_l.clone(),
+                            };
                             return Type::Tensor(
                                 el_ty_l.clone(),
                                 vec![dims_l[0].clone(), dims_r[1].clone()],
-                                top_l.clone(),
+                                top,
                             );
                         }
                     }
@@ -723,23 +772,18 @@ impl<'a> TypeChecker<'a> {
                 // slice's shape (here `*` is elementwise; matmul is `@`/MatMul, handled above).
                 // These lower to vector ops (load/broadcast + arith.{mulf,addf,subf,divf}).
                 //
-                // Half-precision slices participate as STORAGE (Vx#320): they widen to f32 on
-                // load, so any op touching an f16/bf16 slice yields an F32 slice -- storage
-                // precision and arithmetic precision are separate decisions, and arithmetic is
-                // always f32. Narrowing back happens only at an explicit store into a half
-                // tensor, which the assignment rules govern.
+                // Two operands of one element type give that type, as scalars and tensors of
+                // rank 2 do: f16 + f16 is f16. Operands of two float types, such as an f16
+                // slice and an f32 scalar, give f32, which holds every f16 and bf16 value.
                 if matches!(
                     op,
                     BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
                 ) {
-                    let l_half = Self::is_half_slice(&lhs_ty);
-                    let r_half = Self::is_half_slice(&rhs_ty);
-                    let l_slice = Self::is_f32_slice(&lhs_ty) || l_half;
-                    let r_slice = Self::is_f32_slice(&rhs_ty) || r_half;
+                    let l_slice = Self::is_f32_slice(&lhs_ty) || Self::is_half_slice(&lhs_ty);
+                    let r_slice = Self::is_f32_slice(&rhs_ty) || Self::is_half_slice(&rhs_ty);
                     // A half scalar is admitted alongside f32 for the same reason a half slice
-                    // is (Vx#320): it widens to f32 and the arithmetic happens there. Refusing
-                    // it here left `slice * f16_scalar` to fall through to the splat rule, which
-                    // typed it as a half slice and crashed the emitter.
+                    // is. Refusing it here left `slice * f16_scalar` to fall through to the
+                    // splat rule, which crashed the emitter.
                     let float_scalar = |t: &Type| {
                         matches!(
                             t,
@@ -750,14 +794,6 @@ impl<'a> TypeChecker<'a> {
                     };
                     let l_scalar = float_scalar(&lhs_ty);
                     let r_scalar = float_scalar(&rhs_ty);
-                    let l_half_scalar = matches!(
-                        lhs_ty,
-                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
-                    );
-                    let r_half_scalar = matches!(
-                        rhs_ty,
-                        Type::Scalar(ElementType::F16) | Type::Scalar(ElementType::BF16)
-                    );
                     // At least one slice operand; the other must be a slice or an f32 scalar.
                     let slice_op = match (l_slice, r_slice) {
                         (true, true) => true,      // slice OP slice
@@ -767,13 +803,19 @@ impl<'a> TypeChecker<'a> {
                     };
                     if slice_op {
                         let shape_side = if l_slice { &lhs_ty } else { &rhs_ty };
-                        if l_half || r_half || l_half_scalar || r_half_scalar {
-                            // The widened result: same shape and placement, f32 element.
-                            if let Type::Tensor(_, dims, top) = shape_side {
+                        let elem = |t: &Type| match t {
+                            Type::Scalar(e) => Some(e.clone()),
+                            other => Self::as_tensor_operand(other).map(|(e, _, _)| e.clone()),
+                        };
+                        let shape_elem = elem(shape_side);
+                        if elem(&lhs_ty) != elem(&rhs_ty) && shape_elem != Some(ElementType::F32) {
+                            // A half slice with another float type: the f32 result is a new
+                            // tensor of the same shape and placement, not a borrow.
+                            if let Some((_, dims, top)) = Self::as_tensor_operand(shape_side) {
                                 return Type::Tensor(ElementType::F32, dims.clone(), top.clone());
                             }
                         }
-                        return shape_side.clone();
+                        return Self::owned_tensor_result(shape_side);
                     }
                 }
 
@@ -820,9 +862,18 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
-                lhs_ty
+                Self::owned_tensor_result(&lhs_ty)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// The type of the result of an elementwise operation whose operand has type `operand`. The
+    /// result is a new tensor, also when the operand is a borrow of one, as in `&a + &a`.
+    fn owned_tensor_result(operand: &Type) -> Type {
+        match operand {
+            Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => (**inner).clone(),
+            other => other.clone(),
         }
     }
 
@@ -919,8 +970,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
-    /// no elementwise lowering and are not defined on every element type. Returns false,
-    /// having reported E3030, when the operands are outside what the operator accepts.
+    /// no elementwise lowering and are not defined on every element type. `+`, `-`, `*`
+    /// and `/` only refuse two bools. Returns false, having reported E3030, when the operands
+    /// are outside what the operator accepts.
     ///
     /// Shared by `a % b` and `a %= b` so the two cannot drift apart. Before this was
     /// shared, the compound form was checked by the plain assignment rule, which does not
@@ -944,6 +996,38 @@ impl<'a> TypeChecker<'a> {
     ) -> bool {
         let bitwise = matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor);
         let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr);
+        // The other arithmetic operators take tensors too, so they refuse only two bools.
+        // As 1-bit integers, `true + true` would be `false`.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            let is_bool = |t: &Type| Self::scalar_elem(t) == Some(ElementType::Bool);
+            // One `bool` and one number is a type mismatch, which the caller reports.
+            if !(is_bool(lhs_ty) && is_bool(rhs_ty)) {
+                return true;
+            }
+            // A shaped tensor has no `&`, `|` or `^` either, so the hint is for single values.
+            let hint = if Self::single_value_elem(lhs_ty).is_some()
+                && Self::single_value_elem(rhs_ty).is_some()
+            {
+                ". For bools, use `&` (and), `|` (or) or `^` (xor)"
+            } else {
+                ""
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3030,
+                format!(
+                    "`{}` takes two numbers, got {} and {}{}",
+                    binary_op_symbol(op),
+                    lhs_ty,
+                    rhs_ty,
+                    hint
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+            return false;
+        }
         if *op != BinaryOp::Rem && !bitwise && !shift {
             return true;
         }
@@ -1024,9 +1108,8 @@ impl<'a> TypeChecker<'a> {
             Some(ElementType::I64),
             *span,
         ));
-        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::new(
+        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::by_the_compiler(
             "c_str_equals".into(),
-            None,
             vec![(**lhs).clone(), (**rhs).clone(), bound],
             *span,
         ));
@@ -1147,6 +1230,7 @@ impl<'a> TypeChecker<'a> {
                     type_args: None,
                     args: vec![lhs_ref, rhs_ref],
                     span,
+                    by_the_compiler: false,
                 });
                 let ty = self.check_expr_type_flag(&mut call, false);
                 *expr = call;

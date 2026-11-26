@@ -199,7 +199,13 @@ impl<'a> TypeChecker<'a> {
                         if poisoned {
                             crate::registry::ambiguous_import_message("Enum", enum_name)
                         } else {
-                            format!("Unknown enum {}", enum_name)
+                            let base = enum_name.split('<').next().unwrap_or(enum_name);
+                            let hint = self.missing_import_hint(base);
+                            if hint.is_empty() {
+                                format!("Unknown enum {}", enum_name)
+                            } else {
+                                format!("Unknown enum {}.{}", enum_name, hint)
+                            }
                         },
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
@@ -364,7 +370,7 @@ impl<'a> TypeChecker<'a> {
         for (i, (p, a)) in pd.iter().zip(ad.iter()).enumerate() {
             if let (
                 crate::syntax::Dim::Static(crate::syntax::Expr::Identifier(id)),
-                crate::syntax::Dim::Dyn,
+                crate::syntax::Dim::Dyn(None),
             ) = (p, a)
             {
                 return format!(
@@ -457,10 +463,8 @@ impl<'a> TypeChecker<'a> {
         matches!(inner, Type::Tensor(ElementType::F32, dims, _) if dims.len() == 1)
     }
 
-    /// A rank-1 f16/bf16 tensor slice: half-precision STORAGE that every slice contract widens
-    /// to f32 on load (Vx#320). Storage precision and arithmetic precision are separate
-    /// decisions -- a wide-slice op computes in f32 and its result IS f32; only an explicit
-    /// store back into a half tensor narrows again.
+    /// A rank-1 f16/bf16 tensor slice. A reduction over it (`dot`, `sum`, `max`, `min`) gives
+    /// f32. Elementwise arithmetic gives f32 only when the other operand has another type.
     pub(crate) fn is_half_slice(t: &Type) -> bool {
         let inner = match t {
             Type::Borrow { inner, .. }
@@ -480,7 +484,9 @@ impl<'a> TypeChecker<'a> {
     fn is_located_tensor_payload(t: &Type) -> bool {
         match t {
             Type::Pinned(inner, _) | Type::Ref(inner, _) => matches!(**inner, Type::Tensor(..)),
-            Type::Verified(inner) => Self::is_located_tensor_payload(inner),
+            Type::Verified(inner) | Type::Distinct(inner) | Type::DisjointRanges(inner) => {
+                Self::is_located_tensor_payload(inner)
+            }
             _ => false,
         }
     }
@@ -674,6 +680,7 @@ impl<'a> TypeChecker<'a> {
                 name,
                 fields,
                 type_id,
+                made_by_the_compiler,
                 span: literal_span,
             }) => {
                 let literal_span = *literal_span;
@@ -687,7 +694,9 @@ impl<'a> TypeChecker<'a> {
                     }
                     generic_args = args;
                 }
-                self.check_struct_literal_module(base_name.as_ref(), &literal_span);
+                if !*made_by_the_compiler {
+                    self.check_struct_literal_module(base_name.as_ref(), &literal_span);
+                }
 
                 // Attach the struct's resolved GID so downstream consumers (the flat-HIR lowerer)
                 // reach its registry layout without re-resolving the name (#199). Resolved through the

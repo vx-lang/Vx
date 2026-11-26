@@ -227,8 +227,35 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         gen.expected_type = prev_expected;
 
         let ast_ty = ty_ann.clone().or_else(|| gen.infer_ast_type(expr));
+        // An operation on two rows, `let r = o[0] + o[1]`, gives a `vector<2xf32>`. A tensor local
+        // keeps it in a buffer of its own, as the assignment `t = o[0] + o[1]` stores it.
+        let rows = ty.to_string().starts_with("vector<")
+            && match &ast_ty {
+                Some(t) => matches!(t, syntax::Type::Tensor(..)),
+                None => has_a_tensor_operand(gen, expr),
+            };
+        let (val, ty) = if rows {
+            let buffer = store_vector_in_a_new_buffer(gen, &block, val, ty)?;
+            let have = buffer.r#type();
+            let want = match &ast_ty {
+                Some(t) => gen.lower_type(t)?,
+                None => have,
+            };
+            if have == want {
+                (buffer, want)
+            } else {
+                let cast = crate::codegen::lower::cast_memref(gen, &block, buffer, have, want)?;
+                (cast, want)
+            }
+        } else {
+            (val, ty)
+        };
         if let Some(ref t) = ast_ty {
             gen.ast_env.insert(name.to_string().into(), t.clone());
+        } else if !matches!(expr, Expr::Closure(_)) {
+            // The type of an earlier local of this name is not the type of this one. A closure
+            // has its type recorded above.
+            gen.ast_env.remove(name.as_ref());
         }
         if syntax::is_tensor_construction(expr) {
             gen.owned_tensors.insert(name.to_string().into());
@@ -512,6 +539,8 @@ fn nominal_struct_name(ty: &syntax::Type) -> Option<crate::symbol::Symbol> {
         Type::Ref(inner, _)
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
+        | Type::Distinct(inner)
+        | Type::DisjointRanges(inner)
         | Type::Pinned(inner, _) => nominal_struct_name(inner),
         Type::Borrow { inner, .. } => nominal_struct_name(inner),
         _ => None,
@@ -724,6 +753,63 @@ fn store_field_through_pointer<'c>(
     Ok(Some(block))
 }
 
+/// Whether `e` is an operator with a tensor among its operands, as `o[0] + o[1]` is.
+fn has_a_tensor_operand(gen: &MeliorGenerator, e: &Expr) -> bool {
+    let tensor = |e: &Expr| match gen.infer_ast_type(e) {
+        Some(syntax::Type::Tensor(..)) => true,
+        Some(syntax::Type::Ref(inner, _)) => matches!(*inner, syntax::Type::Tensor(..)),
+        _ => false,
+    };
+    match e {
+        Expr::BinaryOp(b) => {
+            tensor(&b.lhs)
+                || tensor(&b.rhs)
+                || has_a_tensor_operand(gen, &b.lhs)
+                || has_a_tensor_operand(gen, &b.rhs)
+        }
+        _ => false,
+    }
+}
+
+/// A new buffer `memref<Nxf32>` that holds the `vector<Nxf32>` `val` of type `ty`.
+fn store_vector_in_a_new_buffer<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let ty_str = ty.to_string();
+    let shape = ty_str
+        .strip_prefix("vector<")
+        .and_then(|s| s.strip_suffix('>'))
+        .ok_or_else(|| LowerError::from(format!("a vector type with no shape: {ty_str}")))?;
+    let buffer_ty = Type::parse(gen.context, &format!("memref<{shape}>"))
+        .ok_or_else(|| LowerError::ParseType(format!("memref<{shape}>")))?;
+    let alloc = OperationBuilder::new("memref.alloc", gen.loc())
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+        )])
+        .add_results(&[buffer_ty])
+        .build()?;
+    let buffer: Value = block.append_operation(alloc).result(0)?.into();
+    let index_ty = Type::index(gen.context);
+    let zero = OperationBuilder::new("arith.constant", gen.loc())
+        .add_attributes(&[(
+            Identifier::new(gen.context, "value"),
+            IntegerAttribute::new(index_ty, 0).into(),
+        )])
+        .add_results(&[index_ty])
+        .build()?;
+    let zero: Value = block.append_operation(zero).result(0)?.into();
+    block.append_operation(
+        OperationBuilder::new("vector.store", gen.loc())
+            .add_operands(&[val, buffer, zero])
+            .build()?,
+    );
+    Ok(buffer)
+}
+
 /// Whether evaluating `e` runs no code: a variable, a field of one, or what one points at.
 fn runs_no_code(e: &Expr) -> bool {
     match e {
@@ -749,37 +835,10 @@ fn lower_lane_matmul<'c>(
     block: melior::ir::BlockRef<'c, 'c>,
     m: &crate::hir::check::lanes::LaneMatmul,
 ) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
-    let mut block = block;
-    let mut operands = Vec::new();
-    for e in [m.acc, m.lhs, m.rhs] {
-        let (v, mut ty, b) = gen.generate_expr(e, block)?;
-        block = b;
-        operands.push(super::expr::load_tensor_slot(gen, &block, v, &mut ty)?);
-    }
-    let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mapped = gen.across_map.is_some();
-    let mut attrs = vec![(Identifier::new(gen.context, "subgroup"), unit)];
-    if !mapped {
-        attrs.push((Identifier::new(gen.context, "serial"), unit));
-    }
-    if m.accumulate {
-        attrs.push((Identifier::new(gen.context, "accumulate"), unit));
-    }
-    if gen
-        .across_map
-        .as_ref()
-        .is_some_and(|map| map.row_of_subgroup(m.acc))
-    {
-        attrs.push((Identifier::new(gen.context, "subgroup_row"), unit));
-    }
-    block.append_operation(
-        OperationBuilder::new("vx.lane_matmul", gen.loc())
-            .add_operands(&operands)
-            .add_attributes(&attrs)
-            .build()?,
-    );
+    let routine = crate::hir::check::lanes::matmul_routine(m.accumulate);
+    let (_, block) = super::expr::lower_lane_call(gen, block, routine, &[m.acc, m.lhs, m.rhs])?;
     // Each lane of the subgroup writes some elements of `acc`, and reads the others after this.
-    if mapped {
+    if gen.across_map.is_some() {
         super::across::barrier(gen, block, super::across::Level::Subgroup)?;
     }
     Ok(block)

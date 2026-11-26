@@ -53,9 +53,9 @@ pub fn blur_rows(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32,
 // CHECK-LABEL: // vx.kernel reverse_each_row m2 i32
 // CHECK: threadgroup float [[TILE:vx_npu_kernel_[0-9]+_smem_0]][64];
 // CHECK: const int p0_s0 = 64;
-// CHECK: [[TILE]][0 + {{v[0-9]+}} * 1] = {{v[0-9]+}};
+// CHECK: ([[TILE]] + 0 + {{v[0-9]+}} * 1)[0] = {{v[0-9]+}};
 // CHECK: threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
-// CHECK: float {{v[0-9]+}} = [[TILE]][0 + {{v[0-9]+}} * 1];
+// CHECK: float {{v[0-9]+}} = ([[TILE]] + 0 + {{v[0-9]+}} * 1)[0];
 pub fn reverse_each_row(out : &mut Tensor<f32, [?, 64], Memory::HBM>, rows : i32) -> void {
   spawn on(Topology::Device) {
     for r in 0..rows across blocks {
@@ -181,11 +181,11 @@ pub fn double_below(out : &mut Tensor<i32, [?], Memory::HBM>, limit : i32, n : i
 // reverse_rows writes a row to shared memory in one lane loop of a subgroup, and reads it in the
 // next. Between the two, only the 32 threads of the SIMD-group wait, not the whole block.
 // CHECK-LABEL: // vx.kernel reverse_rows m1 m1r i32
-// CHECK: vx_npu_kernel_{{[0-9]+}}_smem_0[{{.*}}] = {{v[0-9]+}};
+// CHECK: (vx_npu_kernel_{{[0-9]+}}_smem_0 + {{.*}})[{{[0-9]+}}] = {{v[0-9]+}};
 // CHECK-NOT: threadgroup_barrier
 // CHECK: simdgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
 // CHECK-NOT: threadgroup_barrier
-// CHECK: float {{v[0-9]+}} = vx_npu_kernel_{{[0-9]+}}_smem_0[
+// CHECK: float {{v[0-9]+}} = (vx_npu_kernel_{{[0-9]+}}_smem_0 +
 pub fn reverse_rows(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
   spawn on(Topology::Device) {
     for rb in 0..rows / 4 across blocks {

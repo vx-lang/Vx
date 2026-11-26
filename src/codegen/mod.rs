@@ -170,6 +170,9 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
+/// Registers every MLIR pass, the upstream ones and the Vx ones, once in the process. MLIR keeps
+/// the passes in a global map with no lock, so two threads that register at the same time can
+/// corrupt the heap. Call this, and not the MLIR registration functions.
 pub fn init_codegen_globals() {
     INIT.call_once(|| {
         melior::utility::register_all_passes();
@@ -189,7 +192,7 @@ pub fn enable_optimization_remarks(context: &Context) {
     }
 }
 
-pub fn register_vx_passes() {
+fn register_vx_passes() {
     unsafe {
         registerVxPassesC();
     }
@@ -234,9 +237,10 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // Run unified pipeline. Custom Vx lowering passes run first, followed by standard lowering.
     // `vx-expand-narrow-floats` and `arith-expand` turn conversions to and from fp8, fp4 and bf16
     // into integer operations, bf16 only after `vx-to-llvm` compiles the NVIDIA GPU kernels; see
-    // the note on the copy of this pipeline in src/driver.rs.
+    // the note on the copy of this pipeline in src/driver.rs. `vx-expand-narrow-floats` also runs
+    // first, before a pass folds a conversion of a constant with MLIR's own rounding.
     let mut pipeline =
-        "builtin.module(vx-count-callbacks,vx-libc-externs-to-llvm,convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-expand-narrow-floats,arith-expand{include-f8e8m0=true},vx-to-llvm,arith-expand{include-bf16=true},".to_string();
+        "builtin.module(vx-expand-narrow-floats,vx-count-callbacks,vx-libc-externs-to-llvm,convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-expand-narrow-floats,arith-expand{include-f8e8m0=true},vx-to-llvm,arith-expand{include-bf16=true},".to_string();
     if has_enzyme {
         pipeline.push_str("enzyme,");
     }

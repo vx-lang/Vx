@@ -5,7 +5,7 @@ pub mod macro_expand;
 pub mod stmt;
 mod tuple_match;
 pub mod types;
-pub use macro_expand::MacroExpander;
+pub use macro_expand::{MacroExpander, MacroTable};
 
 //===- parser.rs - Vx Compiler ---------------------------------*- Rust -*-===//
 //
@@ -88,6 +88,9 @@ pub struct Parser<'a> {
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
     uses_tuples: bool,
+    /// Set once `Distinct::check` or `DisjointRanges::check` is seen: the module then imports
+    /// `core::distinct`, where the checks are.
+    uses_distinct_check: bool,
     /// The names that a `let` without `mut` binds to a string literal. `==` on such a name
     /// compares text, so it needs `core::c_str` as a literal does.
     string_literal_names: std::collections::HashSet<crate::symbol::Symbol>,
@@ -106,6 +109,12 @@ pub struct Parser<'a> {
     impl_self: Option<crate::syntax::Type>,
     /// Where each piece of syntax is, for the formatter. `None` when the compiler parses.
     recorder: Option<Vec<formatting::SyntaxRecord>>,
+    /// The first token of an expression that a block follows, such as the condition of an `if`.
+    /// Outside brackets there, a name and `{` are the name and the block, not a struct literal.
+    block_follows: Option<usize>,
+    /// Set while the parser reads the type of a parameter of a function with a body: only there
+    /// can `?n` give a run-time extent a name.
+    extent_names_allowed: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -127,6 +136,7 @@ impl<'a> Parser<'a> {
             mut_params: Vec::new(),
             source,
             uses_tuples: false,
+            uses_distinct_check: false,
             string_literal_names: std::collections::HashSet::new(),
             pending_stmts: Vec::new(),
             tuple_lets: 0,
@@ -134,7 +144,35 @@ impl<'a> Parser<'a> {
             match_is_statement: false,
             impl_self: None,
             recorder: None,
+            block_follows: None,
+            extent_names_allowed: false,
         }
+    }
+
+    /// Parse an expression that a block follows, such as the condition of an `if` or a `while`.
+    /// As in Rust, a struct literal there must be inside parentheses.
+    pub(crate) fn parse_expr_before_block(&mut self) -> ParseResult<'a, crate::syntax::Expr> {
+        let outer = self.block_follows.replace(self.pos);
+        let expr = self.parse_expr();
+        self.block_follows = outer;
+        expr
+    }
+
+    /// Whether the parser is at the top of an expression that a block follows: not inside a
+    /// `(`, a `[` or a `{` that the expression opened.
+    pub(crate) fn block_follows_here(&self) -> bool {
+        let Some(start) = self.block_follows else {
+            return false;
+        };
+        let depth: i64 = self.tokens[start..self.pos]
+            .iter()
+            .map(|t| match t.kind {
+                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => 1,
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => -1,
+                _ => 0,
+            })
+            .sum();
+        depth == 0
     }
 
     /// The largest tuple, as the number of `core::tuple`'s last struct, `Tuple6`.
@@ -835,7 +873,7 @@ mod tests {
         );
         assert_eq!(
             parse_type("Tensor<i64, [?, ?]>"),
-            Type::Tensor(ElementType::I64, vec![Dim::Dyn, Dim::Dyn], None),
+            Type::Tensor(ElementType::I64, vec![Dim::Dyn(None), Dim::Dyn(None)], None),
             "the old spelling reads as a rank-2 tensor with run-time extents"
         );
         let shaped = parse_type("Tensor<f32, [2, 3]>");

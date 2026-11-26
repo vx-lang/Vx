@@ -169,8 +169,8 @@ inline void vx_describe_arg(int64_t i, int32_t tag, void *arg) {
 /// no link flag: `mbind` is a kernel interface, and libnuma is a convenience wrapper over it.
 /// Everything here is Linux-only and compiles out elsewhere -- macOS has one memory and nothing to
 /// choose between.
-#define VX_NUMA_DISPATCH_BASE 1000u
-#define VX_NUMA_MAX_NODE 999u
+#define VX_NUMA_DISPATCH_BASE 1100u
+#define VX_NUMA_MAX_NODE 899u
 
 /// The node an id names, or -1 if the id is not a NUMA one.
 static int vx_numa_node_of(uint32_t topology_id) {
@@ -622,8 +622,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
   }
 
-  vx_host_refuse_coop(binary_payload, payload_size, kernel_name,
-                      VX_BACKEND_NAME);
+  vx_host_refuse_coop(binary_payload, payload_size, VX_BACKEND_NAME);
   void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     fprintf(stderr,

@@ -96,7 +96,7 @@ fn pipeline_emits_identical_mlir_at_benchmark_scale() {
     // A determinism failure over 36 MB of MLIR is useless without the offending line,
     // so dump both and name the first place they diverge.
     let first_divergence = |a: &str, b: &str| -> String {
-        let dir = std::env::temp_dir().join("vx_scale_determinism");
+        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vx_scale_determinism");
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join("a.mlir"), a);
         let _ = std::fs::write(dir.join("b.mlir"), b);

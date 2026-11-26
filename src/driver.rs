@@ -54,7 +54,7 @@ pub enum Action {
     EmitMsl,
     /// Parse and typecheck the program, then print each fact that the compiler trusts without a
     /// proof: each `assume`, each pointer clause that a call in `unsafe` code trusts, each
-    /// `ensures` of an `extern` function, and each pointer `requires` of a `pub fn`
+    /// `ensures` of a function in an `extern` block, and each pointer `requires` of an `extern fn`
     Audit,
 }
 
@@ -115,6 +115,10 @@ pub struct DriverOptions {
     #[arg(long = "audit", overrides_with = "action")]
     pub audit: bool,
 
+    /// With the audit, also list each use of trusted code in `core` and `std`
+    #[arg(long = "audit-library")]
+    pub audit_library: bool,
+
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
     /// flat-HIR bodies link in the flat codegen — all without parsing the library's source (#265 step
@@ -135,6 +139,12 @@ pub struct DriverOptions {
     /// imports that start with `name`. Can be given more than once.
     #[arg(long = "package", value_name = "NAME=DIR", value_parser = parse_package)]
     pub packages: Vec<(String, PathBuf)>,
+
+    /// Refuse trusted code in the package NAME: each `unsafe` block or `unsafe fn`, `mlir!`
+    /// block, `extern` function, `extern impl` and `unsafe impl` in it is an error. Can be given
+    /// more than once.
+    #[arg(long = "no-trusted-code", value_name = "NAME")]
+    pub no_trusted_code: Vec<String>,
 
     /// Read the standard library from DIR instead of from beside the compiler. Can be given more
     /// than once; the directories are searched in order.
@@ -277,7 +287,7 @@ pub struct DriverOptions {
 
     /// Arguments to pass to the running program
     #[arg(last = true)]
-    pub program_args: Vec<String>,
+    pub program_args: Vec<std::ffi::OsString>,
 }
 
 impl DriverOptions {
@@ -373,7 +383,7 @@ impl CompilerDriver {
             options.action = Action::EmitPtx;
         } else if options.emit_msl {
             options.action = Action::EmitMsl;
-        } else if options.audit {
+        } else if options.audit || options.audit_library {
             options.action = Action::Audit;
         } else if options.compile {
             options.action = Action::EmitObj;
@@ -568,7 +578,12 @@ impl CompilerDriver {
         }
 
         let compile = || -> Result<Option<(String, Option<String>)>, String> {
-            let (programs, interfaces) = self.load_modules(filename, sched)?;
+            let (mut programs, interfaces) = self.load_modules(filename, sched)?;
+            crate::hir::check::audit::mark_refused_packages(
+                &mut programs,
+                &self.options.no_trusted_code,
+                &self.options.packages,
+            )?;
             if !interfaces.is_empty() {
                 eprintln!(
                     "[parallel-frontend] an import resolved to a .vxlib interface, which the \
@@ -727,6 +742,7 @@ impl CompilerDriver {
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
                 self.options.thread_sanitizer(),
+                std::process::Stdio::inherit(),
             )
             .map_err(|e| e.to_string())?;
             print_program_output(&out);
@@ -749,6 +765,25 @@ impl CompilerDriver {
         // per-compilation by `GlobalAstEnv`, so there is no process-global state to reset --
         // declarations cannot leak between compilations by construction.
         let (mut program_arr, auto_interfaces) = self.load_and_expand(filename)?;
+        crate::hir::check::audit::mark_refused_packages(
+            &mut program_arr,
+            &self.options.no_trusted_code,
+            &self.options.packages,
+        )?;
+        let refused: Vec<_> = program_arr
+            .iter()
+            .flat_map(crate::hir::check::audit::refused_trusted_code)
+            .collect();
+        if !refused.is_empty() {
+            for d in &refused {
+                eprintln!("{d}");
+            }
+            return Err(format!(
+                "Semantic check failed on '{}': {} error(s) emitted",
+                filename,
+                refused.len()
+            ));
+        }
 
         if self.options.action == Action::ParseOnly {
             return self.handle_parse_only(&program_arr, filename);
@@ -857,14 +892,9 @@ impl CompilerDriver {
             program_arr.push(Self::native_host_program());
         }
 
-        let mut global_macros = std::collections::HashMap::new();
-        for m in &program_arr {
-            for mac in &m.macros {
-                global_macros.insert(mac.name.clone(), mac.rules.clone());
-            }
-        }
+        let macros = crate::parser::MacroTable::new(&program_arr);
         let trait_defaults = crate::resolver::collect_trait_defaults(program_arr.iter());
-        let expander = MacroExpander::new(&global_macros, &trait_defaults);
+        let expander = MacroExpander::new(&macros, &trait_defaults);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));
@@ -886,6 +916,8 @@ impl CompilerDriver {
     fn native_host_program() -> crate::syntax::Program {
         crate::syntax::Program {
             module_path: crate::symbol::Symbol::from(NATIVE_HOST_MODULE),
+            package: None,
+            standard_library: false,
             file: None,
             item_macros: Vec::new(),
             memories: vec![crate::syntax::MemoryDecl {
@@ -919,6 +951,8 @@ impl CompilerDriver {
             // is a declaration like any other and the triple is derived the
             // same way for it as for a host file (#342).
             transfer_impls: Vec::new(),
+            macro_call_sites: Vec::new(),
+            no_trusted_code: None,
             topologies: vec![crate::arch::TopologyDecl {
                 name: crate::symbol::Symbol::from("Host"),
                 descriptor: crate::arch::TopologyDescriptor {
@@ -1111,6 +1145,8 @@ impl CompilerDriver {
         Some(crate::syntax::Program {
             item_macros: Vec::new(),
             module_path: "<interfaces>".into(),
+            package: None,
+            standard_library: false,
             file: None,
             imports: Vec::new(),
             macros: Vec::new(),
@@ -1124,6 +1160,8 @@ impl CompilerDriver {
             topologies: Vec::new(),
             memories: Vec::new(),
             transfer_impls: Vec::new(),
+            macro_call_sites: Vec::new(),
+            no_trusted_code: None,
         })
     }
 
@@ -1179,6 +1217,20 @@ impl CompilerDriver {
         if self.options.action == Action::Audit {
             checker.trusted = Some(std::collections::BTreeSet::new());
         }
+        // The trusted code of each module, read before the check moves the body of each closure
+        // into a function of its own. `--no-trusted-code` reads the modules at this point too.
+        let trusted_code: Vec<_> = match self.options.action {
+            Action::Audit => std::iter::once(&*ast)
+                .chain(other_asts.values())
+                .flat_map(|p| {
+                    let library = crate::hir::check::audit::is_library(p);
+                    crate::hir::check::audit::trusted_code(p)
+                        .into_iter()
+                        .map(move |(kind, item)| (library, kind, item))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
 
         // The checks that look at the whole program's declarations at once can only name a
         // file when the program is one file; a `--host default` module was read from none.
@@ -1275,11 +1327,12 @@ impl CompilerDriver {
         // instantiations land in `monomorphized_functions`, and the method/generic calls in the
         // emitted bodies are rewritten to those instance names. Generic functions were already
         // dropped from `other_asts`; generic *methods* are instantiated on demand by these calls.
-        // Keep each imported function's errors apart, and report only those of the functions
-        // the program uses. See `imported_errors`.
+        // Keep each imported function's errors apart. Report all of them for a module outside
+        // the standard library, and only those of the functions the program uses for a module
+        // of the standard library. See `imported_errors`.
         let mut errors_by_function: std::collections::BTreeMap<
             String,
-            (String, Vec<crate::diagnostic::Diagnostic>),
+            (String, bool, Vec<crate::diagnostic::Diagnostic>),
         > = std::collections::BTreeMap::new();
         for p in modules.iter_mut() {
             for f in &mut p.functions {
@@ -1288,8 +1341,10 @@ impl CompilerDriver {
                     checker.check_function(f);
                     let found: Vec<_> = checker.errors.inner.drain(before..).collect();
                     if found.iter().any(|d| d.level == DiagnosticLevel::Error) {
-                        errors_by_function
-                            .insert(f.name.to_string(), (p.module_path.to_string(), found));
+                        errors_by_function.insert(
+                            f.name.to_string(),
+                            (p.module_path.to_string(), p.standard_library, found),
+                        );
                     }
                 }
             }
@@ -1300,13 +1355,14 @@ impl CompilerDriver {
             &checker.traffic.capacity_summaries,
             &with_errors,
         );
-        for (name, (module, found)) in errors_by_function {
-            if used.contains(&name) {
+        for (name, (module, standard_library, found)) in errors_by_function {
+            let is_used = used.contains(&name);
+            if is_used || !standard_library {
                 checker
                     .errors
                     .inner
                     .extend(crate::hir::check::imported_errors::errors_to_report(
-                        found, &module, &name,
+                        found, &module, &name, is_used,
                     ));
             }
         }
@@ -1405,11 +1461,23 @@ impl CompilerDriver {
         }
 
         if let Some(mut trusted) = checker.trusted.take() {
+            use crate::hir::check::audit;
+            let mut library = std::collections::BTreeMap::new();
             for p in std::iter::once(&*ast).chain(other_asts.values()) {
-                trusted.extend(crate::hir::check::audit::trusted_declarations(p));
+                trusted.extend(audit::trusted_declarations(p));
+            }
+            for (in_library, kind, item) in trusted_code {
+                if in_library && !self.options.audit_library {
+                    *library.entry(kind).or_insert(0) += 1;
+                } else {
+                    trusted.insert(item);
+                }
             }
             for item in &trusted {
                 println!("{item}");
+            }
+            if let Some(line) = audit::library_count_line(&library) {
+                println!("{line}");
             }
         }
 
@@ -1475,10 +1543,9 @@ impl CompilerDriver {
     /// An MLIR context with every dialect, every pass and the Vx dialect registered, and a
     /// diagnostic handler attached. Shared by the sequential driver and `-j`.
     fn backend_context(&self) -> melior::Context {
-        codegen::register_vx_passes();
+        codegen::init_codegen_globals();
         let registry = melior::dialect::DialectRegistry::new();
         melior::utility::register_all_dialects(&registry);
-        melior::utility::register_all_passes();
         let context = melior::Context::new();
         let emit_diagnostics = self.options.emit_backend_diagnostics;
         context.attach_diagnostic_handler(move |diagnostic| {
@@ -1773,13 +1840,14 @@ impl CompilerDriver {
                 crate::intern_mode::timed("mlir_print", || println!("{}", module.as_operation()));
             }
             Action::RunJit => {
-                let mlir_str = format!("{}", module.as_operation());
+                let mlir_str = module_text_with_locations(&module)?;
                 let out = crate::jit::execute_mlir_streams(
                     &mlir_str,
                     self.options.program_args.clone(),
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
                     self.options.thread_sanitizer(),
+                    std::process::Stdio::inherit(),
                 )
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
@@ -1826,7 +1894,7 @@ impl CompilerDriver {
                 // each function an exported wrapper `_mlir_<name>`, after the program's symbols
                 // were hidden. The engine's machine code shared stack slots also at `-O0`, as
                 // `llc` does only from `-O1` up, so `llc` runs at `-O2` or higher.
-                let mlir_str = format!("{}", module.as_operation());
+                let mlir_str = module_text_with_locations(&module)?;
                 let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
                 let obj = crate::jit::compile_mlir_to_object_with_codegen_level(
                     &mlir_str,
@@ -2038,7 +2106,8 @@ impl CompilerDriver {
             }
             let synth = crate::syntax::Function {
                 is_unsafe: false,
-                is_pub: false,
+                visibility: crate::gid::Visibility::Private,
+                exported: false,
                 name: body.name.clone(),
                 generics: vec![],
                 params: body
@@ -2062,6 +2131,7 @@ impl CompilerDriver {
                 doc_comment: None,
                 span: crate::syntax::Span::default(),
                 file: None,
+                package: None,
             };
             imported_entries.push((synth, body.hir.clone(), body.types.clone()));
         }
@@ -2162,6 +2232,15 @@ impl CompilerDriver {
     }
 }
 
+/// The module as text with its source locations, so that `mlir-translate` can make DWARF.
+fn module_text_with_locations(module: &melior::ir::Module) -> Result<String, String> {
+    use melior::ir::operation::{OperationLike, OperationPrintingFlags};
+    module
+        .as_operation()
+        .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
+        .map_err(|e| format!("could not print the MLIR module: {e}"))
+}
+
 fn get_optimization_pipeline(
     opt_level: u8,
     llvm_lower: bool,
@@ -2171,6 +2250,10 @@ fn get_optimization_pipeline(
     let mut passes = vec![];
 
     if opt_level > 0 || llvm_lower {
+        // First, because a pass that rewrites with patterns folds every op that it visits. MLIR
+        // would fold a conversion of a constant to an fp8 or fp4 type with rules of its own:
+        // it rounds `100 as f8e8m0` to the nearest value, 128, where `as f8e8m0` rounds down.
+        passes.push("vx-expand-narrow-floats".to_string());
         // Before the task lowering takes the address of each task body. See the pass.
         passes.push("vx-count-callbacks".to_string());
         // Before the lowerings, so that they reuse a program's own `malloc` and `free` rather
@@ -2215,6 +2298,8 @@ fn get_optimization_pipeline(
         // that round exactly. Left to LLVM, an x86 CPU with AVX512-BF16 converts with
         // `vcvtneps2bf16`, which flushes a subnormal to zero.
         passes.push("vx-to-llvm".to_string());
+        // `vx-to-llvm` expands a lane matmul on the CPU, which converts fp8 tiles to f32.
+        passes.push("vx-expand-narrow-floats".to_string());
         passes.push("arith-expand{include-bf16=true}".to_string());
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());

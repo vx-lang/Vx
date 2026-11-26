@@ -15,11 +15,11 @@
 // CHECK: llvm.func hidden @put(%arg0: !llvm.ptr<3>, %arg1: !llvm.ptr<3>,
 
 fn thread_id() on Topology::Device -> i32 {
-  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
-    %t = gpu.thread_id x
-    %r = "arith.index_cast"(%t) : (index) -> i32
-    macro.yield %r : i32
-  };
+  return unsafe { mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+      %t = gpu.thread_id x
+      %r = "arith.index_cast"(%t) : (index) -> i32
+      macro.yield %r : i32
+    } };
 }
 
 fn put(shared : &mut Tensor<f32, [32], Memory::SMEM>, i : i32, v : f32) on Topology::Device -> void {

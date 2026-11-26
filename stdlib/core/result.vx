@@ -66,7 +66,7 @@ impl<T, E> Try for Result<T, E> {
 
 impl<T, E> Result<T, E> {
   /// Did it succeed?
-  fn is_ok(self : &Result<T, E>) -> bool {
+  pub fn is_ok(self : &Result<T, E>) -> bool {
     let mut ret = false;
     match *self {
       Result<T, E>::Ok(_) => {
@@ -80,12 +80,12 @@ impl<T, E> Result<T, E> {
   }
 
   /// Did it fail? The negation of `is_ok`.
-  fn is_err(self : &Result<T, E>) -> bool {
+  pub fn is_err(self : &Result<T, E>) -> bool {
     return !self.is_ok();
   }
 
   /// The value, or a stop. `unwrap_or` is the form with an answer for the failing case.
-  fn unwrap(self : Result<T, E>, at : Caller) -> T {
+  pub fn unwrap(self : Result<T, E>, at : Caller) -> T {
     match self {
       Result<T, E>::Ok(v) => {
         return v;
@@ -97,7 +97,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// The value, or a stop with the message `msg`. `unwrap` with a message of the caller's.
-  fn expect(self : Result<T, E>, msg : *const i8, at : Caller) -> T {
+  pub fn expect(self : Result<T, E>, msg : *const i8, at : Caller) -> T {
     match self {
       Result<T, E>::Ok(v) => {
         return v;
@@ -112,7 +112,7 @@ impl<T, E> Result<T, E> {
   ///
   /// `default` is evaluated by the caller either way, so keep it cheap; `unwrap_or_else` is
   /// the form that computes nothing when there is a value.
-  fn unwrap_or(self : Result<T, E>, default : T) -> T {
+  pub fn unwrap_or(self : Result<T, E>, default : T) -> T {
     match self {
       Result<T, E>::Ok(v) => {
         return v;
@@ -124,7 +124,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// The success dropped, leaving what there is of one.
-  fn ok(self : Result<T, E>) -> Option<T> {
+  pub fn ok(self : Result<T, E>) -> Option<T> {
     match self {
       Result<T, E>::Ok(v) => {
         return Option<T>::Some(v);
@@ -136,7 +136,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// The failure as an `Option`, the mirror of `ok`.
-  fn err(self : Result<T, E>) -> Option<E> {
+  pub fn err(self : Result<T, E>) -> Option<E> {
     match self {
       Result<T, E>::Ok(v) => {
         return Option<E>::None();
@@ -148,7 +148,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// `f` over the success, the failure untouched.
-  fn map<U>(self : Result<T, E>, f : Closure1<T, U>) -> Result<U, E> {
+  pub fn map<U>(self : Result<T, E>, f : Closure1<T, U>) -> Result<U, E> {
     match self {
       Result<T, E>::Ok(v) => {
         let p = f.func;
@@ -161,7 +161,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// `f` over the failure, the success untouched.
-  fn map_err<F>(self : Result<T, E>, f : Closure1<E, F>) -> Result<T, F> {
+  pub fn map_err<F>(self : Result<T, E>, f : Closure1<E, F>) -> Result<T, F> {
     match self {
       Result<T, E>::Ok(v) => {
         return Result<T, F>::Ok(v);
@@ -174,7 +174,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// `map` for an `f` that may itself fail, without the nesting.
-  fn and_then<U>(self : Result<T, E>, f : Closure1<T, Result<U, E>>) -> Result<U, E> {
+  pub fn and_then<U>(self : Result<T, E>, f : Closure1<T, Result<U, E>>) -> Result<U, E> {
     match self {
       Result<T, E>::Ok(v) => {
         let p = f.func;
@@ -187,7 +187,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// The value, or what `f` makes of the failure.
-  fn unwrap_or_else(self : Result<T, E>, f : Closure1<E, T>) -> T {
+  pub fn unwrap_or_else(self : Result<T, E>, f : Closure1<E, T>) -> T {
     match self {
       Result<T, E>::Ok(v) => {
         return v;
@@ -200,7 +200,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// The failure, or a stop. The mirror of `unwrap`.
-  fn unwrap_err(self : Result<T, E>, at : Caller) -> E {
+  pub fn unwrap_err(self : Result<T, E>, at : Caller) -> E {
     match self {
       Result<T, E>::Ok(v) => {
         panic("unwrap_err called on Ok", at);
@@ -212,7 +212,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// The failure, or a stop with the message `msg`. The mirror of `expect`.
-  fn expect_err(self : Result<T, E>, msg : *const i8, at : Caller) -> E {
+  pub fn expect_err(self : Result<T, E>, msg : *const i8, at : Caller) -> E {
     match self {
       Result<T, E>::Ok(v) => {
         panic(msg, at);
@@ -224,7 +224,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// Did it succeed, and does `p` accept the value?
-  fn is_ok_and(self : Result<T, E>, p : Closure1<T, bool>) -> bool {
+  pub fn is_ok_and(self : Result<T, E>, p : Closure1<T, bool>) -> bool {
     match self {
       Result<T, E>::Ok(v) => {
         let f = p.func;
@@ -237,7 +237,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// Did it fail, and does `p` accept the failure?
-  fn is_err_and(self : Result<T, E>, p : Closure1<E, bool>) -> bool {
+  pub fn is_err_and(self : Result<T, E>, p : Closure1<E, bool>) -> bool {
     match self {
       Result<T, E>::Ok(v) => {
         return false;
@@ -254,7 +254,7 @@ impl<T, E> Result<T, E> {
   ///
   /// Bound first and returned once: a `match` whose arms each return an enum is declined
   /// by the flat path, and `other` is a starting value that needs no default of its own.
-  fn and<U>(self : Result<T, E>, other : Result<U, E>) -> Result<U, E> {
+  pub fn and<U>(self : Result<T, E>, other : Result<U, E>) -> Result<U, E> {
     let mut out = other;
     match self {
       Result<T, E>::Ok(v) => {
@@ -267,7 +267,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// This success if there is one, otherwise the other result. The failure types differ.
-  fn or<F>(self : Result<T, E>, other : Result<T, F>) -> Result<T, F> {
+  pub fn or<F>(self : Result<T, E>, other : Result<T, F>) -> Result<T, F> {
     let mut out = other;
     match self {
       Result<T, E>::Ok(v) => {
@@ -280,7 +280,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// `f` applied to the value, or the given answer when there is none.
-  fn map_or<U>(self : Result<T, E>, default : U, f : Closure1<T, U>) -> U {
+  pub fn map_or<U>(self : Result<T, E>, default : U, f : Closure1<T, U>) -> U {
     match self {
       Result<T, E>::Ok(v) => {
         let p = f.func;
@@ -293,7 +293,7 @@ impl<T, E> Result<T, E> {
   }
 
   /// `f` over the value, or `d` over the failure. Both answer with the same type.
-  fn map_or_else<U>(self : Result<T, E>, d : Closure1<E, U>, f : Closure1<T, U>) -> U {
+  pub fn map_or_else<U>(self : Result<T, E>, d : Closure1<E, U>, f : Closure1<T, U>) -> U {
     match self {
       Result<T, E>::Ok(v) => {
         let p = f.func;
@@ -310,9 +310,9 @@ impl<T, E> Result<T, E> {
 /// `Option`'s two bridges to `Result`. They belong to `core::option` and sit here because
 /// that module cannot import this one back: the import would be a cycle, and this file
 /// already has both types in scope.
-impl<T> Option<T> {
+extern impl<T> Option<T> {
   /// The value as a success, or the given failure.
-  fn ok_or<E>(self : Option<T>, err : E) -> Result<T, E> {
+  pub fn ok_or<E>(self : Option<T>, err : E) -> Result<T, E> {
     match self {
       Option<T>::Some(v) => {
         return Result<T, E>::Ok(v);
@@ -325,7 +325,7 @@ impl<T> Option<T> {
 
   /// The value as a success, or the failure `f` gives. Nothing is computed when there is
   /// a value.
-  fn ok_or_else<E>(self : Option<T>, f : Closure0<E>) -> Result<T, E> {
+  pub fn ok_or_else<E>(self : Option<T>, f : Closure0<E>) -> Result<T, E> {
     match self {
       Option<T>::Some(v) => {
         return Result<T, E>::Ok(v);

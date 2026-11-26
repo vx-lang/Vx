@@ -1,0 +1,45 @@
+//===- w1029_not_for_a_parameter_with_a_run_time_size.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// W1029 says that the compiler could not check a tensor against the capacity of its memory,
+// because the size of the tensor is known only at run time (`[?]`). A parameter and a return
+// type make no tensor, so they get no W1029. The tensor that `make` creates still gets W1029.
+
+// CHECK-NOT: parameter 't' of function 'first'
+// CHECK-NOT: the return type of function 'make'
+// CHECK: Warning[W1029] at {{.*}}.vx:34:3: capacity of 'HBM' not verified — variable 'made' has a dynamic shape
+// CHECK-NOT: parameter 't' of function 'first'
+// CHECK-NOT: the return type of function 'make'
+
+Memory HBM {
+  capacity: 32 GiB, bandwidth: 1200 GB/s, scope: device
+}
+Topology Accelerator {
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 300
+}
+
+fn first(t : &Tensor<u32, [?], Memory::HBM>) -> i32 {
+  return t.len();
+}
+
+fn make(n : i32) -> Tensor<u32, [?], Memory::HBM> {
+  let made = unsafe { Tensor<u32, [?], Memory::HBM>::uninit([n]) };
+  return made;
+}
+
+fn main() -> i32 {
+  let t = Tensor<u32, [16], Memory::HBM>::fill(0u32);
+  let m = make(4);
+  if first(&t) + first(&m) != 20 {
+    return 1;
+  }
+  return 0;
+}
