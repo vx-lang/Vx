@@ -1,7 +1,8 @@
 # Files, input and time
 
 A program often needs text, files, the clock or the network. This chapter shows the parts of the
-standard library for these jobs: `std::string`, `std::fs`, `std::io`, `std::time` and `std::net`.
+standard library for these jobs: `std::string`, `std::env`, `std::fs`, `std::io`, `std::time` and
+`std::net`.
 
 Many of these functions take a raw pointer, such as a string literal or a buffer. The compiler
 cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block. Files and
@@ -35,8 +36,82 @@ parsed 124
 `println!` moves a `String` argument ([Vx#3235](https://github.com/vx-lang/Vx/issues/3235)). So the
 program gets the length before it prints `greeting`.
 
+`String::from_utf8(&v)` copies the bytes of a `Vec<u8>`, and `String::from_bytes(p, n)` copies
+the `n` bytes at the raw pointer `p`. Neither one needs `unsafe`. But a call of `from_bytes` in
+safe code must prove that `p` points at `n` bytes, as `v.as_mut_ptr()` and `v.len()` do. Both
+give a `Result`. Its `Err` holds a `Utf8Error` when the bytes are not UTF-8, and `e.valid_up_to`
+is the number of bytes before the first bad one.
+
 `parse_int` stops at the first byte that is not a digit. So `"12abc"` gives 12, and `"abc"`
 gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
+
+## The command line
+
+A `main` written `fn main(root : Root, args : Vec<String>) -> i32` gets the words of its command
+line in `args`. The program owns them, so it can move them and change them. Each argument comes
+after the first word. Whoever starts the program chooses every word, the first one too.
+Usually the first word is the name or the path of the program, but it can be empty. A `String`
+holds only UTF-8 text, so an argument that is not UTF-8 stops the program before `main` runs.
+
+```vx
+import std::root;
+import std::string;
+import std::vec;
+
+fn main(_root : Root, args : Vec<String>) -> i32 {
+  let mut i = 1;
+  while i < args.len() {
+    println!("{}", args.get_ref(i));
+    i = i + 1;
+  }
+  return 0;
+}
+```
+
+`vxc args.vx -- one two` prints `one` and `two`. The words are data and not a right, so they are
+not part of `Root`. The test is `main_gets_the_words_of_the_command_line.vx`.
+
+## Environment variables
+
+The program that starts a process also chooses its environment variables. They often hold
+secrets, such as the token of a service. So reading them is a right, as opening a file is. `main`
+gets it in `root.env`, an `Environment`, and passes `&root.env` to the code that reads a variable.
+A function that gets no `&Environment` cannot read one.
+
+`env.var(&name)` gives a `Result`:
+
+- `Ok` holds the value, as a `String`.
+- `Err(EnvError::NotPresent)` means that the environment has no variable with the name. An empty
+  name, and a name that holds `=`, name no variable.
+- `Err(EnvError::NotUnicode)` means that the value is not UTF-8 text, so a `String` cannot hold it.
+
+```vx
+import core::result;
+import std::env;
+import std::root;
+import std::string;
+
+// Reads `HOME`. A function needs a `&Environment` to read a variable.
+fn home(env : &Environment) -> String {
+  let name = unsafe { String::from_c_str("HOME") };
+  match env.var(&name) {
+    Result<String, EnvError>::Ok(value) => {
+      return value;
+    }
+    Result<String, EnvError>::Err(_e) => {
+      return String::new();
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  println!("{}", home(&root.env));
+  return 0;
+}
+```
+
+The `unsafe` block only makes a `String` from the literal, as [Networks](#networks) explains. The
+test is `a_program_reads_its_environment_variables.vx`.
 
 ## Files
 
@@ -105,6 +180,20 @@ folder, and no others. For example, a model server can give the code that loads 
 `Folder`, and give the code that reads requests no right at all
 (`a_folder_right_reads_only_the_files_inside_its_folder.vx`).
 
+`file.map()` gives the whole file in memory, read-only, as a `Mapping`. It copies nothing: the
+system reads each part of the file when the program first reads it. So a program can map a file
+of many gigabytes and read only the parts that it needs.
+
+- `mapping.len()` is the size of the file in bytes.
+- `mapping.byte(i)` is byte `i`. It stops the program when `i` is outside the file.
+- `mapping.as_ptr()` is the address of the first byte, for code that reads through raw
+  pointers. An example is a tensor over the weights of a model.
+
+A dropped `Mapping` unmaps the file. A `Mapping` stays valid after its `File` closes. A file open
+only for writing gives `FileError::PermissionDenied` (`a_file_mapped_into_memory.vx`). When
+another program shortens the file while it is mapped, a read past the new end stops the program
+with the signal SIGBUS.
+
 ## Standard input and output
 
 `std::io` has three functions. `stdin_read(buffer, len)` reads up to `len` bytes of standard input
@@ -131,10 +220,10 @@ fn main() -> i32 {
 }
 ```
 
-When `vxc program.vx` runs a program, the program gets no standard input
-([Vx#3236](https://github.com/vx-lang/Vx/issues/3236)). So this loop stops at once and prints
-`0 lines`. Compile the program with `-c` and run the executable to give it input
-([Your first program](first-program.md#compiling-ahead-of-time)).
+When `vxc program.vx` runs a program, the program reads the standard input of vxc. So
+`printf 'a\nb\n' | vxc program.vx` prints `2 lines`. In a terminal, type the lines, then press
+Ctrl-D to end the input. vxc shows what the program prints only when the program ends
+([Vx#3458](https://github.com/vx-lang/Vx/issues/3458)).
 
 ## Time
 

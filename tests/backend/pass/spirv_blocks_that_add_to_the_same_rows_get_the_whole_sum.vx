@@ -1,0 +1,76 @@
+//===- spirv_blocks_that_add_to_the_same_rows_get_the_whole_sum.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each pass of the loop over `i` adds 1 to `m[0][0]` to `m[3][0]`. As blocks and threads, every
+// block would add to the same four rows at the same time, and lose some of the sums. So the
+// loop runs on one thread. `copy_transposed` writes a different element in each block, and runs
+// as blocks and threads. tests/integration_test/spirv_images_on_pocl.rs runs both kernels on
+// pocl and compares the output with this one.
+//
+// EXPECT: sums 20000 20000 20000 20000
+// EXPECT: transpose 9 255 32640
+
+Memory CPU_DRAM {}
+Memory DEV_HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+Topology Dev {
+  arch: spirv64,
+  levels: [blocks(max_lanes: 1024, memory: cta), lanes(memory: thread)],
+  memory: Memory::DEV_HBM,
+  visible: [Memory::DEV_HBM],
+  transfer Memory::CPU_DRAM -> Memory::DEV_HBM : 60 GB/s,
+  transfer Memory::DEV_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn add_to_the_first_rows(m : &mut Tensor<i32, [128, 4], Memory::DEV_HBM>) -> void {
+  spawn on(Topology::Dev) {
+    for i in 0..20000 {
+      for j in 0..4 {
+        m[j][0] = m[j][0] + 1;
+      }
+    }
+  }
+  return;
+}
+
+fn copy_transposed(c : &mut Tensor<i32, [4, 64], Memory::DEV_HBM>, a : &Tensor<i32, [64, 4], Memory::DEV_HBM>) -> void {
+  spawn on(Topology::Dev) {
+    for i in 0..64 {
+      for j in 0..4 {
+        c[j][i] = a[i][j];
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut m = transfer(Tensor<i32, [128, 4]>::new(), Memory::DEV_HBM);
+  add_to_the_first_rows(&mut m);
+  let hm = transfer(m, Memory::CPU_DRAM);
+  println!("sums {} {} {} {}", hm[0][0], hm[1][0], hm[2][0], hm[3][0]);
+
+  let mut a = Tensor<i32, [64, 4]>::new();
+  for i in 0..64 {
+    for j in 0..4 {
+      a[i][j] = i * 4 + j;
+    }
+  }
+  let ga = transfer(a, Memory::DEV_HBM);
+  let mut c = transfer(Tensor<i32, [4, 64]>::new(), Memory::DEV_HBM);
+  copy_transposed(&mut c, &ga);
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let mut total = 0;
+  for j in 0..4 {
+    for i in 0..64 {
+      total = total + hc[j][i];
+    }
+  }
+  println!("transpose {} {} {}", hc[1][2], hc[3][63], total);
+  return 0;
+}

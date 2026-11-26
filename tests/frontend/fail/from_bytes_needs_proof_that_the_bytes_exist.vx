@@ -1,0 +1,49 @@
+//===- from_bytes_needs_proof_that_the_bytes_exist.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `String::from_bytes(p, n)` is safe only because a call in safe code must prove that `p`
+// points at `n` bytes that hold values. Each call below reads a byte that may not exist.
+
+import core::result;
+import std::string;
+import std::vec;
+
+// The `Vec` holds `v.len()` bytes, not one more.
+// CHECK-DAG: Error[E8006] at {{.*}}.vx:[[@LINE+3]]:9: this call to 'String::from_bytes' may not meet its precondition `valid(p, n)`
+// CHECK-DAG: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:9: this call to 'String::from_bytes' may not meet its precondition `initialized(p, n)`
+fn one_byte_too_many(v : &Vec<u8>) -> i32 {
+  match String::from_bytes(v.as_mut_ptr() as *const u8, v.len() + 1) {
+    Result::Ok(_s) => {
+      return 1;
+    }
+    Result::Err(_e) => {
+      return 0;
+    }
+  }
+}
+
+// Nothing is known about `p`.
+// CHECK-DAG: Error[E8006] at {{.*}}.vx:[[@LINE+3]]:9: this call to 'String::from_bytes' may not meet its precondition `valid(p, n)`
+// CHECK-DAG: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:9: this call to 'String::from_bytes' may not meet its precondition `initialized(p, n)`
+fn a_pointer_from_the_caller(p : *const u8) -> i32 {
+  match String::from_bytes(p, 3) {
+    Result::Ok(_s) => {
+      return 1;
+    }
+    Result::Err(_e) => {
+      return 0;
+    }
+  }
+}
+
+// CHECK: 4 error(s) emitted
+
+fn main() -> i32 {
+  return 0;
+}

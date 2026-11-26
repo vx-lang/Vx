@@ -1,0 +1,56 @@
+//===- main_gets_the_words_of_the_command_line.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `main` written `fn main(root : Root, args : Vec<String>)` gets the words of its command line
+// in `args`, with no `unsafe`, and owns them. Each argument comes after the first word. An
+// argument that is not UTF-8 text stops the program before `main` runs. The legacy code
+// generator prints a `String` with no text (#3972), so only the default one checks the text.
+//
+// RUN: vxc %s -- one "two words" 2>&1 | FileCheck %s --check-prefixes=CHECK,TEXT --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen -- one "two words" 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s -- one "$(printf 'a\377b')" 2>&1 | FileCheck %s --check-prefix=BYTES
+// CHECK: 3 words
+// CHECK: arg 1 has 3 bytes
+// TEXT: arg 1 is one
+// CHECK: arg 2 has 9 bytes
+// TEXT: arg 2 is two words
+// CHECK: the last word has 9 bytes
+// TEXT: the last word is two words
+// BYTES-NOT: words
+// BYTES: argument 2 of the command line is not UTF-8 text
+import core::option;
+import std::root;
+import std::string;
+import std::vec;
+
+// Takes the words by value, so it owns them, and moves the last one out.
+fn last_word(words : Vec<String>) -> String {
+  let mut owned = words;
+  match owned.pop() {
+    Option<String>::Some(word) => {
+      return word;
+    }
+    Option<String>::None => {
+      return String::new();
+    }
+  }
+}
+
+fn main(_root : Root, args : Vec<String>) -> i32 {
+  println!("{} words", args.len());
+  let mut i = 1;
+  while i < args.len() {
+    let word = args.get_ref(i);
+    println!("arg {} has {} bytes", i, word.len());
+    println!("arg {} is {}", i, word);
+    i = i + 1;
+  }
+  let last = last_word(args);
+  println!("the last word has {} bytes", last.len());
+  println!("the last word is {}", last);
+  return 0;
+}

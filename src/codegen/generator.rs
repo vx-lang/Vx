@@ -1833,8 +1833,8 @@ impl<'c> MeliorGenerator<'c> {
             }
         }
 
-        // A `pub fn` stays exported: `vx-hide-program-symbols` skips a function with `vx.pub`.
-        if func.is_pub {
+        // An `extern fn` stays exported: `vx-hide-program-symbols` skips a function with `vx.pub`.
+        if func.exported {
             func_attributes.push((
                 melior::ir::Identifier::new(self.context, "vx.pub"),
                 melior::ir::Attribute::unit(self.context),

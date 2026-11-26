@@ -57,10 +57,18 @@ fn half(x : i32) -> i32 {
   };
 }
 
-fn checked_value() -> i64 {
+pub fn checked_value() -> i64 {
   let n = 2i64;
   let p = &n as *const i64;
   let x = read_first!(p);
   let five = 5i64;
   return (ones(3) + half(4) + abs(-1)) as i64 + x + five.size();
+}
+
+// The `{ .. }` of a closure is a plain block, but an `unsafe` block inside it is trusted code.
+fn first_through_a_closure(p : *const i64) -> i64 {
+  let f = || -> i64 {
+    return unsafe { first(p) };
+  };
+  return f();
 }

@@ -1,0 +1,42 @@
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A `+`, `-` or `*` on usize stops the program when the result is out of range, so then the
+// operation has no value. A precondition that uses the operation cannot hold for such arguments.
+// The largest usize is 9223372036854775807.
+
+fn sum_is_large(a : usize, b : usize) -> usize
+requires a + b > 5usize {
+  return a;
+}
+
+fn difference_is_small(a : usize, b : usize) -> usize
+requires a - b < 10usize {
+  return a;
+}
+
+fn product_is_large(a : usize, b : usize) -> usize
+requires a * b > 5usize {
+  return a;
+}
+
+fn main() -> i32 {
+  // Results in range meet the preconditions.
+  // CHECK-NOT: Error
+  let sum = sum_is_large(9223372036854775806usize, 1usize);
+  let difference = difference_is_small(3usize, 1usize);
+  let product = product_is_large(4611686018427387903usize, 2usize);
+  // The sum is one more than the largest usize.
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:
+  // CHECK-SAME: this call to 'sum_is_large' may not meet its precondition
+  let sum_too_large = sum_is_large(9223372036854775807usize, 1usize);
+  // The difference is -2, which is less than 10 but is not a usize.
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:
+  // CHECK-SAME: this call to 'difference_is_small' may not meet its precondition
+  let difference_below_zero = difference_is_small(1usize, 3usize);
+  // The product is one more than the largest usize.
+  // CHECK: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:
+  // CHECK-SAME: this call to 'product_is_large' may not meet its precondition
+  let product_too_large = product_is_large(4611686018427387904usize, 2usize);
+  // CHECK-NOT: Error
+  return 0;
+}

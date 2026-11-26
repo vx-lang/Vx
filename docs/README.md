@@ -20,6 +20,7 @@ What the language *is*. These are normative.
 | [`lang/types.md`](lang/types.md) | The type system: placement, linearity, typestates |
 | [`lang/semantics.md`](lang/semantics.md) | Evaluation rules |
 | [`lang/abi.md`](lang/abi.md) | Calling convention and C interoperability |
+| [`lang/visibility.md`](lang/visibility.md) | Which code can name an item, and what that means for symbols and versions |
 | [`lang/formal_semantics.md`](lang/formal_semantics.md) | The formal model |
 | [`lang/seam_obligations.md`](lang/seam_obligations.md) | What a seam obliges a program to prove |
 | [`lang/hosts_and_machines.md`](lang/hosts_and_machines.md) | Machine and host declaration files |

@@ -19,9 +19,11 @@
 #include "../../runtime/vx_collective.h"
 
 #include <cstdio>
+#include <mutex>
 #include <set>
 #include <sys/stat.h>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -67,6 +69,22 @@ bool recording = false;
 int current_device = 0;
 std::set<int> devices_set;
 
+// What the device did for the buffers of vx_peer_buffer_create, in order, and
+// which rank's thread did it. A handle holds the address it opens.
+struct Event {
+  int rank;
+  std::string what;
+  void *ptr;
+};
+std::mutex events_lock;
+std::vector<Event> events;
+thread_local int event_rank = 0;
+
+void note(const char *what, void *ptr) {
+  std::lock_guard<std::mutex> guard(events_lock);
+  events.push_back({event_rank, what, ptr});
+}
+
 vx::CollectiveDevice test_device() {
   return vx::CollectiveDevice{
       [] { return stream; },
@@ -80,7 +98,61 @@ vx::CollectiveDevice test_device() {
         devices_set.insert(d);
         current_device = d;
       },
+      [](size_t bytes) -> void * {
+        void *p = calloc(1, bytes);
+        note("allocate", p);
+        return p;
+      },
+      [](void *p) {
+        note("release", p);
+        free(p);
+      },
+      [](void *device, const void *host, size_t bytes) {
+        memcpy(device, host, bytes);
+      },
+      [](void *host, const void *device, size_t bytes) {
+        memcpy(host, device, bytes);
+      },
+      [](void *s) { note("synchronize", s); },
+      [](void *p, void *handle) -> std::string {
+        memset(handle, 0, vx::kPeerHandleBytes);
+        memcpy(handle, &p, sizeof p);
+        return "";
+      },
+      [](const void *handle, void **p) -> std::string {
+        memcpy(p, handle, sizeof *p);
+        note("open", *p);
+        return "";
+      },
+      [](void *p) -> std::string {
+        // Rank 1 closes late, so a rank that does not wait for it frees its
+        // part first.
+        if (event_rank == 1) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        note("close", p);
+        return "";
+      },
   };
+}
+
+// The events of `what` on `ptr`.
+size_t count_events(const char *what, void *ptr) {
+  size_t n = 0;
+  for (const Event &e : events) {
+    n += e.what == what && e.ptr == ptr;
+  }
+  return n;
+}
+
+// The position of the first event of `what` on `ptr`, or events.size().
+size_t first_event(const char *what, void *ptr) {
+  for (size_t i = 0; i < events.size(); ++i) {
+    if (events[i].what == what && events[i].ptr == ptr) {
+      return i;
+    }
+  }
+  return events.size();
 }
 
 const auto no_wait = std::chrono::milliseconds(0);
@@ -274,6 +346,141 @@ void test_one_rank_with_no_gpu_copies() {
   check(c.finish().empty() && c.ranks() == 0, "finish leaves the job");
 }
 
+void test_a_peer_buffer_needs_a_job_a_size_and_no_recording() {
+  vx::NcclCollective c(test_device());
+  void *b = nullptr;
+  check(has(c.peer_buffer_create(16, &b), "before vx_collective_init"),
+        "a peer buffer before init is refused");
+  c.init(0, 1, nccl.c_str(), nullptr, no_wait);
+  check(has(c.peer_buffer_create(0, &b), "above 0, but got 0"),
+        "a peer buffer of 0 bytes is refused");
+  recording = true;
+  check(has(c.peer_buffer_create(16, &b), "records a CUDA graph"),
+        "a peer buffer during a recording is refused");
+  recording = false;
+  uint64_t out[1];
+  int x = 0;
+  check(has(c.peer_buffer_pointers(&x, out), "did not make"),
+        "the pointers of an unknown buffer are refused");
+  check(has(c.peer_buffer_destroy(&x), "did not make"),
+        "freeing an unknown buffer is refused");
+}
+
+void test_a_peer_buffer_of_one_rank_is_its_own_memory() {
+  vx::NcclCollective c(test_device());
+  c.init(0, 1, nccl.c_str(), nullptr, no_wait);
+  events.clear();
+  const char *last = calls->last;
+  void *b = nullptr;
+  check(c.peer_buffer_create(16, &b).empty() && b, "one rank makes a buffer");
+  uint64_t out[1] = {0};
+  check(c.peer_buffer_pointers(b, out).empty(), "its pointers are there");
+  void *own = (void *)(uintptr_t)out[0];
+  check(own && count_events("allocate", own) == 1,
+        "the pointer is the memory that the rank allocated");
+  check(calls->last == last, "one rank exchanges nothing through NCCL");
+  recording = true;
+  check(has(c.peer_buffer_destroy(b), "records a CUDA graph"),
+        "freeing a buffer during a recording is refused");
+  recording = false;
+  check(c.peer_buffer_destroy(b).empty() && count_events("release", own) == 1,
+        "destroy frees the memory");
+  check(has(c.peer_buffer_destroy(b), "did not make"),
+        "freeing a buffer twice is refused");
+  void *kept = nullptr;
+  c.peer_buffer_create(8, &kept);
+  c.peer_buffer_pointers(kept, out);
+  // The allocator can give the freed address again, so count from here.
+  void *kept_part = (void *)(uintptr_t)out[0];
+  const size_t released = count_events("release", kept_part);
+  check(c.finish().empty() &&
+            count_events("release", kept_part) == released + 1,
+        "finish frees a buffer that is still there");
+}
+
+void test_two_ranks_address_each_others_part() {
+  const std::string file = dir + "/peer_id";
+  vx::NcclCollective zero(test_device()), one(test_device());
+  std::string why[2], made[2], gone[2];
+  uint64_t out[2][2] = {{0, 0}, {0, 0}};
+  void *b[2] = {nullptr, nullptr};
+  events.clear();
+  auto rank = [&](int r, vx::NcclCollective &c) {
+    event_rank = r;
+    why[r] = c.init(r, 2, nccl.c_str(), file.c_str(), std::chrono::seconds(10));
+    if (!why[r].empty()) {
+      return;
+    }
+    made[r] = c.peer_buffer_create(32, &b[r]);
+    if (made[r].empty()) {
+      c.peer_buffer_pointers(b[r], out[r]);
+      gone[r] = c.peer_buffer_destroy(b[r]);
+    }
+  };
+  std::thread t1([&] { rank(1, one); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  std::thread t0([&] { rank(0, zero); });
+  t0.join();
+  t1.join();
+  check(why[0].empty() && why[1].empty(), "two ranks join");
+  check(made[0].empty() && made[1].empty(), "each rank makes its part");
+  check(gone[0].empty() && gone[1].empty(), "each rank frees its part");
+  void *part0 = (void *)(uintptr_t)out[0][0];
+  void *part1 = (void *)(uintptr_t)out[0][1];
+  check(part0 && part1 && part0 != part1, "rank 0 has two different parts");
+  check(out[1][0] == out[0][0] && out[1][1] == out[0][1],
+        "both ranks see the same part at each rank's index");
+  bool part0_by_0 = false, part1_by_1 = false;
+  for (const Event &e : events) {
+    part0_by_0 |= e.what == "allocate" && e.ptr == part0 && e.rank == 0;
+    part1_by_1 |= e.what == "allocate" && e.ptr == part1 && e.rank == 1;
+  }
+  check(part0_by_0 && part1_by_1, "rank r allocated the part at index r");
+  check(count_events("open", part1) == 1 && count_events("open", part0) == 1,
+        "each rank opened the other rank's part once");
+  const size_t closed =
+      std::max(first_event("close", part0), first_event("close", part1));
+  check(closed < events.size() && first_event("release", part0) > closed &&
+            first_event("release", part1) > closed,
+        "no rank frees its part before both ranks close their address of it");
+  // Rank r closes the part of the other rank, 1 - r.
+  void *other_part[2] = {part1, part0};
+  for (int r = 0; r < 2; ++r) {
+    const size_t close = first_event("close", other_part[r]);
+    bool waited = false;
+    for (size_t i = first_event("open", other_part[r]); i < close; ++i) {
+      waited |= events[i].what == "synchronize" && events[i].rank == r;
+    }
+    check(close < events.size() && waited,
+          "each rank waits for its stream before it closes another rank's "
+          "part");
+  }
+}
+
+void test_a_peer_buffer_with_no_gpu_is_host_memory() {
+  vx::OneRankCollective c;
+  void *b = nullptr;
+  check(has(c.peer_buffer_create(8, &b), "before vx_collective_init"),
+        "a peer buffer before init is refused");
+  c.init(0, 1);
+  check(has(c.peer_buffer_create(-1, &b), "above 0"),
+        "a negative size is refused");
+  check(c.peer_buffer_create(8, &b).empty() && b, "one rank makes a buffer");
+  uint64_t out[1] = {0};
+  check(c.peer_buffer_pointers(b, out).empty() && out[0],
+        "its pointer is there");
+  const char *bytes = (const char *)(uintptr_t)out[0];
+  bool zero = true;
+  for (int i = 0; i < 8; ++i) {
+    zero &= bytes[i] == 0;
+  }
+  check(zero, "the buffer starts at 0");
+  check(c.peer_buffer_destroy(b).empty(), "destroy frees it");
+  check(has(c.peer_buffer_pointers(b, out), "did not make"),
+        "a freed buffer is unknown");
+  c.finish();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -302,6 +509,10 @@ int main(int argc, char **argv) {
   test_an_nccl_error_stops_with_its_message();
   test_finish_leaves_the_job_and_a_new_init_joins_again();
   test_one_rank_with_no_gpu_copies();
+  test_a_peer_buffer_needs_a_job_a_size_and_no_recording();
+  test_a_peer_buffer_of_one_rank_is_its_own_memory();
+  test_two_ranks_address_each_others_part();
+  test_a_peer_buffer_with_no_gpu_is_host_memory();
   if (failures) {
     fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

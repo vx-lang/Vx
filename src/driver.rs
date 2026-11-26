@@ -54,7 +54,7 @@ pub enum Action {
     EmitMsl,
     /// Parse and typecheck the program, then print each fact that the compiler trusts without a
     /// proof: each `assume`, each pointer clause that a call in `unsafe` code trusts, each
-    /// `ensures` of an `extern` function, and each pointer `requires` of a `pub fn`
+    /// `ensures` of a function in an `extern` block, and each pointer `requires` of an `extern fn`
     Audit,
 }
 
@@ -287,7 +287,7 @@ pub struct DriverOptions {
 
     /// Arguments to pass to the running program
     #[arg(last = true)]
-    pub program_args: Vec<String>,
+    pub program_args: Vec<std::ffi::OsString>,
 }
 
 impl DriverOptions {
@@ -742,6 +742,7 @@ impl CompilerDriver {
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
                 self.options.thread_sanitizer(),
+                std::process::Stdio::inherit(),
             )
             .map_err(|e| e.to_string())?;
             print_program_output(&out);
@@ -915,6 +916,7 @@ impl CompilerDriver {
     fn native_host_program() -> crate::syntax::Program {
         crate::syntax::Program {
             module_path: crate::symbol::Symbol::from(NATIVE_HOST_MODULE),
+            package: None,
             file: None,
             item_macros: Vec::new(),
             memories: vec![crate::syntax::MemoryDecl {
@@ -1142,6 +1144,7 @@ impl CompilerDriver {
         Some(crate::syntax::Program {
             item_macros: Vec::new(),
             module_path: "<interfaces>".into(),
+            package: None,
             file: None,
             imports: Vec::new(),
             macros: Vec::new(),
@@ -1212,6 +1215,20 @@ impl CompilerDriver {
         if self.options.action == Action::Audit {
             checker.trusted = Some(std::collections::BTreeSet::new());
         }
+        // The trusted code of each module, read before the check moves the body of each closure
+        // into a function of its own. `--no-trusted-code` reads the modules at this point too.
+        let trusted_code: Vec<_> = match self.options.action {
+            Action::Audit => std::iter::once(&*ast)
+                .chain(other_asts.values())
+                .flat_map(|p| {
+                    let library = crate::hir::check::audit::is_library(p);
+                    crate::hir::check::audit::trusted_code(p)
+                        .into_iter()
+                        .map(move |(kind, item)| (library, kind, item))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
 
         // The checks that look at the whole program's declarations at once can only name a
         // file when the program is one file; a `--host default` module was read from none.
@@ -1442,12 +1459,12 @@ impl CompilerDriver {
             let mut library = std::collections::BTreeMap::new();
             for p in std::iter::once(&*ast).chain(other_asts.values()) {
                 trusted.extend(audit::trusted_declarations(p));
-                for (kind, item) in audit::trusted_code(p) {
-                    if audit::is_library(p) && !self.options.audit_library {
-                        *library.entry(kind).or_insert(0) += 1;
-                    } else {
-                        trusted.insert(item);
-                    }
+            }
+            for (in_library, kind, item) in trusted_code {
+                if in_library && !self.options.audit_library {
+                    *library.entry(kind).or_insert(0) += 1;
+                } else {
+                    trusted.insert(item);
                 }
             }
             for item in &trusted {
@@ -1520,10 +1537,9 @@ impl CompilerDriver {
     /// An MLIR context with every dialect, every pass and the Vx dialect registered, and a
     /// diagnostic handler attached. Shared by the sequential driver and `-j`.
     fn backend_context(&self) -> melior::Context {
-        codegen::register_vx_passes();
+        codegen::init_codegen_globals();
         let registry = melior::dialect::DialectRegistry::new();
         melior::utility::register_all_dialects(&registry);
-        melior::utility::register_all_passes();
         let context = melior::Context::new();
         let emit_diagnostics = self.options.emit_backend_diagnostics;
         context.attach_diagnostic_handler(move |diagnostic| {
@@ -1825,6 +1841,7 @@ impl CompilerDriver {
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
                     self.options.thread_sanitizer(),
+                    std::process::Stdio::inherit(),
                 )
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
@@ -2083,7 +2100,8 @@ impl CompilerDriver {
             }
             let synth = crate::syntax::Function {
                 is_unsafe: false,
-                is_pub: false,
+                visibility: crate::gid::Visibility::Private,
+                exported: false,
                 name: body.name.clone(),
                 generics: vec![],
                 params: body
@@ -2107,6 +2125,7 @@ impl CompilerDriver {
                 doc_comment: None,
                 span: crate::syntax::Span::default(),
                 file: None,
+                package: None,
             };
             imported_entries.push((synth, body.hir.clone(), body.types.clone()));
         }

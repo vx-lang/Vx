@@ -1,0 +1,393 @@
+//===- a_long_else_if_chain_compiles_quickly.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Chains of 40 `else if` links: in a function body, in a `for` loop, and in a loop in the arm
+// of a `match` in a `while`. Some checks once visited the blocks of each `if` again for each `if`
+// around it. The time then doubled with each link, and this file did not compile in the time
+// limit.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}40{{$}}
+// CHECK-NEXT: {{^}}920{{$}}
+// CHECK-NEXT: {{^}}100{{$}}
+
+import std::sync::channel;
+
+fn pick(id : i64) -> i64 {
+  let mut r : i64 = 0;
+  if id == 0 {
+    r = 100;
+  } else if id == 1 {
+    r = r + 1;
+  } else if id == 2 {
+    r = r + 2;
+  } else if id == 3 {
+    r = r + 3;
+  } else if id == 4 {
+    r = r + 4;
+  } else if id == 5 {
+    r = r + 5;
+  } else if id == 6 {
+    r = r + 6;
+  } else if id == 7 {
+    r = r + 7;
+  } else if id == 8 {
+    r = r + 8;
+  } else if id == 9 {
+    r = r + 9;
+  } else if id == 10 {
+    r = r + 10;
+  } else if id == 11 {
+    r = r + 11;
+  } else if id == 12 {
+    r = r + 12;
+  } else if id == 13 {
+    r = r + 13;
+  } else if id == 14 {
+    r = r + 14;
+  } else if id == 15 {
+    r = r + 15;
+  } else if id == 16 {
+    r = r + 16;
+  } else if id == 17 {
+    r = r + 17;
+  } else if id == 18 {
+    r = r + 18;
+  } else if id == 19 {
+    r = r + 19;
+  } else if id == 20 {
+    r = r + 20;
+  } else if id == 21 {
+    r = r + 21;
+  } else if id == 22 {
+    r = r + 22;
+  } else if id == 23 {
+    r = r + 23;
+  } else if id == 24 {
+    r = r + 24;
+  } else if id == 25 {
+    r = r + 25;
+  } else if id == 26 {
+    r = r + 26;
+  } else if id == 27 {
+    r = r + 27;
+  } else if id == 28 {
+    r = r + 28;
+  } else if id == 29 {
+    r = r + 29;
+  } else if id == 30 {
+    r = r + 30;
+  } else if id == 31 {
+    r = r + 31;
+  } else if id == 32 {
+    r = r + 32;
+  } else if id == 33 {
+    r = r + 33;
+  } else if id == 34 {
+    r = r + 34;
+  } else if id == 35 {
+    r = r + 35;
+  } else if id == 36 {
+    r = r + 36;
+  } else if id == 37 {
+    r = r + 37;
+  } else if id == 38 {
+    r = r + 38;
+  } else if id == 39 {
+    r = r + 39;
+  } else if id == 40 {
+    r = r + 40;
+  }
+  return r;
+}
+
+// Adds 100 for 0 and `i` for each other `i` below `n`.
+fn count_up(n : i64) -> i64 {
+  let mut r : i64 = 0;
+  for i in 0..n {
+    if i == 0 {
+      r = r + 100;
+    } else if i == 1 {
+      r = r + 1;
+    } else if i == 2 {
+      r = r + 2;
+    } else if i == 3 {
+      r = r + 3;
+    } else if i == 4 {
+      r = r + 4;
+    } else if i == 5 {
+      r = r + 5;
+    } else if i == 6 {
+      r = r + 6;
+    } else if i == 7 {
+      r = r + 7;
+    } else if i == 8 {
+      r = r + 8;
+    } else if i == 9 {
+      r = r + 9;
+    } else if i == 10 {
+      r = r + 10;
+    } else if i == 11 {
+      r = r + 11;
+    } else if i == 12 {
+      r = r + 12;
+    } else if i == 13 {
+      r = r + 13;
+    } else if i == 14 {
+      r = r + 14;
+    } else if i == 15 {
+      r = r + 15;
+    } else if i == 16 {
+      r = r + 16;
+    } else if i == 17 {
+      r = r + 17;
+    } else if i == 18 {
+      r = r + 18;
+    } else if i == 19 {
+      r = r + 19;
+    } else if i == 20 {
+      r = r + 20;
+    } else if i == 21 {
+      r = r + 21;
+    } else if i == 22 {
+      r = r + 22;
+    } else if i == 23 {
+      r = r + 23;
+    } else if i == 24 {
+      r = r + 24;
+    } else if i == 25 {
+      r = r + 25;
+    } else if i == 26 {
+      r = r + 26;
+    } else if i == 27 {
+      r = r + 27;
+    } else if i == 28 {
+      r = r + 28;
+    } else if i == 29 {
+      r = r + 29;
+    } else if i == 30 {
+      r = r + 30;
+    } else if i == 31 {
+      r = r + 31;
+    } else if i == 32 {
+      r = r + 32;
+    } else if i == 33 {
+      r = r + 33;
+    } else if i == 34 {
+      r = r + 34;
+    } else if i == 35 {
+      r = r + 35;
+    } else if i == 36 {
+      r = r + 36;
+    } else if i == 37 {
+      r = r + 37;
+    } else if i == 38 {
+      r = r + 38;
+    } else if i == 39 {
+      r = r + 39;
+    } else if i == 40 {
+      r = r + 40;
+    }
+  }
+  return r;
+}
+
+// The channel has no sender, so `recv` fails at once. The first chain sets `s` to 100, the
+// second leaves it, and the loop ends with `r` at 100.
+fn after_a_failed_receive() -> i64 {
+  let (tx, rx) = channel<i64>(1);
+  drop(tx);
+  let mut r : i64 = 0;
+  while r < 10 {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        r = r + v;
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        let mut s : i64 = 0;
+        for _k in 0..1 {
+          if s == 0 {
+            s = s + 100;
+          } else if s == 1 {
+            s = s + 1;
+          } else if s == 2 {
+            s = s + 2;
+          } else if s == 3 {
+            s = s + 3;
+          } else if s == 4 {
+            s = s + 4;
+          } else if s == 5 {
+            s = s + 5;
+          } else if s == 6 {
+            s = s + 6;
+          } else if s == 7 {
+            s = s + 7;
+          } else if s == 8 {
+            s = s + 8;
+          } else if s == 9 {
+            s = s + 9;
+          } else if s == 10 {
+            s = s + 10;
+          } else if s == 11 {
+            s = s + 11;
+          } else if s == 12 {
+            s = s + 12;
+          } else if s == 13 {
+            s = s + 13;
+          } else if s == 14 {
+            s = s + 14;
+          } else if s == 15 {
+            s = s + 15;
+          } else if s == 16 {
+            s = s + 16;
+          } else if s == 17 {
+            s = s + 17;
+          } else if s == 18 {
+            s = s + 18;
+          } else if s == 19 {
+            s = s + 19;
+          } else if s == 20 {
+            s = s + 20;
+          } else if s == 21 {
+            s = s + 21;
+          } else if s == 22 {
+            s = s + 22;
+          } else if s == 23 {
+            s = s + 23;
+          } else if s == 24 {
+            s = s + 24;
+          } else if s == 25 {
+            s = s + 25;
+          } else if s == 26 {
+            s = s + 26;
+          } else if s == 27 {
+            s = s + 27;
+          } else if s == 28 {
+            s = s + 28;
+          } else if s == 29 {
+            s = s + 29;
+          } else if s == 30 {
+            s = s + 30;
+          } else if s == 31 {
+            s = s + 31;
+          } else if s == 32 {
+            s = s + 32;
+          } else if s == 33 {
+            s = s + 33;
+          } else if s == 34 {
+            s = s + 34;
+          } else if s == 35 {
+            s = s + 35;
+          } else if s == 36 {
+            s = s + 36;
+          } else if s == 37 {
+            s = s + 37;
+          } else if s == 38 {
+            s = s + 38;
+          } else if s == 39 {
+            s = s + 39;
+          } else if s == 40 {
+            s = s + 40;
+          }
+        }
+        if s == 0 {
+          s = s + 100;
+        } else if s == 1 {
+          s = s + 1;
+        } else if s == 2 {
+          s = s + 2;
+        } else if s == 3 {
+          s = s + 3;
+        } else if s == 4 {
+          s = s + 4;
+        } else if s == 5 {
+          s = s + 5;
+        } else if s == 6 {
+          s = s + 6;
+        } else if s == 7 {
+          s = s + 7;
+        } else if s == 8 {
+          s = s + 8;
+        } else if s == 9 {
+          s = s + 9;
+        } else if s == 10 {
+          s = s + 10;
+        } else if s == 11 {
+          s = s + 11;
+        } else if s == 12 {
+          s = s + 12;
+        } else if s == 13 {
+          s = s + 13;
+        } else if s == 14 {
+          s = s + 14;
+        } else if s == 15 {
+          s = s + 15;
+        } else if s == 16 {
+          s = s + 16;
+        } else if s == 17 {
+          s = s + 17;
+        } else if s == 18 {
+          s = s + 18;
+        } else if s == 19 {
+          s = s + 19;
+        } else if s == 20 {
+          s = s + 20;
+        } else if s == 21 {
+          s = s + 21;
+        } else if s == 22 {
+          s = s + 22;
+        } else if s == 23 {
+          s = s + 23;
+        } else if s == 24 {
+          s = s + 24;
+        } else if s == 25 {
+          s = s + 25;
+        } else if s == 26 {
+          s = s + 26;
+        } else if s == 27 {
+          s = s + 27;
+        } else if s == 28 {
+          s = s + 28;
+        } else if s == 29 {
+          s = s + 29;
+        } else if s == 30 {
+          s = s + 30;
+        } else if s == 31 {
+          s = s + 31;
+        } else if s == 32 {
+          s = s + 32;
+        } else if s == 33 {
+          s = s + 33;
+        } else if s == 34 {
+          s = s + 34;
+        } else if s == 35 {
+          s = s + 35;
+        } else if s == 36 {
+          s = s + 36;
+        } else if s == 37 {
+          s = s + 37;
+        } else if s == 38 {
+          s = s + 38;
+        } else if s == 39 {
+          s = s + 39;
+        } else if s == 40 {
+          s = s + 40;
+        }
+        r = r + s;
+      }
+    }
+  }
+  return r;
+}
+
+fn main() -> i32 {
+  println!("{}", pick(40));
+  println!("{}", count_up(41));
+  println!("{}", after_a_failed_receive());
+  return 0;
+}

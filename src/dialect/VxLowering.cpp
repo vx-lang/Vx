@@ -64,6 +64,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/IR/ConstantFold.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
@@ -11400,6 +11401,28 @@ static std::optional<std::string> spirvTargetRefusal() {
   return refusal;
 }
 
+#if LLVM_VERSION_MAJOR < 23
+/// The SPIR-V backend of LLVM 22 keeps the ids of its blocks in a static map,
+/// by the address of the `MachineFunction` and the number of the block, and
+/// does not clear the map for the next module (llvm/llvm-project#160613). A
+/// later kernel whose `MachineFunction` gets the address of a freed one then
+/// takes the old ids, and its image defines an id twice. This pass manager
+/// keeps every `MachineFunction`: it drops the pass that frees them, and
+/// `serializeSpirv` never deletes it. LLVM 23 has the fix.
+class KeepMachineFunctions final : public llvm::legacy::PassManager {
+public:
+  void add(llvm::Pass *pass) override {
+    if (pass->getPassName() == "Free MachineFunction") {
+      delete pass;
+      droppedTheFree = true;
+      return;
+    }
+    llvm::legacy::PassManager::add(pass);
+  }
+  bool droppedTheFree = false;
+};
+#endif
+
 /// Write an LLVM module out as a SPIR-V object, in this process.
 ///
 /// This is what `llc -mtriple=spirv64-unknown-unknown -filetype=obj` does,
@@ -11439,12 +11462,23 @@ static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
 
   llvm::SmallVector<char, 0> buffer;
   llvm::raw_svector_ostream stream(buffer);
+#if LLVM_VERSION_MAJOR < 23
+  // Never deleted: see `KeepMachineFunctions`.
+  auto *keep = new KeepMachineFunctions();
+  llvm::legacy::PassManager &codegen = *keep;
+#else
   llvm::legacy::PassManager codegen;
+#endif
   if (machine->addPassesToEmitFile(codegen, stream, nullptr,
                                    llvm::CodeGenFileType::ObjectFile)) {
     error = "the SPIR-V target cannot write an object file";
     return failure();
   }
+#if LLVM_VERSION_MAJOR < 23
+  if (!keep->droppedTheFree)
+    llvm::report_fatal_error(
+        "the SPIR-V pipeline has no pass named `Free MachineFunction`");
+#endif
   // `legacy::PassManager::run` answers whether a pass *changed* the module,
   // not whether one failed (`llvm/IR/LegacyPassManager.h`), and code generation
   // only reads it. A module the SPIR-V backend cannot encode stops the process

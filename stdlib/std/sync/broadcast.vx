@@ -73,7 +73,7 @@ impl<T> ReceiverOfAChannel for BroadcastReceiver<T> {}
 
 /// A broadcast channel with room for `n` values. `n` must be at least 1. Each receiver gets a
 /// clone of each value, so `T` must be `Clone`.
-fn broadcast<T : Send + Owned + Clone>(n : i64, at : Caller) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
+pub fn broadcast<T : Send + Owned + Clone>(n : i64, at : Caller) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
   assert(n >= 1, "broadcast: the room must be at least 1");
   let size = BROADCAST_SLOTS + 2 * n;
   let words : *mut AtomicI64 = alloc(size * 8, 8);
@@ -133,8 +133,7 @@ fn broadcast_release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> voi
   }
   let w : *mut i8 = words;
   let d : *mut i8 = data;
-  dealloc(w, 8);
-  dealloc(d, 16);
+  unsafe { dealloc(w, 8); dealloc(d, 16); }
 }
 
 impl<T : Clone>
@@ -142,17 +141,17 @@ BroadcastSender<T> {
   /// Send `v` to each receiver. Wait while a receiver did not read the value in the next slot.
   /// When each receiver was dropped, or the `tasks` block of this task was cancelled, give `v`
   /// back.
-  fn send(self : &BroadcastSender<T>, v : T, at : Caller) -> Result<void, SendError<T>> {
+  pub fn send(self : &BroadcastSender<T>, v : T, at : Caller) -> Result<void, SendError<T>> {
     return self.send_until(v, Instant::never(), at);
   }
 
   /// `send`, and give `v` back when it waited `limit` for room.
-  fn send_for(self : &BroadcastSender<T>, v : T, limit : Duration, at : Caller) -> Result<void, SendError<T>> {
+  pub fn send_for(self : &BroadcastSender<T>, v : T, limit : Duration, at : Caller) -> Result<void, SendError<T>> {
     return self.send_until(v, deadline_after(limit), at);
   }
 
   /// `send` until the clock reaches `deadline`.
-  fn send_until(self : &BroadcastSender<T>, v : T, deadline : Instant, at : Caller) -> Result<void, SendError<T>> {
+  pub fn send_until(self : &BroadcastSender<T>, v : T, deadline : Instant, at : Caller) -> Result<void, SendError<T>> {
     let words = self.words;
     let mut cancelled = false;
     loop {
@@ -193,7 +192,7 @@ BroadcastSender<T> {
   }
 
   /// A new receiver. It gets each value that is sent after this call.
-  fn subscribe(self : &BroadcastSender<T>) -> BroadcastReceiver<T> {
+  pub fn subscribe(self : &BroadcastSender<T>) -> BroadcastReceiver<T> {
     let words = self.words;
     lock_channel(words, BROADCAST_LOCK);
     let k = word(words, SENDS).load(AtomicOrdering::SeqCst);
@@ -211,17 +210,17 @@ BroadcastReceiver<T> {
   /// The next value. Wait while this receiver read each value. When each `BroadcastSender` was
   /// dropped and no value is left for this receiver, give `Closed`. When the `tasks` block of
   /// this task was cancelled, give `Cancelled`.
-  fn recv(self : &BroadcastReceiver<T>, at : Caller) -> Result<T, RecvError> {
+  pub fn recv(self : &BroadcastReceiver<T>, at : Caller) -> Result<T, RecvError> {
     return self.recv_until(Instant::never(), at);
   }
 
   /// `recv`, and give `TimedOut` when it waited `limit` for a value.
-  fn recv_for(self : &BroadcastReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+  pub fn recv_for(self : &BroadcastReceiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
     return self.recv_until(deadline_after(limit), at);
   }
 
   /// `recv` until the clock reaches `deadline`.
-  fn recv_until(self : &BroadcastReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
+  pub fn recv_until(self : &BroadcastReceiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
     let words = self.words;
     let mut why = RecvError::Closed;
     loop {
@@ -253,7 +252,7 @@ BroadcastReceiver<T> {
   }
 
   /// The next value for this receiver, if it was sent. It does not wait.
-  fn try_recv(self : &BroadcastReceiver<T>) -> Result<T, TryRecvError> {
+  pub fn try_recv(self : &BroadcastReceiver<T>) -> Result<T, TryRecvError> {
     let words = self.words;
     // Read `SENDERS` before the slot. Each `send` comes before the drop of its sender, so a
     // closed channel shows its last value.

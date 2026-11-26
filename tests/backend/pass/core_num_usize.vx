@@ -157,6 +157,19 @@ fn main() -> i32 {
   print(zero.abs_diff(max));
   print!("; ceil=");
   print(max.div_ceil(two));
+  print!("; ");
+
+  // Little-endian conversions give the value back. 258 is 0x0102, so swapped bytes
+  // would print 513. `to_be` and `from_be` do not exist at this width.
+  let pattern : usize = 258;
+  print!("to_le=");
+  print(pattern.to_le());
+  print!("; from_le=");
+  print(pattern.from_le());
+  print!("; to_le_max=");
+  print(max.to_le());
+  print!("; from_le_max=");
+  print(max.from_le());
   print!(";");
   return 0;
 }
@@ -170,3 +183,4 @@ fn main() -> i32 {
 // EXPECT: next_pow2=4611686018427387904; next_pow2_zero=1; next_pow2_max_none=yes; next_mult_max_none=yes; zero_is_pow2=no; one_is_pow2=yes;
 // EXPECT: count_ones=63; count_zeros=1; lead=1; trail_ones=63; trail_zero=64; trail_eight=3; ilog2=62; ilog10=18; isqrt=3037000499; ilog2_0_none=yes;
 // EXPECT: mid=9223372036854775807; diff=9223372036854775807; ceil=4611686018427387904;
+// EXPECT: to_le=258; from_le=258; to_le_max=9223372036854775807; from_le_max=9223372036854775807;

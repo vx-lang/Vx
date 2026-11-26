@@ -367,6 +367,11 @@ impl<'a> TypeChecker<'a> {
                 Some(ty) if self.type_can_hold_reference(&ty) => ty,
                 _ => continue,
             };
+            // `info.text = text_of(&u)` with `info : &mut Info` stores a `Vec<u8>` in `info`.
+            // The stored value cannot hold a reference, so `info` keeps no borrow of `u`.
+            if !self.type_can_hold_reference(&self.check_expr_type_probe(&lhs)) {
+                continue;
+            }
             let depth = self.scope_depth_of(&holder);
             let mut borrowed = Vec::new();
             crate::syntax::visit_expr(&rhs, &mut |e| {
@@ -872,7 +877,23 @@ impl<'a> TypeChecker<'a> {
                 self.place_for_let(name, &ty, &context, span);
             }
             self.shadow_borrows(name);
-            self.insert(name.to_string(), ty.clone());
+            // A reference is valid no longer than the variable that holds it. So `alias` in
+            // `let mut alias = &mut outside` in an inner block can later take a borrow there.
+            let held = match ty.clone() {
+                Type::Borrow {
+                    inner,
+                    mem_space,
+                    is_mut,
+                    region_id,
+                } => Type::Borrow {
+                    inner,
+                    mem_space,
+                    is_mut,
+                    region_id: region_id.max(self.scopes.len()),
+                },
+                other => other,
+            };
+            self.insert(name.to_string(), held);
             let depth = self.current_scope_depth();
             if from_literal {
                 self.literal_typed_lets.insert(name.to_string(), depth);
@@ -1103,15 +1124,21 @@ impl<'a> TypeChecker<'a> {
             .filter(|arg| self.call_may_change_argument(arg))
             .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
             .collect();
-        let mut names: HashMap<_, _> = params
-            .iter()
-            .map(|(p, _)| p.clone())
-            .zip(
+        let mut names = self
+            .callee_extent_values(params, &call.args, &mut |extent| {
+                Expr::Identifier(IdentifierExpr {
+                    name: format!("$extent_{name}_{extent}").into(),
+                    span: Span::default(),
+                })
+            })
+            .values;
+        names.extend(
+            params.iter().map(|(p, _)| p.clone()).zip(
                 call.args
                     .iter()
                     .map(|a| crate::hir::prover::without_borrow(a).clone()),
-            )
-            .collect();
+            ),
+        );
         names.insert(
             "return".into(),
             Expr::Identifier(IdentifierExpr {
@@ -1448,6 +1475,10 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Type::Scalar(ElementType::I64)
                     }
+                }
+                // An element of a tensor of rank 2 or more is a row.
+                Type::Tensor(el_ty, dims, top) if dims.len() > 1 => {
+                    Type::Tensor(el_ty, dims[1..].to_vec(), top)
                 }
                 Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
                 // A scalar iterable is an integer range (`a..b`); the induction variable takes
@@ -2593,9 +2624,22 @@ impl<'a> TypeChecker<'a> {
             None => rhs.clone(),
         };
         let renamed = self.name_the_old_value(lhs, &lhs_ty);
+        // As in a `let`: a call that can change an argument gives no equation, because a later
+        // proof would evaluate the call again with the new value.
+        let changes_an_argument = matches!(crate::syntax::bare_unsafe_value(&assigned),
+            Expr::FunctionCall(c) if c.args.iter().any(|a| self.call_may_change_argument(a)));
         let new_fact = renamed
             .as_ref()
+            .filter(|_| !changes_an_argument)
             .and_then(|names| Self::fact_of_an_assignment(lhs, &assigned, names));
+        // `x = f(x)`: the `x` in the argument is the old value.
+        let call_result = match (op, &*lhs, &renamed) {
+            (None, Expr::Identifier(id), Some(names)) => Some((
+                id.name.clone(),
+                hir::prover::substitute_names(crate::syntax::bare_unsafe_value(rhs), names),
+            )),
+            _ => None,
+        };
         // A write to an integer field keeps the facts about the other fields.
         let field_fact = match renamed {
             Some(_) => None,
@@ -2631,6 +2675,9 @@ impl<'a> TypeChecker<'a> {
         }
         self.consteval.constraints.extend(new_fact);
         self.consteval.constraints.extend(field_fact.flatten());
+        if let Some((name, value)) = call_result {
+            self.keep_call_result_ensures(&name, &value);
+        }
         if let Expr::Identifier(id) = lhs {
             self.note_pointer_value(id.name.as_ref(), pointer);
         }
@@ -3064,7 +3111,7 @@ impl<'a> TypeChecker<'a> {
                 if is_verified {
                     self.errors
                         .push(format!("Contract violated for Verified return type: {}", m));
-                } else {
+                } else if self.consteval.uncertain_branch_depth == 0 {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E8002,
                         format!("Comptime assert failed: {}", m),
@@ -3142,8 +3189,16 @@ impl<'a> TypeChecker<'a> {
                         })
                         .collect();
                 if let Some((params, return_type, ensures)) = callee {
-                    let mut names: HashMap<crate::symbol::Symbol, Expr> =
-                        params.iter().map(|(p, _)| p.clone()).zip(args).collect();
+                    let call_index = *calls;
+                    let mut names = self
+                        .callee_extent_values(params, &c.args, &mut |extent| {
+                            Expr::Identifier(IdentifierExpr {
+                                name: format!("$extent_{call_index}_{extent}").into(),
+                                span: c.span,
+                            })
+                        })
+                        .values;
+                    names.extend(params.iter().map(|(p, _)| p.clone()).zip(args));
                     names.insert("return".into(), result.clone());
                     for ens in ensures
                         .iter()
@@ -3230,7 +3285,14 @@ impl<'a> TypeChecker<'a> {
                 Expr::Identifier(id) => params
                     .iter()
                     .find(|(name, _)| *name == id.name)
-                    .map(|(_, ty)| ty.clone()),
+                    .map(|(_, ty)| ty.clone())
+                    .or_else(|| {
+                        // An extent name, `n` of `?n`, is a `usize`.
+                        crate::syntax::types::extent_names(params)
+                            .iter()
+                            .any(|(n, _, _)| *n == id.name)
+                            .then_some(Type::Scalar(ElementType::USize))
+                    }),
                 Expr::MemberAccess(m) => {
                     let mut base = declared_type(checker, &m.base, params, return_type)?;
                     while let Type::Borrow { inner, .. }
@@ -3317,7 +3379,9 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .find(|(p, _)| p.as_ref() == n);
             let hidden = self.declared_vars.iter().any(|(v, _)| v.as_ref() == n);
-            let ranged = param.is_some_and(|(_, p)| *p == ty) && !hidden;
+            // An extent name is never hidden: no variable can have its name.
+            let ranged = (param.is_some_and(|(_, p)| *p == ty) && !hidden)
+                || self.extent_homes.contains_key(n);
             (ty, ranged)
         };
         match ty {
@@ -3758,7 +3822,7 @@ impl<'a> TypeChecker<'a> {
                 name,
                 type_args,
                 args,
-                span: _,
+                ..
             }) => {
                 // Ignored on purpose: the checker has already instantiated the call and
                 // substituted the arguments into the body, so `sort<4>` arrives with its
@@ -3913,7 +3977,7 @@ impl<'a> TypeChecker<'a> {
             name,
             type_args: None,
             args,
-            span: _,
+            ..
         } = call
         else {
             return None;

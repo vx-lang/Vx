@@ -2369,6 +2369,20 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::UnaryOp(u) => return self.drops_scan_temps(&mut u.expr, false, scan),
             Expr::Identifier(_) | Expr::Number(_) | Expr::StringLiteral(_) => return,
+            // A value that `println!` prints is not borrowed here, so it is dropped as before. A
+            // value borrowed inside one, as in `count(&make())`, is dropped after the statement.
+            Expr::Print(p) => {
+                for arg in p.args.iter_mut() {
+                    self.drops_scan_temps(arg, false, scan);
+                }
+                return;
+            }
+            Expr::Println(p) => {
+                for arg in p.args.iter_mut() {
+                    self.drops_scan_temps(arg, false, scan);
+                }
+                return;
+            }
             // The condition of an `if`, and so of a `while`, runs before either branch. Its
             // temporaries move out, and each branch drops them first, as in Rust.
             Expr::If(i) if !i.is_comptime => {

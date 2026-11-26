@@ -1,0 +1,44 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `pub` says that code in other files can call a function, and `extern fn` exports a function
+// to C with its own name (docs/discussions/private_functions.md). A method, a generic function
+// and a function of an `extern` block can be `pub`. The mark of an exported function is
+// `vx.pub`.
+
+extern {
+  pub fn abs(x : i32) -> i32;
+}
+
+struct Counter {
+  n : i32,
+}
+
+impl Counter {
+  pub fn get(self : &Counter) -> i32 {
+    return self.n;
+  }
+}
+
+pub fn first<T>(a : T, b : T) -> T {
+  return a;
+}
+
+extern fn add_one(x : i32) -> i32 {
+  return x + 1;
+}
+
+pub extern fn twice(x : i32) -> i32 {
+  return x * 2;
+}
+
+fn main() -> i32 {
+  let c = Counter {
+    n : 1
+  };
+  return c.get() + first(0, 1) + add_one(0) + twice(1) + unsafe { abs(-1) } - 6;
+}
+// Only the two `extern fn` are exported. A `pub` method and a `pub` generic function are not.
+// CHECK-DAG: func.func @add_one(%arg0: i32) -> i32 attributes {vx.pub} {
+// CHECK-DAG: func.func @twice(%arg0: i32) -> i32 attributes {vx.pub} {
+// CHECK-DAG: func.func @first$i32({{.*}}) -> i32 {
+// CHECK-DAG: func.func @Counter$get({{.*}}) -> i32 {

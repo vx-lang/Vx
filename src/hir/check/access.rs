@@ -406,6 +406,9 @@ impl<'a> TypeChecker<'a> {
                 if name.as_ref() == "true" || name.as_ref() == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
+                if let Some(ty) = self.check_extent_name_read(&name, span) {
+                    return ty;
+                }
 
                 // Track variable usage for W1001/W1009 diagnostics
                 self.used_vars.insert(name.clone());
@@ -550,6 +553,10 @@ impl<'a> TypeChecker<'a> {
                     if name.as_ref() == "main" {
                         self.refuse_a_use_of_main(&span);
                         return Type::Unknown;
+                    }
+                    if let Some(place) = self.place_of_function(name.as_ref()) {
+                        let shown = name.to_string();
+                        self.refuse_a_private_function(&shown, &shown, &place, &span);
                     }
                     self.check_function_value(name.as_ref(), span);
                     if let Some((ret_ty, is_unsafe, params, _, _, _)) =
@@ -1148,7 +1155,11 @@ impl<'a> TypeChecker<'a> {
                 } else if member.as_ref() == "$extent" {
                     // The form `t.extent(i)` is rewritten to; no source spells this member. It
                     // is the list of the tensor's extents, indexed by axis.
-                    return Type::Tensor(ElementType::I32, vec![crate::syntax::Dim::Dyn], None);
+                    return Type::Tensor(
+                        ElementType::I32,
+                        vec![crate::syntax::Dim::Dyn(None)],
+                        None,
+                    );
                 } else if member.as_ref() == "shape" && Self::tensor_operand_elem(&obj_ty).is_some()
                 {
                     self.errors.error_with_code(
@@ -1818,6 +1829,12 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type(idx);
                 self.checking_assign_lhs = lhs;
 
+                // `p[i]` on a `&mut f32` reads the buffer that `p` points into, as a pointer does.
+                // A `Ref` or a `Pinned` number has no index: the code generators cannot read one.
+                let number_by_reference = match &obj_ty {
+                    Type::Borrow { inner, .. } => matches!(**inner, Type::Scalar(_)),
+                    _ => false,
+                };
                 // Look through a Pinned/Ref device wrapper to the underlying tensor so that
                 // indexing a transferred tensor follows the same rule as a local one.
                 let base = match obj_ty {
@@ -1908,7 +1925,20 @@ impl<'a> TypeChecker<'a> {
                 {
                     self.range_index_type(el_ty.clone(), dims, top.clone(), range, &ix_span)
                 } else if let Type::Tensor(el_ty, dims, top) = base {
-                    if dims.len() > 1 {
+                    if dims.is_empty() {
+                        // A rank-0 tensor, `Tensor<f32, []>`, holds one number and has no index.
+                        if !self.speculating {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3004,
+                                format!(
+                                    "Cannot index a value of type {}",
+                                    Type::Tensor(el_ty, dims, top)
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
+                            );
+                        }
+                        Type::Unknown
+                    } else if dims.len() > 1 {
                         // Partial index (S1): a rank-reduced slice of the remaining dimensions,
                         // e.g. `q[i]` on Tensor<f32,[N,D]> is a Tensor<f32,[D]> row view.
                         Type::Tensor(el_ty, dims[1..].to_vec(), top)
@@ -1952,20 +1982,10 @@ impl<'a> TypeChecker<'a> {
                         return t;
                     }
                     elem
-                } else if let Type::Scalar(el_ty) = base {
-                    // A dynamically shaped `Tensor<T>` carries no dims, so the branch above
-                    // takes `dims.len() > 1` as false and the *first* index already yields
-                    // `Scalar(T)`. The second index of `t[i][j]` therefore arrives here with a
-                    // scalar base, and used to fall through to the F32 default below --
-                    // silently retyping the element of every tensor whose element is not f32.
-                    // f32 tensors never revealed it because the wrong answer matched the right
-                    // one, which is why this reads as an f16 bug (#324) and is not one.
-                    //
-                    // Carrying the element type through is what a further index of an
-                    // already-elemental value means. It does not model rank: a rank-unknown
-                    // tensor cannot say how many indices exhaust it, and `t[i]` yielding a row
-                    // view rather than an element is a separate question (#324).
-                    Type::Scalar(el_ty)
+                } else if let (Type::Scalar(el_ty), true) = (&base, number_by_reference) {
+                    // Only a reference to a number has an index. Any other number, such as
+                    // `x[0]` for an `f32 x` or `q[0][0][0]` for a 2-D `q`, gets E3004 below.
+                    Type::Scalar(el_ty.clone())
                 } else if base == Type::Unknown {
                     // Already-reported failure upstream; stay quiet (#294).
                     Type::Unknown
@@ -1980,7 +2000,7 @@ impl<'a> TypeChecker<'a> {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3004,
                             format!("Cannot index a value of type {}", base),
-                            None,
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
                         );
                     }
                     Type::Unknown
@@ -2035,7 +2055,9 @@ impl<'a> TypeChecker<'a> {
                 if let Expr::Identifier(id) = &**inner {
                     self.borrowed_name = Some(id.span);
                 }
-                let inner_ty = self.check_expr_type_flag(inner, false);
+                // `&r.unwrap()` borrows the value that the call gives, and the call moves `r`.
+                let inner_is_a_call = matches!(&**inner, Expr::MethodCall(_));
+                let inner_ty = self.check_expr_type_flag(inner, inner_is_a_call);
                 self.borrowed_name = old_borrowed;
                 self.allow_cross_topology = old_allow;
                 // Quiet when a reference to a reference is what was asked for, as in
@@ -2083,6 +2105,11 @@ impl<'a> TypeChecker<'a> {
                 });
                 let is_reborrow = direct.is_none() || through_ref;
                 let place = direct.or_else(|| self.reborrow_base_and_path(inner));
+                // `&p.b` is valid as long as `p`, so it gets the block of `p`, not the block where
+                // it is written. Through a reference `p`, what `p` points at outlives `p`.
+                let region = place.as_ref().map_or(self.scopes.len(), |(name, _)| {
+                    (self.scope_depth_of(name) + 1).min(self.scopes.len())
+                });
                 if let Some((name, path)) = place {
                     if *is_mut {
                         self.check_two_mut_element_borrows(&name, &path, span);
@@ -2129,7 +2156,7 @@ impl<'a> TypeChecker<'a> {
                     inner: Box::new(inner_ty),
                     mem_space: None,
                     is_mut: *is_mut,
-                    region_id: self.scopes.len(),
+                    region_id: region,
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -2718,6 +2745,9 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn report_read_only(&mut self, name: &str, what: &str, span: &crate::syntax::Span) {
         if self.speculating {
             return;
+        }
+        if self.extent_homes.contains_key(name) {
+            return self.refuse_an_assignment_to_an_extent_name(name, span);
         }
         if self.lookup(name).is_none() && self.env.consts.contains_key(name) {
             self.errors.error_with_code(
