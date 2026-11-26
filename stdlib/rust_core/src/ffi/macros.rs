@@ -182,6 +182,13 @@ macro_rules! instantiate_string_ffi {
             unsafe { s.as_mut_vec().as_mut_ptr() }
         }
 
+        /// The string's bytes, for reading only.
+        #[no_mangle]
+        pub extern "C" fn vx_string_bytes(ptr: *mut std::ffi::c_void) -> *const u8 {
+            assert!(!ptr.is_null(), "vx_string_bytes: null string");
+            unsafe { (*(ptr as *mut String)).as_ptr() }
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_string_from_c_str(
             c_str: *const std::ffi::c_char,
