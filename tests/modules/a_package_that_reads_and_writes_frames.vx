@@ -1,0 +1,33 @@
+//===- a_package_that_reads_and_writes_frames.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with no trusted code. It reads frames from standard input and writes them to
+// standard output. A frame is one byte with its length, and then that many bytes.
+
+import core::result;
+import std::io;
+import std::vec;
+
+/// The bytes of the next frame, or no bytes when the input ended before a frame.
+pub fn read_frame(input : &mut Stdin) -> Result<Vec<u8>, StdioError> {
+  let mut length = Vec<u8>::new();
+  length.push(0u8);
+  let n = input.read(&mut length)?;
+  let mut body = Vec<u8>::new();
+  if n == 0 {
+    return Result<Vec<u8>, StdioError>::Ok(body);
+  }
+  for _i in 0..length.get(0) as i32 {
+    body.push(0u8);
+  }
+  let _filled = input.read_exact(&mut body)?;
+  return Result<Vec<u8>, StdioError>::Ok(body);
+}
+
+pub fn write_frame(out : &mut Stdout, body : &Vec<u8>) -> Result<u64, StdioError> {
+  return out.write_all(body);
+}

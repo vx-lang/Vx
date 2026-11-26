@@ -19,6 +19,7 @@
 import core::ptr;
 import std::env;
 import std::fs;
+import std::io;
 import std::net;
 import std::string;
 import std::vec;
@@ -32,6 +33,10 @@ struct Root {
   files : Files,
   // The right to read the environment variables.
   env : Environment,
+  // The rights to read standard input, and to write to standard output and error.
+  stdin : Stdin,
+  stdout : Stdout,
+  stderr : Stderr,
 
   invariant true,
 }
@@ -42,7 +47,10 @@ pub unsafe fn root_of_the_program() -> Root {
   return Root {
     network : unsafe { network_of_the_program() },
     files : unsafe { files_of_the_program() },
-    env : unsafe { environment_of_the_program() }
+    env : unsafe { environment_of_the_program() },
+    stdin : unsafe { stdin_of_the_program() },
+    stdout : unsafe { stdout_of_the_program() },
+    stderr : unsafe { stderr_of_the_program() }
   };
 }
 
