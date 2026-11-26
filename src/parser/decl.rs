@@ -2070,6 +2070,12 @@ impl<'a> Parser<'a> {
                 item_macros.push(self.parse_item_macro_call()?);
             } else if self.peek().kind == TokenType::Unknown('"') {
                 return Err(self.error(super::UNCLOSED_STRING));
+            } else if self.peek().kind == TokenType::Identifier("use") {
+                // A Rust programmer writes `use core::option::Option;` first. Vx has `import`,
+                // and it takes a module path, so the message does not repeat the user's path.
+                return Err(self.error(
+                    "Vx has no `use`: write `import` with a module path, as in `import core::option;`",
+                ));
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
