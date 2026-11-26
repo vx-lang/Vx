@@ -199,7 +199,13 @@ impl<'a> TypeChecker<'a> {
                         if poisoned {
                             crate::registry::ambiguous_import_message("Enum", enum_name)
                         } else {
-                            format!("Unknown enum {}", enum_name)
+                            let base = enum_name.split('<').next().unwrap_or(enum_name);
+                            let hint = self.missing_import_hint(base);
+                            if hint.is_empty() {
+                                format!("Unknown enum {}", enum_name)
+                            } else {
+                                format!("Unknown enum {}.{}", enum_name, hint)
+                            }
                         },
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );

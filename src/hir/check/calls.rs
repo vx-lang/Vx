@@ -2335,6 +2335,20 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A sentence that names the import a common standard type needs, or an empty string when
+    /// the type is not in the table or the program defines a type with that name.
+    pub(crate) fn missing_import_hint(&self, type_name: &str) -> String {
+        let defined =
+            self.env.structs.contains_key(type_name) || self.env.enums.contains_key(type_name);
+        match standard_type_module(type_name) {
+            Some(module) if !defined => format!(
+                " '{}' is in '{}'. Add `import {};`.",
+                type_name, module, module
+            ),
+            _ => String::new(),
+        }
+    }
+
     /// Resolve and instantiate a `Struct::method(...)` static call (an inherent-impl method
     /// named through its type). Parses any explicit type args on the struct or method, finds the
     /// matching `_inherent` impl method, deduces what those left open from the arguments and
@@ -2668,9 +2682,11 @@ impl<'a> TypeChecker<'a> {
                         "'{}' has no impl of '{}' with a method '{}'.",
                         struct_name, t, method_name
                     )),
-                    None => self
-                        .errors
-                        .push(format!("Undefined static method '{}'.", resolved_name)),
+                    None => self.errors.push(format!(
+                        "Undefined static method '{}'.{}",
+                        resolved_name,
+                        self.missing_import_hint(&struct_name)
+                    )),
                 }
             }
             Type::Unknown
@@ -5219,5 +5235,16 @@ fn impl_type_name(ty: &Type) -> String {
         Type::Struct(name, _) | Type::Enum(name, _) => name.to_string(),
         Type::GenericInstance(base, _) => impl_type_name(base),
         other => other.to_string(),
+    }
+}
+
+/// The module that defines a common standard type, for the error that asks for its import.
+fn standard_type_module(type_name: &str) -> Option<&'static str> {
+    match type_name {
+        "Option" => Some("core::option"),
+        "Result" => Some("core::result"),
+        "Vec" => Some("std::vec"),
+        "String" => Some("std::string"),
+        _ => None,
     }
 }

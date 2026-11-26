@@ -1,0 +1,23 @@
+//===- own_option_gets_no_import_hint.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that defines its own `Option` and calls a method it does not have gets the
+// plain error. The import is not the problem, so the error does not mention one.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Undefined static method 'Option<i64>::missing'.{{$}}
+// CHECK-NOT: Add `import
+
+enum Option<T> {
+  Some(T),
+  None,
+}
+
+fn main() -> i32 {
+  let _o = Option<i64>::missing();
+  return 0;
+}
