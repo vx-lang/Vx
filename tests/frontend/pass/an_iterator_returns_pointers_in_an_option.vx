@@ -1,4 +1,4 @@
-//===- env_args.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//===- an_iterator_returns_pointers_in_an_option.vx - Vx Compiler -*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -6,12 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
-// The command line binding, and the iterator that hands the arguments out one at a time. The
-// enum `Option<*mut i8>` uses an integer field to preserve the payload bits.
-// Its `Some` arm still stores the argument as a pointer.
-// CHECK: func.func private @vx_env_arg(i32) -> !llvm.ptr
-// CHECK-LABEL: func.func @Args$Iterator$Args$ptr$mut$i8$next(%arg0: !llvm.struct<(i32, i32)>) -> !llvm.struct<(i32, i64)>
-// CHECK: %[[P:.*]] = call @arg(%{{.*}}) : (i32) -> !llvm.ptr
+// An iterator that hands out pointers one at a time. The enum `Option<*mut i8>` keeps its payload
+// in an integer field, and its `Some` arm stores the pointer there.
+// CHECK-LABEL: func.func @Words$Iterator$Words$ptr$mut$i8$next(%arg0: !llvm.struct<(i32, i32)>) -> !llvm.struct<(i32, i64)>
+// CHECK: %[[P:.*]] = call @word(%{{.*}}) : (i32) -> !llvm.ptr
 // The `Some` arm tags 0 and carries the pointer; the `None` arm tags 1 and carries nothing.
 // CHECK: %[[TAG:.*]] = llvm.getelementptr %{{.*}}[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i64)>
 // CHECK: llvm.store %c0_i32, %[[TAG]] : i32, !llvm.ptr
@@ -21,33 +19,20 @@
 
 import tests::modules::iter;
 
-extern {
-  fn vx_env_args_count() -> i32;
-  fn vx_env_arg(idx : i32)->*mut i8;
+// The word at `_idx`. Each word is a null pointer, because the test checks only the code that
+// puts a pointer in an `Option`.
+fn word(_idx : i32) -> *mut i8 {
+  return unsafe { 0 as *mut i8 };
 }
 
-fn args_count() -> i32 {
-  return unsafe { vx_env_args_count() };
-}
-
-fn arg(idx : i32) -> *mut i8 {
-  return unsafe { vx_env_arg(idx) };
-}
-
-struct Args {
+struct Words {
   current : i32, count : i32,
 }
 
-fn args() -> Args {
-  return Args {
-    current : 0, count : args_count()
-  };
-}
-
-impl Iterator<Args, *mut i8> for Args {
-  fn next(mut self : Args) -> Option<*mut i8> {
+impl Iterator<Words, *mut i8> for Words {
+  fn next(mut self : Words) -> Option<*mut i8> {
     if self.current < self.count {
-      let val : *mut i8 = arg(self.current);
+      let val : *mut i8 = word(self.current);
       self.current = self.current + 1;
       return Option<*mut i8>::Some(val);
     }
@@ -56,7 +41,9 @@ impl Iterator<Args, *mut i8> for Args {
 }
 
 fn main() -> i32 {
-  let it = args();
+  let it = Words {
+    current : 0, count : 2
+  };
   let _first = it.next();
   return 0;
 }
