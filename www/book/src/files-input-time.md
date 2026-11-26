@@ -1,7 +1,8 @@
 # Files, input and time
 
 A program often needs text, files, the clock or the network. This chapter shows the parts of the
-standard library for these jobs: `std::string`, `std::fs`, `std::io`, `std::time` and `std::net`.
+standard library for these jobs: `std::string`, `std::env`, `std::fs`, `std::io`, `std::time` and
+`std::net`.
 
 Many of these functions take a raw pointer, such as a string literal or a buffer. The compiler
 cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block. Files and
@@ -63,6 +64,48 @@ fn main(_root : Root, args : Vec<String>) -> i32 {
 
 `vxc args.vx -- one two` prints `one` and `two`. The words are data and not a right, so they are
 not part of `Root`. The test is `main_gets_the_words_of_the_command_line.vx`.
+
+## Environment variables
+
+The program that starts a process also chooses its environment variables. They often hold
+secrets, such as the token of a service. So reading them is a right, as opening a file is. `main`
+gets it in `root.env`, an `Environment`, and passes `&root.env` to the code that reads a variable.
+A function that gets no `&Environment` cannot read one.
+
+`env.var(&name)` gives a `Result`:
+
+- `Ok` holds the value, as a `String`.
+- `Err(EnvError::NotPresent)` means that the environment has no variable with the name. An empty
+  name, and a name that holds `=`, name no variable.
+- `Err(EnvError::NotUnicode)` means that the value is not UTF-8 text, so a `String` cannot hold it.
+
+```vx
+import core::result;
+import std::env;
+import std::root;
+import std::string;
+
+// Reads `HOME`. A function needs a `&Environment` to read a variable.
+fn home(env : &Environment) -> String {
+  let name = unsafe { String::from_c_str("HOME") };
+  match env.var(&name) {
+    Result<String, EnvError>::Ok(value) => {
+      return value;
+    }
+    Result<String, EnvError>::Err(_e) => {
+      return String::new();
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  println!("{}", home(&root.env));
+  return 0;
+}
+```
+
+The `unsafe` block only makes a `String` from the literal, as [Networks](#networks) explains. The
+test is `a_program_reads_its_environment_variables.vx`.
 
 ## Files
 

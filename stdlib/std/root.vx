@@ -8,7 +8,8 @@
 // The capabilities of a program: the rights to use the operating system. A program gets them as
 // the parameter of `main`, `fn main(root : Root) -> i32`, and passes each one on to the code that
 // needs it. A library gets only the capabilities that its caller passes. So a library that gets
-// no `&Files` cannot open a file, and a library that gets no `&Network` cannot open a connection.
+// no `&Files` cannot open a file, a library that gets no `&Network` cannot open a connection, and a
+// library that gets no `&Environment` cannot read an environment variable.
 // `docs/discussions/capability_types.md` explains the design.
 //
 // The command line is data, not a right. So it is not in `Root`. A `main` that wants it takes a
@@ -16,6 +17,7 @@
 //===----------------------------------------------------------------------===//
 
 import core::ptr;
+import std::env;
 import std::fs;
 import std::net;
 import std::string;
@@ -28,6 +30,8 @@ struct Root {
   network : Network,
   // The right to open files.
   files : Files,
+  // The right to read the environment variables.
+  env : Environment,
 
   invariant true,
 }
@@ -37,7 +41,8 @@ struct Root {
 pub unsafe fn root_of_the_program() -> Root {
   return Root {
     network : unsafe { network_of_the_program() },
-    files : unsafe { files_of_the_program() }
+    files : unsafe { files_of_the_program() },
+    env : unsafe { environment_of_the_program() }
   };
 }
 

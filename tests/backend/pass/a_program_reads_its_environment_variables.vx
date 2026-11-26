@@ -1,0 +1,73 @@
+//===- a_program_reads_its_environment_variables.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `main` gets the right to read the environment in `root.env`, and passes `&root.env` to the
+// function that reads a variable. A variable that is set gives its value, and an empty one gives
+// an empty `String`. A missing variable, an empty name and a name with `=` give `NotPresent`. A
+// value that is not UTF-8 gives `NotUnicode`. The legacy code generator prints a `String` that
+// `from_c_str` made with no text (#3972), so its run checks the text after each name.
+//
+// RUN: env VX_GREETING="hello there" VX_EMPTY= VX_BYTES="$(printf 'a\377b')" vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_GREETING="hello there" VX_EMPTY= VX_BYTES="$(printf 'a\377b')" vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=LEGACY --implicit-check-not=Error
+// CHECK: VX_GREETING has 11 bytes
+// CHECK-NEXT: VX_GREETING is hello there
+// CHECK-NEXT: VX_EMPTY has 0 bytes
+// CHECK-NEXT: VX_EMPTY is
+// CHECK-NEXT: VX_MISSING is not set
+// CHECK-NEXT: the empty name is not set
+// CHECK-NEXT: VX_GREETING=hello is not set
+// CHECK-NEXT: VX_BYTES is not UTF-8 text
+// LEGACY: has 11 bytes
+// LEGACY-NEXT: is hello there
+// LEGACY-NEXT: has 0 bytes
+// LEGACY-NEXT: is
+// LEGACY-NEXT: is not set
+// LEGACY-NEXT: is not set
+// LEGACY-NEXT: is not set
+// LEGACY-NEXT: is not UTF-8 text
+import core::result;
+import std::env;
+import std::root;
+import std::string;
+
+// Reads one variable. It needs the right to read the environment, so it takes a `&Environment`.
+fn show(env : &Environment, label : &String, name : String) -> void {
+  match env.var(&name) {
+    Result<String, EnvError>::Ok(value) => {
+      println!("{} has {} bytes", label, value.len());
+      println!("{} is {}", label, value);
+    }
+    Result<String, EnvError>::Err(e) => {
+      match e {
+        EnvError::NotPresent() => {
+          println!("{} is not set", label);
+        }
+        EnvError::NotUnicode() => {
+          println!("{} is not UTF-8 text", label);
+        }
+      }
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  let greeting = unsafe { String::from_c_str("VX_GREETING") };
+  show(&root.env, &greeting, unsafe { String::from_c_str("VX_GREETING") });
+  let empty = unsafe { String::from_c_str("VX_EMPTY") };
+  show(&root.env, &empty, unsafe { String::from_c_str("VX_EMPTY") });
+  let missing = unsafe { String::from_c_str("VX_MISSING") };
+  show(&root.env, &missing, unsafe { String::from_c_str("VX_MISSING") });
+  let no_name = unsafe { String::from_c_str("the empty name") };
+  show(&root.env, &no_name, String::new());
+  let with_equals = unsafe { String::from_c_str("VX_GREETING=hello") };
+  show(&root.env, &with_equals, unsafe {
+    String::from_c_str("VX_GREETING=hello")
+  });
+  let bytes = unsafe { String::from_c_str("VX_BYTES") };
+  show(&root.env, &bytes, unsafe { String::from_c_str("VX_BYTES") });
+  return 0;
+}
