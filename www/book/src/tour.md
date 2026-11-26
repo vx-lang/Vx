@@ -227,6 +227,10 @@ fn get(ok: bool, v: i64) -> i64 {
 
 `Option::expect(msg)` and `Result::expect(msg)` stop the program with the caller's message.
 
+The compiler expects a call to a `-> !` function to be rare. In CPU code, it does not inline that
+function. So put the code that reports a rare failure in such a function. A small function that calls it
+then stays small, and the compiler can inline that small function into its callers.
+
 ## Arrays and tensors
 
 An array literal is a tensor:

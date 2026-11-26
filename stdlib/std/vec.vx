@@ -66,10 +66,16 @@ fn vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mu
 /// Stops the program when `index` is outside `0..len`, and prints both to standard error first.
 pub fn vec_check_index(index : i64, len : i64) -> i32 {
   if index < 0 || index >= len {
-    eprintln!("Vec: index {} is out of bounds for length {}", index, len);
-    panic("Vec: index out of bounds");
+    vec_index_out_of_bounds(index, len);
   }
   return 0;
+}
+
+/// Prints the index and the length, and stops the program. The message stays in this function,
+/// out of `get` and `set`, so that LLVM can inline them.
+fn vec_index_out_of_bounds(index : i64, len : i64) -> ! {
+  eprintln!("Vec: index {} is out of bounds for length {}", index, len);
+  panic("Vec: index out of bounds");
 }
 
 /// Moves the element at `index` out of the buffer. The caller makes sure the buffer does not
