@@ -249,6 +249,38 @@ macro_rules! instantiate_string_ffi {
             }
         }
 
+        /// Read the `len` bytes at `ptr` as a float, as Rust's `str::parse` does, and write it
+        /// to `out`. Gives 0 for a number, 1 for no bytes and 2 for text that is not a number.
+        fn vx_parse_float<T: std::str::FromStr>(ptr: *const u8, len: i64, out: *mut T) -> i32 {
+            if len == 0 {
+                return 1;
+            }
+            assert!(
+                !ptr.is_null() && len > 0 && !out.is_null(),
+                "vx_parse_float: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes).map(str::parse::<T>) {
+                Ok(Ok(value)) => {
+                    unsafe { out.write(value) };
+                    0
+                }
+                _ => 2,
+            }
+        }
+
+        /// `vx_parse_float` for an `f64`.
+        #[no_mangle]
+        pub extern "C" fn vx_parse_f64(ptr: *const u8, len: i64, out: *mut f64) -> i32 {
+            vx_parse_float(ptr, len, out)
+        }
+
+        /// `vx_parse_float` for an `f32`. It rounds the text to `f32` once, not to `f64` first.
+        #[no_mangle]
+        pub extern "C" fn vx_parse_f32(ptr: *const u8, len: i64, out: *mut f32) -> i32 {
+            vx_parse_float(ptr, len, out)
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_string_push_c_str(
             ptr: *mut std::ffi::c_void,
