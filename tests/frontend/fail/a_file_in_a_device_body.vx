@@ -18,7 +18,7 @@ fn seek_on_the_gpu(file : &mut File) -> void {
   let _before = file.stream_position();
   spawn on(Topology::GPU) {
     r[0] = 1.0;
-    // CHECK: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: the body of the `spawn on` at line [[@LINE-2]] runs on GPU[0], and it uses 'file': 'File'
+    // CHECK: Error[E6038] at {{.*}}.vx:[[@LINE+1]]:14: the body of the `spawn on` at line [[@LINE-2]] runs on GPU[0], and it uses 'file': {{.*}}'File'
     let _p = file.stream_position();
   }
   let _after = file.stream_position();

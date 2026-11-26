@@ -18,8 +18,6 @@ import core::result;
 import std::string;
 import std::vec;
 
-import std::fs::raw;
-
 extern {
   /// The Rust core behind `File::open_c_str`. Null when the open fails.
   pub fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
@@ -31,6 +29,18 @@ extern {
   pub fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
   /// The Rust core behind `File::write_raw`.
   pub fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : u64) -> u64;
+  // The Rust core behind `OpenOptions::open`, `File::seek_to`, `File::read` and `File::write`.
+  // No `pub`, so only this file can call them. Each gives 0, or the category of the error and
+  // the error number of the system. `docs/implementation_plans/io_error_contract.md` describes
+  // the categories.
+  fn _vx_file_open_options(path : *const i8, options : i32, out : *mut *mut i8,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  fn _vx_file_try_seek(ptr : *mut i8, offset : i64, whence : i32, position : *mut u64,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  fn _vx_file_try_read(ptr : *mut i8, buffer : *mut u8, len : u64, count : *mut u64,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  fn _vx_file_try_write(ptr : *mut i8, buffer : *const u8, len : u64, count : *mut u64,
+  native_code : *mut i32, has_native_code : *mut bool) -> i32;
   /// The Rust core behind `Folder::open`, with the outputs of `vx_file_try_open`.
   pub fn vx_folder_open(c_path : *const i8, folder : *mut *mut i8, native_code : *mut i32) -> i32;
   /// The Rust core behind `Folder::open_file` and `Folder::open_folder`. 13 means that the name
