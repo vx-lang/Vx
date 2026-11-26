@@ -36,6 +36,10 @@ parsed 124
 `println!` moves a `String` argument ([Vx#3235](https://github.com/vx-lang/Vx/issues/3235)). So the
 program gets the length before it prints `greeting`.
 
+A string literal is its bytes and a NUL at the end, and the compiler knows how many bytes it has.
+`"hello" as *const u8` gives those bytes as a `*const u8`, the type that `String::from_bytes`
+below takes. So `String::from_bytes("hello" as *const u8, 5)` makes a `String` with no `unsafe`.
+
 `String::from_utf8(&v)` copies the bytes of a `Vec<u8>`, and `String::from_bytes(p, n)` copies
 the `n` bytes at the raw pointer `p`. Neither one needs `unsafe`. But a call of `from_bytes` in
 safe code must prove that `p` points at `n` bytes, as `v.as_mut_ptr()` and `v.len()` do. Both

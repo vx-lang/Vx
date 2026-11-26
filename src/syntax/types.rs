@@ -1379,6 +1379,12 @@ impl ElementType {
         matches!(self, U4 | U8 | U16 | U32 | U64 | U128 | USize)
     }
 
+    /// Whether this and `other` are integers with the same number of bits, as `i8` and `u8`.
+    pub fn is_int_of_the_same_width(&self, other: &ElementType) -> bool {
+        let int = |e: &ElementType| e.is_signed_int() || e.is_unsigned_int();
+        int(self) && int(other) && self.bits() == other.bits()
+    }
+
     /// Whether this is a floating-point element type (`f16`/`f32`/`f64`/`bf16`/`f8e4m3`/`f8e5m2`).
     pub fn is_float(&self) -> bool {
         matches!(
