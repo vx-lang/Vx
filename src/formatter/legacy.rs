@@ -13,9 +13,21 @@ const UNIT: &str = "\u{0}formatted elsewhere";
 /// The same as `UNIT`, for a unit whose source ends with whitespace, such as a function header
 /// before its `{`.
 const UNIT_ENDING_IN_SPACE: &str = "\u{0}formatted elsewhere, then a space";
+/// The same as `UNIT`, for a macro call that spans several lines. A block that holds it is
+/// already on several lines, as it would be with the tokens of the call in its place.
+const MACRO_CALL_ON_SEVERAL_LINES: &str = "\u{0}a macro call on several lines";
 
 fn is_unit(kind: &TokenType<'_>) -> bool {
-    matches!(kind, TokenType::Identifier(text) if *text == UNIT || *text == UNIT_ENDING_IN_SPACE)
+    matches!(kind, TokenType::Identifier(text)
+        if *text == UNIT || *text == UNIT_ENDING_IN_SPACE || *text == MACRO_CALL_ON_SEVERAL_LINES)
+}
+
+fn breaks_a_line(kind: &TokenType<'_>) -> bool {
+    match kind {
+        TokenType::Whitespace(text) => text.contains('\n'),
+        TokenType::Identifier(text) => *text == MACRO_CALL_ON_SEVERAL_LINES,
+        _ => false,
+    }
 }
 
 /// Format `bytes` with the base formatting. Each range in `units` is formatted by `render_unit`,
@@ -52,9 +64,15 @@ pub(super) fn render(
             if unit.start <= original.bytes.start {
                 if original.bytes.end >= unit.end {
                     let mut token = original.token.clone();
+                    let macro_call = source
+                        .macros
+                        .binary_search_by_key(&unit.start, |view| view.bytes.start)
+                        .is_ok_and(|index| source.macros[index].bytes == *unit);
                     token.kind = TokenType::Identifier(
                         if matches!(original.token.kind, TokenType::Whitespace(_)) {
                             UNIT_ENDING_IN_SPACE
+                        } else if macro_call && source.text[unit.clone()].contains('\n') {
+                            MACRO_CALL_ON_SEVERAL_LINES
                         } else {
                             UNIT
                         },
@@ -205,13 +223,9 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
         if let TokenType::LeftBrace = tokens[i].kind {
             if let Some(&rb_idx) = left_to_right.get(&i) {
                 let lb_idx = i;
-                let has_newline = tokens[(lb_idx + 1)..rb_idx].iter().any(|t| {
-                    if let TokenType::Whitespace(ws) = t.kind {
-                        ws.contains('\n')
-                    } else {
-                        false
-                    }
-                });
+                let has_newline = tokens[(lb_idx + 1)..rb_idx]
+                    .iter()
+                    .any(|t| breaks_a_line(&t.kind));
 
                 let mut is_unsafe_block = false;
                 for j in (0..new_tokens.len()).rev() {
@@ -332,13 +346,9 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
             }
         } else if let TokenType::RightBrace = tokens[i].kind {
             if let Some(&lb_idx) = right_to_left.get(&i) {
-                let has_newline = tokens[(lb_idx + 1)..i].iter().any(|t| {
-                    if let TokenType::Whitespace(ws) = t.kind {
-                        ws.contains('\n')
-                    } else {
-                        false
-                    }
-                });
+                let has_newline = tokens[(lb_idx + 1)..i]
+                    .iter()
+                    .any(|t| breaks_a_line(&t.kind));
 
                 let has_non_ws = tokens[(lb_idx + 1)..i].iter().any(|t| {
                     !matches!(

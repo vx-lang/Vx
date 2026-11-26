@@ -97,3 +97,18 @@ fn an_if_value_with_a_statement_on_one_line_gets_the_base_formatting() {
         format_body(body, &switched_off)
     );
 }
+
+#[test]
+fn the_code_after_an_if_value_counts_toward_the_line_width() {
+    // On one line, the `if` ends at column 33, but the line ends at column 52.
+    let body = "  let v = f(if c { 1 } else { 2 }, 123456789012345);";
+    let config = FormatConfig {
+        max_width: 40,
+        fn_signature_width: 40,
+        ..FormatConfig::default()
+    };
+    assert_eq!(
+        format_body(body, &config),
+        in_main("  let v = f(if c {\n    1\n  } else {\n    2\n  }, 123456789012345);")
+    );
+}

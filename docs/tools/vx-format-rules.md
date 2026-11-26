@@ -12,7 +12,8 @@ These interfaces are internal Rust interfaces, without a stable external plugin 
 1. Recognize supported syntax with shared parser helpers and record coverage warnings.
 1. Protect preserved ranges before selecting registered syntax roots.
 1. Render roots through the registry and render remaining intervals through the bounded legacy adapter.
-1. Check the final output for token, adjacency, macro-column, and exact-byte preservation.
+1. Check the final output for token, adjacency, and exact-byte preservation.
+   A failed check stops the formatter with an `internal formatter error`.
 
 Normal formatting and `--check` share this pipeline.
 The command adapter owns file access, configuration, warnings, and exit status.
@@ -78,8 +79,11 @@ Their code gets the formatting it would get if the rule did not exist.
 
 The renderer requires each original content token exactly once, in source order.
 The final validator also checks token spelling and grammatical adjacency.
-Opaque macros retain their original bytes and columns.
+A macro call retains its original bytes, but its line takes the indentation of the code around it.
+A layout must put a whole macro call in one `Preserve` or `Region` document.
 Excluded text retains its original bytes, including directive lines.
 Unknown syntax produces preservation warnings instead of speculative formatting.
+A rule reports the code that it cannot format yet through `NodeFormatter::warnings`.
+The engine asks for these warnings only when the rule is on.
 
 See [the source architecture guide](vx-format-source-architecture.md) for state handoffs and coverage boundaries.

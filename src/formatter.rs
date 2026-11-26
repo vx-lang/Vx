@@ -16,7 +16,7 @@ use vx_config::FormatConfig;
 mod legacy;
 pub mod source;
 
-pub use source::dispatch::{Coverage, FormatOutcome};
+pub use source::dispatch::FormatOutcome;
 
 pub fn format_file(content: &str, indent_spaces: usize) -> String {
     format_file_with_config(
@@ -62,9 +62,6 @@ pub fn format_file_with_registry(
 }
 
 #[cfg(test)]
-mod activation_tests;
-
-#[cfg(test)]
 mod if_value_tests;
 
 #[cfg(test)]
@@ -75,6 +72,9 @@ mod rule_test_helpers;
 
 #[cfg(test)]
 mod struct_literal_tests;
+
+#[cfg(test)]
+mod whole_file_tests;
 
 #[cfg(test)]
 mod tests {

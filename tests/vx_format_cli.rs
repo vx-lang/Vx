@@ -48,7 +48,7 @@ fn prints_defaults_without_reading_project_config_or_changing_files() -> Result<
     let text = String::from_utf8(output.stdout)?;
     check_equal(
         &text,
-        &"[format]\nstyle_edition = \"2026\"\nindent = 2\nmax_width = 100\nfn_signature_width = 100\nspace_before_colon = false\nstruct_lit_width = 18\nsingle_line_if_else_max_width = 50\n\n[format.rules]\nfunction_headers = true\nstruct_literals = true\nmatch_arms = true\nif_values = true\n",
+        &"[format]\nstyle_edition = \"2026\"\nindent = 2\nmax_width = 100\nspace_before_colon = false\n# Unset, these widths follow max_width: fn_signature_width is max_width,\n# struct_lit_width is 18% of it, and single_line_if_else_max_width is 50% of it.\n\n[format.rules]\nfunction_headers = true\nstruct_literals = true\nmatch_arms = true\nif_values = true\n",
     )?;
     check_equal(
         &vx_config::parse_format_config(Path::new("vx-format.toml"), &text)?,

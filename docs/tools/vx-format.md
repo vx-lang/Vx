@@ -75,7 +75,7 @@ The base formatting changes only indentation and the line breaks around blocks.
 For example, `function_headers = false` keeps each header's spacing, wrapping, and contract-clause layout.
 Width and colon settings then do not change those headers.
 
-The Vx repository's root `vx-format.toml` switches off `function_headers` to keep its existing mixed styles.
+The Vx repository's root `vx-format.toml` switches off all four rules to keep its existing layout.
 CI and `scripts/pre-commit.sh` both use that file.
 
 ## Configuration files
@@ -100,17 +100,16 @@ Print the built-in defaults without reading project configuration or formatting 
 vx-format --print-config default
 ```
 
-The command writes a complete TOML configuration to standard output:
+The command writes the defaults as TOML to standard output:
 
 ```toml
 [format]
 style_edition = "2026"
 indent = 2
 max_width = 100
-fn_signature_width = 100
 space_before_colon = false
-struct_lit_width = 18
-single_line_if_else_max_width = 50
+# Unset, these widths follow max_width: fn_signature_width is max_width,
+# struct_lit_width is 18% of it, and single_line_if_else_max_width is 50% of it.
 
 [format.rules]
 function_headers = true
@@ -119,6 +118,7 @@ match_arms = true
 if_values = true
 ```
 
+The output leaves out the three narrower widths, so a saved copy still follows a new `max_width`.
 Save it with `vx-format --print-config default > vx-format.toml`.
 Print mode cannot be combined with input files, `--config`, `--indent`, `--set`, or `--check`.
 
@@ -181,7 +181,8 @@ let   value = 1;
 ```
 
 The formatter preserves both marker lines and enclosed text exactly.
-Unrecognized macro token trees also retain their original bytes and columns.
+A macro call keeps its bytes exactly as written, but its first line gets the indentation of the code around it.
+A `macro_rules!` definition keeps its lines exactly as written.
 File exclusions through TOML are not implemented yet.
 
 ## Function declarations

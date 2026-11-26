@@ -29,7 +29,10 @@ Lexer line metadata does not define byte ownership.
 Macro envelopes are discovered before ordinary function declarations.
 Invocation arguments, trailing blocks, matchers, and transcribers remain opaque.
 Directive-like comments and declaration-like text inside macros cannot escape their envelopes.
-The engine preserves enclosing macro lines to retain embedded-language columns.
+The engine keeps the bytes of a macro call exactly as written.
+The base formatting sees the call as one placeholder, so the line of the call still gets its indentation.
+A call that spans several lines counts as a line break for the block that holds it.
+A `macro_rules!` definition keeps its complete lines.
 
 The formatter parses each file once with the compiler's own parser, so the two use one grammar.
 For the formatter, the parser also records the token range of each piece of syntax that a rule needs.
@@ -46,7 +49,8 @@ The parser skips that body, and the formatter preserves only that declaration.
 
 Recognition builds the syntax views from the recorded ranges.
 A function's context comes from the impl, trait, or extern block that contains it.
-Unsupported contextual clauses preserve their declaration.
+When `function_headers` is on, an extern or trait function with clauses keeps its declaration and gets a warning.
+When the rule is off, such a function gets the base formatting and no warning.
 
 Types remain parser-confirmed token-backed views rather than a complete recursive syntax tree.
 Their formatter retains existing type whitespace normalization, including `Tensor<f32, [2, 2]>`.
@@ -65,8 +69,6 @@ No syntax-specific engine branch selects the current header rule.
 The built-in root owner formats function headers.
 It delegates parameter lists, parameters, and types.
 Bodies retain existing formatting through the bounded legacy adapter.
-The optional `format_declaration` helper composes a function document with an unchanged body.
-It is not a second full-file pipeline.
 
 `Document` supports original tokens, spaces, lines, concatenation, width reservations, layout alternatives, exact source copies, and regions.
 A region is source code that the engine formats the normal way, inside a rule's layout.
@@ -75,13 +77,18 @@ The renderer chooses flat or expanded layouts within the parent's budget.
 The width of a region is known only after rendering.
 So the renderer renders a one-line alternative that holds a region, and undoes it when it breaks a line or does not fit.
 `MaxWidth` limits part of a one-line alternative, such as the fields of a struct literal.
+For a struct literal or an `if` value, the code after it on the same line also counts toward `max_width`.
+That code ends at a line break, a comment, or the end of the region that holds the root.
+Inside another rule's region, only a comma can follow on the line, so the engine counts one column for it.
 Headers containing comments retain their original header text while supported surrounding code can still format.
 
 ## Ownership and state
 
 Protection is installed before syntax dispatch and before legacy transformations.
-Merged protected ranges cover macros, exclusions, and unsupported syntax.
-The scheduler claims syntax roots outside those ranges.
+Merged protected ranges cover whole lines of exclusions, macro definitions, and unsupported syntax.
+Each macro call outside those ranges is protected on its own bytes only.
+The scheduler claims syntax roots outside the protected ranges, and roots that hold a whole macro call.
+A root inside a macro call is not formatted.
 Legacy normalization and spacing receive only the remaining bounded intervals.
 `OwnershipMap::validate_legacy_edit` rejects transformations across protected or syntax-owned ranges.
 
@@ -106,13 +113,14 @@ This deliberately corrects the old renderer's reindentation of those lines.
 
 The document renderer checks token order, complete source ownership, and preserved child provenance.
 The full-file validator runs after every rendering operation.
-It checks token kinds, spelling, grammatical adjacency, exact excluded or opaque bytes, and macro columns.
-Any validation failure restores the original file and emits a warning.
+It checks token kinds, spelling, grammatical adjacency, and exact excluded or macro bytes.
+A validation failure is a bug in the formatter, so the formatter stops with an `internal formatter error`.
+This way `--check` cannot pass on a file that the formatter did not check.
 Token equality alone cannot establish safety for shifts or embedded macro languages.
 
 ## Coverage and CLI behavior
 
-`FormatOutcome` carries text, coverage, and warnings separately.
+`FormatOutcome` carries the text and the warnings separately.
 A coverage warning preserves the affected declaration when boundaries are certain.
 Uncertain header, macro, delimiter, or file grammar boundaries preserve the complete file.
 Other independent supported declarations can still format after a scoped warning.

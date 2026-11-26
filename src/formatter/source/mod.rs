@@ -13,7 +13,7 @@ mod struct_literals;
 #[cfg(test)]
 mod tests;
 
-pub use formatters::{builtin_registry, format_declaration};
+pub use formatters::builtin_registry;
 
 use crate::lexer::{Lexer, Token, TokenType};
 use std::ops::Range;
@@ -52,9 +52,6 @@ pub struct MacroView {
     pub kind: MacroKind,
     pub tokens: Range<usize>,
     pub bytes: Range<usize>,
-    pub token_trees: Vec<Range<usize>>,
-    pub original_line: usize,
-    pub original_column: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +95,9 @@ pub struct FunctionHeaderView {
 #[derive(Clone, Debug)]
 pub struct FunctionDeclView {
     pub context: DeclarationContext,
+    /// An extern or trait function with clauses, or an extern function with a body. The
+    /// `function_headers` rule keeps such a declaration as written.
+    pub header_unsupported: bool,
     pub tokens: Range<usize>,
     pub bytes: Range<usize>,
     pub header: FunctionHeaderView,
@@ -342,34 +342,6 @@ impl<'a> SourceFileView<'a> {
                 }
             } else if output != &self.text[preserved] {
                 return Err("Formatting changed an excluded source range".into());
-            }
-        }
-        for macro_view in self
-            .macros
-            .iter()
-            .skip(
-                self.macros
-                    .partition_point(|view| view.bytes.end <= bytes.start),
-            )
-            .take_while(|view| view.bytes.start < bytes.end)
-        {
-            if macro_view.tokens.start < range.start {
-                continue;
-            }
-            let Some(position) = &positions[macro_view.tokens.start - range.start] else {
-                continue;
-            };
-            let prefix = &output[..position.start];
-            let original_line_start = self.text[..bytes.start]
-                .rfind('\n')
-                .map_or(0, |offset| offset + 1);
-            let entry_column = self.text[original_line_start..bytes.start].chars().count();
-            let column = prefix.rfind('\n').map_or_else(
-                || entry_column + prefix.chars().count(),
-                |newline| prefix[newline + 1..].chars().count(),
-            );
-            if column != macro_view.original_column - 1 {
-                return Err("Formatting changed an opaque macro's column".into());
             }
         }
         Ok(())

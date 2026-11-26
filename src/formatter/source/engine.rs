@@ -1,15 +1,17 @@
-use super::dispatch::{Coverage, FormatOutcome, NodeRegistry, SyntaxNode};
+use super::dispatch::{FormatOutcome, NodeRegistry, SyntaxKind, SyntaxNode};
 use super::document::{self, RenderState, Shape};
 use super::ownership::{Owner, OwnershipMap};
-use super::{builtin_registry, overlaps, CoverageWarning, SourceFileView};
+use super::{builtin_registry, overlaps, CoverageWarning, MacroKind, SourceFileView};
 use crate::lexer::TokenType;
 use std::cell::RefCell;
 use std::ops::Range;
 use vx_config::FormatConfig;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Work<'a> {
     Syntax(SyntaxNode<'a>),
+    /// A macro call: its bytes stay as written, but its line takes the indentation.
+    MacroCall,
     Preserve,
 }
 
@@ -29,47 +31,29 @@ pub(crate) fn format_source_with_registry(
     registry: &NodeRegistry<'_>,
 ) -> FormatOutcome {
     let source = SourceFileView::parse(text);
+    let unchanged = |warnings: Vec<CoverageWarning>| FormatOutcome {
+        text: text.to_string(),
+        warnings,
+    };
     if source.exclusions.contains(&(0..text.len())) {
-        return FormatOutcome {
-            text: text.to_string(),
-            coverage: Coverage::Complete,
-            warnings: Vec::new(),
-        };
+        return unchanged(Vec::new());
     }
     let mut warnings = source.warnings.clone();
+    warnings.extend(registry.enabled_warnings(&source, config));
+    warnings.sort_by_key(|warning| (warning.bytes.start, warning.bytes.end));
+    warnings.dedup();
     if warnings
         .iter()
         .any(|warning| warning.bytes == (0..text.len()))
     {
-        return preserved(text, warnings);
+        return unchanged(warnings);
     }
-    let result = render_file(&source, config, registry, &mut warnings);
-    match result {
-        Ok(output) => FormatOutcome {
-            text: output,
-            coverage: if warnings.is_empty() {
-                Coverage::Complete
-            } else {
-                Coverage::Partial
-            },
-            warnings,
-        },
-        Err(message) => {
-            warnings.push(CoverageWarning {
-                bytes: 0..text.len(),
-                message: format!("{message}; preserved the file unchanged"),
-            });
-            preserved(text, warnings)
-        }
-    }
-}
-
-fn preserved(text: &str, mut warnings: Vec<CoverageWarning>) -> FormatOutcome {
-    warnings.sort_by_key(|warning| (warning.bytes.start, warning.bytes.end));
-    warnings.dedup();
+    // An error here is a bug in the formatter, not a problem in the program. Stop, so that
+    // `--check` cannot pass on a file that the formatter did not check.
+    let output = render_file(&source, config, registry, &mut warnings)
+        .unwrap_or_else(|message| panic!("internal formatter error: {message}"));
     FormatOutcome {
-        text: text.to_string(),
-        coverage: Coverage::Partial,
+        text: output,
         warnings,
     }
 }
@@ -102,11 +86,14 @@ fn render_file(
     registry: &NodeRegistry<'_>,
     warnings: &mut Vec<CoverageWarning>,
 ) -> Result<String, String> {
+    // Keep whole lines as written around excluded code, macro definitions and code with a
+    // coverage warning. A macro call keeps only its own bytes, so its line can still move.
     let mut raw: Vec<_> = source.exclusions.clone();
     raw.extend(
         source
             .macros
             .iter()
+            .filter(|view| view.kind == MacroKind::Definition)
             .map(|view| line_envelope(source, &view.bytes)),
     );
     raw.extend(
@@ -114,6 +101,19 @@ fn render_file(
             .iter()
             .map(|warning| line_envelope(source, &warning.bytes)),
     );
+    // A protected range that cuts through a macro call protects the whole call.
+    let calls: Vec<Range<usize>> = source
+        .macros
+        .iter()
+        .filter(|view| view.kind == MacroKind::Invocation)
+        .map(|view| view.bytes.clone())
+        .collect();
+    let cut_calls: Vec<_> = calls
+        .iter()
+        .filter(|call| raw.iter().any(|range| overlaps(range, call)))
+        .cloned()
+        .collect();
+    raw.extend(cut_calls);
     raw.sort_by_key(|range| (range.start, range.end));
     let mut protected: Vec<Range<usize>> = Vec::new();
     for range in raw {
@@ -125,14 +125,29 @@ fn render_file(
         }
         protected.push(range);
     }
+    let inside_protected = |bytes: &Range<usize>| {
+        protected
+            .iter()
+            .any(|range| range.start <= bytes.start && bytes.end <= range.end)
+    };
+    let calls: Vec<_> = calls
+        .into_iter()
+        .filter(|call| !inside_protected(call))
+        .collect();
     let mut ownership = OwnershipMap::from_source(source);
     // Additional protection is installed in a fresh map to avoid overlapping opaque envelopes.
     ownership.protect_union(&protected)?;
+    // A root inside a macro call is not Vx code that the formatter may move.
     let mut roots: Vec<_> = registry
         .enabled_roots(source, config)
         .into_iter()
         .map(|node| (source.token_bytes(node.tokens()), node))
         .filter(|(bytes, _)| !bytes.is_empty())
+        .filter(|(bytes, _)| {
+            !calls.iter().any(|call| {
+                overlaps(call, bytes) && !(bytes.start <= call.start && call.end <= bytes.end)
+            })
+        })
         .collect();
     roots.sort_by_key(|(bytes, _)| (bytes.start, std::cmp::Reverse(bytes.end)));
     // Roots may nest, but two roots never share a range or overlap partly.
@@ -157,6 +172,7 @@ fn render_file(
         registry,
         ownership,
         protected,
+        calls,
         roots,
         warnings: RefCell::new(std::mem::take(warnings)),
     };
@@ -188,8 +204,11 @@ struct FileRenderer<'a, 'source> {
     config: &'a FormatConfig,
     registry: &'a NodeRegistry<'a>,
     ownership: OwnershipMap,
-    /// Ranges kept exactly as written: macros, exclusions, and code with a coverage warning.
+    /// Whole lines kept exactly as written: exclusions, macro definitions, and code with a
+    /// coverage warning.
     protected: Vec<Range<usize>>,
+    /// The macro calls outside `protected`, sorted by start. Each keeps its bytes as written.
+    calls: Vec<Range<usize>>,
     /// The roots of the switched-on rules, sorted by start, each outer root before its inner ones.
     roots: Vec<(Range<usize>, SyntaxNode<'a>)>,
     warnings: RefCell<Vec<CoverageWarning>>,
@@ -236,6 +255,22 @@ impl<'a> FileRenderer<'a, '_> {
                 work: Work::Syntax(*node),
             });
         }
+        // A macro call inside a root belongs to that root, which formats it in a region.
+        let calls: Vec<_> = self
+            .calls
+            .iter()
+            .filter(|call| inside(call))
+            .filter(|call| {
+                !units
+                    .iter()
+                    .any(|unit| matches!(unit.work, Work::Syntax(_)) && overlaps(&unit.bytes, call))
+            })
+            .map(|call| Unit {
+                bytes: call.clone(),
+                work: Work::MacroCall,
+            })
+            .collect();
+        units.extend(calls);
         units.sort_by_key(|unit| unit.bytes.start);
         units
     }
@@ -253,15 +288,15 @@ impl<'a> FileRenderer<'a, '_> {
         let mut cursor = bytes.start;
         // The base formatting formats the code between protected ranges in one piece, with
         // each syntax root as one placeholder, so that it sees whole blocks around the roots.
-        let mut roots: Vec<(Range<usize>, SyntaxNode<'a>)> = Vec::new();
+        let mut roots: Vec<(Range<usize>, Work<'a>)> = Vec::new();
         let units = self.units(bytes.clone(), skip);
         for unit in units.iter().map(Some).chain(std::iter::once(None)) {
             if let Some(Unit {
                 bytes: root,
-                work: Work::Syntax(node),
+                work: work @ (Work::Syntax(_) | Work::MacroCall),
             }) = unit
             {
-                roots.push((root.clone(), *node));
+                roots.push((root.clone(), *work));
                 continue;
             }
             let end = unit.map_or(bytes.end, |unit| unit.bytes.start);
@@ -278,7 +313,14 @@ impl<'a> FileRenderer<'a, '_> {
                     state,
                     inside_syntax,
                     &ranges,
-                    &mut |index, state| self.render_root(roots[index].1, &roots[index].0, state),
+                    &mut |index, state| match roots[index].1 {
+                        Work::Syntax(node) => {
+                            let root = &roots[index].0;
+                            let reserved = self.rest_of_line(root, &bytes, inside_syntax);
+                            self.render_root(node, root, reserved, state)
+                        }
+                        _ => self.render_macro_call(&roots[index].0, state),
+                    },
                 )?);
             }
             roots.clear();
@@ -291,9 +333,8 @@ impl<'a> FileRenderer<'a, '_> {
         Ok(output)
     }
 
-    fn render_root(
+    fn render_macro_call(
         &self,
-        node: SyntaxNode<'_>,
         bytes: &Range<usize>,
         state: &mut RenderState,
     ) -> Result<String, String> {
@@ -303,11 +344,68 @@ impl<'a> FileRenderer<'a, '_> {
             state.emitted(&indent);
             output.push_str(&indent);
         }
+        output.push_str(&self.source.text[bytes.clone()]);
+        state.consume_preserved(self.source, bytes.clone())?;
+        Ok(output)
+    }
+
+    /// The width of the code after `bytes` that stays on its line: the source up to a line
+    /// break, a comment, or the end of `range`, the range that the root is formatted in. Inside
+    /// a region of another rule, that rule puts at most a comma after the region on the line.
+    fn rest_of_line(
+        &self,
+        bytes: &Range<usize>,
+        range: &Range<usize>,
+        inside_syntax: bool,
+    ) -> usize {
+        let mut width = 0;
+        let mut pending_space = 0;
+        for token in &self.source.tokens[self.source.token_range(&(bytes.end..range.end))] {
+            if token.bytes.end > range.end {
+                break;
+            }
+            match token.token.kind {
+                TokenType::Whitespace(text) if text.contains('\n') => return width,
+                TokenType::Whitespace(text) => pending_space += text.chars().count(),
+                TokenType::Comment(_) | TokenType::DocComment(_) | TokenType::Eof => return width,
+                _ => {
+                    width += pending_space + self.source.text[token.bytes.clone()].chars().count();
+                    pending_space = 0;
+                }
+            }
+        }
+        let comma_follows = self.source.tokens[self
+            .source
+            .token_range(&(range.end..self.source.text.len()))]
+        .iter()
+        .find(|token| !matches!(token.token.kind, TokenType::Whitespace(_)))
+        .is_some_and(|token| matches!(token.token.kind, TokenType::Comma));
+        width + usize::from(inside_syntax && comma_follows)
+    }
+
+    fn render_root(
+        &self,
+        node: SyntaxNode<'_>,
+        bytes: &Range<usize>,
+        rest_of_line: usize,
+        state: &mut RenderState,
+    ) -> Result<String, String> {
+        let mut output = String::new();
+        if state.column == 0 {
+            let indent = " ".repeat(state.indent_level * self.config.indent);
+            state.emitted(&indent);
+            output.push_str(&indent);
+        }
+        // A function header already reserves the `{` or `;` after it.
+        let reserved = match node.kind() {
+            SyntaxKind::StructLiteral | SyntaxKind::IfValue => rest_of_line,
+            _ => 0,
+        };
         let shape = Shape {
             column: state.column,
             indent_level: state.indent_level,
             indent_spaces: self.config.indent,
-            width: self.config.max_width,
+            width: self.config.max_width.saturating_sub(reserved),
         };
         match self.registry.format(node, self.source, self.config, shape) {
             Ok(layout) => {

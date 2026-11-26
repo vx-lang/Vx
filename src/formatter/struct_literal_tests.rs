@@ -108,3 +108,18 @@ fn an_unsafe_block_that_holds_a_struct_literal_keeps_its_layout_in_a_second_run(
         )
     );
 }
+
+#[test]
+fn the_code_after_a_struct_literal_counts_toward_the_line_width() {
+    // On one line, the literal ends at column 25, but the line ends at column 43.
+    let body = "  mk(Point { x: 1, y: 2 }, 12345678901234);";
+    let config = FormatConfig {
+        max_width: 40,
+        fn_signature_width: 40,
+        ..FormatConfig::default()
+    };
+    assert_eq!(
+        format_body(body, &config),
+        in_main("  mk(Point {\n    x: 1,\n    y: 2\n  }, 12345678901234);")
+    );
+}

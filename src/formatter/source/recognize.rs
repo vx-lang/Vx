@@ -125,7 +125,7 @@ impl<'source> SourceFileView<'source> {
                 break;
             };
             let mut end = close + 1;
-            let mut trees: Vec<_> = std::iter::once(open..end).collect();
+            // A call such as `mlir!(inputs: ()) { ... }` ends with the block after it.
             if !definition {
                 if let Some(next) = significant
                     .get(significant.partition_point(|index| *index < end))
@@ -133,29 +133,11 @@ impl<'source> SourceFileView<'source> {
                 {
                     if matches!(self.tokens[next].token.kind, TokenType::LeftBrace) {
                         if let Some(block_close) = self.matching[next] {
-                            trees.push(next..block_close + 1);
                             end = block_close + 1;
                         }
                     }
                 }
-            } else {
-                trees.clear();
-                let mut cursor = open + 1;
-                while cursor < close {
-                    if matches!(
-                        self.tokens[cursor].token.kind,
-                        TokenType::LeftParen | TokenType::LeftBrace
-                    ) {
-                        if let Some(tree_close) = self.matching[cursor] {
-                            trees.push(cursor..tree_close + 1);
-                            cursor = tree_close + 1;
-                            continue;
-                        }
-                    }
-                    cursor += 1;
-                }
             }
-            let token = &self.tokens[start].token;
             self.macros.push(MacroView {
                 kind: if definition {
                     MacroKind::Definition
@@ -164,9 +146,6 @@ impl<'source> SourceFileView<'source> {
                 },
                 tokens: start..end,
                 bytes: self.token_bytes(start..end),
-                token_trees: trees,
-                original_line: token.line,
-                original_column: token.column,
             });
             while position < significant.len() && significant[position] < end {
                 position += 1;
@@ -352,18 +331,13 @@ impl<'source> SourceFileView<'source> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            let ineligible = (matches!(
+            // The `function_headers` rule cannot lay out these yet. It warns about them.
+            let header_unsupported = (matches!(
                 context,
                 DeclarationContext::Trait | DeclarationContext::Extern
             ) && !clauses.is_empty())
                 || (context == DeclarationContext::Extern
                     && !matches!(self.tokens[terminator].token.kind, TokenType::Semicolon));
-            if ineligible {
-                self.warnings.push(CoverageWarning {
-                    bytes: declaration_bytes.clone(),
-                    message: "Unsupported declaration context; preserved the enclosing declaration unchanged".into(),
-                });
-            }
             let parameters = inside(RecordedKind::Parameter, &parameter_list.tokens)
                 .map(|parameter| ParameterView {
                     tokens: to_source(&parameter.tokens),
@@ -377,6 +351,7 @@ impl<'source> SourceFileView<'source> {
                 .collect();
             self.functions.push(FunctionDeclView {
                 context,
+                header_unsupported,
                 tokens: start..declaration_end,
                 bytes: declaration_bytes,
                 header: FunctionHeaderView {

@@ -42,14 +42,16 @@ impl OwnershipMap {
         {
             return Err("Invalid preserved source envelope".into());
         }
-        self.spans = ranges
-            .iter()
-            .cloned()
-            .map(|bytes| OwnedSpan {
+        // A macro call outside every protected range keeps its own span.
+        self.spans.retain(|span| {
+            span.owner == Owner::OpaqueMacro
+                && !ranges.iter().any(|range| overlaps(range, &span.bytes))
+        });
+        self.spans
+            .extend(ranges.iter().cloned().map(|bytes| OwnedSpan {
                 bytes,
                 owner: Owner::OpaqueUnsupported,
-            })
-            .collect();
+            }));
         self.reindex();
         Ok(())
     }
@@ -186,12 +188,6 @@ impl OwnershipMap {
         Ok(())
     }
 
-    pub fn protected_spans(&self) -> impl Iterator<Item = &OwnedSpan> {
-        self.spans
-            .iter()
-            .filter(|span| span.owner.preserves_bytes())
-    }
-
     pub(crate) fn protected_in<'a>(
         &'a self,
         bytes: &'a Range<usize>,
@@ -205,21 +201,5 @@ pub struct OutputSegment {
     pub output: Range<usize>,
     pub source: Option<Range<usize>>,
     pub owner: Owner,
-    pub whitespace_only: bool,
     pub preserved: bool,
-}
-
-impl OutputSegment {
-    pub fn allows_legacy_cleanup(&self, map: &OwnershipMap, source: &SourceFileView<'_>) -> bool {
-        self.owner == Owner::Legacy
-            && self.whitespace_only
-            && self.source.as_ref().is_some_and(|bytes| {
-                map.validate_legacy_edit(bytes.clone()).is_ok()
-                    && !source.gaps.iter().any(|gap| {
-                        let start = source.tokens[gap.left.0].bytes.end;
-                        let end = source.tokens[gap.right.0].bytes.start;
-                        bytes.start <= end && start <= bytes.end
-                    })
-            })
-    }
 }

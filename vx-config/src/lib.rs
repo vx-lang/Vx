@@ -187,15 +187,17 @@ impl FileSettings {
 /// with its default, because only the formatter knows its rules.
 pub fn default_format_config_toml(rules: &[(&str, bool)]) -> String {
     let defaults = FormatConfig::default();
+    // The narrower widths are left out: unset, each one follows max_width.
     let mut text = format!(
-        "[format]\nstyle_edition = \"{}\"\nindent = {}\nmax_width = {}\nfn_signature_width = {}\nspace_before_colon = {}\nstruct_lit_width = {}\nsingle_line_if_else_max_width = {}\n",
+        "[format]\nstyle_edition = \"{}\"\nindent = {}\nmax_width = {}\nspace_before_colon = {}\n\
+         # Unset, these widths follow max_width: fn_signature_width is max_width,\n\
+         # struct_lit_width is {}% of it, and single_line_if_else_max_width is {}% of it.\n",
         defaults.style_edition,
         defaults.indent,
         defaults.max_width,
-        defaults.fn_signature_width,
         defaults.space_before_colon,
-        defaults.struct_lit_width,
-        defaults.single_line_if_else_max_width
+        defaults.struct_lit_width * 100 / defaults.max_width,
+        defaults.single_line_if_else_max_width * 100 / defaults.max_width
     );
     if !rules.is_empty() {
         text.push_str("\n[format.rules]\n");
@@ -473,6 +475,16 @@ mod tests {
             parse(&default_format_config_toml(&[])).unwrap(),
             FormatConfig::default()
         );
+    }
+
+    #[test]
+    fn printed_defaults_still_parse_after_max_width_is_made_smaller() {
+        let text = default_format_config_toml(&[]).replace("max_width = 100", "max_width = 40");
+        let config = parse(&text).unwrap();
+        assert_eq!(config.max_width, 40);
+        assert_eq!(config.fn_signature_width, 40);
+        assert_eq!(config.struct_lit_width, 7);
+        assert_eq!(config.single_line_if_else_max_width, 20);
     }
 
     #[test]

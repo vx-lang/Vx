@@ -53,7 +53,6 @@ pub enum Document {
     },
     Preserve {
         bytes: Range<usize>,
-        keep_column: bool,
     },
     /// Source code that a rule does not lay out itself, such as the value of a struct field.
     /// The engine formats it the normal way: with the rules that own code inside it, and with
@@ -298,47 +297,20 @@ pub fn render_with_regions(
         .protected_in(&consumed)
         .filter(|span| super::overlaps(&span.bytes, &consumed))
     {
+        // A macro call may also sit in a region, which formats it the normal way. That keeps
+        // its bytes as written and moves only its line.
+        let call = span.owner == Owner::OpaqueMacro;
         if !segments.iter().any(|segment| {
-            segment.preserved
+            (segment.preserved || call)
                 && segment.source.as_ref().is_some_and(|original| {
                     original.start <= span.bytes.start && span.bytes.end <= original.end
                 })
         }) {
-            return Err("Layout did not preserve a complete opaque or excluded range".into());
-        }
-    }
-    for macro_view in source
-        .macros
-        .iter()
-        .skip(
-            source
-                .macros
-                .partition_point(|view| view.bytes.end <= consumed.start),
-        )
-        .take_while(|view| view.bytes.start < consumed.end)
-        .filter(|view| super::overlaps(&view.bytes, &consumed))
-    {
-        let segment = segments
-            .iter()
-            .find(|segment| {
-                segment.preserved
-                    && segment.source.as_ref().is_some_and(|range| {
-                        range.start <= macro_view.bytes.start && macro_view.bytes.end <= range.end
-                    })
-            })
-            .ok_or("Macro token trees require exact source preservation")?;
-        let origin = segment
-            .source
-            .as_ref()
-            .expect("preserved segment has original source");
-        let offset = segment.output.start + macro_view.bytes.start - origin.start;
-        let prefix = &text[..offset];
-        let column = prefix.rfind('\n').map_or_else(
-            || shape.column + prefix.chars().count(),
-            |newline| prefix[newline + 1..].chars().count(),
-        );
-        if column != macro_view.original_column - 1 {
-            return Err("Opaque macro cannot move to a different column".into());
+            return Err(if call {
+                "A layout split the tokens of a macro".into()
+            } else {
+                "Layout did not preserve a complete opaque or excluded range".into()
+            });
         }
     }
     entry.consume_source(source, consumed)?;
@@ -480,7 +452,6 @@ impl Renderer<'_, '_> {
                     output: start..out.text.len(),
                     source: Some(bytes.clone()),
                     owner: Owner::Legacy,
-                    whitespace_only: false,
                     preserved: false,
                 });
                 return Ok(());
@@ -510,15 +481,7 @@ impl Renderer<'_, '_> {
                 None,
                 Owner::Syntax,
             ),
-            Document::Preserve { bytes, keep_column } => {
-                if *keep_column {
-                    let line_start = self.source.text[..bytes.start]
-                        .rfind('\n')
-                        .map_or(0, |offset| offset + 1);
-                    if state.column != self.source.text[line_start..bytes.start].chars().count() {
-                        return Err("Opaque source cannot move to a different column".into());
-                    }
-                }
+            Document::Preserve { bytes } => {
                 let range = self.source.token_range(bytes);
                 for (index, token) in self.source.tokens[range.clone()]
                     .iter()
@@ -547,7 +510,6 @@ impl Renderer<'_, '_> {
             output: start..out.text.len(),
             source: origin,
             owner,
-            whitespace_only: value.chars().all(char::is_whitespace),
             preserved: matches!(document, Document::Preserve { .. }),
         });
         Ok(())

@@ -1,14 +1,9 @@
-use super::dispatch::{
-    Coverage, FormatOutcome, NodeContext, NodeFormatter, NodeRegistry, Rule, SyntaxKind, SyntaxNode,
-};
-use super::document::{self, Document, RenderState, Shape};
-use super::ownership::{Owner, OwnershipMap};
+use super::dispatch::{NodeContext, NodeFormatter, NodeRegistry, Rule, SyntaxKind, SyntaxNode};
+use super::document::{Document, Shape};
 use super::{CoverageWarning, GapConstraint, SourceFileView, TokenId};
 use crate::lexer::TokenType;
 use std::ops::Range;
-use vx_config::FormatConfig;
 
-struct FunctionFormatter;
 struct HeaderFormatter;
 struct ParametersFormatter;
 struct ParameterFormatter;
@@ -16,7 +11,6 @@ struct TypeFormatter;
 
 pub fn builtin_registry() -> NodeRegistry<'static> {
     static FORMATTERS: &[&dyn NodeFormatter] = &[
-        &FunctionFormatter,
         &HeaderFormatter,
         &ParametersFormatter,
         &ParameterFormatter,
@@ -28,97 +22,10 @@ pub fn builtin_registry() -> NodeRegistry<'static> {
     NodeRegistry::new(FORMATTERS).expect("built-in syntax owners must be unique")
 }
 
-/// Format one recognized declaration. Failures preserve its original bytes and become warnings.
-pub fn format_declaration(
-    source: &SourceFileView<'_>,
-    index: usize,
-    config: &FormatConfig,
-    entry: RenderState,
-) -> FormatOutcome {
-    let declaration = &source.functions[index];
-    let original = &source.text[declaration.bytes.clone()];
-    let attempt = || -> Result<String, CoverageWarning> {
-        if let Some(warning) = source
-            .warnings
-            .iter()
-            .find(|warning| super::overlaps(&warning.bytes, &declaration.bytes))
-        {
-            return Err(warning.clone());
-        }
-        let mut ownership = OwnershipMap::from_source(source);
-        ownership
-            .claim(declaration.bytes.clone(), Owner::Syntax)
-            .map_err(|message| CoverageWarning {
-                bytes: declaration.bytes.clone(),
-                message,
-            })?;
-        let shape = Shape {
-            column: entry.column,
-            indent_level: entry.indent_level,
-            indent_spaces: config.indent,
-            width: config.max_width,
-        };
-        let layout =
-            builtin_registry().format(SyntaxNode::Function(declaration), source, config, shape)?;
-        document::render(
-            source,
-            &ownership,
-            &layout,
-            declaration.bytes.clone(),
-            shape,
-            entry.clone(),
-        )
-        .map(|rendered| rendered.text)
-        .map_err(|message| CoverageWarning {
-            bytes: declaration.bytes.clone(),
-            message,
-        })
-    };
-    match attempt() {
-        Ok(text) => FormatOutcome {
-            text,
-            coverage: Coverage::Complete,
-            warnings: Vec::new(),
-        },
-        Err(warning) => FormatOutcome {
-            text: original.to_string(),
-            coverage: Coverage::Partial,
-            warnings: vec![warning],
-        },
-    }
-}
-
 fn unsupported(context: &NodeContext<'_, '_, '_>, node: SyntaxNode<'_>) -> CoverageWarning {
     CoverageWarning {
         bytes: context.source.token_bytes(node.tokens()),
         message: "Unsupported syntax ownership; preserve the enclosing declaration".into(),
-    }
-}
-
-impl NodeFormatter for FunctionFormatter {
-    fn kind(&self) -> SyntaxKind {
-        SyntaxKind::Function
-    }
-    fn format(
-        &self,
-        node: SyntaxNode<'_>,
-        context: &NodeContext<'_, '_, '_>,
-        shape: Shape,
-    ) -> Result<Document, CoverageWarning> {
-        let SyntaxNode::Function(view) = node else {
-            return Err(unsupported(context, node));
-        };
-        let header = context.child(SyntaxNode::Header(&view.header), shape)?;
-        let body = context
-            .source
-            .token_bytes(view.header.terminator.0..view.tokens.end);
-        Ok(Document::Concat(vec![
-            header,
-            Document::Preserve {
-                bytes: body,
-                keep_column: false,
-            },
-        ]))
     }
 }
 
@@ -138,6 +45,19 @@ impl NodeFormatter for HeaderFormatter {
             .functions
             .iter()
             .map(|function| SyntaxNode::Header(&function.header))
+            .collect()
+    }
+    fn warnings(&self, source: &SourceFileView<'_>) -> Vec<CoverageWarning> {
+        source
+            .functions
+            .iter()
+            .filter(|function| function.header_unsupported)
+            .map(|function| CoverageWarning {
+                bytes: function.bytes.clone(),
+                message: "Unsupported declaration context; preserved the enclosing declaration \
+                          unchanged"
+                    .into(),
+            })
             .collect()
     }
     fn format(
@@ -161,10 +81,7 @@ impl NodeFormatter for HeaderFormatter {
                 TokenType::Comment(_) | TokenType::DocComment(_)
             )
         }) {
-            return Ok(Document::Preserve {
-                bytes,
-                keep_column: false,
-            });
+            return Ok(Document::Preserve { bytes });
         }
         if source.is_excluded(&bytes)
             || source
@@ -179,7 +96,6 @@ impl NodeFormatter for HeaderFormatter {
             let end = source.tokens[view.terminator.0].bytes.start;
             return Ok(Document::Preserve {
                 bytes: bytes.start..end,
-                keep_column: true,
             });
         }
         let (suffix, reserved) = header_suffix(context, view);
@@ -243,13 +159,7 @@ fn header_suffix(
         let text = &source.text[start..end];
         let first_line = text.split('\n').next().unwrap_or_default();
         let reserved = first_line.chars().count() + usize::from(!text.contains('\n'));
-        return (
-            Document::Preserve {
-                bytes: start..end,
-                keep_column: false,
-            },
-            reserved,
-        );
+        return (Document::Preserve { bytes: start..end }, reserved);
     }
     let brace = matches!(
         source.tokens[view.terminator.0].token.kind,

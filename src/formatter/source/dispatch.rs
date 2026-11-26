@@ -1,7 +1,7 @@
 use super::document::{Document, Shape};
 use super::{
-    CoverageWarning, FunctionDeclView, FunctionHeaderView, IfValueView, MatchView, ParameterView,
-    SourceFileView, StructLiteralView, TypeView,
+    CoverageWarning, FunctionHeaderView, IfValueView, MatchView, ParameterView, SourceFileView,
+    StructLiteralView, TypeView,
 };
 use std::collections::HashSet;
 use std::ops::Range;
@@ -9,7 +9,6 @@ use vx_config::{FormatConfig, StyleEdition};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SyntaxKind {
-    Function,
     Header,
     ParameterList,
     Parameter,
@@ -21,7 +20,6 @@ pub enum SyntaxKind {
 
 #[derive(Clone, Copy)]
 pub enum SyntaxNode<'a> {
-    Function(&'a FunctionDeclView),
     Header(&'a FunctionHeaderView),
     ParameterList(&'a FunctionHeaderView),
     Parameter(&'a ParameterView),
@@ -34,7 +32,6 @@ pub enum SyntaxNode<'a> {
 impl SyntaxNode<'_> {
     pub fn kind(self) -> SyntaxKind {
         match self {
-            Self::Function(_) => SyntaxKind::Function,
             Self::Header(_) => SyntaxKind::Header,
             Self::ParameterList(_) => SyntaxKind::ParameterList,
             Self::Parameter(_) => SyntaxKind::Parameter,
@@ -46,7 +43,6 @@ impl SyntaxNode<'_> {
     }
     pub fn tokens(self) -> Range<usize> {
         match self {
-            Self::Function(view) => view.tokens.clone(),
             Self::Header(view) => view.tokens.clone(),
             Self::ParameterList(view) => view.parameter_open.0..view.parameter_close.0 + 1,
             Self::Parameter(view) => view.tokens.clone(),
@@ -75,6 +71,10 @@ pub trait NodeFormatter: Sync {
         None
     }
     fn roots<'a>(&self, _source: &'a SourceFileView<'_>) -> Vec<SyntaxNode<'a>> {
+        Vec::new()
+    }
+    /// The code that this formatter's rule cannot format yet. The engine keeps it as written.
+    fn warnings(&self, _source: &SourceFileView<'_>) -> Vec<CoverageWarning> {
         Vec::new()
     }
     fn format(
@@ -108,6 +108,19 @@ impl<'a> NodeRegistry<'a> {
                 );
                 nodes
             })
+            .collect()
+    }
+
+    /// The warnings of the formatters whose rule `config` switches on.
+    pub fn enabled_warnings(
+        &self,
+        source: &SourceFileView<'_>,
+        config: &FormatConfig,
+    ) -> Vec<CoverageWarning> {
+        self.formatters
+            .iter()
+            .filter(|formatter| enabled(**formatter, config))
+            .flat_map(|formatter| formatter.warnings(source))
             .collect()
     }
 
@@ -211,21 +224,8 @@ impl NodeContext<'_, '_, '_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Coverage {
-    Complete,
-    Partial,
-}
-
 pub struct FormatOutcome {
     pub text: String,
-    pub coverage: Coverage,
+    /// Code that the formatter kept as written because it does not support it yet.
     pub warnings: Vec<CoverageWarning>,
-}
-
-impl FormatOutcome {
-    /// Warnings never change the exit status. Input and configuration failures remain caller errors.
-    pub fn check_status(&self, original: &str) -> u8 {
-        u8::from(self.text != original)
-    }
 }

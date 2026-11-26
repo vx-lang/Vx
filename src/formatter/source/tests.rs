@@ -1,8 +1,6 @@
-use super::dispatch::{
-    Coverage, FormatOutcome, NodeContext, NodeFormatter, NodeRegistry, SyntaxKind, SyntaxNode,
-};
+use super::dispatch::{NodeContext, NodeFormatter, NodeRegistry, SyntaxKind, SyntaxNode};
 use super::document::{self, Document, RenderState, Shape};
-use super::ownership::{OutputSegment, Owner, OwnershipMap};
+use super::ownership::{Owner, OwnershipMap};
 use super::*;
 use vx_config::FormatConfig;
 
@@ -70,8 +68,7 @@ fn macro_envelopes_hide_declarations_in_arguments_matchers_and_transcribers() {
     let source = SourceFileView::parse(text);
     assert_eq!(source.macros.len(), 2);
     assert_eq!(source.macros[0].kind, MacroKind::Definition);
-    assert_eq!(source.macros[0].token_trees.len(), 2);
-    assert_eq!(source.macros[1].token_trees.len(), 2);
+    assert_eq!(source.macros[1].kind, MacroKind::Invocation);
     assert_eq!(source.functions.len(), 1);
     assert_eq!(source.token_text(source.functions[0].header.name), "real");
 }
@@ -139,7 +136,7 @@ fn excluded_whitespace_survives_final_preservation_checks() {
 }
 
 #[test]
-fn legacy_edits_cannot_cross_new_or_preserved_ownership() {
+fn the_base_formatting_cannot_edit_code_that_a_rule_owns_or_a_macro() {
     let source = SourceFileView::parse("fn add(value: i32) -> i32 { unknown!(value) }");
     let mut ownership = OwnershipMap::from_source(&source);
     ownership
@@ -196,64 +193,64 @@ fn syntax_registry_rejects_competing_owners() {
 }
 
 #[test]
-fn hierarchical_formatting_keeps_type_normalization_and_header_width() {
+fn a_long_header_wraps_and_its_types_lose_extra_spaces() {
     let text = "fn apply(value: Tensor< f32, [2, 2] >, count: i32) -> i32 { value }";
-    let source = SourceFileView::parse(text);
-    assert_eq!(source.functions.len(), 1);
     let config = FormatConfig {
         indent: 2,
         fn_signature_width: 40,
         ..FormatConfig::default()
     };
-    let result = format_declaration(&source, 0, &config, RenderState::new(shape(40)));
+    let result = engine::format_source(text, &config);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
         result.text,
-        "fn apply(\n  value: Tensor<f32, [2, 2]>,\n  count: i32\n) -> i32 { value }"
+        "fn apply(\n  value: Tensor<f32, [2, 2]>,\n  count: i32\n) -> i32 {\n  value\n}"
     );
-    assert!(source.verify_preservation(&result.text).is_ok());
-    let repeated = SourceFileView::parse(&result.text);
-    let result_again = format_declaration(&repeated, 0, &config, RenderState::new(shape(40)));
-    assert_eq!(result_again.text, result.text);
+    assert!(SourceFileView::parse(text)
+        .verify_preservation(&result.text)
+        .is_ok());
+    assert_eq!(
+        engine::format_source(&result.text, &config).text,
+        result.text
+    );
 }
 
 #[test]
-fn short_multiline_headers_become_single_line() {
-    let source = SourceFileView::parse("fn add(\nvalue: i32\n) -> i32 { value }");
-    let result = format_declaration(
-        &source,
-        0,
+fn a_short_header_on_several_lines_goes_on_one_line() {
+    let result = engine::format_source(
+        "fn add(\nvalue: i32\n) -> i32 {\nvalue\n}",
         &FormatConfig::default(),
-        RenderState::new(shape(100)),
     );
-    assert_eq!(result.text, "fn add(value: i32) -> i32 { value }");
+    assert_eq!(result.text, "fn add(value: i32) -> i32 {\n  value\n}");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
 }
 
 #[test]
-fn source_layouts_cannot_move_opaque_macros_to_another_column() {
+fn a_layout_cannot_split_the_tokens_of_a_macro() {
     let source = SourceFileView::parse("unknown!(value)");
     let layout = Document::Concat(vec![
-        Document::Space,
+        Document::Preserve { bytes: 0..9 },
         Document::Preserve {
-            bytes: 0..source.text.len(),
-            keep_column: false,
+            bytes: 9..source.text.len(),
         },
     ]);
     let ownership = OwnershipMap::from_source(&source);
-    assert!(document::render(
+    let result = document::render(
         &source,
         &ownership,
         &layout,
         0..source.text.len(),
         shape(100),
-        RenderState::new(shape(100))
-    )
-    .is_err());
+        RenderState::new(shape(100)),
+    );
+    assert_eq!(
+        result.err().as_deref(),
+        Some("A layout split the tokens of a macro")
+    );
 }
 
 #[test]
-fn declaration_rendering_preserves_enclosing_impl_state() {
+fn a_header_inside_an_impl_keeps_the_indentation_of_the_impl() {
     let source = SourceFileView::parse(
         "impl Counter {\n  fn add(first: i32, second: i32) -> i32 { first }\n}",
     );
@@ -274,50 +271,36 @@ fn declaration_rendering_preserves_enclosing_impl_state() {
         indent_level: entry.indent_level,
         ..shape(39)
     };
+    let header = source.token_bytes(declaration.header.tokens.clone());
     let layout = builtin_registry()
         .format(
-            SyntaxNode::Function(declaration),
+            SyntaxNode::Header(&declaration.header),
             &source,
             &config,
             node_shape,
         )
         .unwrap();
     let mut ownership = OwnershipMap::from_source(&source);
-    ownership
-        .claim(declaration.bytes.clone(), Owner::Syntax)
-        .unwrap();
-    let result = document::render(
-        &source,
-        &ownership,
-        &layout,
-        declaration.bytes.clone(),
-        node_shape,
-        entry,
-    )
-    .unwrap();
+    ownership.claim(header.clone(), Owner::Syntax).unwrap();
+    let result = document::render(&source, &ownership, &layout, header, node_shape, entry).unwrap();
     assert_eq!(
         result.text,
-        "fn add(\n    first: i32,\n    second: i32\n  ) -> i32 { first }"
+        "fn add(\n    first: i32,\n    second: i32\n  ) -> i32 "
     );
     assert_eq!(result.exit_state.indent_level, 1);
     assert_eq!(result.exit_state.delimiters.len(), 1);
 }
 
 #[test]
-fn warning_only_results_do_not_fail_check_mode() {
-    let result = FormatOutcome {
-        text: "unchanged".into(),
-        coverage: Coverage::Partial,
-        warnings: vec![CoverageWarning {
-            bytes: 0..9,
-            message: "unsupported syntax; preserved the file".into(),
-        }],
+fn a_warning_names_the_file_and_the_line() {
+    let warning = CoverageWarning {
+        bytes: 6..9,
+        message: "unsupported syntax; preserved the file".into(),
     };
-    assert_eq!(result.check_status("unchanged"), 0);
-    assert_eq!(result.check_status("different"), 1);
-    assert!(result.warnings[0]
-        .render("program.vx", "unchanged")
-        .starts_with("WARN: program.vx:1:"));
+    assert_eq!(
+        warning.render("program.vx", "first\nsecond"),
+        "WARN: program.vx:2: unsupported syntax; preserved the file"
+    );
 }
 
 #[test]
@@ -331,19 +314,4 @@ fn child_shapes_reserve_parent_width_and_indent_once() {
     assert_eq!(parent.reserve(5).unwrap().remaining(), 27);
     assert_eq!(parent.child_line().column, 8);
     assert!(parent.reserve(33).is_none());
-}
-
-#[test]
-fn cleanup_cannot_remove_parser_sensitive_separation() {
-    let source = SourceFileView::parse("value > > count");
-    let gap = &source.gaps[0];
-    let bytes = source.tokens[gap.left.0].bytes.end..source.tokens[gap.right.0].bytes.start;
-    let segment = OutputSegment {
-        output: bytes.clone(),
-        source: Some(bytes),
-        owner: Owner::Legacy,
-        whitespace_only: true,
-        preserved: false,
-    };
-    assert!(!segment.allows_legacy_cleanup(&OwnershipMap::from_source(&source), &source));
 }
