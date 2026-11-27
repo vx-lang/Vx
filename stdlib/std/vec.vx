@@ -5,7 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::cmp;
 import core::default;
+import core::hash::traits;
 import core::iter::traits;
 import core::marker;
 import core::mem;
@@ -66,10 +68,16 @@ fn vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mu
 /// Stops the program when `index` is outside `0..len`, and prints both to standard error first.
 pub fn vec_check_index(index : i64, len : i64) -> i32 {
   if index < 0 || index >= len {
-    eprintln!("Vec: index {} is out of bounds for length {}", index, len);
-    panic("Vec: index out of bounds");
+    vec_index_out_of_bounds(index, len);
   }
   return 0;
+}
+
+/// Prints the index and the length, and stops the program. The message stays in this function,
+/// out of `get` and `set`, so that LLVM can inline them.
+fn vec_index_out_of_bounds(index : i64, len : i64) -> ! {
+  eprintln!("Vec: index {} is out of bounds for length {}", index, len);
+  panic("Vec: index out of bounds");
 }
 
 /// Moves the element at `index` out of the buffer. The caller makes sure the buffer does not
@@ -356,6 +364,35 @@ impl<T> Default for Vec<T> {
   /// An empty `Vec`, as `new` makes.
   fn default() -> Vec<T> {
     return Vec<T>::new ();
+  }
+}
+
+/// Two vectors are equal when they have the same length and equal elements in the same order.
+impl<T : PartialEq> PartialEq for Vec<T> {
+  fn eq(self : &Vec<T>, other : &Vec<T>) -> bool {
+    if self.len != other.len {
+      return false;
+    }
+    for i in 0..self.len {
+      if !self.get_ref(i).eq(other.get_ref(i)) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
+
+impl<T : Eq> Eq for Vec<T> {}
+
+/// The length, and then each element, as Rust hashes a slice. So `[1, 2]` and `[1]` then `[2]`
+/// in one hasher do not hash the same.
+impl<T : Hash> Hash for Vec<T> {
+  fn hash<H : Hasher>(self : &Vec<T>, state : &mut H) -> i32 {
+    let _length = state.write_usize(self.len as usize);
+    for i in 0..self.len {
+      let _element = self.get_ref(i).hash(state);
+    }
+    return 0;
   }
 }
 

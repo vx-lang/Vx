@@ -278,6 +278,7 @@ impl<'a> Parser<'a> {
                     expansion: self.expansion(),
                 };
                 self.advance();
+                self.reject_let_condition("while")?;
                 let cond = self.parse_expr_before_block()?;
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {

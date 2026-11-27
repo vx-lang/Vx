@@ -1,0 +1,24 @@
+//===- enum_payload_with_the_wrong_number_of_values.vx - Vx Compiler -*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// An enum variant must get as many values as it declares. E3009 reports each way to get
+// the count wrong. A message uses "value" for a count of 1 and "values" for any other count.
+
+enum Shape {
+  Circle(i32),
+  Rect(i32, i32),
+  Empty,
+}
+
+fn main() -> i32 {
+  let too_many = Shape::Circle(1, 2);
+  let too_few = Shape::Rect(1);
+  let none_expected = Shape::Empty(1);
+  let missing = Shape::Circle;
+  return 0;
+}
+
+// CHECK: Error[E3009] at {{.*}}enum_payload_with_the_wrong_number_of_values.vx:14:18: Enum variant Shape::Circle expects 1 value, got 2
+// CHECK: Error[E3009] at {{.*}}enum_payload_with_the_wrong_number_of_values.vx:15:17: Enum variant Shape::Rect expects 2 values, got 1
+// CHECK: Error[E3009] at {{.*}}enum_payload_with_the_wrong_number_of_values.vx:16:23: Enum variant Shape::Empty does not take a payload
+// CHECK: Error[E3009] at {{.*}}enum_payload_with_the_wrong_number_of_values.vx:17:24: Enum variant Shape::Circle expects a payload

@@ -122,7 +122,8 @@ pub(super) fn render(
     let tokens = adjust_spacing(normalize_and_expand_blocks(
         input,
         state.column,
-        config.max_width,
+        state.indent_level,
+        config,
         measure_unit,
     ));
     let mut tokens = tokens.iter().peekable();
@@ -198,13 +199,65 @@ fn emit(text: &str, state: &mut RenderState, output: &mut String) {
     state.emitted(text);
 }
 
+/// Counts the indentation level that `render` gives a line, with the same rules: one level for
+/// each open `{`, and for each open `[` whose line ends after it.
+struct IndentLevel {
+    scanned: usize,
+    level: usize,
+    brackets: Vec<bool>,
+}
+
+impl IndentLevel {
+    /// Counts the brackets in `tokens[self.scanned..end]`. The tokens before `end` must not change.
+    fn advance(&mut self, tokens: &[Token], end: usize) {
+        assert!(
+            self.scanned <= end,
+            "the indentation was counted past this token"
+        );
+        for k in self.scanned..end {
+            match tokens[k].kind {
+                TokenType::LeftBrace => self.level += 1,
+                TokenType::RightBrace => self.level = self.level.saturating_sub(1),
+                TokenType::LeftBracket => {
+                    let rows_below = matches!(
+                        tokens.get(k + 1).map(|t| &t.kind),
+                        Some(TokenType::Whitespace(ws)) if ws.contains('\n')
+                    );
+                    self.level += usize::from(rows_below);
+                    self.brackets.push(rows_below);
+                }
+                TokenType::RightBracket => {
+                    let rows_below = self.brackets.pop() == Some(true);
+                    self.level = self.level.saturating_sub(usize::from(rows_below));
+                }
+                _ => {}
+            }
+        }
+        self.scanned = end;
+    }
+
+    /// The level of a line that starts with `line`, after `advance` counted the lines above it.
+    /// A line that starts with a `}`, or with the `]` of a multi-line array, is one level out.
+    fn level_of_line(&self, line: &[Token]) -> usize {
+        let closes = match line.first().map(|t| &t.kind) {
+            Some(TokenType::RightBrace) => true,
+            Some(TokenType::RightBracket) => self.brackets.last() == Some(&true),
+            _ => false,
+        };
+        self.level.saturating_sub(usize::from(closes))
+    }
+}
+
 /// `start_column` is the column of the first token, where the code before it on the line ended.
+/// `start_indent` is the indentation level there.
 fn normalize_and_expand_blocks<'a>(
     mut tokens: Vec<Token<'a>>,
     start_column: usize,
-    max_width: usize,
+    start_indent: usize,
+    config: &FormatConfig,
     measure_unit: &MeasureUnit<'_>,
 ) -> Vec<Token<'a>> {
+    let max_width = config.max_width;
     // The width of a token on one line. A rule's unit that needs several lines has none.
     let width = |token: &Token| {
         if is_rule_unit(&token.kind) {
@@ -256,6 +309,11 @@ fn normalize_and_expand_blocks<'a>(
 
     // Pass 1c: Process blocks (collapsing `unsafe` or expanding others)
     let mut new_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 20);
+    let mut indent = IndentLevel {
+        scanned: 0,
+        level: start_indent,
+        brackets: Vec::new(),
+    };
     let mut i = 0;
     while i < tokens.len() {
         if let TokenType::LeftBrace = tokens[i].kind {
@@ -301,21 +359,32 @@ fn normalize_and_expand_blocks<'a>(
                     80
                 };
                 if is_unsafe_block && !holds_comment && !breaks {
-                    // Try to measure the total length if we collapsed it to a single line
-                    // With no line break before the block, its line starts before these tokens.
-                    let mut collapsed_len = start_column;
-                    for j in (0..new_tokens.len()).rev() {
-                        if let TokenType::Whitespace(ws) = new_tokens[j].kind {
-                            if let Some(pos) = ws.rfind('\n') {
-                                collapsed_len = collapsed_len - start_column + ws.len() - pos - 1;
-                                break;
-                            } else {
-                                collapsed_len += new_tokens[j].length;
-                            }
-                        } else {
-                            collapsed_len += width(&new_tokens[j]).unwrap_or(new_tokens[j].length);
-                        }
-                    }
+                    // Measure the line as `render` writes it: with the indentation it gives, not the
+                    // indentation of the input. With no line break before the block in these
+                    // tokens, the line starts before them, at `start_column`.
+                    let line_start = new_tokens
+                        .iter()
+                        .rposition(
+                            |t| matches!(t.kind, TokenType::Whitespace(ws) if ws.contains('\n')),
+                        )
+                        .map_or(0, |k| k + 1);
+                    indent.advance(&new_tokens, line_start);
+                    let line = &new_tokens[line_start..];
+                    // `render` drops the spaces at the start of a line.
+                    let first = line
+                        .iter()
+                        .position(|t| !matches!(t.kind, TokenType::Whitespace(_)))
+                        .unwrap_or(line.len());
+                    let mut collapsed_len = if line_start == 0 && start_column > 0 {
+                        start_column + line.iter().map(|t| t.length).sum::<usize>()
+                            - line[first..].iter().map(|t| t.length).sum::<usize>()
+                    } else {
+                        indent.level_of_line(&line[first..]) * config.indent
+                    };
+                    collapsed_len += line[first..]
+                        .iter()
+                        .map(|t| width(t).unwrap_or(t.length))
+                        .sum::<usize>();
                     for t in &tokens[lb_idx..=rb_idx] {
                         if let TokenType::Whitespace(ws) = t.kind {
                             if ws.contains('\n') {

@@ -514,6 +514,7 @@ fn result_name(at: Span) -> Expr {
 
 fn zero() -> Expr {
     Expr::Number(NumberExpr {
+        written: None,
         value: "0".to_string().into(),
         ty: None,
         span: Span::default(),
@@ -522,6 +523,7 @@ fn zero() -> Expr {
 
 fn one() -> Expr {
     Expr::Number(NumberExpr {
+        written: None,
         value: "1".to_string().into(),
         ty: None,
         span: Span::default(),
@@ -756,11 +758,11 @@ impl<'a> TypeChecker<'a> {
             // as the program: `Valid` and `Init` for its `n + 1` elements.
             Expr::StringLiteral(l) => {
                 let base = self.new_base(Memory::Static);
-                let len = Expr::Number(NumberExpr {
-                    value: (l.value.as_ref().len() + 1).to_string().into(),
-                    ty: None,
-                    span: Span::default(),
-                });
+                let len = Expr::Number(NumberExpr::new(
+                    (l.value.as_ref().len() + 1).to_string(),
+                    None,
+                    Span::default(),
+                ));
                 self.add_range(Kind::Valid, base, Vec::new(), vec![len.clone()]);
                 self.add_range(Kind::Init, base, Vec::new(), vec![len]);
                 PointerValue {

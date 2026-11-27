@@ -112,7 +112,7 @@ impl AstPrinter {
             let is_last = i == fields.len() - 1;
             let prefix = if is_last { "└─ " } else { "├─ " };
             indent.print(w)?;
-            writeln!(w, "{}{}: {:?}", prefix, name, ty)?;
+            writeln!(w, "{}{}: {}", prefix, name, ty)?;
         }
         Ok(())
     }
@@ -220,12 +220,16 @@ impl AstPrinter {
                 writeln!(w, "{}Identifier({})", prefix, name)?;
             }
             Expr::Number(NumberExpr {
+                written: _,
                 value: val,
                 ty: el_ty,
                 span: _,
             }) => {
                 indent.print(w)?;
-                writeln!(w, "{}Number({}{:?})", prefix, val, el_ty)?;
+                match el_ty {
+                    Some(el_ty) => writeln!(w, "{}Number({} : {})", prefix, val, el_ty)?,
+                    None => writeln!(w, "{}Number({})", prefix, val)?,
+                }
             }
             Expr::StringLiteral(StringLiteralExpr { value: s, span: _ }) => {
                 indent.print(w)?;

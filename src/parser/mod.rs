@@ -51,6 +51,7 @@ impl<'a> ParserError<'a> {
                     found.line,
                     found.column,
                     found.length.max(1),
+                    Some(crate::diagnostic::DiagnosticCode::E1001),
                     // The caller's message already says what was expected -- all 149 of them
                     // begin "Expected ..." -- so prefixing another one read "Expected Expected '}'".
                     &format!("Unexpected token {:?}. {}", found.kind, expected),
@@ -62,12 +63,18 @@ impl<'a> ParserError<'a> {
                 token.line,
                 token.column,
                 token.length.max(1),
+                None,
                 message,
             ),
-            ParserError::EndOfFile { expected } => match file {
-                Some(file) => format!("Unexpected end of file in {}. {}", file, expected),
-                None => format!("Unexpected end of file. {}", expected),
-            },
+            ParserError::EndOfFile { expected } => {
+                let code = crate::diagnostic::DiagnosticCode::E1002;
+                match file {
+                    Some(file) => {
+                        format!("Error[{code}] in {file}: Unexpected end of file. {expected}")
+                    }
+                    None => format!("Error[{code}]: Unexpected end of file. {expected}"),
+                }
+            }
         }
     }
 }
@@ -288,6 +295,18 @@ impl<'a> Parser<'a> {
             message: msg.to_string(),
             token: token.clone(),
         }
+    }
+
+    /// Vx has no `if let` and no `while let`. Tell the programmer to write a `match`.
+    pub(crate) fn reject_let_condition(&self, keyword: &str) -> ParseResult<'a, ()> {
+        let token = self.peek();
+        if token.kind == TokenType::Let {
+            return Err(self.error_at(
+                token,
+                &format!("Vx has no `{keyword} let`. Use a `match` with a `_` arm instead"),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn parse_token_tree(&mut self) -> ParseResult<'a, TokenTree> {

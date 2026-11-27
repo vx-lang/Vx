@@ -1,0 +1,64 @@
+//===- errors_in_a_generic_function_first_called_by_a_question_mark_or_a_task.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The compiler checks the body of a generic function at its first call. Each function below is
+// called first where the compiler only works out a type: before a `?`, or as the last expression
+// of a task. The errors in its body are still reported.
+
+import core::result;
+import std::vec;
+
+struct Holder {
+  items : Vec<i32>,
+}
+
+// CHECK-DAG: Error[E3001] at {{.*}}.vx:[[@LINE+2]]:3: '_wrong' is declared i32 but its initializer is bool
+fn first<T>(x : T) -> Result<T, i32> {
+  let _wrong : i32 = true;
+  return Result<T, i32>::Ok(x);
+}
+
+// A move out of a `&mut` would free `items` twice.
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:[[@LINE+2]]:17: `h.items` cannot be moved out
+fn take_items<T>(h : &mut Holder, _unused : T) -> Result<i32, i32> {
+  let items = h.items;
+  h.items = Vec<i32>::new();
+  return Result<i32, i32>::Ok(items.len());
+}
+
+fn step(h : &mut Holder) -> Result<i32, i32> {
+  let _v = first(3)?;
+  let _n = take_items(h, 0)?;
+  return Result<i32, i32>::Ok(0);
+}
+
+// CHECK-DAG: Error[E3001] at {{.*}}.vx:[[@LINE+2]]:3: '_also_wrong' is declared i32 but its initializer is bool
+fn second<T>(x : T) -> T {
+  let _also_wrong : i32 = true;
+  return x;
+}
+
+fn in_a_task() -> i32 {
+  tasks {
+    spawn {
+      second(4)
+    };
+  }
+  return 0;
+}
+
+// CHECK: 3 error(s) emitted
+
+fn main() -> i32 {
+  let mut h = Holder {
+    items : Vec<i32>::new()
+  };
+  let _r = step(&mut h);
+  return in_a_task();
+}

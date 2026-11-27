@@ -349,9 +349,12 @@ impl<'a> Parser<'a> {
             Ok(Type::Scalar(ElementType::I32))
         } else if self.match_token(&TokenType::LeftAngle) {
             let n = match &self.advance().kind {
-                TokenType::Number(s) => s
-                    .parse::<usize>()
-                    .map_err(|_| self.error("Expected integer for SIMD size"))?,
+                // The spellings of any other literal: `<0x4 x f32>`, but no type suffix.
+                TokenType::Number(s) => match crate::parser::expr::infer_number_literal(s) {
+                    Ok((text, None)) => text.parse::<usize>().ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| self.error("Expected integer for SIMD size"))?,
                 _ => return Err(self.error("Expected number after '<' in SIMD type")),
             };
             match &self.advance().kind {
@@ -492,6 +495,17 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_named_type(&mut self) -> ParseResult<'a, Type> {
+        if self.check(&TokenType::Impl) {
+            // Name the trait the user wrote, so the example matches their code.
+            let trait_name = match &self.peek_n(1).kind {
+                TokenType::Identifier(name) => name.to_string(),
+                _ => "Trait".to_string(),
+            };
+            return Err(self.error(&format!(
+                "Vx has no `impl Trait` type yet. In a parameter, write a generic parameter \
+                 instead, as in `fn show<T : {trait_name}>(g : &T)`"
+            )));
+        }
         let ident = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),

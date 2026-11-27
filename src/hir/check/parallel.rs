@@ -1066,7 +1066,7 @@ pub(crate) fn parallel_pure_call(name: &str) -> bool {
     let Some((ty, method)) = name.split_once('$').or_else(|| name.split_once("::")) else {
         return false;
     };
-    matches!(ty, "f32" | "f64" | "i32" | "i64")
+    matches!(ty, "f16" | "bf16" | "f32" | "f64" | "i32" | "i64")
         && matches!(
             method,
             "exp"

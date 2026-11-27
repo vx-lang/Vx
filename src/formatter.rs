@@ -309,4 +309,45 @@ mod tests {
         let formatted = format_file(input, 2);
         assert_eq!(formatted, expected);
     }
+
+    #[test]
+    fn the_indentation_of_the_input_does_not_change_which_unsafe_blocks_go_on_one_line() {
+        // Each program is already formatted. A joined `unsafe` block makes a line of 79
+        // characters. A block on three lines would make a line of 80 or 81 characters if joined.
+        let programs = [
+            // Indented inside two `{`.
+            "fn decode(tokenizer_ptr : *mut i8, token : i32, next : i32) -> i32 {\n  if token > 0 {\n    let piece : *mut i8 = unsafe {\n      vx_decode_token(tokenizer_ptr, token, next)\n    };\n  }\n  return 0;\n}",
+            // Indented inside a `{` and a multi-line array.
+            "fn main() -> i32 {\n  let a : Tensor<i64, [2]> = [\n    unsafe { read_the_first_value_that_the_pointer_points_to_in_memory(p, q) },\n    2\n  ];\n  return 0;\n}",
+            "fn main() -> i32 {\n  let a : Tensor<i64, [2]> = [\n    unsafe {\n      read_the_second_value_that_the_pointer_points_to_in_memory(p, q)\n    },\n    2\n  ];\n  return 0;\n}",
+            // A line that starts with `}` is one level less indented than the line above it.
+            "fn pick(k : i32, p : *mut i8) -> i32 {\n  match k {\n    0 => {\n      return 1;\n    }, _ => unsafe { write_the_value_that_the_pointer_points_to_in_memory(p) },\n  }\n  return 0;\n}",
+        ];
+        // These programs check the base formatting, so the rules are off.
+        let config = [
+            "function_headers",
+            "struct_literals",
+            "match_arms",
+            "if_values",
+        ]
+        .into_iter()
+        .fold(FormatConfig::default(), |config, rule| {
+            config.with_rule(rule, false)
+        });
+        for program in programs {
+            assert_eq!(format_file_with_config(program, &config), program);
+            for indentation in ["", "          "] {
+                let reindented: Vec<String> = program
+                    .lines()
+                    .map(|line| format!("{indentation}{}", line.trim_start()))
+                    .collect();
+                assert_eq!(
+                    format_file_with_config(&reindented.join("\n"), &config),
+                    program,
+                    "input indented with {} spaces",
+                    indentation.len()
+                );
+            }
+        }
+    }
 }
