@@ -1354,13 +1354,15 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_logicalop_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
-            Expr::LogicalOp(LogicalOpExpr {
-                lhs,
-                op: _,
-                rhs,
-                span,
-            }) => {
+            Expr::LogicalOp(LogicalOpExpr { lhs, op, rhs, span }) => {
                 let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false);
+                // `Unknown` is an error reported already.
+                let is_bool = |t: &Type| {
+                    matches!(
+                        t,
+                        Type::Scalar(ElementType::Bool) | Type::Generic(..) | Type::Unknown
+                    )
+                };
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3006,
@@ -1368,6 +1370,16 @@ impl<'a> TypeChecker<'a> {
                             "Type mismatch in logical operation: {} vs {}",
                             lhs_ty, rhs_ty
                         ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                } else if !is_bool(&lhs_ty) || !is_bool(&rhs_ty) {
+                    let op = match op {
+                        LogicalOp::And => "&&",
+                        LogicalOp::Or => "||",
+                    };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3006,
+                        format!("`{op}` takes two `bool` values, but both sides are {lhs_ty}"),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
