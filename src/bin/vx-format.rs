@@ -137,7 +137,15 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
     Ok(cli.check && changes.into_iter().any(|changed| changed))
 }
 
+/// The stack of each thread that formats files. The formatter reads a file with the compiler's
+/// parser, which needs the stack of a main thread for deeply nested expressions.
+const FORMAT_THREAD_STACK: usize = 8 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(FORMAT_THREAD_STACK)
+        .build_global()
+        .expect("the thread pool is built once, before any formatting");
     match run(Cli::parse()) {
         Ok(false) => ExitCode::SUCCESS,
         Ok(true) => ExitCode::from(1),
