@@ -1,5 +1,6 @@
 pub mod decl;
 pub mod expr;
+pub(crate) mod formatting;
 pub mod macro_expand;
 pub mod stmt;
 mod tuple_match;
@@ -113,6 +114,8 @@ pub struct Parser<'a> {
     match_is_statement: bool,
     /// Inside an impl block, the type the impl is for: what `Self` means there.
     impl_self: Option<crate::syntax::Type>,
+    /// Where each piece of syntax is, for the formatter. `None` when the compiler parses.
+    recorder: Option<Vec<formatting::SyntaxRecord>>,
     /// The first token of an expression that a block follows, such as the condition of an `if`.
     /// Outside brackets there, a name and `{` are the name and the block, not a struct literal.
     block_follows: Option<usize>,
@@ -147,6 +150,7 @@ impl<'a> Parser<'a> {
             prefix_stmts: Vec::new(),
             match_is_statement: false,
             impl_self: None,
+            recorder: None,
             block_follows: None,
             extent_names_allowed: false,
         }

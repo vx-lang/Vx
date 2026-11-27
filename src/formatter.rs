@@ -7,516 +7,234 @@
 //===----------------------------------------------------------------------===//
 //
 // This file provides the core logic for the Vx code formatter.
-// It iterates over token streams produced by the lexer and applies intelligent
-// spacing, indentation, and line-wrapping rules to generate idiomatic and
-// readable Vx source code.
+// It composes registered syntax layouts with bounded legacy formatting.
+// Final validation protects original tokens, grammatical gaps, and preserved source.
 //
 //===----------------------------------------------------------------------===//
-use crate::lexer::{Lexer, Token, TokenType};
-use std::collections::HashMap;
+use vx_config::FormatConfig;
+
+mod legacy;
+pub mod source;
+
+pub use source::dispatch::FormatOutcome;
 
 pub fn format_file(content: &str, indent_spaces: usize) -> String {
-    let mut lexer = Lexer::new_with_comments(content);
-    let tokens = lexer.tokenize();
-
-    if let Some(token) = tokens.first() {
-        if let TokenType::Comment(c) | TokenType::DocComment(c) = &token.kind {
-            if c.contains("//! vx-format: OFF") {
-                return content.to_string();
-            }
-        }
-    }
-
-    // A file that does not lex, such as one that ends inside a string, is left as it is: an
-    // unknown token is written back as one character, which would lose the rest of its text.
-    if tokens
-        .iter()
-        .any(|t| matches!(t.kind, TokenType::Unknown(_)))
-    {
-        return content.to_string();
-    }
-
-    let tokens = normalize_and_expand_blocks(tokens, indent_spaces);
-    let tokens = adjust_spacing(tokens);
-    emit_formatted_string(tokens, indent_spaces, content.len())
+    format_file_with_config(
+        content,
+        &FormatConfig {
+            indent: indent_spaces,
+            ..FormatConfig::default()
+        },
+    )
 }
 
-/// Counts the indentation level that `emit_formatted_string` gives a line, with the same rules:
-/// one level for each open `{`, and for each open `[` whose line ends after it.
-#[derive(Default)]
-struct IndentLevel {
-    scanned: usize,
-    level: usize,
-    brackets: Vec<bool>,
+pub fn format_file_with_config(content: &str, config: &FormatConfig) -> String {
+    format_file_with_report(content, config).text
 }
 
-impl IndentLevel {
-    /// Counts the brackets in `tokens[self.scanned..end]`. The tokens before `end` must not change.
-    fn advance(&mut self, tokens: &[Token], end: usize) {
-        assert!(
-            self.scanned <= end,
-            "the indentation was counted past this token"
-        );
-        for k in self.scanned..end {
-            match tokens[k].kind {
-                TokenType::LeftBrace => self.level += 1,
-                TokenType::RightBrace => self.level = self.level.saturating_sub(1),
-                TokenType::LeftBracket => {
-                    let rows_below = matches!(
-                        tokens.get(k + 1).map(|t| &t.kind),
-                        Some(TokenType::Whitespace(ws)) if ws.contains('\n')
-                    );
-                    self.level += rows_below as usize;
-                    self.brackets.push(rows_below);
-                }
-                TokenType::RightBracket => {
-                    let rows_below = self.brackets.pop() == Some(true);
-                    self.level = self.level.saturating_sub(rows_below as usize);
-                }
-                _ => {}
-            }
-        }
-        self.scanned = end;
-    }
-
-    /// The level of a line that starts with `line`, after `advance` counted the lines above it.
-    /// A line that starts with a `}`, or with the `]` of a multi-line array, is one level out.
-    fn level_of_line(&self, line: &[Token]) -> usize {
-        let closes = match line.first().map(|t| &t.kind) {
-            Some(TokenType::RightBrace) => true,
-            Some(TokenType::RightBracket) => self.brackets.last() == Some(&true),
-            _ => false,
-        };
-        self.level.saturating_sub(closes as usize)
-    }
+pub fn format_file_with_report(content: &str, config: &FormatConfig) -> FormatOutcome {
+    source::engine::format_source(content, config)
 }
 
-fn normalize_and_expand_blocks(mut tokens: Vec<Token>, indent_spaces: usize) -> Vec<Token> {
-    // Pass 1a: Ensure spaces before `{`
-    let mut spaced_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 10);
-    for token in &tokens {
-        if let TokenType::LeftBrace = token.kind {
-            if !spaced_tokens.is_empty()
-                && !matches!(spaced_tokens.last().unwrap().kind, TokenType::Whitespace(_))
-            {
-                spaced_tokens.push(Token {
-                    kind: TokenType::Whitespace(" "),
-                    line: token.line,
-                    column: token.column,
-                    length: 1,
-                    expansion: token.expansion,
-                });
-            }
-        }
-        spaced_tokens.push(token.clone());
-    }
-    tokens = spaced_tokens;
-
-    // Pass 1b: Match braces in O(N) using a stack
-    let mut stack = Vec::new();
-    let mut left_to_right = HashMap::new();
-    let mut right_to_left = HashMap::new();
-    for (idx, token) in tokens.iter().enumerate() {
-        match token.kind {
-            TokenType::LeftBrace => stack.push(idx),
-            TokenType::RightBrace => {
-                if let Some(lb_idx) = stack.pop() {
-                    left_to_right.insert(lb_idx, idx);
-                    right_to_left.insert(idx, lb_idx);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Pass 1c: Process blocks (collapsing `unsafe` or expanding others)
-    let mut new_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 20);
-    let mut indent = IndentLevel::default();
-    let mut i = 0;
-    while i < tokens.len() {
-        if let TokenType::LeftBrace = tokens[i].kind {
-            if let Some(&rb_idx) = left_to_right.get(&i) {
-                let lb_idx = i;
-                let has_newline = tokens[(lb_idx + 1)..rb_idx].iter().any(|t| {
-                    if let TokenType::Whitespace(ws) = t.kind {
-                        ws.contains('\n')
-                    } else {
-                        false
-                    }
-                });
-
-                let mut is_unsafe_block = false;
-                for j in (0..new_tokens.len()).rev() {
-                    match new_tokens[j].kind {
-                        TokenType::Whitespace(_)
-                        | TokenType::Comment(_)
-                        | TokenType::DocComment(_) => continue,
-                        TokenType::Unsafe => {
-                            is_unsafe_block = true;
-                            break;
-                        }
-                        _ => break,
-                    }
-                }
-
-                // A line comment inside runs to the end of its line, so a block holding one is
-                // never put on one line: the comment would swallow the code after it.
-                let holds_comment = tokens[lb_idx..=rb_idx]
-                    .iter()
-                    .any(|t| matches!(t.kind, TokenType::Comment(_) | TokenType::DocComment(_)));
-                if is_unsafe_block && !holds_comment {
-                    // Measure the line as the emitter writes it: with the indentation it gives,
-                    // not the indentation of the input. Else the result depends on the input.
-                    let line_start = new_tokens
-                        .iter()
-                        .rposition(
-                            |t| matches!(t.kind, TokenType::Whitespace(ws) if ws.contains('\n')),
-                        )
-                        .map_or(0, |k| k + 1);
-                    indent.advance(&new_tokens, line_start);
-                    let line = &new_tokens[line_start..];
-                    // The emitter drops the spaces at the start of a line.
-                    let first = line
-                        .iter()
-                        .position(|t| !matches!(t.kind, TokenType::Whitespace(_)))
-                        .unwrap_or(line.len());
-                    let mut collapsed_len = indent.level_of_line(&line[first..]) * indent_spaces;
-                    collapsed_len += line[first..].iter().map(|t| t.length).sum::<usize>();
-                    for t in &tokens[lb_idx..=rb_idx] {
-                        if let TokenType::Whitespace(ws) = t.kind {
-                            if ws.contains('\n') {
-                                collapsed_len += 1;
-                            } else {
-                                collapsed_len += t.length;
-                            }
-                        } else {
-                            collapsed_len += t.length;
-                        }
-                    }
-
-                    if collapsed_len + 2 <= 80 {
-                        // Collapse it! Replace all newlines inside with spaces.
-                        new_tokens.push(tokens[lb_idx].clone());
-
-                        if !matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
-                            new_tokens.push(Token {
-                                kind: TokenType::Whitespace(" "),
-                                line: tokens[lb_idx].line,
-                                column: tokens[lb_idx].column,
-                                length: 1,
-                                expansion: tokens[lb_idx].expansion,
-                            });
-                        }
-
-                        for token in &tokens[(lb_idx + 1)..rb_idx] {
-                            let mut t = token.clone();
-                            if let TokenType::Whitespace(ref mut ws) = t.kind {
-                                if ws.contains('\n') {
-                                    *ws = " ";
-                                }
-                            }
-                            new_tokens.push(t);
-                        }
-
-                        if !matches!(new_tokens.last().unwrap().kind, TokenType::Whitespace(_)) {
-                            new_tokens.push(Token {
-                                kind: TokenType::Whitespace(" "),
-                                line: tokens[rb_idx].line,
-                                column: tokens[rb_idx].column,
-                                length: 1,
-                                expansion: tokens[rb_idx].expansion,
-                            });
-                        }
-
-                        new_tokens.push(tokens[rb_idx].clone());
-                        i = rb_idx + 1;
-                        continue;
-                    }
-                }
-
-                let has_non_ws = tokens[(lb_idx + 1)..rb_idx].iter().any(|t| {
-                    !matches!(
-                        t.kind,
-                        TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
-                    )
-                });
-
-                if !has_newline && has_non_ws {
-                    new_tokens.push(tokens[lb_idx].clone());
-
-                    if matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
-                        let mut t = tokens[lb_idx + 1].clone();
-                        t.kind = TokenType::Whitespace("\n");
-                        new_tokens.push(t);
-                        i = lb_idx + 2;
-                    } else {
-                        new_tokens.push(Token {
-                            kind: TokenType::Whitespace("\n"),
-                            line: 0,
-                            column: 0,
-                            length: 1,
-                            expansion: 0,
-                        });
-                        i = lb_idx + 1;
-                    }
-                    continue;
-                }
-            }
-        } else if let TokenType::RightBrace = tokens[i].kind {
-            if let Some(&lb_idx) = right_to_left.get(&i) {
-                let has_newline = tokens[(lb_idx + 1)..i].iter().any(|t| {
-                    if let TokenType::Whitespace(ws) = t.kind {
-                        ws.contains('\n')
-                    } else {
-                        false
-                    }
-                });
-
-                let has_non_ws = tokens[(lb_idx + 1)..i].iter().any(|t| {
-                    !matches!(
-                        t.kind,
-                        TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
-                    )
-                });
-
-                if !has_newline && has_non_ws {
-                    let needs_newline = match new_tokens.last() {
-                        Some(t) => {
-                            if let TokenType::Whitespace(ws) = t.kind {
-                                !ws.contains('\n')
-                            } else {
-                                true
-                            }
-                        }
-                        None => true,
-                    };
-
-                    if needs_newline {
-                        if let Some(t) = new_tokens.last_mut() {
-                            if let TokenType::Whitespace(_) = t.kind {
-                                t.kind = TokenType::Whitespace("\n");
-                            } else {
-                                new_tokens.push(Token {
-                                    kind: TokenType::Whitespace("\n"),
-                                    line: 0,
-                                    column: 0,
-                                    length: 1,
-                                    expansion: 0,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        new_tokens.push(tokens[i].clone());
-        i += 1;
-    }
-
-    new_tokens
+/// The built-in defaults as a complete configuration file, with every built-in rule.
+pub fn default_config_toml() -> String {
+    let edition = FormatConfig::default().style_edition;
+    let rules: Vec<_> = source::builtin_registry()
+        .rules()
+        .into_iter()
+        .map(|rule| (rule.name, (rule.enabled_by_default)(edition)))
+        .collect();
+    vx_config::default_format_config_toml(&rules)
 }
 
-fn adjust_spacing(tokens: Vec<Token>) -> Vec<Token> {
-    let mut new_tokens = Vec::with_capacity(tokens.len());
-    let mut last_non_ws: Option<TokenType> = None;
-
-    let mut next_non_ws_arr = vec![None; tokens.len()];
-    let mut curr_next = None;
-    for (i, token) in tokens.iter().enumerate().rev() {
-        next_non_ws_arr[i] = curr_next.clone();
-        if !matches!(
-            token.kind,
-            TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
-        ) {
-            curr_next = Some(token.kind.clone());
-        }
-    }
-
-    for (i, mut token) in tokens.into_iter().enumerate() {
-        if !matches!(
-            token.kind,
-            TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
-        ) {
-            last_non_ws = Some(token.kind.clone());
-            new_tokens.push(token);
-            continue;
-        }
-
-        if let TokenType::Whitespace(ref mut ws) = token.kind {
-            let next_non_ws = &next_non_ws_arr[i];
-
-            if ws.contains('\n') {
-                if let Some(prev) = &last_non_ws {
-                    if matches!(prev, TokenType::For | TokenType::If | TokenType::While) {
-                        *ws = " ";
-                    }
-                }
-                if let Some(next) = next_non_ws {
-                    if matches!(
-                        next,
-                        TokenType::EqEq
-                            | TokenType::NotEq
-                            | TokenType::LessEq
-                            | TokenType::GreaterEq
-                            | TokenType::LeftAngle
-                            | TokenType::RightAngle
-                            | TokenType::AndAnd
-                            | TokenType::OrOr
-                    ) {
-                        *ws = " ";
-                    }
-                }
-            }
-
-            if let (Some(TokenType::RightBrace), Some(TokenType::Else)) =
-                (&last_non_ws, next_non_ws)
-            {
-                *ws = " ";
-            }
-            if let (Some(TokenType::Else), Some(TokenType::LeftBrace)) = (&last_non_ws, next_non_ws)
-            {
-                *ws = " ";
-            }
-        }
-
-        new_tokens.push(token);
-    }
-
-    new_tokens
+/// An error when `config` switches on or off a rule that the formatter does not have.
+pub fn check_rule_names(config: &FormatConfig) -> Result<(), String> {
+    source::builtin_registry().check_rule_names(config)
 }
 
-fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len: usize) -> String {
-    let mut formatted = String::with_capacity(original_len + original_len / 10);
-    let mut indent_level: isize = 0;
-
-    fn write_indent(out: &mut String, level: isize, spaces: usize) {
-        if level > 0 {
-            for _ in 0..(level as usize * spaces) {
-                out.push(' ');
-            }
-        }
-    }
-
-    let mut is_new_line = true;
-    let mut format_enabled = true;
-    // For each open `[`, whether its line ends after it, so its rows are indented one level.
-    let mut brackets: Vec<bool> = Vec::new();
-
-    let mut tokens = tokens.into_iter().peekable();
-    while let Some(token) = tokens.next() {
-        if token.kind == TokenType::Eof {
-            break;
-        }
-
-        match token.kind {
-            TokenType::LeftBracket => {
-                if format_enabled && is_new_line {
-                    write_indent(&mut formatted, indent_level, indent_spaces);
-                }
-                is_new_line = false;
-                formatted.push('[');
-                let rows_below = matches!(
-                    tokens.peek().map(|t| &t.kind),
-                    Some(TokenType::Whitespace(ws)) if ws.contains('\n')
-                );
-                if rows_below {
-                    indent_level += 1;
-                }
-                brackets.push(rows_below);
-            }
-            TokenType::RightBracket => {
-                if brackets.pop() == Some(true) {
-                    indent_level = (indent_level - 1).max(0);
-                }
-                if format_enabled && is_new_line {
-                    write_indent(&mut formatted, indent_level, indent_spaces);
-                }
-                is_new_line = false;
-                formatted.push(']');
-            }
-            TokenType::Whitespace(ws) => {
-                if !format_enabled {
-                    formatted.push_str(ws);
-                    if ws.contains('\n') {
-                        is_new_line = true;
-                    }
-                } else {
-                    if ws.contains('\n') {
-                        let newlines = ws.chars().filter(|&c| c == '\n').count();
-                        for _ in 0..newlines {
-                            formatted.push('\n');
-                        }
-                        is_new_line = true;
-                    } else {
-                        if !is_new_line {
-                            formatted.push_str(ws);
-                        }
-                    }
-                }
-            }
-            TokenType::RightBrace => {
-                indent_level -= 1;
-                if indent_level < 0 {
-                    indent_level = 0;
-                }
-
-                if format_enabled && is_new_line {
-                    write_indent(&mut formatted, indent_level, indent_spaces);
-                }
-                is_new_line = false;
-                formatted.push('}');
-            }
-            TokenType::LeftBrace => {
-                if format_enabled && is_new_line {
-                    write_indent(&mut formatted, indent_level, indent_spaces);
-                }
-                is_new_line = false;
-                formatted.push('{');
-                indent_level += 1;
-            }
-            TokenType::Comment(c) | TokenType::DocComment(c) => {
-                let mut turning_off = false;
-                if c.contains("vx-format-begin: OFF") {
-                    format_enabled = false;
-                    turning_off = true;
-                } else if c.contains("vx-format-begin: ON") || c.contains("vx-format-end: OFF") {
-                    format_enabled = true;
-                }
-
-                if (format_enabled || turning_off) && is_new_line {
-                    write_indent(&mut formatted, indent_level, indent_spaces);
-                }
-                is_new_line = false;
-                formatted.push_str(c);
-            }
-            other => {
-                if format_enabled && is_new_line {
-                    write_indent(&mut formatted, indent_level, indent_spaces);
-                }
-                is_new_line = false;
-                use std::fmt::Write;
-                write!(&mut formatted, "{}", other).unwrap();
-            }
-        }
-    }
-
-    // Strip trailing whitespace from all lines
-    let mut final_out = String::with_capacity(formatted.len());
-    let mut iter = formatted.split('\n').peekable();
-    while let Some(line) = iter.next() {
-        final_out.push_str(line.trim_end_matches([' ', '\t']));
-        if iter.peek().is_some() {
-            final_out.push('\n');
-        }
-    }
-
-    final_out
+/// Run the shared pipeline with explicitly registered syntax formatters.
+pub fn format_file_with_registry(
+    content: &str,
+    config: &FormatConfig,
+    registry: &source::dispatch::NodeRegistry<'_>,
+) -> FormatOutcome {
+    source::engine::format_source_with_registry(content, config, registry)
 }
+
+#[cfg(test)]
+mod if_value_tests;
+
+#[cfg(test)]
+mod match_arm_tests;
+
+#[cfg(test)]
+mod rule_test_helpers;
+
+#[cfg(test)]
+mod struct_literal_tests;
+
+#[cfg(test)]
+mod whole_file_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lexer::{Lexer, TokenType};
+
+    #[test]
+    fn signatures_fit_on_one_line_or_wrap_at_the_configured_width() {
+        let cases = [
+            (
+                100,
+                2,
+                "fn add(\nfirst: i32,\nsecond: i32\n) -> i32 {\nfirst + second\n}",
+                "fn add(first: i32, second: i32) -> i32 {\n  first + second\n}",
+            ),
+            (
+                39,
+                2,
+                "fn add(first: i32, second: i32) -> i32 {\nfirst + second\n}",
+                "fn add(\n  first: i32,\n  second: i32\n) -> i32 {\n  first + second\n}",
+            ),
+            (
+                40,
+                4,
+                "extern {\nfn add(first: i32, second: i32) -> i32;\n}",
+                "extern {\n    fn add(\n        first: i32,\n        second: i32\n    ) -> i32;\n}",
+            ),
+            (
+                40,
+                2,
+                "fn use_pair<T>(value: Tensor<T, [2, 2]>, pair: (i32, i32)) -> T {\nvalue\n}",
+                "fn use_pair<T>(\n  value: Tensor<T, [2, 2]>,\n  pair: (i32, i32)\n) -> T {\n  value\n}",
+            ),
+            (
+                100,
+                2,
+                "pub fn add(first: i32,second: i32)->i32 {\nfirst + second\n}",
+                "pub fn add(first: i32, second: i32) -> i32 {\n  first + second\n}",
+            ),
+        ];
+        for (width, indent, input, expected) in cases {
+            let config = FormatConfig {
+                indent,
+                fn_signature_width: width,
+                ..FormatConfig::default()
+            };
+            let output = format_file_with_config(input, &config);
+            assert_eq!(output, expected, "width {width}, indent {indent}");
+            assert_eq!(
+                format_file_with_config(&output, &config),
+                output,
+                "formatting must be stable"
+            );
+            let content_tokens = |text: &str| {
+                Lexer::new_with_comments(text)
+                    .tokenize()
+                    .into_iter()
+                    .filter(|token| {
+                        !matches!(token.kind, TokenType::Whitespace(_) | TokenType::Eof)
+                    })
+                    .map(|token| token.kind.to_string())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                content_tokens(input),
+                content_tokens(&output),
+                "source tokens must be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn signature_width_includes_return_type_brace_and_indentation() {
+        let input = "fn add(first: i32, second: i32) -> i32 {\n  first\n}";
+        let exact_width = input.lines().next().unwrap().chars().count();
+        let config = FormatConfig {
+            indent: 2,
+            fn_signature_width: exact_width,
+            ..FormatConfig::default()
+        };
+        assert_eq!(format_file_with_config(input, &config), input);
+        let config = FormatConfig {
+            fn_signature_width: exact_width - 1,
+            ..config
+        };
+        assert_eq!(
+            format_file_with_config(input, &config),
+            "fn add(\n  first: i32,\n  second: i32\n) -> i32 {\n  first\n}"
+        );
+    }
+
+    #[test]
+    fn colon_spacing_applies_to_parameters_and_generic_bounds() {
+        let input = "fn identity<T  :Copy>(value:T, other: package::Value<T>) -> T {\n  value\n}";
+        for (space_before_colon, expected) in [
+            (
+                false,
+                "fn identity<T: Copy>(value: T, other: package::Value<T>) -> T {\n  value\n}",
+            ),
+            (
+                true,
+                "fn identity<T : Copy>(value : T, other : package::Value<T>) -> T {\n  value\n}",
+            ),
+        ] {
+            let config = FormatConfig {
+                space_before_colon,
+                ..FormatConfig::default()
+            };
+            let result = format_file_with_report(input, &config);
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            assert_eq!(
+                result.text, expected,
+                "space_before_colon = {space_before_colon}"
+            );
+            assert_eq!(format_file_with_config(&result.text, &config), result.text);
+        }
+    }
+
+    #[test]
+    fn spaces_before_colons_count_toward_signature_width() {
+        let input = "fn add(first: i32, second: i32) -> i32 {\n  first + second\n}";
+        let config = FormatConfig {
+            fn_signature_width: input.lines().next().unwrap().chars().count(),
+            ..FormatConfig::default()
+        };
+        assert_eq!(format_file_with_config(input, &config), input);
+        let config = FormatConfig {
+            space_before_colon: true,
+            ..config
+        };
+        assert_eq!(
+            format_file_with_config(input, &config),
+            "fn add(\n  first : i32,\n  second : i32\n) -> i32 {\n  first + second\n}"
+        );
+    }
+
+    #[test]
+    fn signature_layout_leaves_calls_comments_and_disabled_text_to_existing_rules() {
+        let cases = [
+            "fn call() -> i32 {\n  add(first, second)\n}",
+            "fn add(\nfirst: i32, // first value\nsecond: i32\n) -> i32;",
+            "//! vx-format: OFF\nfn   add(first: i32,second: i32)->i32;",
+            "// vx-format-begin: OFF\nfn   add(first: i32,second: i32)->i32;\n// vx-format-end: OFF",
+        ];
+        for input in cases {
+            let narrow = FormatConfig {
+                indent: 2,
+                fn_signature_width: 10,
+                ..FormatConfig::default()
+            };
+            let wide = FormatConfig {
+                fn_signature_width: 100,
+                ..narrow.clone()
+            };
+            assert_eq!(
+                format_file_with_config(input, &narrow),
+                format_file_with_config(input, &wide)
+            );
+        }
+    }
 
     #[test]
     fn test_format_off_top_level() {
@@ -553,8 +271,8 @@ mod tests {
 
     #[test]
     fn test_format_off_block() {
-        let input = "fn foo() {\n// vx-format-begin: OFF\n      let   x = 1;\n// vx-format-end: OFF\nlet y = 2;\n}";
-        let expected = "fn foo() {\n  // vx-format-begin: OFF\n      let   x = 1;\n  // vx-format-end: OFF\n  let y = 2;\n}";
+        let input = "fn foo() -> i32 {\n// vx-format-begin: OFF\n      let   x = 1;\n// vx-format-end: OFF\nlet y = 2;\n}";
+        let expected = "fn foo() -> i32 {\n// vx-format-begin: OFF\n      let   x = 1;\n// vx-format-end: OFF\n  let y = 2;\n}";
         let formatted = format_file(input, 2);
         assert_eq!(formatted, expected);
     }
@@ -605,15 +323,26 @@ mod tests {
             // A line that starts with `}` is one level less indented than the line above it.
             "fn pick(k : i32, p : *mut i8) -> i32 {\n  match k {\n    0 => {\n      return 1;\n    }, _ => unsafe { write_the_value_that_the_pointer_points_to_in_memory(p) },\n  }\n  return 0;\n}",
         ];
+        // These programs check the base formatting, so the rules are off.
+        let config = [
+            "function_headers",
+            "struct_literals",
+            "match_arms",
+            "if_values",
+        ]
+        .into_iter()
+        .fold(FormatConfig::default(), |config, rule| {
+            config.with_rule(rule, false)
+        });
         for program in programs {
-            assert_eq!(format_file(program, 2), program);
+            assert_eq!(format_file_with_config(program, &config), program);
             for indentation in ["", "          "] {
                 let reindented: Vec<String> = program
                     .lines()
                     .map(|line| format!("{indentation}{}", line.trim_start()))
                     .collect();
                 assert_eq!(
-                    format_file(&reindented.join("\n"), 2),
+                    format_file_with_config(&reindented.join("\n"), &config),
                     program,
                     "input indented with {} spaces",
                     indentation.len()

@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+use super::formatting::{RecordedKind, SyntaxRecord};
 use super::*;
 
 /// Split a numeric literal token into its numeric part and *explicit* element type.
@@ -626,6 +627,8 @@ impl<'a> Parser<'a> {
         mut call_name: String,
         span: Span,
     ) -> ParseResult<'a, Expr> {
+        // The caller has read the first name of the path.
+        let start = self.pos.saturating_sub(1);
         // In an impl, `Self { .. }`, `Self::new()` and `Self::Variant` name the impl's type,
         // spelled as the type prints: `Pair<T>`. `Self::Item::default()` keeps its `Self`.
         let mut self_type_args = None;
@@ -806,6 +809,7 @@ impl<'a> Parser<'a> {
                 self.advance(); // consume '{'
                 let mut fields = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    let field_start = self.pos;
                     let token_kind = self.advance().kind.clone();
                     let f_name = match token_kind {
                         TokenType::Identifier(f) => f.to_string(),
@@ -818,12 +822,14 @@ impl<'a> Parser<'a> {
                     };
                     self.consume(&TokenType::Colon, "Expected ':'")?;
                     let f_expr = self.parse_expr()?;
+                    self.record(RecordedKind::StructField, field_start);
                     fields.push((f_name.into(), f_expr));
                     if !self.match_token(&TokenType::Comma) {
                         break;
                     }
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                self.record(RecordedKind::StructLiteral, start);
                 Self::apply_type_args(&mut call_name, parsed_type_args);
                 Ok(Expr::StructInit(StructInitExpr {
                     name: call_name.into(),
@@ -1086,6 +1092,7 @@ impl<'a> Parser<'a> {
                 length: self.peek().length,
                 expansion: self.expansion(),
             };
+            let match_start = self.pos;
             self.advance();
             let at_statement = std::mem::take(&mut self.match_is_statement);
             let expr = self.parse_expr()?;
@@ -1094,6 +1101,7 @@ impl<'a> Parser<'a> {
             let mut tuple_arms = Vec::new();
             while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                 let arm_token = self.peek().clone();
+                let arm_start = self.pos;
                 let pattern = self.parse_arm_pattern()?;
                 self.consume(&TokenType::FatArrow, "Expected '=>' after pattern")?;
                 let mut body = Vec::new();
@@ -1102,6 +1110,7 @@ impl<'a> Parser<'a> {
                         self.parse_statement_into(&mut body)?;
                     }
                     self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                    self.record(RecordedKind::MatchArm, arm_start);
                     self.match_token(&TokenType::Comma); // optional comma
                 } else {
                     let body_start = self.peek().clone();
@@ -1120,11 +1129,13 @@ impl<'a> Parser<'a> {
                             other => other,
                         });
                     }
+                    self.record(RecordedKind::MatchArm, arm_start);
                     self.match_token(&TokenType::Comma); // optional comma
                 }
                 tuple_arms.push((pattern, body, arm_token));
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
+            self.record(RecordedKind::Match, match_start);
             if tuple_arms
                 .iter()
                 .any(|(p, _, _)| matches!(p, tuple_match::ArmPattern::Tuple(_)))
@@ -1770,19 +1781,23 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_if_expr(&mut self) -> ParseResult<'a, IfExpr> {
+        let start = self.pos;
         let if_span = self.next_span();
         self.advance();
         let is_comptime = self.match_token(&TokenType::Comptime);
         self.reject_let_condition("if")?;
         let cond = self.parse_expr_before_block()?;
+        let then_start = self.pos;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut then_block = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             self.parse_statement_into(&mut then_block)?;
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        let then_end = self.pos;
 
         let mut else_block = None;
+        let mut else_range = None;
         if self.match_token(&TokenType::Else) {
             if self.check(&TokenType::If) {
                 // `else if`
@@ -1793,13 +1808,43 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 })]);
             } else {
+                let else_start = self.pos;
                 self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                 let mut block = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                     self.parse_statement_into(&mut block)?;
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                else_range = Some(else_start..self.pos);
                 else_block = Some(block);
+            }
+        }
+        // For the formatter: an `if` value that can stay on one line, as in
+        // `if c { 1 } else { 0 }`, with one value and no statement in each branch. A macro call
+        // such as `vec![1]` can be the value too.
+        let one_value = |block: &[Statement]| {
+            matches!(
+                block,
+                [Statement::ExprStmt(ExprStmtStmt {
+                    has_semi: false,
+                    ..
+                })] | [Statement::MacroCall(crate::syntax::stmt::MacroCallStmt {
+                    has_semi: false,
+                    ..
+                })]
+            )
+        };
+        if let (Some(else_range), Some(else_statements)) = (&else_range, &else_block) {
+            if self.recording() && one_value(&then_block) && one_value(else_statements) {
+                if let Some(records) = &mut self.recorder {
+                    for tokens in [then_start..then_end, else_range.clone()] {
+                        records.push(SyntaxRecord {
+                            kind: RecordedKind::IfValueBranch,
+                            tokens,
+                        });
+                    }
+                }
+                self.record(RecordedKind::IfValue, start);
             }
         }
         Ok(IfExpr {
