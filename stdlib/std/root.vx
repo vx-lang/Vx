@@ -51,7 +51,7 @@ pub unsafe fn root_of_the_program() -> Root {
     network : unsafe { network_of_the_program() },
     files : unsafe { files_of_the_program() },
     env : unsafe { environment_of_the_program() },
-    processes : unsafe { processes_of_the_program() }
+    processes : unsafe { processes_of_the_program() },
     stdin : unsafe { stdin_of_the_program() },
     stdout : unsafe { stdout_of_the_program() },
     stderr : unsafe { stderr_of_the_program() }
