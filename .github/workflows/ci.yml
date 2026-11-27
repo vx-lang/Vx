@@ -188,10 +188,11 @@ jobs:
           python3 scripts/tools/gen_error_index.py --check
           python3 scripts/tools/gen_stdlib_reference.py
 
+      # The tests in tests/integration_test.rs run in the `integration-tests` jobs below.
       - name: Run tests
         env:
           VX_TESTS_NEED_THREAD_SANITIZER: 1
-        run: cargo test --release --workspace --verbose
+        run: 'cargo test --release --workspace --verbose -- --skip integration_test::'
 
       # Generated programs, each run on both code generators and as a Rust twin. A program
       # whose output differs, or that does not free everything it allocates, fails the build.
@@ -258,6 +259,93 @@ jobs:
             echo "Skipping stress tests. They run every 10th commit (current run: $GITHUB_RUN_NUMBER)."
           fi
 
+      - name: Run benchmarks (Every 10th Commit, offset by 1)
+        run: |
+          if [ $(((GITHUB_RUN_NUMBER + 1) % 10)) -eq 0 ]; then
+            echo "Running benchmarks for run $GITHUB_RUN_NUMBER"
+            cargo bench --workspace --verbose
+          else
+            echo "Skipping benchmarks. They run every 10th commit offset by 1 (current run: $GITHUB_RUN_NUMBER)."
+          fi
+
+  # tests/integration_test.rs takes about 23 minutes on one runner. Each of these jobs runs
+  # every third of its tests, in the order of their names, on a runner of its own.
+  integration-tests:
+    name: Integration tests (part ${{ matrix.part }} of 3)
+    needs: llvm
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3]
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+      VX_TESTS_NEED_THREAD_SANITIZER: 1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # The same cache as the `test` job, which saves it. A pull request can restore the caches
+      # of main only, so a cache of this job's own would be empty on most pull requests.
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ needs.llvm.outputs.key }}-test
+          save-if: false
+
+      - name: Use our own LLVM
+        uses: ./.github/actions/use-own-llvm
+        with:
+          key: ${{ needs.llvm.outputs.key }}
+
+      - name: Build
+        run: cargo build --release --workspace --verbose
+
+      - name: Run this part of the integration tests
+        run: |
+          set -euo pipefail
+          cargo test --release --workspace --test integration_test -- --list --format terse \
+            | sed -n 's/: test$//p' | sort > "$RUNNER_TEMP/all_tests.txt"
+          awk 'NR % 3 == ${{ matrix.part }} - 1' "$RUNNER_TEMP/all_tests.txt" > "$RUNNER_TEMP/part.txt"
+          echo "This part runs $(wc -l < "$RUNNER_TEMP/part.txt") of $(wc -l < "$RUNNER_TEMP/all_tests.txt") tests"
+          test -s "$RUNNER_TEMP/part.txt"
+          xargs -a "$RUNNER_TEMP/part.txt" \
+            cargo test --release --workspace --verbose --test integration_test -- --exact
+
+  task-schedules:
+    name: Tests of tasks under many schedules
+    needs: llvm
+    runs-on: ubuntu-26.04
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # The same cache as the `test` job, which saves it. A pull request can restore the caches
+      # of main only, so a cache of this job's own would be empty on most pull requests.
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ needs.llvm.outputs.key }}-test
+          save-if: false
+
+      - name: Use our own LLVM
+        uses: ./.github/actions/use-own-llvm
+        with:
+          key: ${{ needs.llvm.outputs.key }}
+
+      - name: Build
+        run: cargo build --release --workspace --verbose
+
       # Each test of tasks again, under other orders of its tasks: 3 seeds on each run, and 20
       # on every 10th run. "1 passed" fails the step if the test was renamed or did not run.
       - name: Run the tests of tasks under many schedules
@@ -270,14 +358,6 @@ jobs:
             || { echo "$out"; exit 1; }
           grep -q "1 passed" <<<"$out" || { echo "$out"; echo "The test did not run"; exit 1; }
 
-      - name: Run benchmarks (Every 10th Commit, offset by 1)
-        run: |
-          if [ $(((GITHUB_RUN_NUMBER + 1) % 10)) -eq 0 ]; then
-            echo "Running benchmarks for run $GITHUB_RUN_NUMBER"
-            cargo bench --workspace --verbose
-          else
-            echo "Skipping benchmarks. They run every 10th commit offset by 1 (current run: $GITHUB_RUN_NUMBER)."
-          fi
 
   # The release job above never runs a line of debug-only code: 15 `#[cfg(debug_assertions)]`
   # blocks, 33 `debug_assert!` calls, and the integer overflow checks the dev profile turns on.
