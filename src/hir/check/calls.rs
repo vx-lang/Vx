@@ -3604,7 +3604,32 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push(format!("Function '{}' expects 1 argument", resolved_name));
             }
-            Some(Type::Struct("Option".into(), None))
+            // A `let` with an `Option<T>` annotation names the type to write in its own error.
+            let names_option = |t: &Type| match t {
+                Type::GenericInstance(base, _) => {
+                    matches!(&**base, Type::Struct(n, _) | Type::Enum(n, _) if n.as_ref() == "Option")
+                }
+                Type::Struct(n, _) | Type::Enum(n, _) => n.as_ref() == "Option",
+                _ => false,
+            };
+            if self.expected_type.as_ref().is_some_and(names_option) || self.speculating {
+                return Some(Type::Struct("Option".into(), None));
+            }
+            let at = Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span));
+            if self.env.enums.contains_key("Option") {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E2002,
+                    "`Some(value)` does not name its enum. Write `Option::Some(value)`".to_string(),
+                    at,
+                );
+            } else {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E2003,
+                    format!("Unknown enum Option.{}", self.missing_import_hint("Option")),
+                    at,
+                );
+            }
+            Some(Type::Unknown)
         } else if resolved_name == "matmul_into" {
             // `dst = &a @ &b` rebinds dst to a fresh allocation, so a view over
             // a caller's buffer is left untouched -- and a model's
