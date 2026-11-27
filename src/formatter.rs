@@ -29,16 +29,92 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
 
     // A file that does not lex, such as one that ends inside a string, is left as it is: an
     // unknown token is written back as one character, which would lose the rest of its text.
-    if tokens
-        .iter()
-        .any(|t| matches!(t.kind, TokenType::Unknown(_)))
-    {
+    if first_unknown_token(&tokens).is_some() {
         return content.to_string();
     }
 
     let tokens = normalize_and_expand_blocks(tokens, indent_spaces);
     let tokens = adjust_spacing(tokens);
     emit_formatted_string(tokens, indent_spaces, content.len())
+}
+
+/// The line and column of the first unknown token that stops `format_file`, if there is one.
+pub fn unformattable_position(content: &str) -> Option<(usize, usize)> {
+    let tokens = Lexer::new_with_comments(content).tokenize();
+    first_unknown_token(&tokens).map(|t| (t.line, t.column))
+}
+
+/// The first unknown token outside the `{ .. }` block of an `mlir!` call. MLIR writes the first
+/// result of an operation as `%r#0`, and the lexer reads that `#` as unknown. An unknown token
+/// in that block is one character, and the formatter writes it back as it is.
+fn first_unknown_token<'t, 'a>(tokens: &'t [Token<'a>]) -> Option<&'t Token<'a>> {
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].kind {
+            TokenType::Unknown(_) => return Some(&tokens[i]),
+            TokenType::Identifier("mlir") => {
+                if let Some((open, close)) = mlir_block(tokens, i) {
+                    if let Some(t) = first_unknown_token(&tokens[i + 1..open]) {
+                        return Some(t);
+                    }
+                    assert!(
+                        tokens[open..close].iter().all(|t| match t.kind {
+                            TokenType::Unknown(c) => t.length == c.len_utf8(),
+                            _ => true,
+                        }),
+                        "an unknown token in an mlir! block is longer than one character"
+                    );
+                    i = close;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// For an `mlir!(..) { .. }` call whose name is at `start`, the indexes of the `{` and the `}` of
+/// its block.
+fn mlir_block(tokens: &[Token], start: usize) -> Option<(usize, usize)> {
+    let next_code = |from: usize| {
+        (from..tokens.len()).find(|&j| {
+            !matches!(
+                tokens[j].kind,
+                TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
+            )
+        })
+    };
+    let closing = |open: usize, left: TokenType, right: TokenType| {
+        let mut depth = 0;
+        for (j, token) in tokens.iter().enumerate().skip(open) {
+            if token.kind == left {
+                depth += 1;
+            } else if token.kind == right {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+        }
+        None
+    };
+
+    if tokens.get(start + 1)?.kind != TokenType::Bang {
+        return None;
+    }
+    let arguments = next_code(start + 2)?;
+    if tokens[arguments].kind != TokenType::LeftParen {
+        return None;
+    }
+    let block = next_code(closing(arguments, TokenType::LeftParen, TokenType::RightParen)? + 1)?;
+    if tokens[block].kind != TokenType::LeftBrace {
+        return None;
+    }
+    Some((
+        block,
+        closing(block, TokenType::LeftBrace, TokenType::RightBrace)?,
+    ))
 }
 
 /// Counts the indentation level that `emit_formatted_string` gives a line, with the same rules:
@@ -543,6 +619,26 @@ mod tests {
     fn a_file_that_ends_inside_a_string_is_left_as_it_is() {
         let input = "fn main() -> i32 {\n    let s = \"abc";
         assert_eq!(format_file(input, 2), input);
+    }
+
+    #[test]
+    fn a_file_with_a_hash_in_an_mlir_block_is_formatted() {
+        // MLIR names the first result of `%r:2` as `%r#0`. The lexer reads `#` as unknown.
+        let input = "fn double_and_carry(a : i32) -> i32 {\nreturn mlir!( inputs : (%a = a : i32), returns : i32, dialects : [\"arith\"]) {\n%r:2 = arith.addui_extended %a, %a : i32, i1\nmacro.yield %r#0 : i32\n};\n}\n\nfn main() -> i32 {\nlet x = double_and_carry(7);\nreturn x;\n}\n";
+        let expected = "fn double_and_carry(a : i32) -> i32 {\n  return mlir!( inputs : (%a = a : i32), returns : i32, dialects : [\"arith\"]) {\n    %r:2 = arith.addui_extended %a, %a : i32, i1\n    macro.yield %r#0 : i32\n  };\n}\n\nfn main() -> i32 {\n  let x = double_and_carry(7);\n  return x;\n}\n";
+        assert_eq!(format_file(input, 2), expected);
+        assert_eq!(unformattable_position(input), None);
+    }
+
+    #[test]
+    fn a_hash_outside_an_mlir_block_leaves_the_file_as_it_is() {
+        // The `#` after the block's `}` and the `#` in the arguments are not in the block.
+        let after_block = "fn f() -> i32 {\nreturn mlir!(inputs : ()) {\n%r = op\n} # 1;\n}\n";
+        assert_eq!(format_file(after_block, 2), after_block);
+        assert_eq!(unformattable_position(after_block), Some((4, 3)));
+        let in_arguments = "fn f() -> i32 {\nreturn mlir!(inputs : #) {\n%r = op\n};\n}\n";
+        assert_eq!(format_file(in_arguments, 2), in_arguments);
+        assert_eq!(unformattable_position(in_arguments), Some((2, 23)));
     }
 
     #[test]

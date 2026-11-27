@@ -195,13 +195,13 @@ impl<T : Float> Tensor<T, [?, ?]> {
   /// Lowered through `linalg`, with a separate path chosen at compile time for AVX-512.
   pub fn fill(self : &mut Tensor<T, [?, ?]>, val : T) -> void {
     unsafe { mlir!(
-    inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
-    clobbers: [self],
-    dialects: ["linalg"]
-    ) {
-      linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
-      macro.yield
-    } };
+      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
+        macro.yield
+      } };
   }
 
   /// Overwrite this tensor's elements with `src`'s.
@@ -212,32 +212,32 @@ impl<T : Float> Tensor<T, [?, ?]> {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       unsafe { mlir!(
-      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
-      clobbers: [self],
-      dialects: ["linalg"]
-      ) {
-        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
-        macro.yield
-      } };
+        inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
+        clobbers: [self],
+        dialects: ["linalg"]
+        ) {
+          linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
+          macro.yield
+        } };
     } else if comptime
     Topology::Current == Topology::ANE {
       unsafe { mlir!(
-      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
-      clobbers: [self],
-      dialects: ["linalg"]
-      ) {
-        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
-        macro.yield
-      } };
+        inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
+        clobbers: [self],
+        dialects: ["linalg"]
+        ) {
+          linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
+          macro.yield
+        } };
     } else {
       unsafe { mlir!(
-      inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
-      clobbers: [self],
-      dialects: ["linalg"]
-      ) {
-        linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
-        macro.yield
-      } };
+        inputs: (%dst = self: memref<? x ? x T>, %src = src: memref<? x ? x T>),
+        clobbers: [self],
+        dialects: ["linalg"]
+        ) {
+          linalg.copy ins(%src : memref<? x ? x T>) outs(%dst : memref<? x ? x T>)
+          macro.yield
+        } };
     };
   }
 
@@ -247,32 +247,32 @@ impl<T : Float> Tensor<T, [?, ?]> {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       unsafe { mlir!(
-      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
-      clobbers: [self],
-      dialects: ["linalg"]
-      ) {
-        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
-        macro.yield
-      } };
+        inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
+        clobbers: [self],
+        dialects: ["linalg"]
+        ) {
+          linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
+          macro.yield
+        } };
     } else if comptime
     Topology::Current == Topology::ANE {
       unsafe { mlir!(
-      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
-      clobbers: [self],
-      dialects: ["linalg"]
-      ) {
-        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
-        macro.yield
-      } };
+        inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
+        clobbers: [self],
+        dialects: ["linalg"]
+        ) {
+          linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
+          macro.yield
+        } };
     } else {
       unsafe { mlir!(
-      inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
-      clobbers: [self],
-      dialects: ["linalg"]
-      ) {
-        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
-        macro.yield
-      } };
+        inputs: (%arg_t = self: memref<? x ? x T>, %arg_v = val: T),
+        clobbers: [self],
+        dialects: ["linalg"]
+        ) {
+          linalg.fill ins(%arg_v : T) outs(%arg_t : memref<? x ? x T>)
+          macro.yield
+        } };
     };
   }
 
@@ -284,83 +284,83 @@ impl<T : Float> Tensor<T, [?, ?]> {
     if comptime
     Topology::Current == Topology::CPU_AVX512 {
       unsafe { mlir!(
-      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
-      clobbers: [],
-      returns: bool,
-      dialects: ["linalg", "arith", "memref", "func"]
-      ) {
-        %true = arith.constant 1 : i1
-        %res = memref.alloca() : memref<i1>
-        memref.store %true, %res[] : memref<i1>
-        linalg.generic {
-          indexing_maps = [
-            affine_map<(d0, d1) -> (d0, d1)>,
-            affine_map<(d0, d1) -> (d0, d1)>,
-            affine_map<(d0, d1) -> ()>
-          ],
-          iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
-          ^bb0(%a: T, %b: T, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : T
-          %and = arith.andi %out, %cmp : i1
-          linalg.yield %and : i1
-        }
-        %val = memref.load %res[] : memref<i1>
-        func.return %val : i1
-      } }
+        inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
+        clobbers: [],
+        returns: bool,
+        dialects: ["linalg", "arith", "memref", "func"]
+        ) {
+          %true = arith.constant 1 : i1
+          %res = memref.alloca() : memref<i1>
+          memref.store %true, %res[] : memref<i1>
+          linalg.generic {
+            indexing_maps = [
+              affine_map<(d0, d1) -> (d0, d1)>,
+              affine_map<(d0, d1) -> (d0, d1)>,
+              affine_map<(d0, d1) -> ()>
+            ],
+            iterator_types = ["reduction", "reduction"]
+          } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+            ^bb0(%a: T, %b: T, %out: i1):
+            %cmp = arith.cmpf oeq, %a, %b : T
+            %and = arith.andi %out, %cmp : i1
+            linalg.yield %and : i1
+          }
+          %val = memref.load %res[] : memref<i1>
+          func.return %val : i1
+        } }
     } else if comptime
     Topology::Current == Topology::ANE {
       unsafe { mlir!(
-      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
-      clobbers: [],
-      returns: bool,
-      dialects: ["linalg", "arith", "memref", "func"]
-      ) {
-        %true = arith.constant 1 : i1
-        %res = memref.alloca() : memref<i1>
-        memref.store %true, %res[] : memref<i1>
-        linalg.generic {
-          indexing_maps = [
-            affine_map<(d0, d1) -> (d0, d1)>,
-            affine_map<(d0, d1) -> (d0, d1)>,
-            affine_map<(d0, d1) -> ()>
-          ],
-          iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
-          ^bb0(%a: T, %b: T, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : T
-          %and = arith.andi %out, %cmp : i1
-          linalg.yield %and : i1
-        }
-        %val = memref.load %res[] : memref<i1>
-        func.return %val : i1
-      } }
+        inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
+        clobbers: [],
+        returns: bool,
+        dialects: ["linalg", "arith", "memref", "func"]
+        ) {
+          %true = arith.constant 1 : i1
+          %res = memref.alloca() : memref<i1>
+          memref.store %true, %res[] : memref<i1>
+          linalg.generic {
+            indexing_maps = [
+              affine_map<(d0, d1) -> (d0, d1)>,
+              affine_map<(d0, d1) -> (d0, d1)>,
+              affine_map<(d0, d1) -> ()>
+            ],
+            iterator_types = ["reduction", "reduction"]
+          } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+            ^bb0(%a: T, %b: T, %out: i1):
+            %cmp = arith.cmpf oeq, %a, %b : T
+            %and = arith.andi %out, %cmp : i1
+            linalg.yield %and : i1
+          }
+          %val = memref.load %res[] : memref<i1>
+          func.return %val : i1
+        } }
     } else {
       unsafe { mlir!(
-      inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
-      clobbers: [],
-      returns: bool,
-      dialects: ["linalg", "arith", "memref", "func"]
-      ) {
-        %true = arith.constant 1 : i1
-        %res = memref.alloca() : memref<i1>
-        memref.store %true, %res[] : memref<i1>
-        linalg.generic {
-          indexing_maps = [
-            affine_map<(d0, d1) -> (d0, d1)>,
-            affine_map<(d0, d1) -> (d0, d1)>,
-            affine_map<(d0, d1) -> ()>
-          ],
-          iterator_types = ["reduction", "reduction"]
-        } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
-          ^bb0(%a: T, %b: T, %out: i1):
-          %cmp = arith.cmpf oeq, %a, %b : T
-          %and = arith.andi %out, %cmp : i1
-          linalg.yield %and : i1
-        }
-        %val = memref.load %res[] : memref<i1>
-        func.return %val : i1
-      } }
+        inputs: (%lhs = self: memref<? x ? x T>, %rhs = other: memref<? x ? x T>),
+        clobbers: [],
+        returns: bool,
+        dialects: ["linalg", "arith", "memref", "func"]
+        ) {
+          %true = arith.constant 1 : i1
+          %res = memref.alloca() : memref<i1>
+          memref.store %true, %res[] : memref<i1>
+          linalg.generic {
+            indexing_maps = [
+              affine_map<(d0, d1) -> (d0, d1)>,
+              affine_map<(d0, d1) -> (d0, d1)>,
+              affine_map<(d0, d1) -> ()>
+            ],
+            iterator_types = ["reduction", "reduction"]
+          } ins(%lhs, %rhs : memref<? x ? x T>, memref<? x ? x T>) outs(%res : memref<i1>) {
+            ^bb0(%a: T, %b: T, %out: i1):
+            %cmp = arith.cmpf oeq, %a, %b : T
+            %and = arith.andi %out, %cmp : i1
+            linalg.yield %and : i1
+          }
+          %val = memref.load %res[] : memref<i1>
+          func.return %val : i1
+        } }
     }
   }
 }
@@ -372,13 +372,13 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   /// The shape is known at compile time here, so the emitted loop has constant bounds.
   pub fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void {
     unsafe { mlir!(
-    inputs: (%arg_t = self: memref<N x M x T>, %arg_v = val: T),
-    clobbers: [self],
-    dialects: ["linalg"]
-    ) {
-      linalg.fill ins(%arg_v : T) outs(%arg_t : memref<N x M x T>)
-      macro.yield
-    } };
+      inputs: (%arg_t = self: memref<N x M x T>, %arg_v = val: T),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.fill ins(%arg_v : T) outs(%arg_t : memref<N x M x T>)
+        macro.yield
+      } };
   }
 }
 
@@ -395,44 +395,44 @@ macro_rules stamp_tensor_sums {
       /// The sum of the elements. 0 for an empty tensor.
       pub fn sum(self : &Tensor<$t, [?]>) -> $t {
         return unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-          %c0 = arith.constant 0 : index
-          %c1 = arith.constant 1 : index
-          %c2 = arith.constant 2 : index
-          %c3 = arith.constant 3 : index
-          %c4 = arith.constant 4 : index
-          %lanes = arith.constant $lanes : index
-          %l2 = arith.muli %lanes, %c2 : index
-          %l3 = arith.muli %lanes, %c3 : index
-          %step = arith.muli %lanes, %c4 : index
-          %n = memref.dim %a, %c0 : memref<?x$t>
-          %rem = arith.remui %n, %step : index
-          %body = arith.subi %n, %rem : index
-          %z = arith.constant dense<0.0> : vector<$lanes x $t>
-          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-            %i1 = arith.addi %i0, %lanes : index
-            %i2 = arith.addi %i0, %l2 : index
-            %i3 = arith.addi %i0, %l3 : index
-            %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %s0 = arith.addf %v0, %x0 : vector<$lanes x $t>
-            %s1 = arith.addf %v1, %x1 : vector<$lanes x $t>
-            %s2 = arith.addf %v2, %x2 : vector<$lanes x $t>
-            %s3 = arith.addf %v3, %x3 : vector<$lanes x $t>
-            scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-          }
-          %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
-          %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
-          %p = arith.addf %p0, %p1 : vector<$lanes x $t>
-          %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
-          %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-            %x = memref.load %a[%i] : memref<?x$t>
-            %y = arith.addf %acc, %x : $t
-            scf.yield %y : $t
-          }
-          macro.yield %t : $t
-        } };
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c3 = arith.constant 3 : index
+            %c4 = arith.constant 4 : index
+            %lanes = arith.constant $lanes : index
+            %l2 = arith.muli %lanes, %c2 : index
+            %l3 = arith.muli %lanes, %c3 : index
+            %step = arith.muli %lanes, %c4 : index
+            %n = memref.dim %a, %c0 : memref<?x$t>
+            %rem = arith.remui %n, %step : index
+            %body = arith.subi %n, %rem : index
+            %z = arith.constant dense<0.0> : vector<$lanes x $t>
+            %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+              %i1 = arith.addi %i0, %lanes : index
+              %i2 = arith.addi %i0, %l2 : index
+              %i3 = arith.addi %i0, %l3 : index
+              %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %s0 = arith.addf %v0, %x0 : vector<$lanes x $t>
+              %s1 = arith.addf %v1, %x1 : vector<$lanes x $t>
+              %s2 = arith.addf %v2, %x2 : vector<$lanes x $t>
+              %s3 = arith.addf %v3, %x3 : vector<$lanes x $t>
+              scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+            }
+            %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
+            %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
+            %p = arith.addf %p0, %p1 : vector<$lanes x $t>
+            %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+            %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+              %x = memref.load %a[%i] : memref<?x$t>
+              %y = arith.addf %acc, %x : $t
+              scf.yield %y : $t
+            }
+            macro.yield %t : $t
+          } };
       }
 
       /// The sum of the products of matching elements. Refused for tensors of different
@@ -440,93 +440,93 @@ macro_rules stamp_tensor_sums {
       pub fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> $t {
         assert(self.len() == other.len(), "dot needs two tensors of the same length");
         return unsafe { mlir!( inputs : (%a = self : memref<?x$t>, %b = other : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-          %c0 = arith.constant 0 : index
-          %c1 = arith.constant 1 : index
-          %c2 = arith.constant 2 : index
-          %c3 = arith.constant 3 : index
-          %c4 = arith.constant 4 : index
-          %lanes = arith.constant $lanes : index
-          %l2 = arith.muli %lanes, %c2 : index
-          %l3 = arith.muli %lanes, %c3 : index
-          %step = arith.muli %lanes, %c4 : index
-          %n = memref.dim %a, %c0 : memref<?x$t>
-          %rem = arith.remui %n, %step : index
-          %body = arith.subi %n, %rem : index
-          %z = arith.constant dense<0.0> : vector<$lanes x $t>
-          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-            %i1 = arith.addi %i0, %lanes : index
-            %i2 = arith.addi %i0, %l2 : index
-            %i3 = arith.addi %i0, %l3 : index
-            %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %y0 = vector.load %b[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %y1 = vector.load %b[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %y2 = vector.load %b[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %y3 = vector.load %b[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %s0 = vector.fma %x0, %y0, %v0 : vector<$lanes x $t>
-            %s1 = vector.fma %x1, %y1, %v1 : vector<$lanes x $t>
-            %s2 = vector.fma %x2, %y2, %v2 : vector<$lanes x $t>
-            %s3 = vector.fma %x3, %y3, %v3 : vector<$lanes x $t>
-            scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-          }
-          %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
-          %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
-          %p = arith.addf %p0, %p1 : vector<$lanes x $t>
-          %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
-          %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-            %x = memref.load %a[%i] : memref<?x$t>
-            %y = memref.load %b[%i] : memref<?x$t>
-            %m = math.fma %x, %y, %acc : $t
-            scf.yield %m : $t
-          }
-          macro.yield %t : $t
-        } };
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c3 = arith.constant 3 : index
+            %c4 = arith.constant 4 : index
+            %lanes = arith.constant $lanes : index
+            %l2 = arith.muli %lanes, %c2 : index
+            %l3 = arith.muli %lanes, %c3 : index
+            %step = arith.muli %lanes, %c4 : index
+            %n = memref.dim %a, %c0 : memref<?x$t>
+            %rem = arith.remui %n, %step : index
+            %body = arith.subi %n, %rem : index
+            %z = arith.constant dense<0.0> : vector<$lanes x $t>
+            %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+              %i1 = arith.addi %i0, %lanes : index
+              %i2 = arith.addi %i0, %l2 : index
+              %i3 = arith.addi %i0, %l3 : index
+              %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %y0 = vector.load %b[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %y1 = vector.load %b[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %y2 = vector.load %b[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %y3 = vector.load %b[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %s0 = vector.fma %x0, %y0, %v0 : vector<$lanes x $t>
+              %s1 = vector.fma %x1, %y1, %v1 : vector<$lanes x $t>
+              %s2 = vector.fma %x2, %y2, %v2 : vector<$lanes x $t>
+              %s3 = vector.fma %x3, %y3, %v3 : vector<$lanes x $t>
+              scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+            }
+            %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
+            %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
+            %p = arith.addf %p0, %p1 : vector<$lanes x $t>
+            %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+            %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+              %x = memref.load %a[%i] : memref<?x$t>
+              %y = memref.load %b[%i] : memref<?x$t>
+              %m = math.fma %x, %y, %acc : $t
+              scf.yield %m : $t
+            }
+            macro.yield %t : $t
+          } };
       }
 
       /// The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
       /// rather than calling `self.sum()`, which the legacy code generator cannot compile.
       pub fn mean(self : &Tensor<$t, [?]>) -> $t {
         let total : $t = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-          %c0 = arith.constant 0 : index
-          %c1 = arith.constant 1 : index
-          %c2 = arith.constant 2 : index
-          %c3 = arith.constant 3 : index
-          %c4 = arith.constant 4 : index
-          %lanes = arith.constant $lanes : index
-          %l2 = arith.muli %lanes, %c2 : index
-          %l3 = arith.muli %lanes, %c3 : index
-          %step = arith.muli %lanes, %c4 : index
-          %n = memref.dim %a, %c0 : memref<?x$t>
-          %rem = arith.remui %n, %step : index
-          %body = arith.subi %n, %rem : index
-          %z = arith.constant dense<0.0> : vector<$lanes x $t>
-          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-            %i1 = arith.addi %i0, %lanes : index
-            %i2 = arith.addi %i0, %l2 : index
-            %i3 = arith.addi %i0, %l3 : index
-            %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %s0 = arith.addf %v0, %x0 : vector<$lanes x $t>
-            %s1 = arith.addf %v1, %x1 : vector<$lanes x $t>
-            %s2 = arith.addf %v2, %x2 : vector<$lanes x $t>
-            %s3 = arith.addf %v3, %x3 : vector<$lanes x $t>
-            scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-          }
-          %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
-          %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
-          %p = arith.addf %p0, %p1 : vector<$lanes x $t>
-          %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
-          %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-            %x = memref.load %a[%i] : memref<?x$t>
-            %y = arith.addf %acc, %x : $t
-            scf.yield %y : $t
-          }
-          macro.yield %t : $t
-        } };
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c3 = arith.constant 3 : index
+            %c4 = arith.constant 4 : index
+            %lanes = arith.constant $lanes : index
+            %l2 = arith.muli %lanes, %c2 : index
+            %l3 = arith.muli %lanes, %c3 : index
+            %step = arith.muli %lanes, %c4 : index
+            %n = memref.dim %a, %c0 : memref<?x$t>
+            %rem = arith.remui %n, %step : index
+            %body = arith.subi %n, %rem : index
+            %z = arith.constant dense<0.0> : vector<$lanes x $t>
+            %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+              %i1 = arith.addi %i0, %lanes : index
+              %i2 = arith.addi %i0, %l2 : index
+              %i3 = arith.addi %i0, %l3 : index
+              %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %s0 = arith.addf %v0, %x0 : vector<$lanes x $t>
+              %s1 = arith.addf %v1, %x1 : vector<$lanes x $t>
+              %s2 = arith.addf %v2, %x2 : vector<$lanes x $t>
+              %s3 = arith.addf %v3, %x3 : vector<$lanes x $t>
+              scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+            }
+            %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
+            %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
+            %p = arith.addf %p0, %p1 : vector<$lanes x $t>
+            %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+            %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+              %x = memref.load %a[%i] : memref<?x$t>
+              %y = arith.addf %acc, %x : $t
+              scf.yield %y : $t
+            }
+            macro.yield %t : $t
+          } };
         return total / (self.len() as $t);
       }
 
@@ -535,49 +535,49 @@ macro_rules stamp_tensor_sums {
       /// which the legacy code generator cannot compile.
       pub fn norm(self : &Tensor<$t, [?]>) -> $t {
         let squares : $t = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-          %c0 = arith.constant 0 : index
-          %c1 = arith.constant 1 : index
-          %c2 = arith.constant 2 : index
-          %c3 = arith.constant 3 : index
-          %c4 = arith.constant 4 : index
-          %lanes = arith.constant $lanes : index
-          %l2 = arith.muli %lanes, %c2 : index
-          %l3 = arith.muli %lanes, %c3 : index
-          %step = arith.muli %lanes, %c4 : index
-          %n = memref.dim %a, %c0 : memref<?x$t>
-          %rem = arith.remui %n, %step : index
-          %body = arith.subi %n, %rem : index
-          %z = arith.constant dense<0.0> : vector<$lanes x $t>
-          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-            %i1 = arith.addi %i0, %lanes : index
-            %i2 = arith.addi %i0, %l2 : index
-            %i3 = arith.addi %i0, %l3 : index
-            %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %y0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %y1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %y2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %y3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %s0 = vector.fma %x0, %y0, %v0 : vector<$lanes x $t>
-            %s1 = vector.fma %x1, %y1, %v1 : vector<$lanes x $t>
-            %s2 = vector.fma %x2, %y2, %v2 : vector<$lanes x $t>
-            %s3 = vector.fma %x3, %y3, %v3 : vector<$lanes x $t>
-            scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-          }
-          %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
-          %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
-          %p = arith.addf %p0, %p1 : vector<$lanes x $t>
-          %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
-          %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-            %x = memref.load %a[%i] : memref<?x$t>
-            %y = memref.load %a[%i] : memref<?x$t>
-            %m = math.fma %x, %y, %acc : $t
-            scf.yield %m : $t
-          }
-          macro.yield %t : $t
-        } };
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c3 = arith.constant 3 : index
+            %c4 = arith.constant 4 : index
+            %lanes = arith.constant $lanes : index
+            %l2 = arith.muli %lanes, %c2 : index
+            %l3 = arith.muli %lanes, %c3 : index
+            %step = arith.muli %lanes, %c4 : index
+            %n = memref.dim %a, %c0 : memref<?x$t>
+            %rem = arith.remui %n, %step : index
+            %body = arith.subi %n, %rem : index
+            %z = arith.constant dense<0.0> : vector<$lanes x $t>
+            %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+              %i1 = arith.addi %i0, %lanes : index
+              %i2 = arith.addi %i0, %l2 : index
+              %i3 = arith.addi %i0, %l3 : index
+              %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %y0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %y1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %y2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %y3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %s0 = vector.fma %x0, %y0, %v0 : vector<$lanes x $t>
+              %s1 = vector.fma %x1, %y1, %v1 : vector<$lanes x $t>
+              %s2 = vector.fma %x2, %y2, %v2 : vector<$lanes x $t>
+              %s3 = vector.fma %x3, %y3, %v3 : vector<$lanes x $t>
+              scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+            }
+            %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
+            %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
+            %p = arith.addf %p0, %p1 : vector<$lanes x $t>
+            %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+            %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+              %x = memref.load %a[%i] : memref<?x$t>
+              %y = memref.load %a[%i] : memref<?x$t>
+              %m = math.fma %x, %y, %acc : $t
+              scf.yield %m : $t
+            }
+            macro.yield %t : $t
+          } };
         return squares.sqrt();
       }
     }
@@ -594,49 +594,49 @@ macro_rules stamp_half_tensor_sums {
       /// The sum of the elements. 0 for an empty tensor.
       pub fn sum(self : &Tensor<$t, [?]>) -> f32 {
         return unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-          %c0 = arith.constant 0 : index
-          %c1 = arith.constant 1 : index
-          %c2 = arith.constant 2 : index
-          %c3 = arith.constant 3 : index
-          %c4 = arith.constant 4 : index
-          %lanes = arith.constant $lanes : index
-          %l2 = arith.muli %lanes, %c2 : index
-          %l3 = arith.muli %lanes, %c3 : index
-          %step = arith.muli %lanes, %c4 : index
-          %n = memref.dim %a, %c0 : memref<?x$t>
-          %rem = arith.remui %n, %step : index
-          %body = arith.subi %n, %rem : index
-          %z = arith.constant dense<0.0> : vector<$lanes x f32>
-          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>) {
-            %i1 = arith.addi %i0, %lanes : index
-            %i2 = arith.addi %i0, %l2 : index
-            %i3 = arith.addi %i0, %l3 : index
-            %x0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %x0 = arith.extf %x0h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %x1 = arith.extf %x1h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %x2 = arith.extf %x2h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %x3 = arith.extf %x3h : vector<$lanes x $t> to vector<$lanes x f32>
-            %s0 = arith.addf %v0, %x0 : vector<$lanes x f32>
-            %s1 = arith.addf %v1, %x1 : vector<$lanes x f32>
-            %s2 = arith.addf %v2, %x2 : vector<$lanes x f32>
-            %s3 = arith.addf %v3, %x3 : vector<$lanes x f32>
-            scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>
-          }
-          %p0 = arith.addf %r#0, %r#1 : vector<$lanes x f32>
-          %p1 = arith.addf %r#2, %r#3 : vector<$lanes x f32>
-          %p = arith.addf %p0, %p1 : vector<$lanes x f32>
-          %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x f32> into f32
-          %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
-            %xh = memref.load %a[%i] : memref<?x$t>
-            %x = "arith.extf"(%xh) : ($t) -> f32
-            %y = arith.addf %acc, %x : f32
-            scf.yield %y : f32
-          }
-          macro.yield %t : f32
-        } };
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c3 = arith.constant 3 : index
+            %c4 = arith.constant 4 : index
+            %lanes = arith.constant $lanes : index
+            %l2 = arith.muli %lanes, %c2 : index
+            %l3 = arith.muli %lanes, %c3 : index
+            %step = arith.muli %lanes, %c4 : index
+            %n = memref.dim %a, %c0 : memref<?x$t>
+            %rem = arith.remui %n, %step : index
+            %body = arith.subi %n, %rem : index
+            %z = arith.constant dense<0.0> : vector<$lanes x f32>
+            %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>) {
+              %i1 = arith.addi %i0, %lanes : index
+              %i2 = arith.addi %i0, %l2 : index
+              %i3 = arith.addi %i0, %l3 : index
+              %x0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %x0 = arith.extf %x0h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %x1 = arith.extf %x1h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %x2 = arith.extf %x2h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %x3 = arith.extf %x3h : vector<$lanes x $t> to vector<$lanes x f32>
+              %s0 = arith.addf %v0, %x0 : vector<$lanes x f32>
+              %s1 = arith.addf %v1, %x1 : vector<$lanes x f32>
+              %s2 = arith.addf %v2, %x2 : vector<$lanes x f32>
+              %s3 = arith.addf %v3, %x3 : vector<$lanes x f32>
+              scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>
+            }
+            %p0 = arith.addf %r#0, %r#1 : vector<$lanes x f32>
+            %p1 = arith.addf %r#2, %r#3 : vector<$lanes x f32>
+            %p = arith.addf %p0, %p1 : vector<$lanes x f32>
+            %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x f32> into f32
+            %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
+              %xh = memref.load %a[%i] : memref<?x$t>
+              %x = "arith.extf"(%xh) : ($t) -> f32
+              %y = arith.addf %acc, %x : f32
+              scf.yield %y : f32
+            }
+            macro.yield %t : f32
+          } };
       }
 
       /// The sum of the products of matching elements. Refused for tensors of different
@@ -644,108 +644,108 @@ macro_rules stamp_half_tensor_sums {
       pub fn dot(self : &Tensor<$t, [?]>, other : &Tensor<$t, [?]>) -> f32 {
         assert(self.len() == other.len(), "dot needs two tensors of the same length");
         return unsafe { mlir!( inputs : (%a = self : memref<?x$t>, %b = other : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-          %c0 = arith.constant 0 : index
-          %c1 = arith.constant 1 : index
-          %c2 = arith.constant 2 : index
-          %c3 = arith.constant 3 : index
-          %c4 = arith.constant 4 : index
-          %lanes = arith.constant $lanes : index
-          %l2 = arith.muli %lanes, %c2 : index
-          %l3 = arith.muli %lanes, %c3 : index
-          %step = arith.muli %lanes, %c4 : index
-          %n = memref.dim %a, %c0 : memref<?x$t>
-          %rem = arith.remui %n, %step : index
-          %body = arith.subi %n, %rem : index
-          %z = arith.constant dense<0.0> : vector<$lanes x f32>
-          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>) {
-            %i1 = arith.addi %i0, %lanes : index
-            %i2 = arith.addi %i0, %l2 : index
-            %i3 = arith.addi %i0, %l3 : index
-            %x0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %x0 = arith.extf %x0h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %x1 = arith.extf %x1h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %x2 = arith.extf %x2h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %x3 = arith.extf %x3h : vector<$lanes x $t> to vector<$lanes x f32>
-            %y0h = vector.load %b[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %y0 = arith.extf %y0h : vector<$lanes x $t> to vector<$lanes x f32>
-            %y1h = vector.load %b[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %y1 = arith.extf %y1h : vector<$lanes x $t> to vector<$lanes x f32>
-            %y2h = vector.load %b[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %y2 = arith.extf %y2h : vector<$lanes x $t> to vector<$lanes x f32>
-            %y3h = vector.load %b[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %y3 = arith.extf %y3h : vector<$lanes x $t> to vector<$lanes x f32>
-            %s0 = vector.fma %x0, %y0, %v0 : vector<$lanes x f32>
-            %s1 = vector.fma %x1, %y1, %v1 : vector<$lanes x f32>
-            %s2 = vector.fma %x2, %y2, %v2 : vector<$lanes x f32>
-            %s3 = vector.fma %x3, %y3, %v3 : vector<$lanes x f32>
-            scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>
-          }
-          %p0 = arith.addf %r#0, %r#1 : vector<$lanes x f32>
-          %p1 = arith.addf %r#2, %r#3 : vector<$lanes x f32>
-          %p = arith.addf %p0, %p1 : vector<$lanes x f32>
-          %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x f32> into f32
-          %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
-            %xh = memref.load %a[%i] : memref<?x$t>
-            %x = "arith.extf"(%xh) : ($t) -> f32
-            %yh = memref.load %b[%i] : memref<?x$t>
-            %y = "arith.extf"(%yh) : ($t) -> f32
-            %m = math.fma %x, %y, %acc : f32
-            scf.yield %m : f32
-          }
-          macro.yield %t : f32
-        } };
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c3 = arith.constant 3 : index
+            %c4 = arith.constant 4 : index
+            %lanes = arith.constant $lanes : index
+            %l2 = arith.muli %lanes, %c2 : index
+            %l3 = arith.muli %lanes, %c3 : index
+            %step = arith.muli %lanes, %c4 : index
+            %n = memref.dim %a, %c0 : memref<?x$t>
+            %rem = arith.remui %n, %step : index
+            %body = arith.subi %n, %rem : index
+            %z = arith.constant dense<0.0> : vector<$lanes x f32>
+            %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>) {
+              %i1 = arith.addi %i0, %lanes : index
+              %i2 = arith.addi %i0, %l2 : index
+              %i3 = arith.addi %i0, %l3 : index
+              %x0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %x0 = arith.extf %x0h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %x1 = arith.extf %x1h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %x2 = arith.extf %x2h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %x3 = arith.extf %x3h : vector<$lanes x $t> to vector<$lanes x f32>
+              %y0h = vector.load %b[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %y0 = arith.extf %y0h : vector<$lanes x $t> to vector<$lanes x f32>
+              %y1h = vector.load %b[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %y1 = arith.extf %y1h : vector<$lanes x $t> to vector<$lanes x f32>
+              %y2h = vector.load %b[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %y2 = arith.extf %y2h : vector<$lanes x $t> to vector<$lanes x f32>
+              %y3h = vector.load %b[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %y3 = arith.extf %y3h : vector<$lanes x $t> to vector<$lanes x f32>
+              %s0 = vector.fma %x0, %y0, %v0 : vector<$lanes x f32>
+              %s1 = vector.fma %x1, %y1, %v1 : vector<$lanes x f32>
+              %s2 = vector.fma %x2, %y2, %v2 : vector<$lanes x f32>
+              %s3 = vector.fma %x3, %y3, %v3 : vector<$lanes x f32>
+              scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>
+            }
+            %p0 = arith.addf %r#0, %r#1 : vector<$lanes x f32>
+            %p1 = arith.addf %r#2, %r#3 : vector<$lanes x f32>
+            %p = arith.addf %p0, %p1 : vector<$lanes x f32>
+            %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x f32> into f32
+            %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
+              %xh = memref.load %a[%i] : memref<?x$t>
+              %x = "arith.extf"(%xh) : ($t) -> f32
+              %yh = memref.load %b[%i] : memref<?x$t>
+              %y = "arith.extf"(%yh) : ($t) -> f32
+              %m = math.fma %x, %y, %acc : f32
+              scf.yield %m : f32
+            }
+            macro.yield %t : f32
+          } };
       }
 
       /// The average of the elements. NaN for an empty tensor. The loop of `sum`, written out
       /// rather than calling `self.sum()`, which the legacy code generator cannot compile.
       pub fn mean(self : &Tensor<$t, [?]>) -> f32 {
         let total : f32 = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-          %c0 = arith.constant 0 : index
-          %c1 = arith.constant 1 : index
-          %c2 = arith.constant 2 : index
-          %c3 = arith.constant 3 : index
-          %c4 = arith.constant 4 : index
-          %lanes = arith.constant $lanes : index
-          %l2 = arith.muli %lanes, %c2 : index
-          %l3 = arith.muli %lanes, %c3 : index
-          %step = arith.muli %lanes, %c4 : index
-          %n = memref.dim %a, %c0 : memref<?x$t>
-          %rem = arith.remui %n, %step : index
-          %body = arith.subi %n, %rem : index
-          %z = arith.constant dense<0.0> : vector<$lanes x f32>
-          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>) {
-            %i1 = arith.addi %i0, %lanes : index
-            %i2 = arith.addi %i0, %l2 : index
-            %i3 = arith.addi %i0, %l3 : index
-            %x0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %x0 = arith.extf %x0h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %x1 = arith.extf %x1h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %x2 = arith.extf %x2h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %x3 = arith.extf %x3h : vector<$lanes x $t> to vector<$lanes x f32>
-            %s0 = arith.addf %v0, %x0 : vector<$lanes x f32>
-            %s1 = arith.addf %v1, %x1 : vector<$lanes x f32>
-            %s2 = arith.addf %v2, %x2 : vector<$lanes x f32>
-            %s3 = arith.addf %v3, %x3 : vector<$lanes x f32>
-            scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>
-          }
-          %p0 = arith.addf %r#0, %r#1 : vector<$lanes x f32>
-          %p1 = arith.addf %r#2, %r#3 : vector<$lanes x f32>
-          %p = arith.addf %p0, %p1 : vector<$lanes x f32>
-          %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x f32> into f32
-          %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
-            %xh = memref.load %a[%i] : memref<?x$t>
-            %x = "arith.extf"(%xh) : ($t) -> f32
-            %y = arith.addf %acc, %x : f32
-            scf.yield %y : f32
-          }
-          macro.yield %t : f32
-        } };
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c3 = arith.constant 3 : index
+            %c4 = arith.constant 4 : index
+            %lanes = arith.constant $lanes : index
+            %l2 = arith.muli %lanes, %c2 : index
+            %l3 = arith.muli %lanes, %c3 : index
+            %step = arith.muli %lanes, %c4 : index
+            %n = memref.dim %a, %c0 : memref<?x$t>
+            %rem = arith.remui %n, %step : index
+            %body = arith.subi %n, %rem : index
+            %z = arith.constant dense<0.0> : vector<$lanes x f32>
+            %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>) {
+              %i1 = arith.addi %i0, %lanes : index
+              %i2 = arith.addi %i0, %l2 : index
+              %i3 = arith.addi %i0, %l3 : index
+              %x0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %x0 = arith.extf %x0h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %x1 = arith.extf %x1h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %x2 = arith.extf %x2h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %x3 = arith.extf %x3h : vector<$lanes x $t> to vector<$lanes x f32>
+              %s0 = arith.addf %v0, %x0 : vector<$lanes x f32>
+              %s1 = arith.addf %v1, %x1 : vector<$lanes x f32>
+              %s2 = arith.addf %v2, %x2 : vector<$lanes x f32>
+              %s3 = arith.addf %v3, %x3 : vector<$lanes x f32>
+              scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>
+            }
+            %p0 = arith.addf %r#0, %r#1 : vector<$lanes x f32>
+            %p1 = arith.addf %r#2, %r#3 : vector<$lanes x f32>
+            %p = arith.addf %p0, %p1 : vector<$lanes x f32>
+            %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x f32> into f32
+            %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
+              %xh = memref.load %a[%i] : memref<?x$t>
+              %x = "arith.extf"(%xh) : ($t) -> f32
+              %y = arith.addf %acc, %x : f32
+              scf.yield %y : f32
+            }
+            macro.yield %t : f32
+          } };
         return total / (self.len() as f32);
       }
 
@@ -754,59 +754,59 @@ macro_rules stamp_half_tensor_sums {
       /// which the legacy code generator cannot compile.
       pub fn norm(self : &Tensor<$t, [?]>) -> f32 {
         let squares : f32 = unsafe { mlir!( inputs : (%a = self : memref<?x$t>), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-          %c0 = arith.constant 0 : index
-          %c1 = arith.constant 1 : index
-          %c2 = arith.constant 2 : index
-          %c3 = arith.constant 3 : index
-          %c4 = arith.constant 4 : index
-          %lanes = arith.constant $lanes : index
-          %l2 = arith.muli %lanes, %c2 : index
-          %l3 = arith.muli %lanes, %c3 : index
-          %step = arith.muli %lanes, %c4 : index
-          %n = memref.dim %a, %c0 : memref<?x$t>
-          %rem = arith.remui %n, %step : index
-          %body = arith.subi %n, %rem : index
-          %z = arith.constant dense<0.0> : vector<$lanes x f32>
-          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>) {
-            %i1 = arith.addi %i0, %lanes : index
-            %i2 = arith.addi %i0, %l2 : index
-            %i3 = arith.addi %i0, %l3 : index
-            %x0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %x0 = arith.extf %x0h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %x1 = arith.extf %x1h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %x2 = arith.extf %x2h : vector<$lanes x $t> to vector<$lanes x f32>
-            %x3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %x3 = arith.extf %x3h : vector<$lanes x $t> to vector<$lanes x f32>
-            %y0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-            %y0 = arith.extf %y0h : vector<$lanes x $t> to vector<$lanes x f32>
-            %y1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-            %y1 = arith.extf %y1h : vector<$lanes x $t> to vector<$lanes x f32>
-            %y2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-            %y2 = arith.extf %y2h : vector<$lanes x $t> to vector<$lanes x f32>
-            %y3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-            %y3 = arith.extf %y3h : vector<$lanes x $t> to vector<$lanes x f32>
-            %s0 = vector.fma %x0, %y0, %v0 : vector<$lanes x f32>
-            %s1 = vector.fma %x1, %y1, %v1 : vector<$lanes x f32>
-            %s2 = vector.fma %x2, %y2, %v2 : vector<$lanes x f32>
-            %s3 = vector.fma %x3, %y3, %v3 : vector<$lanes x f32>
-            scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>
-          }
-          %p0 = arith.addf %r#0, %r#1 : vector<$lanes x f32>
-          %p1 = arith.addf %r#2, %r#3 : vector<$lanes x f32>
-          %p = arith.addf %p0, %p1 : vector<$lanes x f32>
-          %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x f32> into f32
-          %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
-            %xh = memref.load %a[%i] : memref<?x$t>
-            %x = "arith.extf"(%xh) : ($t) -> f32
-            %yh = memref.load %a[%i] : memref<?x$t>
-            %y = "arith.extf"(%yh) : ($t) -> f32
-            %m = math.fma %x, %y, %acc : f32
-            scf.yield %m : f32
-          }
-          macro.yield %t : f32
-        } };
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c3 = arith.constant 3 : index
+            %c4 = arith.constant 4 : index
+            %lanes = arith.constant $lanes : index
+            %l2 = arith.muli %lanes, %c2 : index
+            %l3 = arith.muli %lanes, %c3 : index
+            %step = arith.muli %lanes, %c4 : index
+            %n = memref.dim %a, %c0 : memref<?x$t>
+            %rem = arith.remui %n, %step : index
+            %body = arith.subi %n, %rem : index
+            %z = arith.constant dense<0.0> : vector<$lanes x f32>
+            %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>) {
+              %i1 = arith.addi %i0, %lanes : index
+              %i2 = arith.addi %i0, %l2 : index
+              %i3 = arith.addi %i0, %l3 : index
+              %x0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %x0 = arith.extf %x0h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %x1 = arith.extf %x1h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %x2 = arith.extf %x2h : vector<$lanes x $t> to vector<$lanes x f32>
+              %x3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %x3 = arith.extf %x3h : vector<$lanes x $t> to vector<$lanes x f32>
+              %y0h = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+              %y0 = arith.extf %y0h : vector<$lanes x $t> to vector<$lanes x f32>
+              %y1h = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+              %y1 = arith.extf %y1h : vector<$lanes x $t> to vector<$lanes x f32>
+              %y2h = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+              %y2 = arith.extf %y2h : vector<$lanes x $t> to vector<$lanes x f32>
+              %y3h = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+              %y3 = arith.extf %y3h : vector<$lanes x $t> to vector<$lanes x f32>
+              %s0 = vector.fma %x0, %y0, %v0 : vector<$lanes x f32>
+              %s1 = vector.fma %x1, %y1, %v1 : vector<$lanes x f32>
+              %s2 = vector.fma %x2, %y2, %v2 : vector<$lanes x f32>
+              %s3 = vector.fma %x3, %y3, %v3 : vector<$lanes x f32>
+              scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>, vector<$lanes x f32>
+            }
+            %p0 = arith.addf %r#0, %r#1 : vector<$lanes x f32>
+            %p1 = arith.addf %r#2, %r#3 : vector<$lanes x f32>
+            %p = arith.addf %p0, %p1 : vector<$lanes x f32>
+            %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x f32> into f32
+            %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
+              %xh = memref.load %a[%i] : memref<?x$t>
+              %x = "arith.extf"(%xh) : ($t) -> f32
+              %yh = memref.load %a[%i] : memref<?x$t>
+              %y = "arith.extf"(%yh) : ($t) -> f32
+              %m = math.fma %x, %y, %acc : f32
+              scf.yield %m : f32
+            }
+            macro.yield %t : f32
+          } };
         return squares.sqrt();
       }
     }
@@ -824,44 +824,44 @@ stamp_half_tensor_sums!(bf16 , 16);
 macro_rules tensor_max_loop {
   ($a : expr , $t : ident , $lanes : expr , $start : expr) => {
     unsafe { mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %c2 = arith.constant 2 : index
-      %c3 = arith.constant 3 : index
-      %c4 = arith.constant 4 : index
-      %lanes = arith.constant $lanes : index
-      %l2 = arith.muli %lanes, %c2 : index
-      %l3 = arith.muli %lanes, %c3 : index
-      %step = arith.muli %lanes, %c4 : index
-      %n = memref.dim %a, %c0 : memref<?x$t>
-      %rem = arith.remui %n, %step : index
-      %body = arith.subi %n, %rem : index
-      %z = arith.constant dense<$start> : vector<$lanes x $t>
-      %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-        %i1 = arith.addi %i0, %lanes : index
-        %i2 = arith.addi %i0, %l2 : index
-        %i3 = arith.addi %i0, %l3 : index
-        %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-        %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-        %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-        %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-        %s0 = arith.maxnumf %v0, %x0 : vector<$lanes x $t>
-        %s1 = arith.maxnumf %v1, %x1 : vector<$lanes x $t>
-        %s2 = arith.maxnumf %v2, %x2 : vector<$lanes x $t>
-        %s3 = arith.maxnumf %v3, %x3 : vector<$lanes x $t>
-        scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-      }
-      %p0 = arith.maxnumf %r#0, %r#1 : vector<$lanes x $t>
-      %p1 = arith.maxnumf %r#2, %r#3 : vector<$lanes x $t>
-      %p = arith.maxnumf %p0, %p1 : vector<$lanes x $t>
-      %head = vector.reduction <maxnumf>, %p : vector<$lanes x $t> into $t
-      %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-        %x = memref.load %a[%i] : memref<?x$t>
-        %y = arith.maxnumf %acc, %x : $t
-        scf.yield %y : $t
-      }
-      macro.yield %t : $t
-    } }
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %lanes = arith.constant $lanes : index
+        %l2 = arith.muli %lanes, %c2 : index
+        %l3 = arith.muli %lanes, %c3 : index
+        %step = arith.muli %lanes, %c4 : index
+        %n = memref.dim %a, %c0 : memref<?x$t>
+        %rem = arith.remui %n, %step : index
+        %body = arith.subi %n, %rem : index
+        %z = arith.constant dense<$start> : vector<$lanes x $t>
+        %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+          %i1 = arith.addi %i0, %lanes : index
+          %i2 = arith.addi %i0, %l2 : index
+          %i3 = arith.addi %i0, %l3 : index
+          %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+          %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+          %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+          %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+          %s0 = arith.maxnumf %v0, %x0 : vector<$lanes x $t>
+          %s1 = arith.maxnumf %v1, %x1 : vector<$lanes x $t>
+          %s2 = arith.maxnumf %v2, %x2 : vector<$lanes x $t>
+          %s3 = arith.maxnumf %v3, %x3 : vector<$lanes x $t>
+          scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+        }
+        %p0 = arith.maxnumf %r#0, %r#1 : vector<$lanes x $t>
+        %p1 = arith.maxnumf %r#2, %r#3 : vector<$lanes x $t>
+        %p = arith.maxnumf %p0, %p1 : vector<$lanes x $t>
+        %head = vector.reduction <maxnumf>, %p : vector<$lanes x $t> into $t
+        %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+          %x = memref.load %a[%i] : memref<?x$t>
+          %y = arith.maxnumf %acc, %x : $t
+          scf.yield %y : $t
+        }
+        macro.yield %t : $t
+      } }
   };
 }
 
@@ -870,44 +870,44 @@ macro_rules tensor_max_loop {
 macro_rules tensor_min_loop {
   ($a : expr , $t : ident , $lanes : expr , $start : expr) => {
     unsafe { mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %c2 = arith.constant 2 : index
-      %c3 = arith.constant 3 : index
-      %c4 = arith.constant 4 : index
-      %lanes = arith.constant $lanes : index
-      %l2 = arith.muli %lanes, %c2 : index
-      %l3 = arith.muli %lanes, %c3 : index
-      %step = arith.muli %lanes, %c4 : index
-      %n = memref.dim %a, %c0 : memref<?x$t>
-      %rem = arith.remui %n, %step : index
-      %body = arith.subi %n, %rem : index
-      %z = arith.constant dense<$start> : vector<$lanes x $t>
-      %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-        %i1 = arith.addi %i0, %lanes : index
-        %i2 = arith.addi %i0, %l2 : index
-        %i3 = arith.addi %i0, %l3 : index
-        %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-        %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-        %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-        %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-        %s0 = arith.minnumf %v0, %x0 : vector<$lanes x $t>
-        %s1 = arith.minnumf %v1, %x1 : vector<$lanes x $t>
-        %s2 = arith.minnumf %v2, %x2 : vector<$lanes x $t>
-        %s3 = arith.minnumf %v3, %x3 : vector<$lanes x $t>
-        scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-      }
-      %p0 = arith.minnumf %r#0, %r#1 : vector<$lanes x $t>
-      %p1 = arith.minnumf %r#2, %r#3 : vector<$lanes x $t>
-      %p = arith.minnumf %p0, %p1 : vector<$lanes x $t>
-      %head = vector.reduction <minnumf>, %p : vector<$lanes x $t> into $t
-      %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-        %x = memref.load %a[%i] : memref<?x$t>
-        %y = arith.minnumf %acc, %x : $t
-        scf.yield %y : $t
-      }
-      macro.yield %t : $t
-    } }
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %lanes = arith.constant $lanes : index
+        %l2 = arith.muli %lanes, %c2 : index
+        %l3 = arith.muli %lanes, %c3 : index
+        %step = arith.muli %lanes, %c4 : index
+        %n = memref.dim %a, %c0 : memref<?x$t>
+        %rem = arith.remui %n, %step : index
+        %body = arith.subi %n, %rem : index
+        %z = arith.constant dense<$start> : vector<$lanes x $t>
+        %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+          %i1 = arith.addi %i0, %lanes : index
+          %i2 = arith.addi %i0, %l2 : index
+          %i3 = arith.addi %i0, %l3 : index
+          %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+          %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+          %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+          %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+          %s0 = arith.minnumf %v0, %x0 : vector<$lanes x $t>
+          %s1 = arith.minnumf %v1, %x1 : vector<$lanes x $t>
+          %s2 = arith.minnumf %v2, %x2 : vector<$lanes x $t>
+          %s3 = arith.minnumf %v3, %x3 : vector<$lanes x $t>
+          scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+        }
+        %p0 = arith.minnumf %r#0, %r#1 : vector<$lanes x $t>
+        %p1 = arith.minnumf %r#2, %r#3 : vector<$lanes x $t>
+        %p = arith.minnumf %p0, %p1 : vector<$lanes x $t>
+        %head = vector.reduction <minnumf>, %p : vector<$lanes x $t> into $t
+        %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+          %x = memref.load %a[%i] : memref<?x$t>
+          %y = arith.minnumf %acc, %x : $t
+          scf.yield %y : $t
+        }
+        macro.yield %t : $t
+      } }
   };
 }
 
@@ -1002,44 +1002,44 @@ stamp_tensor_statistics!(bf16 , f32);
 macro_rules tensor_sum_loop {
   ($a : expr , $t : ident , $lanes : expr) => {
     unsafe { mlir!( inputs : (%a = $a : memref<?x$t>), returns : $t, dialects : ["arith", "memref", "scf", "vector"]) {
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %c2 = arith.constant 2 : index
-      %c3 = arith.constant 3 : index
-      %c4 = arith.constant 4 : index
-      %lanes = arith.constant $lanes : index
-      %l2 = arith.muli %lanes, %c2 : index
-      %l3 = arith.muli %lanes, %c3 : index
-      %step = arith.muli %lanes, %c4 : index
-      %n = memref.dim %a, %c0 : memref<?x$t>
-      %rem = arith.remui %n, %step : index
-      %body = arith.subi %n, %rem : index
-      %z = arith.constant dense<0.0> : vector<$lanes x $t>
-      %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-        %i1 = arith.addi %i0, %lanes : index
-        %i2 = arith.addi %i0, %l2 : index
-        %i3 = arith.addi %i0, %l3 : index
-        %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-        %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-        %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-        %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-        %s0 = arith.addf %v0, %x0 : vector<$lanes x $t>
-        %s1 = arith.addf %v1, %x1 : vector<$lanes x $t>
-        %s2 = arith.addf %v2, %x2 : vector<$lanes x $t>
-        %s3 = arith.addf %v3, %x3 : vector<$lanes x $t>
-        scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-      }
-      %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
-      %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
-      %p = arith.addf %p0, %p1 : vector<$lanes x $t>
-      %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
-      %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-        %x = memref.load %a[%i] : memref<?x$t>
-        %y = arith.addf %acc, %x : $t
-        scf.yield %y : $t
-      }
-      macro.yield %t : $t
-    } }
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %lanes = arith.constant $lanes : index
+        %l2 = arith.muli %lanes, %c2 : index
+        %l3 = arith.muli %lanes, %c3 : index
+        %step = arith.muli %lanes, %c4 : index
+        %n = memref.dim %a, %c0 : memref<?x$t>
+        %rem = arith.remui %n, %step : index
+        %body = arith.subi %n, %rem : index
+        %z = arith.constant dense<0.0> : vector<$lanes x $t>
+        %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+          %i1 = arith.addi %i0, %lanes : index
+          %i2 = arith.addi %i0, %l2 : index
+          %i3 = arith.addi %i0, %l3 : index
+          %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+          %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+          %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+          %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+          %s0 = arith.addf %v0, %x0 : vector<$lanes x $t>
+          %s1 = arith.addf %v1, %x1 : vector<$lanes x $t>
+          %s2 = arith.addf %v2, %x2 : vector<$lanes x $t>
+          %s3 = arith.addf %v3, %x3 : vector<$lanes x $t>
+          scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+        }
+        %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
+        %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
+        %p = arith.addf %p0, %p1 : vector<$lanes x $t>
+        %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+        %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+          %x = memref.load %a[%i] : memref<?x$t>
+          %y = arith.addf %acc, %x : $t
+          scf.yield %y : $t
+        }
+        macro.yield %t : $t
+      } }
   };
 }
 
@@ -1048,50 +1048,50 @@ macro_rules tensor_sum_loop {
 macro_rules tensor_squared_distance_loop {
   ($a : expr , $mean : expr , $t : ident , $lanes : expr) => {
     unsafe { mlir!( inputs : (%a = $a : memref<?x$t>, %m = $mean : $t), returns : $t, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %c2 = arith.constant 2 : index
-      %c3 = arith.constant 3 : index
-      %c4 = arith.constant 4 : index
-      %lanes = arith.constant $lanes : index
-      %l2 = arith.muli %lanes, %c2 : index
-      %l3 = arith.muli %lanes, %c3 : index
-      %step = arith.muli %lanes, %c4 : index
-      %n = memref.dim %a, %c0 : memref<?x$t>
-      %rem = arith.remui %n, %step : index
-      %body = arith.subi %n, %rem : index
-      %z = arith.constant dense<0.0> : vector<$lanes x $t>
-      %mv = "vector.broadcast"(%m) : ($t) -> vector<$lanes x $t>
-      %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-        %i1 = arith.addi %i0, %lanes : index
-        %i2 = arith.addi %i0, %l2 : index
-        %i3 = arith.addi %i0, %l3 : index
-        %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-        %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-        %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-        %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-        %d0 = arith.subf %x0, %mv : vector<$lanes x $t>
-        %d1 = arith.subf %x1, %mv : vector<$lanes x $t>
-        %d2 = arith.subf %x2, %mv : vector<$lanes x $t>
-        %d3 = arith.subf %x3, %mv : vector<$lanes x $t>
-        %s0 = vector.fma %d0, %d0, %v0 : vector<$lanes x $t>
-        %s1 = vector.fma %d1, %d1, %v1 : vector<$lanes x $t>
-        %s2 = vector.fma %d2, %d2, %v2 : vector<$lanes x $t>
-        %s3 = vector.fma %d3, %d3, %v3 : vector<$lanes x $t>
-        scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-      }
-      %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
-      %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
-      %p = arith.addf %p0, %p1 : vector<$lanes x $t>
-      %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
-      %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-        %x = memref.load %a[%i] : memref<?x$t>
-        %d = arith.subf %x, %m : $t
-        %y = math.fma %d, %d, %acc : $t
-        scf.yield %y : $t
-      }
-      macro.yield %t : $t
-    } }
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %lanes = arith.constant $lanes : index
+        %l2 = arith.muli %lanes, %c2 : index
+        %l3 = arith.muli %lanes, %c3 : index
+        %step = arith.muli %lanes, %c4 : index
+        %n = memref.dim %a, %c0 : memref<?x$t>
+        %rem = arith.remui %n, %step : index
+        %body = arith.subi %n, %rem : index
+        %z = arith.constant dense<0.0> : vector<$lanes x $t>
+        %mv = "vector.broadcast"(%m) : ($t) -> vector<$lanes x $t>
+        %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+          %i1 = arith.addi %i0, %lanes : index
+          %i2 = arith.addi %i0, %l2 : index
+          %i3 = arith.addi %i0, %l3 : index
+          %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+          %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+          %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+          %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
+          %d0 = arith.subf %x0, %mv : vector<$lanes x $t>
+          %d1 = arith.subf %x1, %mv : vector<$lanes x $t>
+          %d2 = arith.subf %x2, %mv : vector<$lanes x $t>
+          %d3 = arith.subf %x3, %mv : vector<$lanes x $t>
+          %s0 = vector.fma %d0, %d0, %v0 : vector<$lanes x $t>
+          %s1 = vector.fma %d1, %d1, %v1 : vector<$lanes x $t>
+          %s2 = vector.fma %d2, %d2, %v2 : vector<$lanes x $t>
+          %s3 = vector.fma %d3, %d3, %v3 : vector<$lanes x $t>
+          scf.yield %s0, %s1, %s2, %s3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+        }
+        %p0 = arith.addf %r#0, %r#1 : vector<$lanes x $t>
+        %p1 = arith.addf %r#2, %r#3 : vector<$lanes x $t>
+        %p = arith.addf %p0, %p1 : vector<$lanes x $t>
+        %head = vector.reduction <add>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+        %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+          %x = memref.load %a[%i] : memref<?x$t>
+          %d = arith.subf %x, %m : $t
+          %y = math.fma %d, %d, %acc : $t
+          scf.yield %y : $t
+        }
+        macro.yield %t : $t
+      } }
   };
 }
 
@@ -1170,68 +1170,68 @@ macro_rules stamp_half_tensor_spread {
 macro_rules tensor_exp_shifted_loop {
   ($a : expr , $m : expr) => {
     unsafe { mlir!( inputs : (%a = $a : memref<?xf32>, %m = $m : f32), returns : f32, dialects : ["arith", "math", "memref", "scf", "vector"]) {
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %c16 = arith.constant 16 : index
-      %n = memref.dim %a, %c0 : memref<?xf32>
-      %rem = arith.remui %n, %c16 : index
-      %body = arith.subi %n, %rem : index
-      %mv = "vector.broadcast"(%m) : (f32) -> vector<16xf32>
-      %hi = arith.constant dense<88.3762626647949> : vector<16xf32>
-      %lo = arith.constant dense<-88.3762626647949> : vector<16xf32>
-      %log2e = arith.constant dense<1.44269504088896341> : vector<16xf32>
-      %half = arith.constant dense<0.5> : vector<16xf32>
-      %neg_ln2_hi = arith.constant dense<-0.693359375> : vector<16xf32>
-      %neg_ln2_lo = arith.constant dense<2.12194440e-4> : vector<16xf32>
-      %p0 = arith.constant dense<1.9875691500e-4> : vector<16xf32>
-      %p1 = arith.constant dense<1.3981999507e-3> : vector<16xf32>
-      %p2 = arith.constant dense<8.3334519073e-3> : vector<16xf32>
-      %p3 = arith.constant dense<4.1665795894e-2> : vector<16xf32>
-      %p4 = arith.constant dense<1.6666665459e-1> : vector<16xf32>
-      %p5 = arith.constant dense<5.0000001201e-1> : vector<16xf32>
-      %one = arith.constant dense<1.0> : vector<16xf32>
-      %bias = arith.constant dense<127> : vector<16xi32>
-      %c23 = arith.constant dense<23> : vector<16xi32>
-      %z = arith.constant dense<0.0> : vector<16xf32>
-      %sums = scf.for %i = %c0 to %body step %c16 iter_args(%acc = %z) -> (vector<16xf32>) {
-        %v = vector.load %a[%i] : memref<?xf32>, vector<16xf32>
-        %x = arith.subf %v, %mv : vector<16xf32>
-        %x1 = arith.minnumf %x, %hi : vector<16xf32>
-        %xc = arith.maxnumf %x1, %lo : vector<16xf32>
-        %t = vector.fma %xc, %log2e, %half : vector<16xf32>
-        %fx = math.floor %t : vector<16xf32>
-        %ra = vector.fma %fx, %neg_ln2_hi, %xc : vector<16xf32>
-        %r = vector.fma %fx, %neg_ln2_lo, %ra : vector<16xf32>
-        %rr = arith.mulf %r, %r : vector<16xf32>
-        %y0 = vector.fma %p0, %r, %p1 : vector<16xf32>
-        %y1 = vector.fma %y0, %r, %p2 : vector<16xf32>
-        %y2 = vector.fma %y1, %r, %p3 : vector<16xf32>
-        %y3 = vector.fma %y2, %r, %p4 : vector<16xf32>
-        %y4 = vector.fma %y3, %r, %p5 : vector<16xf32>
-        %y5 = vector.fma %y4, %rr, %r : vector<16xf32>
-        %y = arith.addf %y5, %one : vector<16xf32>
-        %k = "arith.fptosi"(%fx) : (vector<16xf32>) -> vector<16xi32>
-        %kb = arith.addi %k, %bias : vector<16xi32>
-        %bits = arith.shli %kb, %c23 : vector<16xi32>
-        %pow = "arith.bitcast"(%bits) : (vector<16xi32>) -> vector<16xf32>
-        %ex = arith.mulf %y, %pow : vector<16xf32>
-        %nan = arith.cmpf uno, %x, %x : vector<16xf32>
-        %e = arith.select %nan, %x, %ex : vector<16xi1>, vector<16xf32>
-        vector.store %e, %a[%i] : memref<?xf32>, vector<16xf32>
-        %s = arith.addf %acc, %e : vector<16xf32>
-        scf.yield %s : vector<16xf32>
-      }
-      %head = vector.reduction <add>, %sums fastmath<reassoc> : vector<16xf32> into f32
-      %total = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
-        %v = memref.load %a[%i] : memref<?xf32>
-        %x = arith.subf %v, %m : f32
-        %e = math.exp %x : f32
-        memref.store %e, %a[%i] : memref<?xf32>
-        %s = arith.addf %acc, %e : f32
-        scf.yield %s : f32
-      }
-      macro.yield %total : f32
-    } }
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c16 = arith.constant 16 : index
+        %n = memref.dim %a, %c0 : memref<?xf32>
+        %rem = arith.remui %n, %c16 : index
+        %body = arith.subi %n, %rem : index
+        %mv = "vector.broadcast"(%m) : (f32) -> vector<16xf32>
+        %hi = arith.constant dense<88.3762626647949> : vector<16xf32>
+        %lo = arith.constant dense<-88.3762626647949> : vector<16xf32>
+        %log2e = arith.constant dense<1.44269504088896341> : vector<16xf32>
+        %half = arith.constant dense<0.5> : vector<16xf32>
+        %neg_ln2_hi = arith.constant dense<-0.693359375> : vector<16xf32>
+        %neg_ln2_lo = arith.constant dense<2.12194440e-4> : vector<16xf32>
+        %p0 = arith.constant dense<1.9875691500e-4> : vector<16xf32>
+        %p1 = arith.constant dense<1.3981999507e-3> : vector<16xf32>
+        %p2 = arith.constant dense<8.3334519073e-3> : vector<16xf32>
+        %p3 = arith.constant dense<4.1665795894e-2> : vector<16xf32>
+        %p4 = arith.constant dense<1.6666665459e-1> : vector<16xf32>
+        %p5 = arith.constant dense<5.0000001201e-1> : vector<16xf32>
+        %one = arith.constant dense<1.0> : vector<16xf32>
+        %bias = arith.constant dense<127> : vector<16xi32>
+        %c23 = arith.constant dense<23> : vector<16xi32>
+        %z = arith.constant dense<0.0> : vector<16xf32>
+        %sums = scf.for %i = %c0 to %body step %c16 iter_args(%acc = %z) -> (vector<16xf32>) {
+          %v = vector.load %a[%i] : memref<?xf32>, vector<16xf32>
+          %x = arith.subf %v, %mv : vector<16xf32>
+          %x1 = arith.minnumf %x, %hi : vector<16xf32>
+          %xc = arith.maxnumf %x1, %lo : vector<16xf32>
+          %t = vector.fma %xc, %log2e, %half : vector<16xf32>
+          %fx = math.floor %t : vector<16xf32>
+          %ra = vector.fma %fx, %neg_ln2_hi, %xc : vector<16xf32>
+          %r = vector.fma %fx, %neg_ln2_lo, %ra : vector<16xf32>
+          %rr = arith.mulf %r, %r : vector<16xf32>
+          %y0 = vector.fma %p0, %r, %p1 : vector<16xf32>
+          %y1 = vector.fma %y0, %r, %p2 : vector<16xf32>
+          %y2 = vector.fma %y1, %r, %p3 : vector<16xf32>
+          %y3 = vector.fma %y2, %r, %p4 : vector<16xf32>
+          %y4 = vector.fma %y3, %r, %p5 : vector<16xf32>
+          %y5 = vector.fma %y4, %rr, %r : vector<16xf32>
+          %y = arith.addf %y5, %one : vector<16xf32>
+          %k = "arith.fptosi"(%fx) : (vector<16xf32>) -> vector<16xi32>
+          %kb = arith.addi %k, %bias : vector<16xi32>
+          %bits = arith.shli %kb, %c23 : vector<16xi32>
+          %pow = "arith.bitcast"(%bits) : (vector<16xi32>) -> vector<16xf32>
+          %ex = arith.mulf %y, %pow : vector<16xf32>
+          %nan = arith.cmpf uno, %x, %x : vector<16xf32>
+          %e = arith.select %nan, %x, %ex : vector<16xi1>, vector<16xf32>
+          vector.store %e, %a[%i] : memref<?xf32>, vector<16xf32>
+          %s = arith.addf %acc, %e : vector<16xf32>
+          scf.yield %s : vector<16xf32>
+        }
+        %head = vector.reduction <add>, %sums fastmath<reassoc> : vector<16xf32> into f32
+        %total = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> (f32) {
+          %v = memref.load %a[%i] : memref<?xf32>
+          %x = arith.subf %v, %m : f32
+          %e = math.exp %x : f32
+          memref.store %e, %a[%i] : memref<?xf32>
+          %s = arith.addf %acc, %e : f32
+          scf.yield %s : f32
+        }
+        macro.yield %total : f32
+      } }
   };
 }
 
@@ -1361,80 +1361,31 @@ stamp_tensor_rank2!(bf16);
 macro_rules tensor_reduce_2d {
   ($a : expr , $t : ident , $lanes : expr , $start : expr , $op : ident , $red : ident) => {
     unsafe { mlir!( inputs : (%m = $a : memref<?x?x$t>), returns : $t, dialects : ["arith", "memref", "scf", "vector"]) {
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %c2 = arith.constant 2 : index
-      %c3 = arith.constant 3 : index
-      %c4 = arith.constant 4 : index
-      %lanes = arith.constant $lanes : index
-      %l2 = arith.muli %lanes, %c2 : index
-      %l3 = arith.muli %lanes, %c3 : index
-      %step = arith.muli %lanes, %c4 : index
-      %rows = memref.dim %m, %c0 : memref<?x?x$t>
-      %cols = memref.dim %m, %c1 : memref<?x?x$t>
-      %z = arith.constant dense<$start> : vector<$lanes x $t>
-      %s0 = arith.constant $start : $t
-      %n = arith.muli %rows, %cols : index
-      %a = memref.reinterpret_cast %m to offset: [0], sizes: [%n], strides: [1] : memref<?x?x$t> to memref<?x$t>
-      %rem = arith.remui %n, %step : index
-      %body = arith.subi %n, %rem : index
-      %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-        %i1 = arith.addi %i0, %lanes : index
-        %i2 = arith.addi %i0, %l2 : index
-        %i3 = arith.addi %i0, %l3 : index
-        %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
-        %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
-        %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
-        %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
-        %y0 = arith.$op %v0, %x0 : vector<$lanes x $t>
-        %y1 = arith.$op %v1, %x1 : vector<$lanes x $t>
-        %y2 = arith.$op %v2, %x2 : vector<$lanes x $t>
-        %y3 = arith.$op %v3, %x3 : vector<$lanes x $t>
-        scf.yield %y0, %y1, %y2, %y3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-      }
-      %p0 = arith.$op %r#0, %r#1 : vector<$lanes x $t>
-      %p1 = arith.$op %r#2, %r#3 : vector<$lanes x $t>
-      %p = arith.$op %p0, %p1 : vector<$lanes x $t>
-      %head = vector.reduction <$red>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
-      %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
-        %x = memref.load %a[%i] : memref<?x$t>
-        %y = arith.$op %acc, %x : $t
-        scf.yield %y : $t
-      }
-      macro.yield %t : $t
-    } }
-  };
-}
-
-/// The reduction of `tensor_reduce_2d` along each row of a 2-D tensor `$a` of `$t`, written to
-/// the 1-D tensor `$out`, which has one element per row.
-macro_rules tensor_reduce_rows_2d {
-  ($a : expr , $out : expr , $t : ident , $lanes : expr , $start : expr , $op : ident , $red : ident) => {
-    unsafe { mlir!( inputs : (%m = $a : memref<?x?x$t>, %o = $out : memref<?x$t>), returns : i32, dialects : ["arith", "memref", "scf", "vector"]) {
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %c2 = arith.constant 2 : index
-      %c3 = arith.constant 3 : index
-      %c4 = arith.constant 4 : index
-      %lanes = arith.constant $lanes : index
-      %l2 = arith.muli %lanes, %c2 : index
-      %l3 = arith.muli %lanes, %c3 : index
-      %step = arith.muli %lanes, %c4 : index
-      %rows = memref.dim %m, %c0 : memref<?x?x$t>
-      %cols = memref.dim %m, %c1 : memref<?x?x$t>
-      %z = arith.constant dense<$start> : vector<$lanes x $t>
-      %s0 = arith.constant $start : $t
-      %rem = arith.remui %cols, %step : index
-      %body = arith.subi %cols, %rem : index
-      scf.for %row = %c0 to %rows step %c1 {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %lanes = arith.constant $lanes : index
+        %l2 = arith.muli %lanes, %c2 : index
+        %l3 = arith.muli %lanes, %c3 : index
+        %step = arith.muli %lanes, %c4 : index
+        %rows = memref.dim %m, %c0 : memref<?x?x$t>
+        %cols = memref.dim %m, %c1 : memref<?x?x$t>
+        %z = arith.constant dense<$start> : vector<$lanes x $t>
+        %s0 = arith.constant $start : $t
+        %n = arith.muli %rows, %cols : index
+        %a = memref.reinterpret_cast %m to offset: [0], sizes: [%n], strides: [1] : memref<?x?x$t> to memref<?x$t>
+        %rem = arith.remui %n, %step : index
+        %body = arith.subi %n, %rem : index
         %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
           %i1 = arith.addi %i0, %lanes : index
           %i2 = arith.addi %i0, %l2 : index
           %i3 = arith.addi %i0, %l3 : index
-          %x0 = vector.load %m[%row, %i0] : memref<?x?x$t>, vector<$lanes x $t>
-          %x1 = vector.load %m[%row, %i1] : memref<?x?x$t>, vector<$lanes x $t>
-          %x2 = vector.load %m[%row, %i2] : memref<?x?x$t>, vector<$lanes x $t>
-          %x3 = vector.load %m[%row, %i3] : memref<?x?x$t>, vector<$lanes x $t>
+          %x0 = vector.load %a[%i0] : memref<?x$t>, vector<$lanes x $t>
+          %x1 = vector.load %a[%i1] : memref<?x$t>, vector<$lanes x $t>
+          %x2 = vector.load %a[%i2] : memref<?x$t>, vector<$lanes x $t>
+          %x3 = vector.load %a[%i3] : memref<?x$t>, vector<$lanes x $t>
           %y0 = arith.$op %v0, %x0 : vector<$lanes x $t>
           %y1 = arith.$op %v1, %x1 : vector<$lanes x $t>
           %y2 = arith.$op %v2, %x2 : vector<$lanes x $t>
@@ -1445,16 +1396,65 @@ macro_rules tensor_reduce_rows_2d {
         %p1 = arith.$op %r#2, %r#3 : vector<$lanes x $t>
         %p = arith.$op %p0, %p1 : vector<$lanes x $t>
         %head = vector.reduction <$red>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
-        %t = scf.for %i = %body to %cols step %c1 iter_args(%acc = %head) -> ($t) {
-          %x = memref.load %m[%row, %i] : memref<?x?x$t>
+        %t = scf.for %i = %body to %n step %c1 iter_args(%acc = %head) -> ($t) {
+          %x = memref.load %a[%i] : memref<?x$t>
           %y = arith.$op %acc, %x : $t
           scf.yield %y : $t
         }
-        memref.store %t, %o[%row] : memref<?x$t>
-      }
-      %zero = arith.constant 0 : i32
-      macro.yield %zero : i32
-    } }
+        macro.yield %t : $t
+      } }
+  };
+}
+
+/// The reduction of `tensor_reduce_2d` along each row of a 2-D tensor `$a` of `$t`, written to
+/// the 1-D tensor `$out`, which has one element per row.
+macro_rules tensor_reduce_rows_2d {
+  ($a : expr , $out : expr , $t : ident , $lanes : expr , $start : expr , $op : ident , $red : ident) => {
+    unsafe { mlir!( inputs : (%m = $a : memref<?x?x$t>, %o = $out : memref<?x$t>), returns : i32, dialects : ["arith", "memref", "scf", "vector"]) {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %lanes = arith.constant $lanes : index
+        %l2 = arith.muli %lanes, %c2 : index
+        %l3 = arith.muli %lanes, %c3 : index
+        %step = arith.muli %lanes, %c4 : index
+        %rows = memref.dim %m, %c0 : memref<?x?x$t>
+        %cols = memref.dim %m, %c1 : memref<?x?x$t>
+        %z = arith.constant dense<$start> : vector<$lanes x $t>
+        %s0 = arith.constant $start : $t
+        %rem = arith.remui %cols, %step : index
+        %body = arith.subi %cols, %rem : index
+        scf.for %row = %c0 to %rows step %c1 {
+          %r:4 = scf.for %i0 = %c0 to %body step %step iter_args(%v0 = %z, %v1 = %z, %v2 = %z, %v3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+            %i1 = arith.addi %i0, %lanes : index
+            %i2 = arith.addi %i0, %l2 : index
+            %i3 = arith.addi %i0, %l3 : index
+            %x0 = vector.load %m[%row, %i0] : memref<?x?x$t>, vector<$lanes x $t>
+            %x1 = vector.load %m[%row, %i1] : memref<?x?x$t>, vector<$lanes x $t>
+            %x2 = vector.load %m[%row, %i2] : memref<?x?x$t>, vector<$lanes x $t>
+            %x3 = vector.load %m[%row, %i3] : memref<?x?x$t>, vector<$lanes x $t>
+            %y0 = arith.$op %v0, %x0 : vector<$lanes x $t>
+            %y1 = arith.$op %v1, %x1 : vector<$lanes x $t>
+            %y2 = arith.$op %v2, %x2 : vector<$lanes x $t>
+            %y3 = arith.$op %v3, %x3 : vector<$lanes x $t>
+            scf.yield %y0, %y1, %y2, %y3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+          }
+          %p0 = arith.$op %r#0, %r#1 : vector<$lanes x $t>
+          %p1 = arith.$op %r#2, %r#3 : vector<$lanes x $t>
+          %p = arith.$op %p0, %p1 : vector<$lanes x $t>
+          %head = vector.reduction <$red>, %p fastmath<reassoc> : vector<$lanes x $t> into $t
+          %t = scf.for %i = %body to %cols step %c1 iter_args(%acc = %head) -> ($t) {
+            %x = memref.load %m[%row, %i] : memref<?x?x$t>
+            %y = arith.$op %acc, %x : $t
+            scf.yield %y : $t
+          }
+          memref.store %t, %o[%row] : memref<?x$t>
+        }
+        %zero = arith.constant 0 : i32
+        macro.yield %zero : i32
+      } }
   };
 }
 
@@ -1768,126 +1768,126 @@ stamp_half_tensor_rank2_reductions!(bf16);
 macro_rules tensor_matmul_kernel {
   ($c : expr , $a : expr , $b : expr , $t : ident , $lanes : expr) => {
     unsafe { mlir!( inputs : (%c = $c : memref<?x?x$t>, %a = $a : memref<?x?x$t>, %b = $b : memref<?x?x$t>), returns : i32, dialects : ["arith", "memref", "scf", "vector"]) {
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %lanes = arith.constant $lanes : index
-      %c4 = arith.constant 4 : index
-      %cnv = arith.constant 4 : index
-      %nr = arith.muli %lanes, %cnv : index
-      %m = memref.dim %a, %c0 : memref<?x?x$t>
-      %kk = memref.dim %a, %c1 : memref<?x?x$t>
-      %n = memref.dim %b, %c1 : memref<?x?x$t>
-      %last_row = arith.subi %m, %c1 : index
-      %z = arith.constant dense<0.0> : vector<$lanes x $t>
-      %pb = memref.alloc(%kk, %nr) : memref<?x?x$t>
-      %cv0 = arith.constant 0 : index
-      %po0 = arith.muli %lanes, %cv0 : index
-      %cv1 = arith.constant 1 : index
-      %po1 = arith.muli %lanes, %cv1 : index
-      %cv2 = arith.constant 2 : index
-      %po2 = arith.muli %lanes, %cv2 : index
-      %cv3 = arith.constant 3 : index
-      %po3 = arith.muli %lanes, %cv3 : index
-      scf.for %jb = %c0 to %n step %nr {
-        %left = arith.subi %n, %jb : index
-        %w0 = arith.subi %left, %po0 : index
-        %mask0 = vector.create_mask %w0 : vector<$lanes x i1>
-        %j0 = arith.addi %jb, %po0 : index
-        %w1 = arith.subi %left, %po1 : index
-        %mask1 = vector.create_mask %w1 : vector<$lanes x i1>
-        %j1 = arith.addi %jb, %po1 : index
-        %w2 = arith.subi %left, %po2 : index
-        %mask2 = vector.create_mask %w2 : vector<$lanes x i1>
-        %j2 = arith.addi %jb, %po2 : index
-        %w3 = arith.subi %left, %po3 : index
-        %mask3 = vector.create_mask %w3 : vector<$lanes x i1>
-        %j3 = arith.addi %jb, %po3 : index
-        scf.for %k = %c0 to %kk step %c1 {
-          %p0 = vector.maskedload %b[%k, %j0], %mask0, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
-          vector.store %p0, %pb[%k, %po0] : memref<?x?x$t>, vector<$lanes x $t>
-          %p1 = vector.maskedload %b[%k, %j1], %mask1, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
-          vector.store %p1, %pb[%k, %po1] : memref<?x?x$t>, vector<$lanes x $t>
-          %p2 = vector.maskedload %b[%k, %j2], %mask2, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
-          vector.store %p2, %pb[%k, %po2] : memref<?x?x$t>, vector<$lanes x $t>
-          %p3 = vector.maskedload %b[%k, %j3], %mask3, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
-          vector.store %p3, %pb[%k, %po3] : memref<?x?x$t>, vector<$lanes x $t>
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %lanes = arith.constant $lanes : index
+        %c4 = arith.constant 4 : index
+        %cnv = arith.constant 4 : index
+        %nr = arith.muli %lanes, %cnv : index
+        %m = memref.dim %a, %c0 : memref<?x?x$t>
+        %kk = memref.dim %a, %c1 : memref<?x?x$t>
+        %n = memref.dim %b, %c1 : memref<?x?x$t>
+        %last_row = arith.subi %m, %c1 : index
+        %z = arith.constant dense<0.0> : vector<$lanes x $t>
+        %pb = memref.alloc(%kk, %nr) : memref<?x?x$t>
+        %cv0 = arith.constant 0 : index
+        %po0 = arith.muli %lanes, %cv0 : index
+        %cv1 = arith.constant 1 : index
+        %po1 = arith.muli %lanes, %cv1 : index
+        %cv2 = arith.constant 2 : index
+        %po2 = arith.muli %lanes, %cv2 : index
+        %cv3 = arith.constant 3 : index
+        %po3 = arith.muli %lanes, %cv3 : index
+        scf.for %jb = %c0 to %n step %nr {
+          %left = arith.subi %n, %jb : index
+          %w0 = arith.subi %left, %po0 : index
+          %mask0 = vector.create_mask %w0 : vector<$lanes x i1>
+          %j0 = arith.addi %jb, %po0 : index
+          %w1 = arith.subi %left, %po1 : index
+          %mask1 = vector.create_mask %w1 : vector<$lanes x i1>
+          %j1 = arith.addi %jb, %po1 : index
+          %w2 = arith.subi %left, %po2 : index
+          %mask2 = vector.create_mask %w2 : vector<$lanes x i1>
+          %j2 = arith.addi %jb, %po2 : index
+          %w3 = arith.subi %left, %po3 : index
+          %mask3 = vector.create_mask %w3 : vector<$lanes x i1>
+          %j3 = arith.addi %jb, %po3 : index
+          scf.for %k = %c0 to %kk step %c1 {
+            %p0 = vector.maskedload %b[%k, %j0], %mask0, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
+            vector.store %p0, %pb[%k, %po0] : memref<?x?x$t>, vector<$lanes x $t>
+            %p1 = vector.maskedload %b[%k, %j1], %mask1, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
+            vector.store %p1, %pb[%k, %po1] : memref<?x?x$t>, vector<$lanes x $t>
+            %p2 = vector.maskedload %b[%k, %j2], %mask2, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
+            vector.store %p2, %pb[%k, %po2] : memref<?x?x$t>, vector<$lanes x $t>
+            %p3 = vector.maskedload %b[%k, %j3], %mask3, %z : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t> into vector<$lanes x $t>
+            vector.store %p3, %pb[%k, %po3] : memref<?x?x$t>, vector<$lanes x $t>
+          }
+          scf.for %i0 = %c0 to %m step %c4 {
+            %i0c = arith.minui %i0, %last_row : index
+            %ro1 = arith.constant 1 : index
+            %iu1 = arith.addi %i0, %ro1 : index
+            %i1c = arith.minui %iu1, %last_row : index
+            %ro2 = arith.constant 2 : index
+            %iu2 = arith.addi %i0, %ro2 : index
+            %i2c = arith.minui %iu2, %last_row : index
+            %ro3 = arith.constant 3 : index
+            %iu3 = arith.addi %i0, %ro3 : index
+            %i3c = arith.minui %iu3, %last_row : index
+            %acc:16 = scf.for %k = %c0 to %kk step %c1 iter_args(%s0_0 = %z, %s0_1 = %z, %s0_2 = %z, %s0_3 = %z, %s1_0 = %z, %s1_1 = %z, %s1_2 = %z, %s1_3 = %z, %s2_0 = %z, %s2_1 = %z, %s2_2 = %z, %s2_3 = %z, %s3_0 = %z, %s3_1 = %z, %s3_2 = %z, %s3_3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
+              %b0 = vector.load %pb[%k, %po0] : memref<?x?x$t>, vector<$lanes x $t>
+              %b1 = vector.load %pb[%k, %po1] : memref<?x?x$t>, vector<$lanes x $t>
+              %b2 = vector.load %pb[%k, %po2] : memref<?x?x$t>, vector<$lanes x $t>
+              %b3 = vector.load %pb[%k, %po3] : memref<?x?x$t>, vector<$lanes x $t>
+              %x0 = memref.load %a[%i0c, %k] : memref<?x?x$t>
+              %a0 = "vector.broadcast"(%x0) : ($t) -> vector<$lanes x $t>
+              %t0_0 = vector.fma %a0, %b0, %s0_0 : vector<$lanes x $t>
+              %t0_1 = vector.fma %a0, %b1, %s0_1 : vector<$lanes x $t>
+              %t0_2 = vector.fma %a0, %b2, %s0_2 : vector<$lanes x $t>
+              %t0_3 = vector.fma %a0, %b3, %s0_3 : vector<$lanes x $t>
+              %x1 = memref.load %a[%i1c, %k] : memref<?x?x$t>
+              %a1 = "vector.broadcast"(%x1) : ($t) -> vector<$lanes x $t>
+              %t1_0 = vector.fma %a1, %b0, %s1_0 : vector<$lanes x $t>
+              %t1_1 = vector.fma %a1, %b1, %s1_1 : vector<$lanes x $t>
+              %t1_2 = vector.fma %a1, %b2, %s1_2 : vector<$lanes x $t>
+              %t1_3 = vector.fma %a1, %b3, %s1_3 : vector<$lanes x $t>
+              %x2 = memref.load %a[%i2c, %k] : memref<?x?x$t>
+              %a2 = "vector.broadcast"(%x2) : ($t) -> vector<$lanes x $t>
+              %t2_0 = vector.fma %a2, %b0, %s2_0 : vector<$lanes x $t>
+              %t2_1 = vector.fma %a2, %b1, %s2_1 : vector<$lanes x $t>
+              %t2_2 = vector.fma %a2, %b2, %s2_2 : vector<$lanes x $t>
+              %t2_3 = vector.fma %a2, %b3, %s2_3 : vector<$lanes x $t>
+              %x3 = memref.load %a[%i3c, %k] : memref<?x?x$t>
+              %a3 = "vector.broadcast"(%x3) : ($t) -> vector<$lanes x $t>
+              %t3_0 = vector.fma %a3, %b0, %s3_0 : vector<$lanes x $t>
+              %t3_1 = vector.fma %a3, %b1, %s3_1 : vector<$lanes x $t>
+              %t3_2 = vector.fma %a3, %b2, %s3_2 : vector<$lanes x $t>
+              %t3_3 = vector.fma %a3, %b3, %s3_3 : vector<$lanes x $t>
+              scf.yield %t0_0, %t0_1, %t0_2, %t0_3, %t1_0, %t1_1, %t1_2, %t1_3, %t2_0, %t2_1, %t2_2, %t2_3, %t3_0, %t3_1, %t3_2, %t3_3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
+            }
+            %in0 = arith.cmpi ult, %i0, %m : index
+            scf.if %in0 {
+              vector.maskedstore %c[%i0, %j0], %mask0, %acc#0 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%i0, %j1], %mask1, %acc#1 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%i0, %j2], %mask2, %acc#2 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%i0, %j3], %mask3, %acc#3 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            }
+            %in1 = arith.cmpi ult, %iu1, %m : index
+            scf.if %in1 {
+              vector.maskedstore %c[%iu1, %j0], %mask0, %acc#4 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu1, %j1], %mask1, %acc#5 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu1, %j2], %mask2, %acc#6 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu1, %j3], %mask3, %acc#7 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            }
+            %in2 = arith.cmpi ult, %iu2, %m : index
+            scf.if %in2 {
+              vector.maskedstore %c[%iu2, %j0], %mask0, %acc#8 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu2, %j1], %mask1, %acc#9 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu2, %j2], %mask2, %acc#10 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu2, %j3], %mask3, %acc#11 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            }
+            %in3 = arith.cmpi ult, %iu3, %m : index
+            scf.if %in3 {
+              vector.maskedstore %c[%iu3, %j0], %mask0, %acc#12 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu3, %j1], %mask1, %acc#13 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu3, %j2], %mask2, %acc#14 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+              vector.maskedstore %c[%iu3, %j3], %mask3, %acc#15 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
+            }
+          }
         }
-        scf.for %i0 = %c0 to %m step %c4 {
-          %i0c = arith.minui %i0, %last_row : index
-          %ro1 = arith.constant 1 : index
-          %iu1 = arith.addi %i0, %ro1 : index
-          %i1c = arith.minui %iu1, %last_row : index
-          %ro2 = arith.constant 2 : index
-          %iu2 = arith.addi %i0, %ro2 : index
-          %i2c = arith.minui %iu2, %last_row : index
-          %ro3 = arith.constant 3 : index
-          %iu3 = arith.addi %i0, %ro3 : index
-          %i3c = arith.minui %iu3, %last_row : index
-          %acc:16 = scf.for %k = %c0 to %kk step %c1 iter_args(%s0_0 = %z, %s0_1 = %z, %s0_2 = %z, %s0_3 = %z, %s1_0 = %z, %s1_1 = %z, %s1_2 = %z, %s1_3 = %z, %s2_0 = %z, %s2_1 = %z, %s2_2 = %z, %s2_3 = %z, %s3_0 = %z, %s3_1 = %z, %s3_2 = %z, %s3_3 = %z) -> (vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>) {
-            %b0 = vector.load %pb[%k, %po0] : memref<?x?x$t>, vector<$lanes x $t>
-            %b1 = vector.load %pb[%k, %po1] : memref<?x?x$t>, vector<$lanes x $t>
-            %b2 = vector.load %pb[%k, %po2] : memref<?x?x$t>, vector<$lanes x $t>
-            %b3 = vector.load %pb[%k, %po3] : memref<?x?x$t>, vector<$lanes x $t>
-            %x0 = memref.load %a[%i0c, %k] : memref<?x?x$t>
-            %a0 = "vector.broadcast"(%x0) : ($t) -> vector<$lanes x $t>
-            %t0_0 = vector.fma %a0, %b0, %s0_0 : vector<$lanes x $t>
-            %t0_1 = vector.fma %a0, %b1, %s0_1 : vector<$lanes x $t>
-            %t0_2 = vector.fma %a0, %b2, %s0_2 : vector<$lanes x $t>
-            %t0_3 = vector.fma %a0, %b3, %s0_3 : vector<$lanes x $t>
-            %x1 = memref.load %a[%i1c, %k] : memref<?x?x$t>
-            %a1 = "vector.broadcast"(%x1) : ($t) -> vector<$lanes x $t>
-            %t1_0 = vector.fma %a1, %b0, %s1_0 : vector<$lanes x $t>
-            %t1_1 = vector.fma %a1, %b1, %s1_1 : vector<$lanes x $t>
-            %t1_2 = vector.fma %a1, %b2, %s1_2 : vector<$lanes x $t>
-            %t1_3 = vector.fma %a1, %b3, %s1_3 : vector<$lanes x $t>
-            %x2 = memref.load %a[%i2c, %k] : memref<?x?x$t>
-            %a2 = "vector.broadcast"(%x2) : ($t) -> vector<$lanes x $t>
-            %t2_0 = vector.fma %a2, %b0, %s2_0 : vector<$lanes x $t>
-            %t2_1 = vector.fma %a2, %b1, %s2_1 : vector<$lanes x $t>
-            %t2_2 = vector.fma %a2, %b2, %s2_2 : vector<$lanes x $t>
-            %t2_3 = vector.fma %a2, %b3, %s2_3 : vector<$lanes x $t>
-            %x3 = memref.load %a[%i3c, %k] : memref<?x?x$t>
-            %a3 = "vector.broadcast"(%x3) : ($t) -> vector<$lanes x $t>
-            %t3_0 = vector.fma %a3, %b0, %s3_0 : vector<$lanes x $t>
-            %t3_1 = vector.fma %a3, %b1, %s3_1 : vector<$lanes x $t>
-            %t3_2 = vector.fma %a3, %b2, %s3_2 : vector<$lanes x $t>
-            %t3_3 = vector.fma %a3, %b3, %s3_3 : vector<$lanes x $t>
-            scf.yield %t0_0, %t0_1, %t0_2, %t0_3, %t1_0, %t1_1, %t1_2, %t1_3, %t2_0, %t2_1, %t2_2, %t2_3, %t3_0, %t3_1, %t3_2, %t3_3 : vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>, vector<$lanes x $t>
-          }
-          %in0 = arith.cmpi ult, %i0, %m : index
-          scf.if %in0 {
-            vector.maskedstore %c[%i0, %j0], %mask0, %acc#0 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%i0, %j1], %mask1, %acc#1 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%i0, %j2], %mask2, %acc#2 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%i0, %j3], %mask3, %acc#3 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-          }
-          %in1 = arith.cmpi ult, %iu1, %m : index
-          scf.if %in1 {
-            vector.maskedstore %c[%iu1, %j0], %mask0, %acc#4 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu1, %j1], %mask1, %acc#5 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu1, %j2], %mask2, %acc#6 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu1, %j3], %mask3, %acc#7 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-          }
-          %in2 = arith.cmpi ult, %iu2, %m : index
-          scf.if %in2 {
-            vector.maskedstore %c[%iu2, %j0], %mask0, %acc#8 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu2, %j1], %mask1, %acc#9 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu2, %j2], %mask2, %acc#10 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu2, %j3], %mask3, %acc#11 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-          }
-          %in3 = arith.cmpi ult, %iu3, %m : index
-          scf.if %in3 {
-            vector.maskedstore %c[%iu3, %j0], %mask0, %acc#12 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu3, %j1], %mask1, %acc#13 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu3, %j2], %mask2, %acc#14 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-            vector.maskedstore %c[%iu3, %j3], %mask3, %acc#15 : memref<?x?x$t>, vector<$lanes x i1>, vector<$lanes x $t>
-          }
-        }
-      }
-      memref.dealloc %pb : memref<?x?x$t>
-      %zero = arith.constant 0 : i32
-      macro.yield %zero : i32
-    } }
+        memref.dealloc %pb : memref<?x?x$t>
+        %zero = arith.constant 0 : i32
+        macro.yield %zero : i32
+      } }
   };
 }
 
