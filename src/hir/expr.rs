@@ -251,6 +251,7 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
+        let mut value_expr = None;
         let value_ty = value.map(|(value, unused)| {
             self.borrow.set_stmt(stmts.len());
             self.drops_set_stmt(stmts.len());
@@ -262,6 +263,7 @@ impl<'a> TypeChecker<'a> {
             }
             let ty = self.check_expr_type_flag(value, consume);
             self.expected_type = outer;
+            value_expr = Some((value, ty.clone()));
             ty
         });
         if let Some(ty) = type_at_end {
@@ -273,7 +275,12 @@ impl<'a> TypeChecker<'a> {
         if let Some(state) = state_at_end {
             self.restore_flow_state(state);
         }
-        self.drops_exit_block(stmts, terminated_at, !block_unused && !has_value);
+        self.drops_exit_block(
+            stmts,
+            value_expr,
+            terminated_at,
+            !block_unused && !has_value,
+        );
         self.borrow.exit_block();
         ret_ty
     }
