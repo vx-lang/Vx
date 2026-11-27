@@ -4740,7 +4740,17 @@ impl<'a> TypeChecker<'a> {
                     // A method that is not found might have changed its receiver; assume so,
                     // so the error does not also bring a warning that its `mut` is not needed.
                     self.changed_vars.extend(receiver_root.clone());
-                    if !self.speculating {
+                    if _method.as_ref() == "is_standard_error" {
+                        // `print_s!` and `println_s!` call it on their first argument.
+                        if !self.speculating {
+                            self.errors.push(format!(
+                                "the first argument of `print_s!` or `println_s!` is the right to \
+                                 print: a `Stdout` or a `Stderr` from `root`, or a reference to \
+                                 one. Its type is `{base_ty}`"
+                            ));
+                        }
+                        base_ty = Type::Scalar(ElementType::Bool);
+                    } else if !self.speculating {
                         self.errors.push(format!(
                             "Method '{}' not found on type {}",
                             _method, base_ty

@@ -144,6 +144,11 @@ impl Stdin {
 }
 
 impl Stdout {
+  /// False: `print_s!` and `println_s!` with a `Stdout` print to standard output.
+  pub fn is_standard_error(self : &Stdout) -> bool {
+    return false;
+  }
+
   /// Write all of `bytes` and give their number. It keeps its order with `print!`.
   pub fn write_all(self : &mut Stdout, bytes : &Vec<u8>) -> Result<u64, StdioError> {
     let status = unsafe {
@@ -157,6 +162,11 @@ impl Stdout {
 }
 
 impl Stderr {
+  /// True: `print_s!` and `println_s!` with a `Stderr` print to standard error.
+  pub fn is_standard_error(self : &Stderr) -> bool {
+    return true;
+  }
+
   /// Write all of `bytes` and give their number.
   pub fn write_all(self : &mut Stderr, bytes : &Vec<u8>) -> Result<u64, StdioError> {
     let status = unsafe {

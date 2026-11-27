@@ -136,8 +136,9 @@ operating system needs one:
   native code each take a capability parameter. Environment variables are data, as the command
   line is. But they often hold secrets, such as the token of a service, so reading them is a right
   (`Environment`), as in Deno's `--allow-env`. The command line is a parameter of `main`.
-- Standard input, output and error are rights too (`Stdin`, `Stdout`, `Stderr`). `println!` and
-  `print!` do not take one yet, so code with no right can still print.
+- Standard input, output and error are rights too (`Stdin`, `Stdout`, `Stderr`). `print_s!` and
+  `println_s!` take the right as their first argument. `print!` and `println!` take none, so code
+  with no right can still print with them.
 - Only `main` gets the root capabilities. A library gets only the capabilities that its caller
   passes to it.
 - A module narrows a capability, for example from the right to open any file to the right to read

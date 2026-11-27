@@ -20,7 +20,16 @@ use crate::syntax::{Delimiter, Span};
 use std::collections::HashMap;
 
 /// The macros that `expand_macro_call` expands itself, with no `macro_rules!`.
-pub const BUILT_IN_MACROS: [&str; 6] = ["mlir", "vec", "print", "eprint", "println", "eprintln"];
+pub const BUILT_IN_MACROS: [&str; 8] = [
+    "mlir",
+    "vec",
+    "print",
+    "eprint",
+    "println",
+    "eprintln",
+    "print_s",
+    "println_s",
+];
 
 /// The `macro_rules` of a program. A module can call the macros that it defines and the macros
 /// of the modules that it imports. So the expansion of a module depends only on its imports.
@@ -747,6 +756,9 @@ impl<'a> MacroExpander<'a> {
         if name == "println" || name == "eprintln" {
             return self.expand_println_macro(tt, name == "eprintln");
         }
+        if name == "print_s" || name == "println_s" {
+            return self.expand_print_s_macro(tt, name == "println_s");
+        }
 
         let (home, rules) = self.macros.rules(&self.module, name)?;
         let call_site = self.call_site(home, span);
@@ -1125,6 +1137,80 @@ impl<'a> MacroExpander<'a> {
             span: Span::default(),
             to_stderr,
         }))
+    }
+
+    /// `print_s!(w, ..)` and `println_s!(w, ..)` print as `print!` and `println!` do, but they
+    /// need the right to print: `w` is a `Stdout` or a `Stderr`, or a reference to one. Only
+    /// `std::io` can make them.
+    /// The macro is `if w.is_standard_error() { eprint!(..) } else { print!(..) }`, so another
+    /// `w` gets an error for the method.
+    fn expand_print_s_macro(&self, tt: &TokenTree, newline: bool) -> Result<expr::Expr, String> {
+        let name = if newline { "println_s!" } else { "print_s!" };
+        let elements = match tt {
+            TokenTree::Delimited(_, inner) => inner,
+            _ => return Err(format!("Expected delimited token tree for {name}")),
+        };
+        let mut tokens = Vec::new();
+        for t in elements {
+            tokens.extend(self.flatten_tt(t));
+        }
+        tokens.push(crate::lexer::OwnedToken {
+            kind: OwnedTokenType::Eof,
+            line: 0,
+            column: 0,
+            length: 0,
+            expansion: 0,
+        });
+        let mut exprs = self.parse_expanded_exprs(&tokens)?;
+        if exprs.is_empty() {
+            return Err(format!(
+                "{name} needs the right to print first: a `Stdout` or a `Stderr`, or a reference \
+                 to one, as in `{name}(root.stdout, \"..\")`"
+            ));
+        }
+        if matches!(exprs[0], expr::Expr::StringLiteral(_)) {
+            return Err(format!(
+                "{name} needs the right to print before the text: a `Stdout` or a `Stderr`, or a \
+                 reference to one, as in `{name}(root.stdout, \"..\")`"
+            ));
+        }
+        let writer = exprs.remove(0);
+        let args = interleave_format_args(exprs, name)?;
+        let print = |to_stderr: bool| {
+            let e = if newline {
+                expr::Expr::Println(expr::PrintlnExpr {
+                    args: args.clone(),
+                    span: Span::default(),
+                    to_stderr,
+                })
+            } else {
+                expr::Expr::Print(expr::PrintExpr {
+                    args: args.clone(),
+                    span: Span::default(),
+                    to_stderr,
+                })
+            };
+            vec![stmt::Statement::ExprStmt(stmt::ExprStmtStmt {
+                expr: e,
+                has_semi: true,
+                span: Span::default(),
+            })]
+        };
+        let span = writer.span();
+        let cond = expr::Expr::MethodCall(expr::MethodCallExpr::new(
+            Box::new(writer),
+            "is_standard_error".into(),
+            None,
+            Vec::new(),
+            span,
+        ));
+        Ok(expr::Expr::If(expr::IfExpr::new(
+            false,
+            Box::new(cond),
+            print(true),
+            Some(print(false)),
+            span,
+        )))
     }
 
     fn expand_mlir_macro(
