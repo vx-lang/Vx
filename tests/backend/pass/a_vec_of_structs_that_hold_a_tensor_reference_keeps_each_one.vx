@@ -1,0 +1,45 @@
+//===- a_vec_of_structs_that_hold_a_tensor_reference_keeps_each_one.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `&Tensor` is the tensor's own descriptor: two pointers, an offset, a size and a stride. So
+// a struct that holds one is as large as the descriptor, not as a pointer. A `Vec` of three
+// such structs keeps each one whole, and reads each tensor back.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+import core::ops;
+import std::vec;
+
+struct Holder {
+  r : &Tensor<i64, [4]>,
+}
+
+fn main() -> i32 {
+  let a : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+  let b : Tensor<i64, [4]> = [10i64, 20i64, 30i64, 40i64];
+  let c : Tensor<i64, [4]> = [100i64, 200i64, 300i64, 400i64];
+  let mut v = Vec<Holder>::new();
+  v.push(Holder {
+    r : &a
+  });
+  v.push(Holder {
+    r : &b
+  });
+  v.push(Holder {
+    r : &c
+  });
+  // CHECK: {{^}}1 4{{$}}
+  // CHECK-NEXT: {{^}}10 40{{$}}
+  // CHECK-NEXT: {{^}}100 400{{$}}
+  for i in 0..3 {
+    let h = v.get_ref(i);
+    println!("{} {}", h.r[0], h.r[3]);
+  }
+  // CHECK-NEXT: {{^}}done{{$}}
+  println!("done");
+  return 0;
+}

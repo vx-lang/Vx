@@ -2367,14 +2367,15 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    /// Byte size + alignment of a type for `sizeof<T>()`: a scalar by its element, any pointer/borrow
-    /// 8, a tensor by its memref descriptor, and a nominal struct (or a monomorphized generic
-    /// instance of one) as the aligned sum of its recursively-sized fields, as the layout pass does
+    /// Byte size + alignment of a type for `sizeof<T>()`: a scalar by its element, any other
+    /// pointer/borrow 8, a tensor and a borrow of one by its memref descriptor, and a nominal
+    /// struct (or a monomorphized generic instance of one) as the aligned sum of its
+    /// recursively-sized fields, as the layout pass does
     /// (`crate::layout::LayoutComputer::struct_layout`). An enum is sized from the type that it
     /// lowers to (`enum_size_align`), because this generator stores an enum as a tag and a slot
-    /// that the layout pass does not know. Only a tensor needs its own case: it lowers to a memref,
-    /// which is not an LLVM type. `None` for an unmodelled type (closure, generic scalar), and the
-    /// caller falls back to 8.
+    /// that the layout pass does not know. Only a tensor and a borrow of one need their own case:
+    /// they lower to a memref, which is not an LLVM type. `None` for an unmodelled type (closure,
+    /// generic scalar), and the caller falls back to 8.
     pub(crate) fn type_size_align(&self, ty: &syntax::Type, depth: u32) -> Option<(usize, usize)> {
         use crate::layout::scalar_size_align;
         if depth > 32 {
@@ -2385,6 +2386,10 @@ impl<'c> MeliorGenerator<'c> {
         }
         match ty {
             syntax::Type::Scalar(e) => scalar_size_align(e),
+            // `lower_type` gives a borrow of a tensor the tensor's own descriptor, not a pointer.
+            syntax::Type::Borrow { inner, .. } if tensor_field_rank(inner).is_some() => {
+                self.type_size_align(inner, depth + 1)
+            }
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => {
                 Some((8, 8))
             }
