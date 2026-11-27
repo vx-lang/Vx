@@ -10,6 +10,8 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 **Update (2026-11-23):** `File::open`, `File::read` and `File::write` are now safe. `open` takes the right to open files (a `&Files`, which `main` gets in its `Root`), a `String` path and an `OpenMode`, and gives a `Result<File, FileError>`. `read` and `write` take a `Vec<u8>` and give a `Result<u64, FileError>`. The raw-pointer methods are now `open_c_str`, `read_raw` and `write_raw`. The example below uses them.
 
+**Update (2026-11-24):** `OpenOptions` sets each choice on its own: read, write, append, create, truncate and create new. `OpenOptions::open` takes a `&Files` and a `String` path, like `File::open`. `File::seek_to(SeekFrom)` and `File::stream_position()` give a `Result<u64, FileError>`. `FileError` has two more cases, `AlreadyExists` and `InvalidInput`. Vx keeps `FileError` and does not add the `std::io::Error` that [the error contract](io_error_contract.md) proposed. `File` is `HostOnly`, so device code cannot use it.
+
 File I/O belongs in host `std`, not device-portable `core`. The purity rule in [the core library plan](core_library.md) forbids `extern` in `core`; host `std::fs` may call the operating system. The intended end state is for Vx to own the file API and its implementation above those operating-system calls, without the Rust file bridge. The [roadmap](../../ROADMAP.md) marks native file I/O complete, but that checkmark describes the basic host path, not an end-user file API.
 
 ## Current implementation status

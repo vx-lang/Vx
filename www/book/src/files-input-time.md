@@ -146,18 +146,28 @@ three values of `OpenMode`:
 - `OpenMode::ReadWriteCreate()` opens the file for both, and makes it if it does not exist. It
   keeps the bytes that the file has.
 
+For other ways to open a file, use `OpenOptions`. Start with `OpenOptions::new()`, and turn on
+each choice that you want: `read`, `write`, `append`, `create`, `truncate` or `create_new`. Then
+call `open(files, path)`. For example, `OpenOptions::new().append(true).create(true)` opens a log
+file and writes at its end.
+
 `write(bytes)` writes the bytes of a `Vec<u8>` and gives how many it wrote. `read(buffer)` reads
 up to `buffer.len()` bytes into a `Vec<u8>` and gives how many it read. 0 means the end of the
-file. `seek(offset, whence)` moves the position of the next read or write, and gives the new
-position. `whence` is 0 for the start of the file, 1 for the current position and 2 for the end.
+file. `seek_to(from)` moves the position of the next read or write, and gives the new position.
+`SeekFrom::Start(n)` counts from the start of the file, `SeekFrom::Current(n)` from the current
+position, and `SeekFrom::End(n)` from the end. `stream_position()` gives the position and does
+not move it.
 
-`open`, `read` and `write` give a `Result`. When a call does not work, its `Err` holds a
+`open`, `read`, `write` and `seek_to` give a `Result`. When a call does not work, its `Err` holds a
 `FileError`:
 
 - `NotFound`: no file has the path, or a folder of the path is missing.
 - `PermissionDenied`: the system does not let the program open the file in the mode.
 - `BadPath`: the path holds a zero byte.
 - `NotInFolder`: the name leads out of a `Folder`. The end of this section explains `Folder`.
+- `AlreadyExists`: the file exists, and `create_new` is on.
+- `InvalidInput`: the `OpenOptions` choices do not go together, or a seek goes before the start
+  of the file.
 - `Os(code)`: another failure, with the error number of the system.
 
 The `?` operator gives the error to the caller

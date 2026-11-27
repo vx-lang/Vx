@@ -413,6 +413,16 @@ macro_rules! instantiate_file_ffi {
         const VX_FILE_ERROR_UNSUPPORTED: i32 = 11;
         const VX_FILE_ERROR_OTHER: i32 = 12;
 
+        // The bits of `_vx_file_open_options`. Keep them in sync with `OpenOptions` in
+        // stdlib/std/fs.vx.
+        const VX_FILE_OPEN_READ: i32 = 1;
+        const VX_FILE_OPEN_WRITE: i32 = 2;
+        const VX_FILE_OPEN_APPEND: i32 = 4;
+        const VX_FILE_OPEN_CREATE: i32 = 8;
+        const VX_FILE_OPEN_TRUNCATE: i32 = 16;
+        const VX_FILE_OPEN_CREATE_NEW: i32 = 32;
+        const VX_FILE_OPEN_ALL: i32 = 63;
+
         fn vx_file_error_kind(kind: std::io::ErrorKind) -> i32 {
             match kind {
                 std::io::ErrorKind::NotFound => VX_FILE_ERROR_NOT_FOUND,
@@ -629,7 +639,7 @@ macro_rules! instantiate_file_ffi {
 
         /// Opens `c_path` as `vx_file_open` does. On success it gives 0 and stores the file in
         /// `*file`. Else it stores null in `*file` and gives the error category of
-        /// `vx_file_try_read`. It stores the error number of the system in `*native_code`, or 0
+        /// `_vx_file_try_read`. It stores the error number of the system in `*native_code`, or 0
         /// when there is none.
         ///
         /// # Safety
@@ -656,6 +666,62 @@ macro_rules! instantiate_file_ffi {
                     let mut has_native_code = false;
                     unsafe { vx_file_store_error(&error, native_code, &mut has_native_code) }
                 }
+            }
+        }
+
+        /// Opens `c_path` with the bits of `OpenOptions`. On success it gives 0 and stores the
+        /// file in `*out`. Else it gives the error category of `_vx_file_try_read`, and stores
+        /// the error number of the system in `*native_code`. Unknown bits or a null pointer give
+        /// -1. The function clears every non-null output before it checks the arguments.
+        ///
+        /// # Safety
+        /// A non-null path must name a live NUL-terminated string. Each non-null output
+        /// must be aligned, writable, and disjoint from the path and all other outputs.
+        /// Success transfers one bridge-owned File to `out`, released by `vx_file_drop`.
+        #[no_mangle]
+        pub unsafe extern "C" fn _vx_file_open_options(
+            c_path: *const std::ffi::c_char,
+            options: i32,
+            out: *mut *mut std::ffi::c_void,
+            native_code: *mut i32,
+            has_native_code: *mut bool,
+        ) -> i32 {
+            unsafe {
+                if !out.is_null() {
+                    *out = std::ptr::null_mut();
+                }
+                if !native_code.is_null() {
+                    *native_code = 0;
+                }
+                if !has_native_code.is_null() {
+                    *has_native_code = false;
+                }
+            }
+            if c_path.is_null()
+                || out.is_null()
+                || native_code.is_null()
+                || has_native_code.is_null()
+            {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            if !(0..=VX_FILE_OPEN_ALL).contains(&options) {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(options & VX_FILE_OPEN_READ != 0)
+                .write(options & VX_FILE_OPEN_WRITE != 0)
+                .append(options & VX_FILE_OPEN_APPEND != 0)
+                .create(options & VX_FILE_OPEN_CREATE != 0)
+                .truncate(options & VX_FILE_OPEN_TRUNCATE != 0)
+                .create_new(options & VX_FILE_OPEN_CREATE_NEW != 0);
+            match unsafe { vx_file_open_path(c_path, &opts) } {
+                Ok(file) => {
+                    unsafe {
+                        *out = Box::into_raw(Box::new(file)).cast();
+                    }
+                    VX_FILE_STATUS_OK
+                }
+                Err(error) => unsafe { vx_file_store_error(&error, native_code, has_native_code) },
             }
         }
 
@@ -705,7 +771,7 @@ macro_rules! instantiate_file_ffi {
         /// must be aligned and writable, even if another argument is invalid.
         /// The file, buffer, and outputs must not overlap during the call.
         #[no_mangle]
-        pub unsafe extern "C" fn vx_file_try_read(
+        pub unsafe extern "C" fn _vx_file_try_read(
             ptr: *mut std::ffi::c_void,
             buffer: *mut u8,
             len: u64,
@@ -722,24 +788,51 @@ macro_rules! instantiate_file_ffi {
                     native_code,
                     has_native_code,
                     |file| {
-                        // Read::read requires an initialized slice, even when the
-                        // caller provides writable memory without initial values.
-                        std::ptr::write_bytes(buffer, 0, len as usize);
-                        let bytes = std::slice::from_raw_parts_mut(buffer, len as usize);
-                        file.read(bytes)
+                        #[cfg(unix)]
+                        {
+                            use std::os::fd::AsRawFd;
+                            unsafe extern "C" {
+                                fn read(
+                                    fd: std::ffi::c_int,
+                                    buffer: *mut std::ffi::c_void,
+                                    len: usize,
+                                ) -> isize;
+                            }
+                            // macOS refuses a read of more than i32::MAX bytes, so ask for
+                            // less there, as Rust's File::read does. A short read is normal.
+                            #[cfg(target_vendor = "apple")]
+                            let limit = std::ffi::c_int::MAX as usize - 1;
+                            #[cfg(not(target_vendor = "apple"))]
+                            let limit = isize::MAX as usize;
+                            // POSIX read initializes only the bytes it returns.
+                            let count =
+                                read(file.as_raw_fd(), buffer.cast(), (len as usize).min(limit));
+                            if count < 0 {
+                                Err(std::io::Error::last_os_error())
+                            } else {
+                                Ok(count as usize)
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            // Read::read requires initialized memory on other hosts.
+                            std::ptr::write_bytes(buffer, 0, len as usize);
+                            let bytes = std::slice::from_raw_parts_mut(buffer, len as usize);
+                            file.read(bytes)
+                        }
                     },
                 )
             })
         }
 
-        /// Uses the same status and output contract as `vx_file_try_read`.
+        /// Uses the same status and output contract as `_vx_file_try_read`.
         ///
         /// # Safety
         /// The handle, outputs, null arguments, and non-overlap rules are the same
-        /// as for `vx_file_try_read`. For a valid positive length, `buffer` must
+        /// as for `_vx_file_try_read`. For a valid positive length, `buffer` must
         /// point to `len` initialized, readable bytes instead of writable bytes.
         #[no_mangle]
-        pub unsafe extern "C" fn vx_file_try_write(
+        pub unsafe extern "C" fn _vx_file_try_write(
             ptr: *mut std::ffi::c_void,
             buffer: *const u8,
             len: u64,
@@ -760,6 +853,51 @@ macro_rules! instantiate_file_ffi {
                         file.write(bytes)
                     },
                 )
+            })
+        }
+
+        /// Seek with the file error status encoding. Start offsets use all 64 bits.
+        /// Every provided output is cleared before validating arguments.
+        ///
+        /// # Safety
+        /// A non-null handle must be a live, exclusively accessed bridge-owned File.
+        /// Every non-null output must be aligned, writable, and disjoint from the others and the file.
+        #[no_mangle]
+        pub unsafe extern "C" fn _vx_file_try_seek(
+            ptr: *mut std::ffi::c_void,
+            offset: i64,
+            whence: i32,
+            position: *mut u64,
+            native_code: *mut i32,
+            has_native_code: *mut bool,
+        ) -> i32 {
+            unsafe { vx_file_clear_transfer_outputs(position, native_code, has_native_code) };
+            if ptr.is_null()
+                || position.is_null()
+                || native_code.is_null()
+                || has_native_code.is_null()
+            {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            let from = match whence {
+                0 => SeekFrom::Start(offset as u64),
+                1 => SeekFrom::Current(offset),
+                2 => SeekFrom::End(offset),
+                _ => return VX_FILE_STATUS_INVALID_ARGUMENT,
+            };
+            $off_the_worker(|| {
+                let file = unsafe { &mut *ptr.cast::<std::fs::File>() };
+                match file.seek(from) {
+                    Ok(value) => {
+                        unsafe {
+                            *position = value;
+                        }
+                        VX_FILE_STATUS_OK
+                    }
+                    Err(error) => unsafe {
+                        vx_file_store_error(&error, native_code, has_native_code)
+                    },
+                }
             })
         }
 

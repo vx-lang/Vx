@@ -14,7 +14,7 @@ use super::{vx_file_store_error, VX_FILE_STATUS_INVALID_ARGUMENT, VX_FILE_STATUS
 
 /// The status of a name that does not name a file inside the folder: a name with no part, an
 /// absolute path, a `..` part, or a part that is a symbolic link. The other statuses are those
-/// of `vx_file_try_read`.
+/// of `_vx_file_try_read`.
 pub const VX_FOLDER_STATUS_NOT_IN_FOLDER: i32 = 13;
 
 /// Why a name did not open.

@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // A program of the book chapter on files, input and time (www/book/src/files-input-time.md):
-// it writes a file, reads it back byte by byte, and moves the position with `seek`.
+// it writes a file, reads it back byte by byte, and moves the position with `seek_to`.
 // The RUN lines give the path in NOTES. The test runner gives no such variable, so NO_EXEC.
 //
 // NO_EXEC
@@ -56,9 +56,9 @@ fn write_and_read(files : &Files, path : &String) -> Result<i32, FileError> {
     }
   }
   println!("read {} lines", lines);
-  println!("the file ends at byte {}", input.seek(0, 2));
+  println!("the file ends at byte {}", input.seek_to(SeekFrom::End(0))?);
 
-  input.seek(4, 0);
+  input.seek_to(SeekFrom::Start(4))?;
   let _n = input.read(&mut byte)?;
   println!("byte 4 is {}, the letter t", byte.get(0));
   return Result<i32, FileError>::Ok(lines);

@@ -11,8 +11,8 @@ extern {
   fn vx_free_temp_file(ptr : *mut i8) -> i32;
   fn vx_file_open(path : *const i8, mode : i32) -> *mut i8;
   fn vx_file_drop(ptr : *mut i8) -> void;
-  fn vx_file_try_read(ptr : *mut i8, buffer : *mut u8, len : u64, count : *mut u64, native_code : *mut i32, has_native_code : *mut bool) -> i32;
-  fn vx_file_try_write(ptr : *mut i8, buffer : *const u8, len : u64, count : *mut u64, native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  fn _vx_file_try_read(ptr : *mut i8, buffer : *mut u8, len : u64, count : *mut u64, native_code : *mut i32, has_native_code : *mut bool) -> i32;
+  fn _vx_file_try_write(ptr : *mut i8, buffer : *const u8, len : u64, count : *mut u64, native_code : *mut i32, has_native_code : *mut bool) -> i32;
   fn remove(path : *const i8) -> i32;
 }
 
@@ -25,7 +25,7 @@ fn main() -> i32 {
     let mut has_native_code : bool = true;
 
     let writer = vx_file_open(path, 1);
-    let write_status = vx_file_try_write(writer, (&input) as *const u8, 1, &mut count, &mut native_code, &mut has_native_code);
+    let write_status = _vx_file_try_write(writer, (&input) as *const u8, 1, &mut count, &mut native_code, &mut has_native_code);
     let write_count = count;
     let write_native_code = native_code;
     let write_has_native_code = has_native_code;
@@ -36,7 +36,7 @@ fn main() -> i32 {
     has_native_code = true;
     let reader = vx_file_open(path, 0);
     let mut output : u8 = 0;
-    let read_status = vx_file_try_read(reader, &mut output, 1, &mut count, &mut native_code, &mut has_native_code);
+    let read_status = _vx_file_try_read(reader, &mut output, 1, &mut count, &mut native_code, &mut has_native_code);
     let read_count = count;
     let read_native_code = native_code;
     let read_has_native_code = has_native_code;
@@ -45,7 +45,7 @@ fn main() -> i32 {
     count = 99;
     native_code = 99;
     has_native_code = true;
-    let eof_status = vx_file_try_read(reader, &mut output, 1, &mut count, &mut native_code, &mut has_native_code);
+    let eof_status = _vx_file_try_read(reader, &mut output, 1, &mut count, &mut native_code, &mut has_native_code);
     let eof_count = count;
     let eof_native_code = native_code;
     let eof_has_native_code = has_native_code;
@@ -53,7 +53,7 @@ fn main() -> i32 {
     count = 99;
     native_code = 99;
     has_native_code = false;
-    let failed_write_status = vx_file_try_write(reader, (&input) as *const u8, 1, &mut count, &mut native_code, &mut has_native_code);
+    let failed_write_status = _vx_file_try_write(reader, (&input) as *const u8, 1, &mut count, &mut native_code, &mut has_native_code);
     let failed_write_count = count;
     let failed_write_native_code = native_code;
     let failed_write_has_native_code = has_native_code;
