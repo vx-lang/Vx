@@ -8,8 +8,9 @@
 // The capabilities of a program: the rights to use the operating system. A program gets them as
 // the parameter of `main`, `fn main(root : Root) -> i32`, and passes each one on to the code that
 // needs it. A library gets only the capabilities that its caller passes. So a library that gets
-// no `&Files` cannot open a file, a library that gets no `&Network` cannot open a connection, and a
-// library that gets no `&Environment` cannot read an environment variable.
+// no `&Files` cannot open a file, a library that gets no `&Network` cannot open a connection, a
+// library that gets no `&Environment` cannot read an environment variable, and a library that gets
+// no `&Processes` cannot start another program.
 // `docs/discussions/capability_types.md` explains the design.
 //
 // The command line is data, not a right. So it is not in `Root`. A `main` that wants it takes a
@@ -21,6 +22,7 @@ import std::env;
 import std::fs;
 import std::io;
 import std::net;
+import std::process;
 import std::string;
 import std::vec;
 
@@ -33,11 +35,12 @@ struct Root {
   files : Files,
   // The right to read the environment variables.
   env : Environment,
+  // The right to start other programs.
+  processes : Processes,
   // The rights to read standard input, and to write to standard output and error.
   stdin : Stdin,
   stdout : Stdout,
   stderr : Stderr,
-
   invariant true,
 }
 
@@ -48,6 +51,7 @@ pub unsafe fn root_of_the_program() -> Root {
     network : unsafe { network_of_the_program() },
     files : unsafe { files_of_the_program() },
     env : unsafe { environment_of_the_program() },
+    processes : unsafe { processes_of_the_program() },
     stdin : unsafe { stdin_of_the_program() },
     stdout : unsafe { stdout_of_the_program() },
     stderr : unsafe { stderr_of_the_program() }
