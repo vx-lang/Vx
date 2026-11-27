@@ -25,9 +25,42 @@ pub enum GapFunction {
     /// The name as the program's author wrote it.
     Source(String),
 
-    /// A name the compiler made: a generic instance's type arguments, a method's receiver.
-    /// The author wrote something shorter, so the message says this is not a source name.
+    /// A name the compiler made, from the program's own: a method's receiver and name
+    /// (`P$get`), or a generic instance's type arguments (`id$i32`). The function record has no
+    /// field holding the source spelling, so the message renders the parts it can and says when
+    /// it cannot.
     Instance(String),
+}
+
+/// `name`, whose parts the compiler joined with `$`, written the way the program would write it:
+/// `P$get` is `P::get` and `id$i32` is `id::<i32>`. A part that is not a plain name or a type —
+/// a topology key, which is an encoded identity — is not guessed at, and `None` says so.
+fn source_spelling_of_instance(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.split('$').collect();
+    let plain = |p: &str| {
+        !p.is_empty()
+            && p.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && !p.starts_with(|c: char| c.is_ascii_digit())
+    };
+    let (base, rest) = parts.split_first()?;
+    if !plain(base) || rest.is_empty() || !rest.iter().all(|p| plain(p)) {
+        return None;
+    }
+    // A type starts with an upper-case letter or is one of the compiler's scalar names; a
+    // method name is lower case and is not one of them. This is how the two shapes of a made
+    // name are told apart without a type table here.
+    let scalar = |p: &str| {
+        const SCALARS: &[&str] = &[
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f16", "f32",
+            "f64", "bf16", "fp8", "fp4", "bool", "str", "char",
+        ];
+        SCALARS.contains(&p)
+    };
+    let is_type = |p: &str| scalar(p) || p.starts_with(|c: char| c.is_ascii_uppercase());
+    if rest.len() == 1 && is_type(rest[0]) {
+        return Some(format!("{base}::<{}>", rest[0]));
+    }
+    Some(format!("{base}::{}", rest.join("::")))
 }
 
 /// Why one function did not lower through the flat path.
@@ -114,9 +147,7 @@ impl Decline {
     }
 
     /// Fill in the name a gap was found under when the compiler made that name: a generic
-    /// instance or a method. The function record has no field holding the source spelling, so
-    /// the message says the name is an instance rather than pretending it is one the author
-    /// wrote.
+    /// instance or a method.
     pub fn in_instance(self, function: &str) -> Decline {
         match self {
             Decline::EmitterGap {
@@ -164,9 +195,10 @@ impl fmt::Display for Decline {
                 write!(f, "an emitter gap at {site}")?;
                 match function {
                     Some(GapFunction::Source(name)) => write!(f, " in function '{name}'")?,
-                    Some(GapFunction::Instance(name)) => {
-                        write!(f, " in function '{name}' (a name the compiler made)")?
-                    }
+                    Some(GapFunction::Instance(name)) => match source_spelling_of_instance(name) {
+                        Some(shown) => write!(f, " in function '{shown}'")?,
+                        None => write!(f, " in function '{name}' (a name the compiler made)")?,
+                    },
                     None => {}
                 }
                 Ok(())
@@ -224,21 +256,39 @@ mod tests {
         assert_eq!(named.detail_key(), "emitter-gap(src/example.rs:1)");
     }
 
-    /// A generic instance or a method is named by a name the compiler made, which the program's
-    /// author never wrote. The function record has no field for the source spelling, so the
-    /// message says the name is one the compiler made.
+    /// The shapes a made name has, written the way the program would write them, and the one
+    /// that has no source spelling.
     #[test]
-    fn a_gap_says_when_the_name_is_an_instance_the_compiler_named() {
-        let named = Decline::EmitterGap {
-            site: "src/example.rs:1",
-            function: None,
-        }
-        .in_instance("sum$i64");
+    fn an_instance_name_is_shown_the_way_the_source_would_write_it() {
+        let named = |name: &str| {
+            Decline::EmitterGap {
+                site: "src/example.rs:1",
+                function: None,
+            }
+            .in_instance(name)
+            .to_string()
+        };
         assert_eq!(
-            named.to_string(),
-            "an emitter gap at src/example.rs:1 in function 'sum$i64' (a name the compiler made)"
+            named("P$get"),
+            "an emitter gap at src/example.rs:1 in function 'P::get'"
         );
-        assert_eq!(named.detail_key(), "emitter-gap(src/example.rs:1)");
+        assert_eq!(
+            named("id$i32"),
+            "an emitter gap at src/example.rs:1 in function 'id::<i32>'"
+        );
+        assert_eq!(
+            named("Pair$f32"),
+            "an emitter gap at src/example.rs:1 in function 'Pair::<f32>'"
+        );
+        // A topology key is an encoded identity, not a type, so the message keeps the name the
+        // compiler made and says so.
+        assert_eq!(
+            named("exp_helper$topology$746f706f"),
+            "an emitter gap at src/example.rs:1 in function 'exp_helper$topology$746f706f' \
+             (a name the compiler made)"
+        );
+        // The same for a part that is not a name the source could have written.
+        assert!(named("f$0").contains("(a name the compiler made)"));
     }
 
     /// Every other decline already carries the construct it names, so filling in a function

@@ -1728,10 +1728,8 @@ type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64);
 
 /// `why`, naming the function it was found in.
 ///
-/// `$` is how the compiler joins the parts of a name it made: a generic instance's type
-/// arguments, a method's receiver. Such a name is the one the function is emitted under, not one
-/// the program's author wrote. The function record has no field holding the source spelling, so
-/// the message says the name is an instance rather than presenting it as a source name.
+/// A name with a `$` is one the compiler made (see `GapFunction`), so it is filled in as an
+/// instance rather than as a source name.
 fn name_the_gap(why: Decline, func: &Function) -> Decline {
     if func.name.contains('$') {
         why.in_instance(func.name.as_ref())
