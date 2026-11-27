@@ -1,0 +1,32 @@
+//===- a_package_makes_strings_from_literals_with_no_trusted_code.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A string literal of `n` bytes is `n` bytes and a NUL, and the compiler knows it. `as *const u8`
+// gives its bytes. So the package `tests` calls `String::from_bytes` on literals with no `unsafe`
+// block, and `--no-trusted-code tests` allows the program.
+//
+// RUN: vxc --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc --package tests=tests --no-trusted-code tests --legacy-codegen %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// "hello", then the lengths of "hi there" with its NUL, of "hi" plus the one byte of a `Vec`
+// that grew, and of "a\n".
+// CHECK: {{^}}[hello] 9 3 2{{$}}
+// This file is not in the package, so it can call the unsafe `stdout_write`, which takes the
+// bytes of a literal through the same cast.
+// CHECK-NEXT: {{^}}A|{{$}}
+
+import std::io;
+import std::string;
+import std::vec;
+import tests::modules::a_package_that_makes_strings_from_literals;
+
+fn main() -> i32 {
+  let h = hello();
+  let mut v = Vec<u8>::new();
+  println!("[{}] {} {} {}", h, with_its_nul(), after_a_vec_grows(&mut v), with_an_escape());
+  let _written = unsafe { stdout_write("A|\n" as *const u8, 3u64) };
+  return 0;
+}

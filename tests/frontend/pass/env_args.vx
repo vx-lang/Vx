@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
-// The command line binding, and the iterator that hands the arguments out one at a time. The
-// enum `Option<*mut i8>` uses an integer field to preserve the payload bits.
+// An iterator that hands out the words of an `extern` function one at a time. The enum
+// `Option<*mut i8>` uses an integer field to preserve the payload bits.
 // Its `Some` arm still stores the argument as a pointer.
-// CHECK: func.func private @vx_env_arg(i32) -> !llvm.ptr
+// CHECK: func.func private @word_at(i32) -> !llvm.ptr
 // CHECK-LABEL: func.func @Args$Iterator$Args$ptr$mut$i8$next(%arg0: !llvm.struct<(i32, i32)>) -> !llvm.struct<(i32, i64)>
 // CHECK: %[[P:.*]] = call @arg(%{{.*}}) : (i32) -> !llvm.ptr
 // The `Some` arm tags 0 and carries the pointer; the `None` arm tags 1 and carries nothing.
@@ -22,16 +22,16 @@
 import tests::modules::iter;
 
 extern {
-  fn vx_env_args_count() -> i32;
-  fn vx_env_arg(idx : i32)->*mut i8;
+  fn word_count() -> i32;
+  fn word_at(idx : i32)->*mut i8;
 }
 
 fn args_count() -> i32 {
-  return unsafe { vx_env_args_count() };
+  return unsafe { word_count() };
 }
 
 fn arg(idx : i32) -> *mut i8 {
-  return unsafe { vx_env_arg(idx) };
+  return unsafe { word_at(idx) };
 }
 
 struct Args {

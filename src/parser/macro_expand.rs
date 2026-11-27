@@ -897,6 +897,26 @@ impl<'a> MacroExpander<'a> {
                                     captured.push(input[i].clone());
                                     i += 1;
                                 }
+                                // Keep an `expr` of more than one token together, as Rust
+                                // does: `$x * $x` with `a + b` must be `(a + b) * (a + b)`.
+                                // Each parenthesis takes the position of the token next to it.
+                                if !is_ty && captured.len() > 1 {
+                                    let first = &captured[0];
+                                    let last = &captured[captured.len() - 1];
+                                    let open = crate::lexer::OwnedToken {
+                                        kind: OwnedTokenType::LeftParen,
+                                        length: 1,
+                                        ..first.clone()
+                                    };
+                                    let close = crate::lexer::OwnedToken {
+                                        kind: OwnedTokenType::RightParen,
+                                        column: last.column + last.length,
+                                        length: 1,
+                                        ..last.clone()
+                                    };
+                                    captured.insert(0, open);
+                                    captured.push(close);
+                                }
                                 captures.insert(name.clone(), captured);
                                 j += 4;
                                 continue;

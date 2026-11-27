@@ -20,6 +20,7 @@
 import core::ptr;
 import std::env;
 import std::fs;
+import std::io;
 import std::net;
 import std::process;
 import std::string;
@@ -36,7 +37,10 @@ struct Root {
   env : Environment,
   // The right to start other programs.
   processes : Processes,
-
+  // The rights to read standard input, and to write to standard output and error.
+  stdin : Stdin,
+  stdout : Stdout,
+  stderr : Stderr,
   invariant true,
 }
 
@@ -48,6 +52,9 @@ pub unsafe fn root_of_the_program() -> Root {
     files : unsafe { files_of_the_program() },
     env : unsafe { environment_of_the_program() },
     processes : unsafe { processes_of_the_program() }
+    stdin : unsafe { stdin_of_the_program() },
+    stdout : unsafe { stdout_of_the_program() },
+    stderr : unsafe { stderr_of_the_program() }
   };
 }
 

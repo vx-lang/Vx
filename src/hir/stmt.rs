@@ -854,9 +854,29 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 } else {
+                    // `Some(..)` has no type arguments of its own, so it needs the type spelled.
+                    let bare_some = matches!(
+                        expr,
+                        Expr::FunctionCall(c)
+                            if c.name.as_ref() == "Some" && c.owner_type_args.is_none()
+                    ) || matches!(
+                        expr,
+                        Expr::EnumVariant(v)
+                            if v.enum_name.as_ref() == "Option"
+                                && v.variant_name.as_ref() == "Some"
+                                && v.type_args.as_ref().is_none_or(|a| a.is_empty())
+                    );
+                    let bare_some = bare_some
+                        && matches!(&*ann, Type::GenericInstance(base, _)
+                        if matches!(&**base, Type::Enum(n, _) | Type::Struct(n, _) if n.as_ref() == "Option"));
+                    let hint = if bare_some {
+                        format!(". Write `{ann}::Some(value)`")
+                    } else {
+                        String::new()
+                    };
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3001,
-                        format!("'{name}' is declared {ann} but its initializer is {ty}"),
+                        format!("'{name}' is declared {ann} but its initializer is {ty}{hint}"),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
@@ -1022,7 +1042,10 @@ impl<'a> TypeChecker<'a> {
             // their new values, not the values from when the result was returned.
             let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
                 if c.args.iter().any(|a| self.call_may_change_argument(a)));
-            if !changes_an_argument {
+            // A fact reads each variable as it is after the `let`. A variable that the value
+            // read before a call in the value changed it had another value at the read.
+            let read_before_a_change = self.variables_read_before_a_change(&value);
+            if !changes_an_argument && read_before_a_change.is_empty() {
                 let id_expr = Expr::Identifier(IdentifierExpr {
                     name: name.clone(),
                     span: Span::default(),
@@ -1108,13 +1131,111 @@ impl<'a> TypeChecker<'a> {
             )
     }
 
+    /// The variables that `value` read before a call inside `value` changed them. In
+    /// `first(read(&c), halve(&mut c))`, `read` gets the old `c`. A fact made from the text of
+    /// `value` reads the new `c`, so a fact that names one of these variables can be false.
+    fn variables_read_before_a_change(&self, value: &Expr) -> Vec<String> {
+        let mut order = ReadsAndChanges::default();
+        self.note_reads_and_changes(value, &mut order);
+        order.read_before_a_change
+    }
+
+    /// Adds the reads and the changes of `e` to `order`, in the order in which `e` runs.
+    fn note_reads_and_changes(&self, e: &Expr, order: &mut ReadsAndChanges) {
+        match e {
+            Expr::Identifier(id) => order.read.push(id.name.to_string()),
+            Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
+            }
+            Expr::BinaryOp(b) => {
+                self.note_reads_and_changes(&b.lhs, order);
+                self.note_reads_and_changes(&b.rhs, order);
+            }
+            Expr::RelationalOp(r) => {
+                self.note_reads_and_changes(&r.lhs, order);
+                self.note_reads_and_changes(&r.rhs, order);
+            }
+            Expr::LogicalOp(l) => {
+                self.note_reads_and_changes(&l.lhs, order);
+                self.note_reads_and_changes(&l.rhs, order);
+            }
+            Expr::IndexAccess(ix) => {
+                self.note_reads_and_changes(&ix.base, order);
+                self.note_reads_and_changes(&ix.index, order);
+            }
+            Expr::UnaryOp(u) => self.note_reads_and_changes(&u.expr, order),
+            Expr::Borrow(b) => self.note_reads_and_changes(&b.expr, order),
+            Expr::Dereference(d) => self.note_reads_and_changes(&d.expr, order),
+            Expr::MemberAccess(m) => self.note_reads_and_changes(&m.base, order),
+            Expr::AsCast(c) => self.note_reads_and_changes(&c.expr, order),
+            Expr::EnumVariant(v) => {
+                for x in v.payload.iter().flatten() {
+                    self.note_reads_and_changes(x, order);
+                }
+            }
+            Expr::FunctionCall(c) => {
+                let params = self.call_param_types(c.name.as_ref(), e);
+                self.note_a_call(None, &c.args, params.as_deref(), order);
+            }
+            // The check of the `let` turned each method call that it found into a call of the
+            // function of the method. A method call that stays is of a built-in method.
+            Expr::MethodCall(m) => self.note_a_call(Some(&m.base), &m.args, None, order),
+            // Any other expression can read and change each variable.
+            _ => {
+                order
+                    .read_before_a_change
+                    .extend(order.read.iter().cloned());
+                order.unknown_read = true;
+            }
+        }
+    }
+
+    /// A call reads its receiver and its arguments from left to right. Then it changes each
+    /// variable that it can write through. It cannot write through the argument of a `&`
+    /// parameter. `params` has the parameter types, when the checker knows them.
+    fn note_a_call(
+        &self,
+        receiver: Option<&Expr>,
+        args: &[Expr],
+        params: Option<&[Type]>,
+        order: &mut ReadsAndChanges,
+    ) {
+        let mut changed = Vec::new();
+        if let Some(receiver) = receiver {
+            self.note_reads_and_changes(receiver, order);
+            // The method can take `&mut self` when the receiver is a `let mut` or a `&mut`.
+            let root = Self::arg_reborrow_base(receiver).map(|(root, _)| root);
+            let can_change = self.call_may_change_argument(receiver)
+                || root.as_ref().is_none_or(|root| self.is_mutable(root));
+            changed.extend(root.filter(|_| can_change));
+        }
+        for (i, arg) in args.iter().enumerate() {
+            self.note_reads_and_changes(arg, order);
+            let param = params.and_then(|p| p.get(i));
+            let reads_only = matches!(param, Some(Type::Borrow { is_mut: false, .. }));
+            if !reads_only && self.call_may_change_argument(arg) {
+                changed.extend(Self::arg_reborrow_base(arg).map(|(root, _)| root));
+            }
+        }
+        for root in &changed {
+            // The `&mut` in the call reads the variable once. Any other read came before.
+            let reads = order.read.iter().filter(|r| *r == root).count();
+            let by_this_call = changed.iter().filter(|r| *r == root).count();
+            if reads > by_this_call || order.unknown_read {
+                order.read_before_a_change.push(root.clone());
+            }
+        }
+    }
+
     /// A returned number keeps its postconditions even when a later call changes an input
     /// buffer. The equation `name == call(args)` does not: a later proof evaluates the call
-    /// again with the new buffer.
+    /// again with the new buffer. A postcondition is not kept when it names a variable that the
+    /// call read before a call in an argument changed it.
     fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
-        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+        let value = crate::syntax::bare_unsafe_value(value);
+        let Expr::FunctionCall(call) = value else {
             return;
         };
+        let read_before_a_change = self.variables_read_before_a_change(value);
         let Some((params, return_type, ensures)) = self.declared_callee(&call.name) else {
             return;
         };
@@ -1157,6 +1278,7 @@ impl<'a> TypeChecker<'a> {
             .filter(|e| {
                 !changed
                     .iter()
+                    .chain(&read_before_a_change)
                     .any(|root| crate::hir::check::raw::expr_mentions(e, root))
             })
             .collect();
@@ -1476,6 +1598,10 @@ impl<'a> TypeChecker<'a> {
                         Type::Scalar(ElementType::I64)
                     }
                 }
+                // An element of a tensor of rank 2 or more is a row.
+                Type::Tensor(el_ty, dims, top) if dims.len() > 1 => {
+                    Type::Tensor(el_ty, dims[1..].to_vec(), top)
+                }
                 Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
                 // A scalar iterable is an integer range (`a..b`); the induction variable takes
                 // the range's element type, so `for i in 0..10` binds `i: i32` and code like
@@ -1596,6 +1722,7 @@ impl<'a> TypeChecker<'a> {
         // environment, and settling that up requires the state it started from.
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
+        self.forget_values_a_loop_writes(body);
 
         let marks_before = self.moved_snapshot();
         let passes = self.pass_count(iterable);
@@ -1936,6 +2063,7 @@ impl<'a> TypeChecker<'a> {
         // what the program does, so what it folded is settled up once the loop has been run.
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
+        self.forget_values_a_loop_writes(body);
 
         let marks_before = self.moved_snapshot();
         self.borrow
@@ -2620,9 +2748,22 @@ impl<'a> TypeChecker<'a> {
             None => rhs.clone(),
         };
         let renamed = self.name_the_old_value(lhs, &lhs_ty);
+        // As in a `let`: a call that can change an argument gives no equation, because a later
+        // proof would evaluate the call again with the new value.
+        let changes_an_argument = matches!(crate::syntax::bare_unsafe_value(&assigned),
+            Expr::FunctionCall(c) if c.args.iter().any(|a| self.call_may_change_argument(a)));
         let new_fact = renamed
             .as_ref()
+            .filter(|_| !changes_an_argument)
             .and_then(|names| Self::fact_of_an_assignment(lhs, &assigned, names));
+        // `x = f(x)`: the `x` in the argument is the old value.
+        let call_result = match (op, &*lhs, &renamed) {
+            (None, Expr::Identifier(id), Some(names)) => Some((
+                id.name.clone(),
+                hir::prover::substitute_names(crate::syntax::bare_unsafe_value(rhs), names),
+            )),
+            _ => None,
+        };
         // A write to an integer field keeps the facts about the other fields.
         let field_fact = match renamed {
             Some(_) => None,
@@ -2658,6 +2799,9 @@ impl<'a> TypeChecker<'a> {
         }
         self.consteval.constraints.extend(new_fact);
         self.consteval.constraints.extend(field_fact.flatten());
+        if let Some((name, value)) = call_result {
+            self.keep_call_result_ensures(&name, &value);
+        }
         if let Expr::Identifier(id) = lhs {
             self.note_pointer_value(id.name.as_ref(), pointer);
         }
@@ -2749,6 +2893,19 @@ impl<'a> TypeChecker<'a> {
             }
         }
         scopes
+    }
+
+    /// Drop the compile-time value of each variable that a loop body writes, before the body
+    /// is checked. The body is checked once, but it runs many times. On a later pass such a
+    /// variable does not hold the value that it had before the loop.
+    fn forget_values_a_loop_writes(&mut self, body: &[Statement]) {
+        for name in crate::hir::check::raw::names_a_body_writes(body) {
+            // Every scope: the value of an outer variable of the same name must not show in
+            // place of the dropped one.
+            for scope in &mut self.consteval.env {
+                scope.remove(name.as_str());
+            }
+        }
     }
 
     /// Settle what the constant environment knows about the variables a loop body writes.
@@ -3586,6 +3743,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<Value> {
         match expr {
             Expr::Number(NumberExpr {
+                written: _,
                 value: n_str,
                 ty,
                 span: _,
@@ -4508,6 +4666,17 @@ impl<'a> TypeChecker<'a> {
             _ => false,
         }
     }
+}
+
+/// What an expression did up to one point as it runs.
+#[derive(Default)]
+struct ReadsAndChanges {
+    /// The variable of each read up to this point, in order.
+    read: Vec<String>,
+    /// An expression that the checker cannot look into ran, and it can read each variable.
+    unknown_read: bool,
+    /// The variables that a call changed after the expression read them.
+    read_before_a_change: Vec<String>,
 }
 
 /// The type definitions `TypeChecker::type_can_carry_mut_reference` looks through, apart from the

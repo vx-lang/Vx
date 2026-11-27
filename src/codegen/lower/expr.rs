@@ -4185,13 +4185,14 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             name.as_ref(),
             "Tensor" | "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
         ) {
-            // `Tensor<T, [d0, d1]>::fill(v)` takes its shape from the type like `::new()` does, so
-            // the call argument is the fill value rather than an extent. Captured before `args` is
-            // rebound to the normalised shape below.
-            let fill_expr: Option<Expr> = if name.as_ref() == "Tensor::fill" {
-                args.first().cloned()
-            } else {
-                None
+            // The value of `::fill` is its last argument: `::fill(v)`, or `::fill([n, 2], v)` with
+            // a run-time shape. Captured before `args` is rebound to the normalised shape below,
+            // which leaves the value out.
+            let (fill_expr, args): (Option<Expr>, &[Expr]) = match args.split_last() {
+                Some((value, shape)) if name.as_ref() == "Tensor::fill" => {
+                    (Some(value.clone()), shape)
+                }
+                _ => (None, args),
             };
             // `Tensor<T, [d0, d1]>::uninit()` writes its element and shape in the type; the older
             // `Tensor<T>([d0, d1])` splits them between the generic argument and the call
@@ -5381,6 +5382,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let NumberExpr {
+            written: _,
             value: val_str,
             ty: ast_ty_opt,
             span: _,
@@ -6074,6 +6076,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             _ => {
                 if let Some(syntax::Type::Struct(s, _)) =
                     gen.infer_ast_type(self.elements.first().unwrap_or(&Expr::Number(NumberExpr {
+                        written: None,
                         value: "0".into(),
                         ty: None,
                         span: Span::default(),

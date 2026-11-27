@@ -1,0 +1,35 @@
+//===- match_on_moved_option_reports_only_the_move.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on a moved `Option<Cap>` gets one error, the use of the moved variable.
+// The value inside `Some(c)` must not get the type `T` of `Option` and a second error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import core::option;
+
+struct Cap {}
+
+fn take(c : Cap) -> i32 {
+  return 1;
+}
+
+fn main() -> i32 {
+  let o = Option<Cap>::Some(Cap {});
+  let _o2 = o;
+  let mut n = 0;
+  // CHECK: Error[E4001]{{.*}}moved or consumed linear variable: o
+  // CHECK: 1 error(s) emitted
+  match o {
+    Option<Cap>::Some(c) => {
+      n = n + take(c);
+    },
+    Option<Cap>::None() => { }
+  }
+  print(n);
+  return 0;
+}

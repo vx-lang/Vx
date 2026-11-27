@@ -43,6 +43,41 @@ fn return_the_trailing_expression(body: &mut [Statement]) {
 }
 
 impl<'a> Parser<'a> {
+    /// The message for a `#` where an item should start. Vx has no attributes. For
+    /// `#[derive(Clone)]` and `#[derive(Copy)]`, it shows the `impl` to write instead.
+    fn attribute_message(&self) -> String {
+        let mut message = String::from("Vx has no attributes yet, so `#[...]` does not work.");
+        let is_derive = self.peek_n(1).kind == TokenType::LeftBracket
+            && self.peek_n(2).kind == TokenType::Identifier("derive")
+            && self.peek_n(3).kind == TokenType::LeftParen;
+        if !is_derive {
+            return message;
+        }
+        let mut impls = Vec::new();
+        let mut offset = 4;
+        while let TokenType::Identifier(name) = self.peek_n(offset).kind {
+            match name {
+                "Clone" => {
+                    impls.push("`impl Clone for Type { fn clone(self : &Self) -> Self { ... } }`")
+                }
+                "Copy" => impls.push("`impl Copy for Type {}`"),
+                _ => {}
+            }
+            offset += 1;
+            if self.peek_n(offset).kind != TokenType::Comma {
+                break;
+            }
+            offset += 1;
+        }
+        if !impls.is_empty() {
+            message.push_str(&format!(
+                " Write the impl yourself: {}.",
+                impls.join(" and ")
+            ));
+        }
+        message
+    }
+
     pub(crate) fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
         let token = self.advance();
         match &token.kind {
@@ -1132,11 +1167,20 @@ impl<'a> Parser<'a> {
     /// Text rather than `f64` so [`crate::units::to_bytes`] can do exact integer arithmetic: `3.35`
     /// is not representable in binary floating point, and a parse-multiply-round pipeline is
     /// correct only for the particular values it happens to be given.
+    ///
+    /// The spellings are those of a literal in an expression, so `1_048_576` and `0x100000`
+    /// are read here too, and come back as plain decimal text.
     fn parse_number_text(&mut self, what: &str) -> ParseResult<'a, String> {
-        match &self.advance().kind {
-            TokenType::Number(s) => Ok(s.to_string()),
-            other => Err(self.error(&format!("Expected {}, got {:?}", what, other))),
+        let literal = match &self.advance().kind {
+            TokenType::Number(s) => s.to_string(),
+            other => return Err(self.error(&format!("Expected {}, got {:?}", what, other))),
+        };
+        let (text, suffix) =
+            crate::parser::expr::infer_number_literal(&literal).map_err(|e| self.error(&e))?;
+        if suffix.is_some() {
+            return Err(self.error(&format!("{what} takes no type suffix, got '{literal}'")));
         }
+        Ok(text)
     }
 
     /// Exact mantissa-times-unit, with the failure reported where the reader can see the figure.
@@ -2068,8 +2112,16 @@ impl<'a> Parser<'a> {
                 // `stamp_impl!(i32);` where an item goes. What it expands to is not known until
                 // macro expansion runs, so it is recorded and replaced there.
                 item_macros.push(self.parse_item_macro_call()?);
+            } else if self.peek().kind == TokenType::Unknown('#') {
+                return Err(self.error(&self.attribute_message()));
             } else if self.peek().kind == TokenType::Unknown('"') {
                 return Err(self.error(super::UNCLOSED_STRING));
+            } else if self.peek().kind == TokenType::Identifier("use") {
+                // A Rust programmer writes `use core::option::Option;` first. Vx has `import`,
+                // and it takes a module path, so the message does not repeat the user's path.
+                return Err(self.error(
+                    "Vx has no `use`: write `import` with a module path, as in `import core::option;`",
+                ));
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
@@ -2128,6 +2180,7 @@ impl<'a> Parser<'a> {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             file: None,
             package: None,
+            standard_library: false,
             item_macros,
             imports,
             macros,
@@ -2569,6 +2622,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 // A topology index is a compile-time dimension, stamped to its default type at
                 // parse time (#240) rather than left untyped like a value-position literal.
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                    written: None,
                     value: "0".to_string().into(),
                     ty: Some(ElementType::I32),
                     span: Span::default()
@@ -2768,6 +2822,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 assert_eq!(
                     **start,
                     Expr::Number(NumberExpr {
+                        written: None,
                         value: "0".to_string().into(),
                         ty: None,
                         span: Span::default()
@@ -2776,6 +2831,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 assert_eq!(
                     **end,
                     Expr::Number(NumberExpr {
+                        written: None,
                         value: "10".to_string().into(),
                         ty: None,
                         span: Span::default()

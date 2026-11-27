@@ -21,7 +21,7 @@ use melior;
 #[link(name = "vx_dialect", kind = "static")]
 #[link(name = "plugin_loader", kind = "static")]
 extern "C" {
-    fn run_vx_opt(argc: c_int, argv: *const *const c_char) -> c_int;
+    fn run_vx_opt(argc: c_int, argv: *const *const c_char, version: *const c_char) -> c_int;
 }
 
 use std::os::unix::ffi::OsStrExt;
@@ -35,7 +35,8 @@ fn main() {
 
     let c_ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
 
-    let status = unsafe { run_vx_opt(c_ptrs.len() as c_int, c_ptrs.as_ptr()) };
+    let version = CString::new(vxc::driver::VERSION).unwrap();
+    let status = unsafe { run_vx_opt(c_ptrs.len() as c_int, c_ptrs.as_ptr(), version.as_ptr()) };
 
     std::process::exit(status);
 }

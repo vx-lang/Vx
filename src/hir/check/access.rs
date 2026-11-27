@@ -148,6 +148,7 @@ impl<'a> TypeChecker<'a> {
                 n.value.clone()
             };
             return Some(Expr::Number(NumberExpr {
+                written: None,
                 value,
                 ty: Some(elem),
                 span: *span,
@@ -177,12 +178,14 @@ impl<'a> TypeChecker<'a> {
                 span: *span,
             })),
             (Value::Int(i), false) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: i.to_string().into(),
                 ty: Some(elem),
                 span: *span,
             })),
             (Value::Number(f), false) if is_float && f.is_finite() => {
                 Some(Expr::Number(NumberExpr {
+                    written: None,
                     value: f.to_string().into(),
                     ty: Some(elem),
                     span: *span,
@@ -1829,6 +1832,12 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type(idx);
                 self.checking_assign_lhs = lhs;
 
+                // `p[i]` on a `&mut f32` reads the buffer that `p` points into, as a pointer does.
+                // A `Ref` or a `Pinned` number has no index: the code generators cannot read one.
+                let number_by_reference = match &obj_ty {
+                    Type::Borrow { inner, .. } => matches!(**inner, Type::Scalar(_)),
+                    _ => false,
+                };
                 // Look through a Pinned/Ref device wrapper to the underlying tensor so that
                 // indexing a transferred tensor follows the same rule as a local one.
                 let base = match obj_ty {
@@ -1919,7 +1928,20 @@ impl<'a> TypeChecker<'a> {
                 {
                     self.range_index_type(el_ty.clone(), dims, top.clone(), range, &ix_span)
                 } else if let Type::Tensor(el_ty, dims, top) = base {
-                    if dims.len() > 1 {
+                    if dims.is_empty() {
+                        // A rank-0 tensor, `Tensor<f32, []>`, holds one number and has no index.
+                        if !self.speculating {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3004,
+                                format!(
+                                    "Cannot index a value of type {}",
+                                    Type::Tensor(el_ty, dims, top)
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
+                            );
+                        }
+                        Type::Unknown
+                    } else if dims.len() > 1 {
                         // Partial index (S1): a rank-reduced slice of the remaining dimensions,
                         // e.g. `q[i]` on Tensor<f32,[N,D]> is a Tensor<f32,[D]> row view.
                         Type::Tensor(el_ty, dims[1..].to_vec(), top)
@@ -1963,20 +1985,10 @@ impl<'a> TypeChecker<'a> {
                         return t;
                     }
                     elem
-                } else if let Type::Scalar(el_ty) = base {
-                    // A dynamically shaped `Tensor<T>` carries no dims, so the branch above
-                    // takes `dims.len() > 1` as false and the *first* index already yields
-                    // `Scalar(T)`. The second index of `t[i][j]` therefore arrives here with a
-                    // scalar base, and used to fall through to the F32 default below --
-                    // silently retyping the element of every tensor whose element is not f32.
-                    // f32 tensors never revealed it because the wrong answer matched the right
-                    // one, which is why this reads as an f16 bug (#324) and is not one.
-                    //
-                    // Carrying the element type through is what a further index of an
-                    // already-elemental value means. It does not model rank: a rank-unknown
-                    // tensor cannot say how many indices exhaust it, and `t[i]` yielding a row
-                    // view rather than an element is a separate question (#324).
-                    Type::Scalar(el_ty)
+                } else if let (Type::Scalar(el_ty), true) = (&base, number_by_reference) {
+                    // Only a reference to a number has an index. Any other number, such as
+                    // `x[0]` for an `f32 x` or `q[0][0][0]` for a 2-D `q`, gets E3004 below.
+                    Type::Scalar(el_ty.clone())
                 } else if base == Type::Unknown {
                     // Already-reported failure upstream; stay quiet (#294).
                     Type::Unknown
@@ -1991,7 +2003,7 @@ impl<'a> TypeChecker<'a> {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3004,
                             format!("Cannot index a value of type {}", base),
-                            None,
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
                         );
                     }
                     Type::Unknown
@@ -2947,6 +2959,7 @@ impl<'a> TypeChecker<'a> {
 pub(crate) fn extent_literal(value: i64, span: Span) -> Expr {
     let value = value.to_string();
     Expr::Number(NumberExpr {
+        written: None,
         ty: Some(crate::parser::expr::default_number_elem(&value)),
         value: value.into(),
         span,

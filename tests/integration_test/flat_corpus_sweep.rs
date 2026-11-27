@@ -201,6 +201,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_prefetch_into_the_l2_cache.vx",              // needs --machine
         "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
         "optimizations/pass/values_at_the_start_of_block_code_reach_every_lane.vx", // needs --machine
+        "optimizations/pass/across_loop_calls_the_math_methods_of_f16_and_bf16.vx", // needs --machine
         "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
         "optimizations/pass/lane_matmuls_on_the_gpu.vx",                      // needs --machine
         "optimizations/pass/matmul_tiles_in_shared_memory_avoid_bank_conflicts.vx", // needs --machine
@@ -270,6 +271,9 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
         "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
         "frontend/pass/packages/import_from_a_package.vx", // needs --package
+        "frontend/pass/jobs_keeps_an_imported_library_flaw_quiet.vx", // needs --std-path
+        // needs --std-path
+        "frontend/pass/unused_functions_with_type_errors_in_the_standard_library.vx",
         // needs --machine
         "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
         // needs --machine

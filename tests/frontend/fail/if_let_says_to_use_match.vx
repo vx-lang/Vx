@@ -1,0 +1,22 @@
+//===- if_let_says_to_use_match.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Vx has no `if let`. The error says to write a `match` with a `_` arm.
+//
+// CHECK: :18:6: {{.*}}Vx has no `if let`. Use a `match` with a `_` arm instead
+
+import core::option;
+
+fn main() -> i32 {
+  let o = Option<i64>::Some(3i64);
+  if let Option<i64>::Some(v) = o {
+    return v as i32;
+  }
+  return 0;
+}

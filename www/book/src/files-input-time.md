@@ -36,14 +36,26 @@ parsed 124
 `println!` moves a `String` argument ([Vx#3235](https://github.com/vx-lang/Vx/issues/3235)). So the
 program gets the length before it prints `greeting`.
 
+A string literal is its bytes and a NUL at the end, and the compiler knows how many bytes it has.
+`"hello" as *const u8` gives those bytes as a `*const u8`, the type that `String::from_bytes`
+below takes. So `String::from_bytes("hello" as *const u8, 5)` makes a `String` with no `unsafe`.
+
 `String::from_utf8(&v)` copies the bytes of a `Vec<u8>`, and `String::from_bytes(p, n)` copies
 the `n` bytes at the raw pointer `p`. Neither one needs `unsafe`. But a call of `from_bytes` in
 safe code must prove that `p` points at `n` bytes, as `v.as_mut_ptr()` and `v.len()` do. Both
 give a `Result`. Its `Err` holds a `Utf8Error` when the bytes are not UTF-8, and `e.valid_up_to`
-is the number of bytes before the first bad one.
+is the number of bytes before the first bad one. `s.to_bytes()` goes the other way: it copies the
+bytes of a `String` into a new `Vec<u8>`.
 
 `parse_int` stops at the first byte that is not a digit. So `"12abc"` gives 12, and `"abc"`
 gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
+
+`i64::parse(&v, from, to)` reads the decimal integer in bytes `from` to `to` of a `Vec<u8>`, with
+no `unsafe`. It allows one `+` or `-` before the digits, and nothing else. `u64::parse` allows only
+a `+`. `f64::parse` and `f32::parse` read a float, such as `1.5`, `-2e10`, `inf` or `NaN`. Each
+gives a `Result`. Its `Err` holds a `ParseNumberError`: `Empty`, `Invalid` or `OutOfRange`. A
+range that is not inside `v` stops the program. `to_string()` on an `f32` or an `f64` gives the
+fewest digits that read back as the same value, as in `0.1`.
 
 ## The command line
 
@@ -196,23 +208,45 @@ with the signal SIGBUS.
 
 ## Standard input and output
 
-`std::io` has three functions. `stdin_read(buffer, len)` reads up to `len` bytes of standard input
-and gives the count. 0 means the end of the input. `stdout_write` and `stderr_write` write bytes to
-standard output and standard error. This loop counts the lines of the input:
+Reading standard input and writing to standard output and error are rights, as files are. `main`
+gets them in `root.stdin`, a `Stdin`, `root.stdout`, a `Stdout`, and `root.stderr`, a `Stderr`.
+Only `std::io` can make them, so a library reads or writes them only when its caller passes them.
+
+- `input.read(&mut buffer)` reads up to `buffer.len()` bytes and gives the count in a `Result`.
+  0 means the end of the input.
+- `input.read_exact(&mut buffer)` fills all of `buffer`. It gives `StdioError::EndOfInput` when
+  the input ends first.
+- `out.write_all(&bytes)` writes all of the bytes. They keep their order with `print!`.
+- A `select` can wait on a `Stdin`, as it waits on a socket.
+
+`println!` and `print!` do not need the right yet. The older `unsafe` functions `stdin_read`,
+`stdout_write` and `stderr_write` take a raw pointer and a length. This loop counts the lines of
+the input:
 
 ```vx
+import core::result;
 import std::io;
+import std::root;
+import std::vec;
 
-fn main() -> i32 {
-  let mut byte : u8 = 0;
+fn main(root : Root) -> i32 {
+  let mut input = root.stdin;
+  let mut byte = Vec<u8>::new();
+  byte.push(0u8);
   let mut lines = 0;
   loop {
-    let n = unsafe { stdin_read((&mut byte) as *mut u8, 1) };
-    if n == 0 {
-      break;
-    }
-    if byte == 10 {
-      lines = lines + 1;
+    match input.read(&mut byte) {
+      Result::Ok(n) => {
+        if n == 0 {
+          break;
+        }
+        if byte.get(0) == 10u8 {
+          lines = lines + 1;
+        }
+      }
+      Result::Err(_e) => {
+        break;
+      }
     }
   }
   println!("{} lines", lines);

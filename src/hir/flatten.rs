@@ -2152,11 +2152,22 @@ impl<'r> Lowerer<'r> {
             // *local* that lives in a slot (`&v` where `v` is a struct slot, or `&x` where `x` is an
             // address-taken scalar demoted to a slot by the pre-pass, #230) yields the slot's
             // `!llvm.ptr` — the pointer a `&Vec<T>` method receives so `v.len()` lowers (#242), or the
-            // `&i32` a `pick(a : &i32, ..)` argument passes. A tensor local in a slot is the
-            // exception: the slot holds the tensor, and borrowing a tensor gives the tensor.
+            // `&i32` a `pick(a : &i32, ..)` argument passes. A tensor can be slotted too, and the
+            // read below gives the tensor for it.
             Expr::Borrow(b) => {
                 if let Expr::Identifier(id) = &*b.expr {
                     if let Some(Binding::Slot { reg, ty }) = self.scope.get(&id.name).cloned() {
+                        // Every tensor slot holds the tensor's memref, not its address. That
+                        // is why this read gives the tensor. A tensor local gets a slot in
+                        // four cases:
+                        //   - a `let` given a new value in code with control flow (see
+                        //     `LetDecl`)
+                        //   - any tensor local in a memory-mode function (see `bind_local`)
+                        //   - a tensor that a `match` takes out of an enum's payload (see
+                        //     `bind_local`)
+                        //   - the result slot of `let x : T = if ..` (see `LetDecl`)
+                        // Borrowing a tensor is transparent, so the borrow is the memref read
+                        // out of the slot.
                         if matches!(ty, LoweredTy::Tensor { .. }) {
                             return Ok(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0));
                         }
@@ -5819,7 +5830,9 @@ impl<'r> Lowerer<'r> {
         let written = fc.type_args.as_ref()?.first()?;
         // `Tensor<T, [d0, d1]>::uninit()` writes the element and shape in the type and takes no
         // arguments, so there is nothing to recover from the call. With a `?` in the type the
-        // one argument is the full shape, and the `?` positions take their extents from it.
+        // first argument is the full shape, and the `?` positions take their extents from it.
+        // `::fill` takes the value as its last argument: `::fill(v)` or `::fill([n, 2], v)`.
+        let fills = fc.name.as_ref() == "Tensor::fill";
         if let crate::syntax::Type::Tensor(el, dims, placement) = written {
             if matches!(el, ElementType::Generic(_)) {
                 return None;
@@ -5837,7 +5850,9 @@ impl<'r> Lowerer<'r> {
             let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
                 let written_shape = match fc.args.first() {
-                    Some(Expr::Array(arr)) if fc.args.len() == 1 => Some(&arr.elements),
+                    Some(Expr::Array(arr)) if fc.args.len() == 1 + usize::from(fills) => {
+                        Some(&arr.elements)
+                    }
                     _ => None,
                 };
                 for (i, d) in dims.iter().enumerate() {
@@ -5893,8 +5908,8 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
             }
             // `::fill(v)` writes `v` into every element, where `::new()` writes a zero.
-            if fc.name.as_ref() == "Tensor::fill" {
-                let v = self.lower_expr(fc.args.first()?).ok()?;
+            if fills {
+                let v = self.lower_expr(fc.args.last()?).ok()?;
                 self.emit_effect(Opcode::TensorFill, buf.reg, v.reg, 0);
             }
             return Some(buf);

@@ -1,0 +1,35 @@
+//===- vec_get_in_a_loop_is_vectorized_on_x86_64.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// At -O3, a loop that calls `Vec::get` adds 4 values at a time on an x86-64-v3 CPU.
+// The RUN line gives `opt` that CPU. `opt` can make it only when LLVM has its X86 target.
+//
+// REQUIRES: x86_64
+// RUN: vxc %s -O3 --emit-llvm 2>&1 | mlir-translate --mlir-to-llvmir | opt -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64-v3 -passes='default<O3>' -S | FileCheck %s
+// CHECK-LABEL: define {{.*}} @sum_get(
+// CHECK-NOT: {{^}}}
+// CHECK: call i64 @llvm.vector.reduce.add.v4i64(
+// CHECK: {{^}}}
+import core::convert;
+import std::vec;
+
+fn sum_get(a : &Vec<i64>, n : i32) -> i64 {
+  let mut s : i64 = 0;
+  for i in 0..n {
+    s = s + a.get(i);
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let mut a = Vec<i64>::with_capacity(100);
+  for i in 0..100 {
+    a.push(i64::from(i));
+  }
+  print(sum_get(&a, 100));
+  return 0;
+}

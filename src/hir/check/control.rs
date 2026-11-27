@@ -317,11 +317,13 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn value_to_expr(value: &Value, span: &Span) -> Option<Expr> {
         match value {
             Value::Int(i) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: i.to_string().into(),
                 ty: None,
                 span: *span,
             })),
             Value::Number(n) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: n.to_string().into(),
                 ty: None,
                 span: *span,
@@ -604,6 +606,15 @@ impl<'a> TypeChecker<'a> {
         // Each branch starts from the values known before the `if`, and the paths join after it.
         let taken = taken.or_else(|| self.known_condition(&if_expr.cond));
         let values_before = self.consteval.env.clone();
+        // A branch that is only a number with no suffix, such as `else { 0.0 }`, takes the type
+        // of the other branch.
+        let then_literal =
+            unsuffixed_number_tail(&mut if_expr.then_block).is_some_and(|n| n.ty.is_none());
+        let else_literal = if_expr
+            .else_block
+            .as_mut()
+            .and_then(|b| unsuffixed_number_tail(b))
+            .is_some_and(|n| n.ty.is_none());
         let (then_name, else_name) = Self::pointer_branch_names(if_expr).unzip();
         let named = then_name.is_some();
         self.pointer_branches.extend(then_name);
@@ -665,6 +676,26 @@ impl<'a> TypeChecker<'a> {
                     || (!unused && self.branch_ends_early(else_b))
                 {
                     else_ty = then_ty.clone();
+                }
+                // The other branch decides even when the context suggests a type, as the
+                // operand of `as` does: `(if c { a } else { 0.0 }) as bf16` is an `if` of `a`'s
+                // type.
+                if then_ty != else_ty && then_literal != else_literal {
+                    let (literal_block, other_ty) = if then_literal {
+                        (&mut if_expr.then_block, &else_ty)
+                    } else {
+                        (&mut *else_b, &then_ty)
+                    };
+                    let n = unsuffixed_number_tail(literal_block)
+                        .expect("a literal branch ends in a number");
+                    if let Some(e) = crate::hir::expr::expected_numeric_elem(other_ty, &n.value) {
+                        n.ty = Some(e);
+                        if then_literal {
+                            then_ty = else_ty.clone();
+                        } else {
+                            else_ty = then_ty.clone();
+                        }
+                    }
                 }
                 if !if_expr.is_comptime && then_ty != else_ty {
                     self.errors.error_with_code(
@@ -1240,6 +1271,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let types = variant.1.as_ref()?;
+        // An earlier error, such as the use of a moved variable, made the matched type
+        // unknown. The payload is then unknown too, not the enum's own `T`.
+        if *matched == Type::Unknown {
+            return Some(vec![Type::Unknown; types.len()]);
+        }
         Some(types.iter().map(|t| t.substitute(&mapping)).collect())
     }
 

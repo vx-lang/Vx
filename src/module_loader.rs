@@ -260,6 +260,7 @@ impl ModuleLoader {
             .filter_map(|r| Some((canonical(r)?, r.file_name() == Some("std".as_ref()))))
             .collect();
         for program in programs {
+            program.standard_library = false;
             let Some(file) = (self.paths.get(&program.module_path)).and_then(|p| canonical(p))
             else {
                 program.package = None;
@@ -271,6 +272,7 @@ impl ModuleLoader {
             let package = if in_package {
                 path[0]
             } else if let Some((_, is_std)) = std_roots.iter().find(|(r, _)| file.starts_with(r)) {
+                program.standard_library = true;
                 if *is_std {
                     "std"
                 } else {

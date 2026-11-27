@@ -1791,10 +1791,15 @@ impl<'c> MeliorGenerator<'c> {
         // ordinary symbol.
         let _ = is_main;
 
-        // A function declared `-> !` is `noreturn` to LLVM.
+        // A function declared `-> !` is `noreturn` to LLVM. A call to it runs at most once, so it
+        // is also `cold` and `noinline`: a small function that calls it stays small enough to
+        // inline.
         if syntax::is_never_ty(&func.return_type) {
-            let attr = melior::ir::Attribute::parse(self.context, "[\"noreturn\"]")
-                .ok_or_else(|| LowerError::from("bad noreturn attribute".to_string()))?;
+            let attr = melior::ir::Attribute::parse(
+                self.context,
+                "[\"noreturn\", \"cold\", \"noinline\"]",
+            )
+            .ok_or_else(|| LowerError::from("bad noreturn attribute".to_string()))?;
             func_attributes.push((
                 melior::ir::Identifier::new(self.context, "passthrough"),
                 attr,
@@ -2920,6 +2925,7 @@ impl<'c> MeliorGenerator<'c> {
         if !dims.is_empty() {
             for (i, dim) in dims.iter().enumerate() {
                 if let syntax::Dim::Static(syntax::Expr::Number(NumberExpr {
+                    written: _,
                     value: n_str,
                     ty: _,
                     span: _,
@@ -3147,6 +3153,7 @@ impl<'c> MeliorGenerator<'c> {
                                 .into_iter()
                                 .map(|n| {
                                     Expr::Number(syntax::NumberExpr {
+                                        written: None,
                                         value: n.to_string().into(),
                                         ty: Some(syntax::ElementType::I32),
                                         span: syntax::Span::default(),
