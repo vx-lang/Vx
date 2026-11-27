@@ -154,7 +154,7 @@ impl FnEmit<'_> {
         self.region_slots.push(None);
         self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
         // A device region states the multiple-of facts of the tensor parameters it can reach
-        // as `llvm.intr.assume`s at its entry (#3668, Vx#3874), so the backend folds on them.
+        // as `llvm.intr.assume`s at its entry, so the backend folds on them.
         // An assume for a parameter the body never reads is pruned at `SpawnEnd`: it would
         // make the kernel take an operand it did not need.
         let marks = if crate::arch::is_device_dispatch_id(topo) {
@@ -168,12 +168,12 @@ impl FnEmit<'_> {
     }
 
     /// One `llvm.intr.assume` per multiple-of fact of each tensor parameter, read from the
-    /// function's `requires` and the `?n` of the parameter's type (#3668, Vx#3874). N a
+    /// function's `requires` and the `?n` of the parameter's type. N a
     /// power of two, so `(extent & (N - 1)) == 0` says what the caller proved at the call.
     /// Returns `(start, end, arg)` marks into `body` for the caller to prune when the region
     /// turns out not to read the parameter. A parameter with no fact, and one whose MLIR
     /// spelling is not a plain memref (a slot), adds nothing. A kernel from a `.vxlib` has
-    /// no `requires` (#3950), so it gets no facts and no assume.
+    /// no `requires`, so it gets no facts and no assume.
     fn emit_mult_of_assumes(&mut self, idx: usize) -> Lowered<Vec<(usize, usize, String)>> {
         let mut marks = Vec::new();
         for (i, (_, ty)) in self.func.params.iter().enumerate() {

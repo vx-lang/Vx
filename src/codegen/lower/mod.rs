@@ -83,10 +83,10 @@ pub(crate) fn requires_mult_of(expr: &syntax::Expr, name: &str) -> Option<u64> {
 }
 
 /// One `(param, axis, N)` for each run-time extent of a parameter that a `requires` of the
-/// function states is a multiple of a power of two (#3668, Vx#3874). The extent is named by
+/// function states is a multiple of a power of two. The extent is named by
 /// `?n` in the parameter's type, and the clause says `n % N == 0`.
 ///
-/// A kernel that comes from a `.vxlib` has no `requires` (#3950), so its facts are empty and
+/// A kernel that comes from a `.vxlib` has no `requires`, so its facts are empty and
 /// it gets no assume: the promise is only safe where the compiler can read it.
 pub(crate) fn extent_mult_facts(func: &syntax::Function) -> Vec<(usize, usize, u64)> {
     let mut facts = Vec::new();
@@ -132,7 +132,6 @@ fn index_constant<'c>(
 /// One `llvm.intr.assume` per fact: `(extent & (N - 1)) == 0` says what the caller proved at
 /// the call, so LLVM folds on it. The op goes where `block` puts it; callers append at the
 /// entry of the code the fact covers, so the assume dominates the accesses that rely on it.
-/// A value that is not a plain memref (a slot that holds a tensor) adds nothing.
 pub(crate) fn assume_extents_are_multiples<'c>(
     gen: &MeliorGenerator<'c>,
     val: Value<'c, 'c>,
@@ -143,10 +142,11 @@ pub(crate) fn assume_extents_are_multiples<'c>(
     if mults.is_empty() {
         return Ok(());
     }
-    let ty_str = mlir_ty.to_string();
-    // `memref<memref<...>>` is a slot that holds a tensor, not one: `memref.dim` reads a
-    // plain memref, and the caller hands the loaded inner one instead.
-    if !ty_str.starts_with("memref<") || ty_str.contains("memref<memref<") {
+    // A reference to a tensor is a slot, `memref<memref<...>>`, and `memref.dim` reads the
+    // tensor in it.
+    let mut mlir_ty = mlir_ty;
+    let val = expr::load_tensor_slot(gen, &block, val, &mut mlir_ty)?;
+    if !mlir_ty.to_string().starts_with("memref<") {
         return Ok(());
     }
     let index_ty = melior::ir::r#type::Type::index(gen.context);

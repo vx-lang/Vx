@@ -81,9 +81,7 @@ fn lower_spawn_region<'c>(
     }
 
     // The multiple-of facts of the tensor parameters this region reads, assumed at the
-    // entry of the kernel body (#3668, Vx#3874). Only names the region reads: an assume
-    // for a tensor the body never touches would make the kernel take an operand it did
-    // not need.
+    // entry of the kernel body.
     if is_device {
         assume_mult_of_params(gen, this, body_block)?;
     }
@@ -926,9 +924,9 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
     }
 }
 
-/// The `?n` facts of the tensors this region reads, assumed at the entry of the kernel body
-/// (#3668, Vx#3874). Only names the region reads: an assume for a tensor the body never
-/// touches would make the kernel take an operand it did not need.
+/// The `?n` facts of the tensor parameters this region reads, assumed at the entry of the
+/// kernel body, in parameter order. Only names the region reads: an assume for a tensor the
+/// body never touches would make the kernel take an operand it did not need.
 fn assume_mult_of_params<'c>(
     gen: &mut MeliorGenerator<'c>,
     this: &syntax::SpawnOnExpr,
@@ -943,18 +941,17 @@ fn assume_mult_of_params<'c>(
     }
     // Cloned out of `gen` so the loop below can reach `gen.env` while the names are held.
     let candidates: Vec<(crate::symbol::Symbol, Vec<(usize, u64)>)> = gen
-        .ast_env
+        .extent_mults
         .iter()
-        .filter(|(name, ty)| {
+        .filter(|(name, _)| {
             used.contains(name.as_ref())
-                && gen.extent_mults.contains_key(*name)
-                && tensor_dims_of(ty)
+                && gen
+                    .ast_env
+                    .get(name)
+                    .and_then(tensor_dims_of)
                     .is_some_and(|dims| dims.iter().any(|d| matches!(d, syntax::Dim::Dyn(_))))
         })
-        .map(|(name, _)| {
-            let mults = gen.extent_mults.get(name).cloned().unwrap_or_default();
-            (name.clone(), mults)
-        })
+        .cloned()
         .collect();
     for (name, mults) in candidates {
         let Some(&(val, mlir_ty)) = gen.env.get(&name) else {

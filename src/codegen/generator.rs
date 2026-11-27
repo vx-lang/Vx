@@ -179,11 +179,10 @@ pub struct MeliorGenerator<'c> {
     /// Host-proven facts (the conditions of `assert`s lowered so far in the current
     /// function) available for transport into a device kernel body. Reset per function.
     pub(crate) assert_facts: Vec<syntax::Expr>,
-    /// The multiple-of facts of the current function's parameters, keyed by parameter name:
-    /// the `?n` of a parameter's type with the `n % N == 0` a `requires` of the function
-    /// states about it (#3668, Vx#3874). The function's entry and each device region assume
-    /// them. Reset per function.
-    pub(crate) extent_mults: HashMap<crate::symbol::Symbol, Vec<(usize, u64)>>,
+    /// The multiple-of facts of the current function's parameters, in parameter order: the
+    /// `?n` of a parameter's type with the `n % N == 0` a `requires` of the function states
+    /// about it. The function's entry and each device region assume them. Reset per function.
+    pub(crate) extent_mults: Vec<(crate::symbol::Symbol, Vec<(usize, u64)>)>,
 }
 
 /// `memref<2x3xf32>` -> `memref<?x?xf32>`, keeping the rank and element type.
@@ -1163,7 +1162,7 @@ impl<'c> MeliorGenerator<'c> {
             describe_params: false,
             spawns: 0,
             assert_facts: Vec::new(),
-            extent_mults: HashMap::new(),
+            extent_mults: Vec::new(),
         }
     }
 
@@ -1600,16 +1599,16 @@ impl<'c> MeliorGenerator<'c> {
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
         self.address_taken = syntax::locals_with_address_taken(&func.body);
         // The multiple-of facts of the parameters, from the `?n` of their types and the
-        // `n % N == 0` of the function's `requires` (#3668, Vx#3874). A kernel from a
-        // `.vxlib` has no `requires` (#3950), so it gets no facts and no assume.
-        self.extent_mults = crate::codegen::lower::extent_mult_facts(func)
-            .into_iter()
-            .fold(HashMap::new(), |mut map, (p, axis, n)| {
-                map.entry(func.params[p].0.clone())
-                    .or_default()
-                    .push((axis, n));
-                map
-            });
+        // `n % N == 0` of the function's `requires`. A kernel from a `.vxlib` has no
+        // `requires`, so it gets no facts and no assume.
+        self.extent_mults.clear();
+        for (p, axis, n) in crate::codegen::lower::extent_mult_facts(func) {
+            let name = &func.params[p].0;
+            match self.extent_mults.last_mut() {
+                Some((last, mults)) if last == name => mults.push((axis, n)),
+                _ => self.extent_mults.push((name.clone(), vec![(axis, n)])),
+            }
+        }
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type)?;
         let ret_ty = if is_main { self.i32_ty } else { true_ret_ty };
@@ -1679,9 +1678,9 @@ impl<'c> MeliorGenerator<'c> {
             }
             self.ast_env.insert(name.to_string().into(), ast_ty.clone());
             // A `requires n % N == 0` of the function, for the `?n` of a parameter's type,
-            // reaches LLVM as an assume at the function's entry (#3668, Vx#3874), so every
-            // access the body makes can fold on it.
-            if let Some(mults) = self.extent_mults.get(name) {
+            // reaches LLVM as an assume at the function's entry, so every access the body
+            // makes can fold on it.
+            if let Some((_, mults)) = self.extent_mults.iter().find(|(n, _)| n == name) {
                 crate::codegen::lower::assume_extents_are_multiples(
                     self,
                     arg_val,

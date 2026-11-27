@@ -174,9 +174,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/gpu_kernel_in_main_on_the_ast_code_generator.vx", // needs --machine
         "optimizations/pass/gpu_register_tensor_stays_in_registers.vx",       // needs --machine
         "optimizations/pass/register_tensor_loops_are_unrolled.vx",           // needs --machine
-        "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",     // needs --machine
+        "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",      // needs --machine
         "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
         "optimizations/pass/a_multiple_of_fact_on_a_dimension_writes_the_values_it_states.vx", // needs --machine
+        "optimizations/pass/both_code_generators_assume_the_multiple_of_fact_of_a_kernel.vx", // needs --machine
         "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
         "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
         "optimizations/pass/whole_tensor_assignments_write_into_the_destination.vx", // needs --machine

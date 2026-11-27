@@ -9,7 +9,7 @@
 // its `requires n % 4 == 0` states a fact about that extent. The prover shows the
 // `requires` at the call from the extent it knows: the caller hands over a tensor whose
 // shape is in its type, and the pitch of `4` shows `n % 4 == 0`. Block `t` writes the
-// rows of range `t`: rows 0..3 get `10..13`, rows 4..7 get `20..23`.
+// rows of range `t`: rows 0..3 get `0..3`, rows 4..7 get `10..13`.
 //
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
