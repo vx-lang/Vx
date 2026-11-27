@@ -330,6 +330,10 @@ To open a connection or to bind an address, a call needs the right to use the ne
 function that gets no `&Network` cannot open a connection. A connection that `accept` gives needs
 no other right.
 
+`lookup(&root.network, &host)` gives the IP addresses of a host name, with no port. Each
+`IpAddress` holds 4 bytes for IPv4 or 16 bytes for IPv6, in network order. It takes the network
+right too, because the lookup can send the name to the network.
+
 The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
 The length of the vector is the size of the buffer. Each type also has methods that take raw
 pointers. Their names end in `_c_str` or `_raw`.
