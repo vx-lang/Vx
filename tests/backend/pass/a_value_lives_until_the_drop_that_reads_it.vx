@@ -16,11 +16,13 @@
 // - `param`: the same for a parameter taken by value;
 // - `returned`: the call in the `return` stores the reference to `t` in `p`;
 // - `early`: both the `return` in the `if` and the last `return` drop `p` before `t`;
-// - `vec`: a `Vec` drops the `Peek` that it holds;
 // - `field`: the `Peek` is a field of another struct;
 // - `variable`: `p` gets the reference from the variable `r`;
 // - `through`: `d` holds a reference to `inner`, and `inner` holds the reference to `t`;
 // - `value`: the block is the value of an `if`.
+//
+// a_value_in_a_vec_lives_until_the_drop_that_reads_it.vx has the case of a `Vec` that holds the
+// value.
 //
 // The rest printed the same before the drop of a value counted as a use. They show what must
 // not change. In `struct` and `late struct` the value borrowed is a struct of numbers, which
@@ -33,7 +35,7 @@
 // - `refs`: a `Vec` of references does not read them when it is dropped;
 // - `read`: `total` takes `&mut p` but stores nothing in it.
 //
-// EXPECT: last 1 7 | later 1 70 | param 1 70 | returned 70 | early 1 7 | early 5 7 | vec 1 7 | field 1 7 | variable 1 7 | through 1 7 | value 5 70 | struct 19 7 | late struct 19 70 | by hand 77 end | given 77 end | plain 77 | refs 1 | read 78 1 | done
+// EXPECT: last 1 7 | later 1 70 | param 1 70 | returned 70 | early 1 7 | early 5 7 | field 1 7 | variable 1 7 | through 1 7 | value 5 70 | struct 19 7 | late struct 19 70 | by hand 77 end | given 77 end | plain 77 | refs 1 | read 78 1 | done
 
 import core::mem;
 import core::ops;
@@ -170,18 +172,6 @@ fn early(c : bool) -> i32 {
   }
   let w : Tensor<i64, [4]> = [5i64, 6i64, 7i64, 8i64];
   print!("{} ", w[0]);
-  return 0;
-}
-
-fn in_a_vec() -> i32 {
-  print!("| vec ");
-  let t : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
-  let mut v = Vec<Peek>::new();
-  v.push(Peek {
-    r : &t
-  });
-  let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
-  print!("{} ", u[0]);
   return 0;
 }
 
@@ -338,7 +328,7 @@ fn main() -> i32 {
   let a : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
   let ran = last() + later() + param(Peek {
     r : &a
-  }) + returned() + early(true) + early(false) + in_a_vec() + in_a_field() + from_a_variable() + through();
+  }) + returned() + early(true) + early(false) + in_a_field() + from_a_variable() + through();
   let value = value_of_a_block(true);
   let rest = a_struct() + a_late_struct() + dropped_by_hand() + given_away() + no_drop()
   + a_vec_of_references() + only_read();
