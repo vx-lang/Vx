@@ -246,6 +246,8 @@ pub struct MacroCallStmt {
     pub block_tree: Option<TokenTree>,
     pub has_semi: bool,
     pub span: Span,
+    /// The variables and parameters in scope at the call, as for `MacroCallExpr::locals`.
+    pub locals: Vec<Symbol>,
 }
 impl MacroCallStmt {
     pub fn new(
@@ -261,6 +263,7 @@ impl MacroCallStmt {
             block_tree,
             has_semi,
             span,
+            locals: Vec::new(),
         }
     }
 }
@@ -481,6 +484,7 @@ impl Statement {
                 block_tree: e.block_tree.clone(),
                 has_semi: e.has_semi,
                 span: e.span,
+                locals: e.locals.clone(),
             }),
             Statement::Drop(d) => Statement::Drop(d.clone()),
             Statement::Error(s) => Statement::Error(*s),

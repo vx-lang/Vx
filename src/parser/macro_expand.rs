@@ -174,6 +174,9 @@ pub struct MacroExpander<'a> {
     /// The id the last expansion in this module got. Counted per module, so a parallel compile
     /// gives the same ids as a normal one.
     expansions: std::cell::Cell<u32>,
+    /// The variables in scope at the macro call that is being expanded. The parsers of the
+    /// expansion read `a < b` after one of them as a comparison.
+    call_locals: std::cell::RefCell<Vec<Symbol>>,
 }
 
 fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
@@ -288,6 +291,7 @@ impl<'a> MacroExpander<'a> {
             call_sites: std::cell::RefCell::new(Vec::new()),
             trait_defaults,
             expansions: std::cell::Cell::new(0),
+            call_locals: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -301,6 +305,7 @@ impl<'a> MacroExpander<'a> {
         use crate::lexer::TokenType;
         let lexed_tokens: Vec<_> = tokens.iter().map(|t| t.as_token()).collect();
         let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
+        parser.seed_locals(&self.call_locals.borrow());
         if let Ok(expr) = parser.parse_expr() {
             parser.match_token(&TokenType::Semicolon);
             if parser.check(&TokenType::Eof) {
@@ -326,6 +331,7 @@ impl<'a> MacroExpander<'a> {
         );
         let lexed_tokens: Vec<_> = block_tokens.iter().map(|t| t.as_token()).collect();
         let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
+        parser.seed_locals(&self.call_locals.borrow());
         let mut stmts = Vec::new();
         while !parser.check(&TokenType::RightBrace) {
             parser
@@ -341,6 +347,7 @@ impl<'a> MacroExpander<'a> {
     ) -> Result<Vec<expr::Expr>, String> {
         let lexed_tokens: Vec<_> = tokens.iter().map(|t| t.as_token()).collect();
         let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
+        parser.seed_locals(&self.call_locals.borrow());
         let mut exprs = Vec::new();
         while !parser.check(&crate::lexer::TokenType::Eof) {
             exprs.push(parser.parse_expr().map_err(|e| format!("{:?}", e))?);
@@ -509,8 +516,13 @@ impl<'a> MacroExpander<'a> {
 
     fn expand_stmt(&self, mut stmt: stmt::Statement) -> Result<Vec<stmt::Statement>, String> {
         if let stmt::Statement::MacroCall(call) = stmt {
-            let body =
-                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree, call.span)?;
+            let body = self.expand_macro_call_with_locals(
+                &call.name,
+                &call.token_tree,
+                &call.block_tree,
+                call.span,
+                &call.locals,
+            )?;
             let expanded_expr = match body {
                 MacroBody::Expr(e) => *e,
                 MacroBody::Stmts(stmts) => {
@@ -581,8 +593,13 @@ impl<'a> MacroExpander<'a> {
 
     fn expand_expr(&self, mut expr: expr::Expr) -> Result<expr::Expr, String> {
         if let expr::Expr::MacroCall(call) = expr {
-            let body =
-                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree, call.span)?;
+            let body = self.expand_macro_call_with_locals(
+                &call.name,
+                &call.token_tree,
+                &call.block_tree,
+                call.span,
+                &call.locals,
+            )?;
             let MacroBody::Expr(expanded) = body else {
                 return Err(format!(
                     "the body of macro `{name}` is not one expression, so the call at line {line} \
@@ -795,6 +812,22 @@ impl<'a> MacroExpander<'a> {
             expr::Expr::MacroCall(_) => unreachable!("expanded above"),
         }
         Ok(expr)
+    }
+
+    /// `expand_macro_call`, with the variables in scope at `call` known to the parsers of the
+    /// expansion.
+    fn expand_macro_call_with_locals(
+        &self,
+        name: &str,
+        tt: &TokenTree,
+        block_tree: &Option<TokenTree>,
+        span: Span,
+        locals: &[Symbol],
+    ) -> Result<MacroBody, String> {
+        let outer = self.call_locals.replace(locals.to_vec());
+        let body = self.expand_macro_call(name, tt, block_tree, span);
+        self.call_locals.replace(outer);
+        body
     }
 
     fn expand_macro_call(
@@ -1316,6 +1349,7 @@ impl<'a> MacroExpander<'a> {
 
         let lexed_tokens: Vec<_> = tokens.iter().map(|t| t.as_token()).collect();
         let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
+        parser.seed_locals(&self.call_locals.borrow());
 
         while !parser.check(&crate::lexer::TokenType::Eof) {
             let field_name = match &parser.advance().kind {

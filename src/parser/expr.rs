@@ -702,7 +702,9 @@ impl<'a> Parser<'a> {
         }
 
         let mut parsed_type_args = self_type_args;
-        if self.check(&TokenType::LeftAngle) {
+        // After a variable, `<` is a comparison: `f(a < b, c > (d))` passes two `bool`s. Vx has
+        // no `::<`, so only the name tells a comparison from type arguments.
+        if self.check(&TokenType::LeftAngle) && !self.is_local_in_scope(&call_name) {
             let saved_pos = self.pos;
             self.advance(); // consume '<'
             if let Ok(type_args) = self.parse_generic_type_args() {
@@ -1456,6 +1458,7 @@ impl<'a> Parser<'a> {
                                     length: token.length,
                                     expansion: self.expansion(),
                                 },
+                                locals: self.locals_in_scope(),
                             })
                         } else {
                             let span = crate::syntax::Span {
