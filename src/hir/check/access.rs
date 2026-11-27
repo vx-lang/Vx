@@ -632,8 +632,9 @@ impl<'a> TypeChecker<'a> {
                             && self.borrowed_name != Some(span);
                         // A move of a placed tensor copies its pointer and its shape, and a
                         // host drop frees it through the runtime. Neither reads an element.
-                        let handle_only =
-                            ty.placement().is_some() && self.whole_value_name == Some(span);
+                        let handle_only = (ty.placement().is_some()
+                            && self.whole_value_name == Some(span))
+                            || self.placed_field_root == Some(span);
                         let is_valid = matches!(&ty, Type::Borrow { inner, .. } if inner.placement().is_some())
                             || by_value
                             || handle_only
@@ -964,6 +965,43 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_memberaccess_expr(&mut self, expr: &mut Expr) -> Type {
+        // A read of `h.t` reads the handle of the tensor. A write, `h.t = x`, changes `h`. An
+        // index, `h.t[i] = x`, marked `h` before it came here.
+        let root = (!self.checking_assign_lhs)
+            .then(|| self.root_of_a_placed_field(expr))
+            .flatten();
+        let old_root = self.placed_field_root;
+        self.placed_field_root = root.or(old_root);
+        let ty = self.check_memberaccess_expr_inner(expr);
+        self.placed_field_root = old_root;
+        ty
+    }
+
+    /// The variable that `place` starts from, when `place` is a field that holds a placed
+    /// tensor, such as `h` in `h.t` or in `h.layer.t`. A device region can use such a field of
+    /// a host struct: the launch reads the handle of the tensor on the host and passes it.
+    fn root_of_a_placed_field(&self, place: &Expr) -> Option<crate::syntax::Span> {
+        // Host code sees the struct, so only a device region needs the answer.
+        if matches!(self.active_topology, Topology::CPU) {
+            return None;
+        }
+        let Expr::MemberAccess(field) = place else {
+            return None;
+        };
+        let mut root = &*field.base;
+        while let Expr::MemberAccess(m) = root {
+            root = &m.base;
+        }
+        let Expr::Identifier(id) = root else {
+            return None;
+        };
+        self.check_expr_type_probe(place)
+            .placement()
+            .is_some()
+            .then_some(id.span)
+    }
+
+    fn check_memberaccess_expr_inner(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::MemberAccess(MemberAccessExpr {
                 base: obj,
@@ -1717,7 +1755,11 @@ impl<'a> TypeChecker<'a> {
                 if place.is_some() {
                     self.borrow.skip_borrow_check = true;
                 }
+                // An element of `h.t` is in the memory of the tensor, also in a write.
+                let old_root = self.placed_field_root;
+                self.placed_field_root = self.root_of_a_placed_field(obj).or(old_root);
                 let obj_ty = self.check_expr_type_flag(obj, false);
+                self.placed_field_root = old_root;
                 self.borrow.skip_borrow_check = old_skip;
                 self.indexed_name = None;
                 if let Some((name, mut path)) = place {

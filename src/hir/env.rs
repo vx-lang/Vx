@@ -757,6 +757,9 @@ pub struct TypeChecker<'a> {
     /// The identifier being checked is the base of a field access, `p` in `p.b`: a move of
     /// another field, `p.a`, does not stop it.
     pub(crate) checking_field_base: bool,
+    /// The identifier that a field access starts from, `h` in `h.t`, while it is checked, when
+    /// the field is a placed tensor. Such a use reads only the handle of the tensor.
+    pub(crate) placed_field_root: Option<crate::syntax::Span>,
     pub(crate) next_id: u32,
     pub current_return_type: Option<Type>,
     /// Name of the function being checked, so a record produced deep inside a body can say
@@ -896,6 +899,7 @@ impl<'a> TypeChecker<'a> {
             borrowed_name: None,
             whole_value_name: None,
             checking_field_base: false,
+            placed_field_root: None,
             next_id: 1,
             current_return_type: None,
             current_function: String::new(),

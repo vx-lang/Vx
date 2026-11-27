@@ -1,0 +1,47 @@
+//===- gpu_region_uses_the_host_parts_of_a_struct.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A struct in host memory holds a tensor that is in the memory of the GPU. A GPU region can use
+// the elements of the tensor, because the launch passes the tensor to the kernel. The struct
+// itself stays in host memory, which the GPU of this machine cannot see. So a region cannot
+// read a number field, and cannot give the tensor field a new value.
+
+struct Holder {
+  n : i32,
+  t : Tensor<f32, [?], Memory::HBM>
+}
+
+// CHECK: Error[E6003] at {{.*}}gpu_region_uses_the_host_parts_of_a_struct.vx:[[@LINE+3]]:14: 'h' lives in CPU_DRAM but Device sees only
+fn reads_a_number_field(h : &Holder, out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    out[0] = h.n as f32;
+  }
+  return;
+}
+
+// CHECK: Error[E6003] at {{.*}}gpu_region_uses_the_host_parts_of_a_struct.vx:[[@LINE+3]]:5: 'h' lives in CPU_DRAM but Device sees only
+fn replaces_the_tensor_field(h : &mut Holder) -> void {
+  spawn on(Topology::Device) {
+    h.t = unsafe { Tensor<f32, [?], Memory::HBM>::uninit([4]) };
+  }
+  return;
+}
+
+fn writes_an_element(h : &mut Holder) -> void {
+  spawn on(Topology::Device) {
+    h.t[0] = 1.0;
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 2 error(s) emitted
