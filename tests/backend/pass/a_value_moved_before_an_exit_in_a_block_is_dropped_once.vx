@@ -1,0 +1,234 @@
+//===- a_value_moved_before_an_exit_in_a_block_is_dropped_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Inside an `if` or a `match` arm, a statement moves a value and then returns early, with `?`
+// or with `return`. The value belongs to what the function returns, so the function must not
+// drop it too. A `Noisy` prints a line when it is dropped, so each drop shows in the output.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// CHECK: {{^}}a ? in an if block{{$}}
+// CHECK-NEXT: {{^}}err 1{{$}}
+// CHECK-NEXT: {{^}}drop 1{{$}}
+// CHECK-NEXT: {{^}}a ? in a match arm{{$}}
+// CHECK-NEXT: {{^}}err 2{{$}}
+// CHECK-NEXT: {{^}}drop 2{{$}}
+//
+// The function drops the field `b` that it keeps, and not the field `a` that it returns.
+// CHECK-NEXT: {{^}}a ? on a field{{$}}
+// CHECK-NEXT: {{^}}drop 7{{$}}
+// CHECK-NEXT: {{^}}err 6{{$}}
+// CHECK-NEXT: {{^}}drop 6{{$}}
+// CHECK-NEXT: {{^}}a return of a field{{$}}
+// CHECK-NEXT: {{^}}drop 9{{$}}
+// CHECK-NEXT: {{^}}err 8{{$}}
+// CHECK-NEXT: {{^}}drop 8{{$}}
+//
+// The `?` returns before the call that would take `n`, so the function drops `n`.
+// CHECK-NEXT: {{^}}a ? before the move{{$}}
+// CHECK-NEXT: {{^}}drop 3{{$}}
+// CHECK-NEXT: {{^}}err 4{{$}}
+// CHECK-NEXT: {{^}}drop 4{{$}}
+//
+// The `Vec` that the error holds still has its byte.
+// CHECK-NEXT: {{^}}a ? on a Vec{{$}}
+// CHECK-NEXT: {{^}}err 65{{$}}
+//
+// `count` takes `n` and drops it, then the loop body returns. `n` is not dropped again.
+// CHECK-NEXT: {{^}}a return in a loop{{$}}
+// CHECK-NEXT: {{^}}drop 15{{$}}
+// CHECK-NEXT: {{^}}err 16{{$}}
+// CHECK-NEXT: {{^}}drop 16{{$}}
+//
+// The arm that takes `n` does not run, so the arm that returns drops `n`.
+// CHECK-NEXT: {{^}}a return in the other arm{{$}}
+// CHECK-NEXT: {{^}}drop 12{{$}}
+// CHECK-NEXT: {{^}}err 13{{$}}
+// CHECK-NEXT: {{^}}drop 13{{$}}
+// CHECK-NEXT: {{^}}end{{$}}
+
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("drop {}", self.id);
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+fn give_back(n : Noisy) -> Result<bool, Noisy> {
+  return Result<bool, Noisy>::Err(n);
+}
+
+fn fails() -> Result<i32, Noisy> {
+  return Result<i32, Noisy>::Err(Noisy {
+    id : 4
+  });
+}
+
+fn take_both(k : i32, _n : Noisy) -> i32 {
+  return k;
+}
+
+fn in_an_if_block(go : bool) -> Result<i32, Noisy> {
+  let n = Noisy {
+    id : 1
+  };
+  if go {
+    let _x = give_back(n)?;
+  }
+  return Result<i32, Noisy>::Ok(0);
+}
+
+fn in_a_match_arm(k : i32) -> Result<i32, Noisy> {
+  let n = Noisy {
+    id : 2
+  };
+  match k {
+    2 => {
+      let _x = give_back(n)?;
+    }
+    _ => {}
+  }
+  return Result<i32, Noisy>::Ok(0);
+}
+
+fn on_a_field(go : bool) -> Result<i32, Noisy> {
+  let p = Pair {
+    a : Noisy {
+      id : 6
+    },
+    b : Noisy {
+      id : 7
+    }
+  };
+  if go {
+    let _x = give_back(p.a)?;
+  }
+  return Result<i32, Noisy>::Ok(0);
+}
+
+fn return_a_field(go : bool) -> Result<i32, Noisy> {
+  let p = Pair {
+    a : Noisy {
+      id : 8
+    },
+    b : Noisy {
+      id : 9
+    }
+  };
+  if go {
+    return Result<i32, Noisy>::Err(p.a);
+  }
+  return Result<i32, Noisy>::Ok(0);
+}
+
+fn before_the_move(go : bool) -> Result<i32, Noisy> {
+  let n = Noisy {
+    id : 3
+  };
+  if go {
+    let _k = take_both(fails()?, n);
+  }
+  return Result<i32, Noisy>::Ok(0);
+}
+
+fn give_back_bytes(bytes : Vec<u8>) -> Result<bool, Vec<u8>> {
+  return Result<bool, Vec<u8>>::Err(bytes);
+}
+
+fn on_a_vec(go : bool) -> Result<i32, Vec<u8>> {
+  let mut bytes = Vec<u8>::new();
+  bytes.push(65u8);
+  if go {
+    let _x = give_back_bytes(bytes)?;
+  }
+  return Result<i32, Vec<u8>>::Ok(0);
+}
+
+fn count(_n : Noisy) -> i32 {
+  return 1;
+}
+
+fn in_a_loop(go : bool) -> Result<i32, Noisy> {
+  let n = Noisy {
+    id : 15
+  };
+  if go {
+    for _i in 0..count(n) {
+      return Result<i32, Noisy>::Err(Noisy {
+        id : 16
+      });
+    }
+  }
+  return Result<i32, Noisy>::Ok(0);
+}
+
+fn in_the_other_arm(k : i32) -> Result<i32, Noisy> {
+  let n = Noisy {
+    id : 12
+  };
+  match k {
+    1 => {
+      let _k = take_both(0, n);
+    }
+    _ => {
+      return Result<i32, Noisy>::Err(Noisy {
+        id : 13
+      });
+    }
+  }
+  return Result<i32, Noisy>::Ok(0);
+}
+
+fn report(r : Result<i32, Noisy>) -> void {
+  match r {
+    Result<i32, Noisy>::Ok(v) => {
+      println!("ok {}", v);
+    }
+    Result<i32, Noisy>::Err(e) => {
+      println!("err {}", e.id);
+    }
+  }
+}
+
+fn main() -> i32 {
+  println!("a ? in an if block");
+  report(in_an_if_block(true));
+  println!("a ? in a match arm");
+  report(in_a_match_arm(2));
+  println!("a ? on a field");
+  report(on_a_field(true));
+  println!("a return of a field");
+  report(return_a_field(true));
+  println!("a ? before the move");
+  report(before_the_move(true));
+  println!("a ? on a Vec");
+  match on_a_vec(true) {
+    Result<i32, Vec<u8>>::Ok(v) => {
+      println!("ok {}", v);
+    }
+    Result<i32, Vec<u8>>::Err(e) => {
+      println!("err {}", e[0]);
+    }
+  }
+  println!("a return in a loop");
+  report(in_a_loop(true));
+  println!("a return in the other arm");
+  report(in_the_other_arm(2));
+  println!("end");
+  return 0;
+}
