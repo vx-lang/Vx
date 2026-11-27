@@ -119,6 +119,11 @@ pub struct Parser<'a> {
     /// Set while the parser reads the type of a parameter of a function with a body: only there
     /// can `?n` give a run-time extent a name.
     extent_names_allowed: bool,
+    /// For each token, the number of `{` around it. A `}` has the depth after it.
+    brace_depth: Vec<u32>,
+    /// The variables and parameters that the parser has read: the name, the token where its
+    /// scope starts, and the depth of that scope. `a < b` after such a name is a comparison.
+    locals: Vec<(String, usize, u32)>,
 }
 
 impl<'a> Parser<'a> {
@@ -149,7 +154,53 @@ impl<'a> Parser<'a> {
             impl_self: None,
             block_follows: None,
             extent_names_allowed: false,
+            brace_depth: brace_depths(tokens),
+            locals: Vec::new(),
         }
+    }
+
+    /// `name` is a variable whose scope starts at the token `at` and holds the code `inner`
+    /// levels of braces below that token: 0 for a `let`, 1 for a parameter of the function or
+    /// a `for` loop variable, whose scope is the body that follows.
+    pub(crate) fn note_local(&mut self, name: &str, at: usize, inner: u32) {
+        let depth = self.brace_depth.get(at).copied().unwrap_or(0) + inner;
+        self.locals.push((name.to_string(), at, depth));
+    }
+
+    /// The names of the variables and parameters in scope at the current token.
+    pub(crate) fn locals_in_scope(&self) -> Vec<crate::symbol::Symbol> {
+        let mut names: Vec<crate::symbol::Symbol> = Vec::new();
+        for (name, _, _) in &self.locals {
+            let symbol = crate::symbol::Symbol::from(name.as_str());
+            if !names.contains(&symbol) && self.is_local_in_scope(name) {
+                names.push(symbol);
+            }
+        }
+        names
+    }
+
+    /// `names` are in scope at every token: the parser reads the tokens of a macro call that
+    /// these variables were in scope at.
+    pub(crate) fn seed_locals(&mut self, names: &[crate::symbol::Symbol]) {
+        for name in names {
+            self.locals.push((name.to_string(), 0, 0));
+        }
+    }
+
+    /// Whether `name` is a variable or a parameter in scope at the current token. The scope of
+    /// one starts at its first token at its depth, and ends at the first token above that depth.
+    pub(crate) fn is_local_in_scope(&self, name: &str) -> bool {
+        let here = self.pos.min(self.brace_depth.len().saturating_sub(1));
+        self.locals.iter().rev().any(|(local, at, depth)| {
+            if local != name || *at > here {
+                return false;
+            }
+            let after = &self.brace_depth[*at..=here];
+            match after.iter().position(|d| d >= depth) {
+                Some(start) => after[start..].iter().all(|d| d >= depth),
+                None => false,
+            }
+        })
     }
 
     /// Parse an expression that a block follows, such as the condition of an `if` or a `while`.
@@ -342,6 +393,26 @@ impl<'a> Parser<'a> {
             }
         }
     }
+}
+
+/// For each token, the number of `{` around it. A `}` has the depth after it, so it is outside
+/// the block that it closes.
+fn brace_depths(tokens: &[Token]) -> Vec<u32> {
+    let mut depth = 0u32;
+    tokens
+        .iter()
+        .map(|t| match t.kind {
+            TokenType::RightBrace => {
+                depth = depth.saturating_sub(1);
+                depth
+            }
+            TokenType::LeftBrace => {
+                depth += 1;
+                depth - 1
+            }
+            _ => depth,
+        })
+        .collect()
 }
 
 #[cfg(test)]

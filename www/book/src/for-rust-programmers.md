@@ -37,7 +37,9 @@ lists what to change. Each item shows the Rust form and the Vx form.
 
 ## Types and values
 
-- **No turbofish.** `Vec::<i32>::new()` is `Vec<i32>::new()`.
+- **No turbofish.** `Vec::<i32>::new()` is `Vec<i32>::new()`. After the name of a variable or a
+  parameter, `<` is a comparison, so `f(a < b, c > (d))` passes two `bool`s. After any other name,
+  `<` starts the type arguments.
 - **An enum variant is written with its type.** `Some(3)` is `Option<i64>::Some(3)`, and `None` is
   `Option<i64>::None()`. `Option` comes from `import core::option;`.
 - **An integer variable with no written type is `i32`.** Rust reads `let mut total = 0;` as an

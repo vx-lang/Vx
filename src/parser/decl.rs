@@ -106,7 +106,13 @@ impl<'a> Parser<'a> {
                 let is_mut = self.match_token(&TokenType::Mut);
                 // Keep the name token so a missing type on `self` can point at the name.
                 let name_token = self.peek().clone();
+                let at = self.pos;
                 let name = self.expect_identifier("Expected parameter name")?;
+                // A parameter of a function with a body is in scope in the body, one level of
+                // braces down.
+                if extent_names {
+                    self.note_local(&name, at, 1);
+                }
                 if is_mut {
                     self.mut_params.push(name.clone().into());
                 }
@@ -1889,12 +1895,14 @@ impl<'a> Parser<'a> {
             block_tree = Some(self.parse_token_tree()?);
         }
         let has_semi = self.match_token(&TokenType::Semicolon);
+        // A macro call outside a function has no variables in scope.
         Ok(crate::syntax::stmt::MacroCallStmt {
             name: name.into(),
             token_tree,
             block_tree,
             has_semi,
             span,
+            locals: Vec::new(),
         })
     }
 

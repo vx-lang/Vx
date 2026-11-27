@@ -1181,6 +1181,9 @@ pub struct MacroCallExpr {
     pub token_tree: TokenTree,
     pub block_tree: Option<TokenTree>,
     pub span: Span,
+    /// The variables and parameters in scope at the call. The expansion parses the tokens of
+    /// the call again, and `a < b` after one of these names is a comparison there too.
+    pub locals: Vec<Symbol>,
 }
 impl MacroCallExpr {
     pub fn new(
@@ -1194,6 +1197,7 @@ impl MacroCallExpr {
             token_tree,
             block_tree,
             span,
+            locals: Vec::new(),
         }
     }
 }
@@ -2110,6 +2114,7 @@ impl Expr {
                 token_tree: e.token_tree.clone(),
                 block_tree: e.block_tree.clone(),
                 span: e.span,
+                locals: e.locals.clone(),
             }),
             Expr::Print(e) => Expr::Print(PrintExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
