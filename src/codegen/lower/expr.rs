@@ -5425,7 +5425,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
 
 /// The type of an arm whose value is a name its pattern binds, `Ok(v) => { v }`: the variant's
 /// payload type, with the type arguments that the pattern's enum names.
-fn payload_binding_type(
+pub(crate) fn payload_binding_type(
     gen: &MeliorGenerator<'_>,
     arm: &syntax::MatchArm,
     value: &Expr,

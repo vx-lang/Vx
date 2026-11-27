@@ -3064,6 +3064,24 @@ impl<'c> MeliorGenerator<'c> {
                 syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
                 _ => None,
             },
+            // A `match` that gives a value has the type of an arm's last expression. That is often
+            // a name that the arm's pattern binds, as `x` in `Ok(x) => { x }`.
+            Expr::Match(m) => {
+                let scrutinee = self.infer_ast_type(&m.expr);
+                m.arms.iter().find_map(|arm| match arm.body.last()? {
+                    syntax::Statement::ExprStmt(e) if !e.has_semi => {
+                        crate::codegen::lower::expr::payload_binding_type(
+                            self,
+                            arm,
+                            &e.expr,
+                            scrutinee.as_ref(),
+                            m.binds_references,
+                        )
+                        .or_else(|| self.infer_ast_type(&e.expr))
+                    }
+                    _ => None,
+                })
+            }
             // A number has the type the checker gave it.
             Expr::Number(n) => n.ty.clone().map(syntax::Type::Scalar),
             // `let p = &mut x` binds a reference. Recording that is what tells a later read of
