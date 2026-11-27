@@ -751,7 +751,11 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if !if_expr.is_comptime && then_ty != else_ty {
+                // Each branch type must fit where the other one is expected. One enum has two
+                // spellings: a call gives `Struct("Shape")`, and a variant gives `Enum("Shape")`.
+                let one_type = self.is_assignable(&then_ty, &else_ty)
+                    && self.is_assignable(&else_ty, &then_ty);
+                if !if_expr.is_comptime && !one_type {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3007,
                         format!(
