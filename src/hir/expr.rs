@@ -163,6 +163,7 @@ impl<'a> TypeChecker<'a> {
         let mut terminated_at = None;
         let mut type_at_end = None;
         let mut state_at_end = None;
+        let mut never_statement = false;
         let last = stmts.len().saturating_sub(1);
         // An `if` or `match` arm is a block of its own: what it declares is dropped inside it,
         // and a borrow made in it ends at its last use there.
@@ -217,6 +218,7 @@ impl<'a> TypeChecker<'a> {
                 let prev_statement_span = self.errors.enter_statement(*stmt_span);
                 let ty = self.check_expr_type_flag(expr, consume);
                 self.errors.at = prev_statement_span;
+                never_statement |= crate::syntax::is_never_ty(&ty);
                 if !*has_semi {
                     // A last expression that never finishes, `todo()`, gives the block the type
                     // `!` but no value: it is a statement, after which nothing runs.
@@ -275,6 +277,7 @@ impl<'a> TypeChecker<'a> {
         }
         self.drops_exit_block(stmts, terminated_at, !block_unused && !has_value);
         self.borrow.exit_block();
+        self.last_block_has_a_never_statement = never_statement;
         ret_ty
     }
 
