@@ -1,0 +1,20 @@
+//===- option_some_without_its_import.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Option` is in `core::option`. With no import of it, `Option::Some(..)` and `Some(..)` are
+// errors that name the import.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn main() -> i32 {
+  // CHECK: Error[E2003] at {{.*}}.vx:[[@LINE+1]]:12: Unknown enum Option. 'Option' is in 'core::option'. Add `import core::option;`.
+  let _a = Option::Some(3i64);
+  // CHECK: Error[E2003] at {{.*}}.vx:[[@LINE+1]]:12: Unknown enum Option. 'Option' is in 'core::option'. Add `import core::option;`.
+  let _b = Some(3i64);
+  return 0;
+}
+// CHECK: 2 error(s) emitted
