@@ -17,9 +17,7 @@ use std::os::raw::{c_char, c_int};
 #[allow(unused_imports, clippy::single_component_path_imports)]
 use melior;
 
-#[allow(clippy::duplicated_attributes)]
 #[link(name = "vx_dialect", kind = "static")]
-#[link(name = "plugin_loader", kind = "static")]
 extern "C" {
     fn run_vx_opt(argc: c_int, argv: *const *const c_char, version: *const c_char) -> c_int;
 }

@@ -204,6 +204,8 @@ jobs:
 
       # The pipeline's claims -- same bytes at any thread count, isolated compilations,
       # parity with the AST oracle -- named so a gate silenced with #[ignore] fails the build.
+      # `--workspace` gives the dependencies the same features as in "Run tests". Without it,
+      # cargo builds the compiler again in release mode.
       - name: Parallel pipeline gates
         run: |
           set -euo pipefail
@@ -212,7 +214,7 @@ jobs:
             read -ra target_args <<< "$1"
             local name="$2"
             echo "== $name"
-            if ! out=$(cargo test --release "${target_args[@]}" -- --exact "$name" --nocapture 2>&1); then
+            if ! out=$(cargo test --release --workspace "${target_args[@]}" -- --exact "$name" --nocapture 2>&1); then
               echo "$out" 
               echo "GATE FAILED: $name"
               exit 1
@@ -251,7 +253,7 @@ jobs:
         run: |
           if [ $((GITHUB_RUN_NUMBER % 10)) -eq 0 ]; then
             echo "Running stress tests for run $GITHUB_RUN_NUMBER"
-            cargo test --release --test stress_test -- --ignored
+            cargo test --release --workspace --test stress_test -- --ignored
           else
             echo "Skipping stress tests. They run every 10th commit (current run: $GITHUB_RUN_NUMBER)."
           fi
@@ -263,7 +265,7 @@ jobs:
           seeds=3
           if [ $((GITHUB_RUN_NUMBER % 10)) -eq 0 ]; then seeds=20; fi
           echo "Running the tests of tasks with $seeds seeds"
-          out=$(VX_TEST_TASK_SEEDS=$seeds cargo test --release --test integration_test -- \
+          out=$(VX_TEST_TASK_SEEDS=$seeds cargo test --release --workspace --test integration_test -- \
             --ignored --exact integration_test::compile_test::test_tasks_under_many_schedules 2>&1) \
             || { echo "$out"; exit 1; }
           grep -q "1 passed" <<<"$out" || { echo "$out"; echo "The test did not run"; exit 1; }

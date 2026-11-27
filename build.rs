@@ -668,13 +668,7 @@ fn main() {
         }
     }
 
-    // --- Compile MLIR Pass Plugin Loader Wrapper ---
-    println!("cargo:rerun-if-changed=src/plugin_loader.cpp");
-
     let out_dir = env::var("OUT_DIR").unwrap();
-    let plugin_obj_path = PathBuf::from(&out_dir).join("plugin_loader.o");
-    let plugin_lib_path = PathBuf::from(&out_dir).join("libplugin_loader.a");
-
     let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
 
     // Get LLVM CXXFLAGS via llvm-config
@@ -687,41 +681,11 @@ fn main() {
         .to_string();
     let llvm_cxxflags_vec: Vec<&str> = llvm_cxxflags.split_whitespace().collect();
 
-    let mut plugin_cmd = Command::new(&cxx);
-    plugin_cmd.args([
-        "-c",
-        "src/plugin_loader.cpp",
-        "-o",
-        plugin_obj_path.to_str().unwrap(),
-        "-std=c++17",
-    ]);
-    plugin_cmd.args(&llvm_cxxflags_vec);
-
-    let status = plugin_cmd
-        .status()
-        .unwrap_or_else(|_| panic!("Failed to execute {} for plugin_loader", cxx));
-    assert!(
-        status.success(),
-        "clang++ compilation failed for plugin_loader"
-    );
-
     let ar = env::var("AR").unwrap_or_else(|_| "ar".to_string());
     let arflags_env = env::var("ARFLAGS").unwrap_or_else(|_| "rcs".to_string());
     let arflags: Vec<&str> = arflags_env.split_whitespace().collect();
 
-    let mut ar_cmd = Command::new(&ar);
-    ar_cmd.args(&arflags);
-    ar_cmd.args([
-        plugin_lib_path.to_str().unwrap(),
-        plugin_obj_path.to_str().unwrap(),
-    ]);
-    let status = ar_cmd
-        .status()
-        .unwrap_or_else(|_| panic!("Failed to archive libplugin_loader.a"));
-    assert!(status.success(), "ar failed for libplugin_loader");
-
     println!("cargo:rustc-link-search=native={}", out_dir);
-    println!("cargo:rustc-link-lib=static=plugin_loader");
 
     // --- Compile Vx MLIR Dialect ---
     println!("cargo:rerun-if-changed=include/VxDialect.td");

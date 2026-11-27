@@ -160,7 +160,6 @@ pub fn mark_libm_for_enzyme<'c>(context: &'c Context, module: &mut Module<'c>) {
 }
 
 extern "C" {
-    fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;
     fn registerVxDialect(ctx: mlir_sys::MlirContext);
     fn registerVxPassesC();
     fn mlirEnableOptimizationRemarks(ctx: mlir_sys::MlirContext);
@@ -198,7 +197,7 @@ fn register_vx_passes() {
     }
 }
 
-pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Result<bool, String> {
+pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Result<(), String> {
     // Register the custom `vx` dialect before loading dialects
     register_vx_dialect(context);
 
@@ -212,28 +211,6 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // runtime concern. See docs/lang/abi.md and runtime/npu_dispatch.mm.
     pass_manager.enable_verifier(true);
 
-    // Check if an external plugin is specified via ENZYME_LIB (for MLIR Enzyme)
-    let mut has_enzyme = false;
-    if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
-        match std::ffi::CString::new(enzyme_lib.as_str()) {
-            Ok(c_path) => {
-                let loaded = unsafe { loadMlirPassPlugin(c_path.as_ptr()) };
-                if loaded {
-                    println!("[CodeGen] Loaded MLIR Pass Plugin from {}", enzyme_lib);
-                    has_enzyme = true;
-                } else {
-                    eprintln!(
-                        "[CodeGen] Failed to load MLIR Pass Plugin at {}",
-                        enzyme_lib
-                    );
-                }
-            }
-            Err(_) => {
-                eprintln!("[CodeGen] Invalid ENZYME_LIB path (contains null byte)");
-            }
-        }
-    }
-
     // Run unified pipeline. Custom Vx lowering passes run first, followed by standard lowering.
     // `vx-expand-narrow-floats` and `arith-expand` turn conversions to and from fp8, fp4 and bf16
     // into integer operations, bf16 only after `vx-to-llvm` compiles the NVIDIA GPU kernels; see
@@ -241,9 +218,6 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // first, before a pass folds a conversion of a constant with MLIR's own rounding.
     let mut pipeline =
         "builtin.module(vx-expand-narrow-floats,vx-count-callbacks,vx-libc-externs-to-llvm,convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-expand-narrow-floats,arith-expand{include-f8e8m0=true},vx-to-llvm,arith-expand{include-bf16=true},".to_string();
-    if has_enzyme {
-        pipeline.push_str("enzyme,");
-    }
     // `vx-libc-externs-to-llvm` makes a program's `malloc` and `free` the `llvm.func` that
     // the task lowering and finalize-memref-to-llvm reuse, so neither declares a second one.
     // symbol-dce drops the declarations that nothing calls.
@@ -261,5 +235,5 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
         .run(module)
         .map_err(|e| format!("Failed to lower MLIR module to LLVM: {}", e))?;
 
-    Ok(has_enzyme)
+    Ok(())
 }

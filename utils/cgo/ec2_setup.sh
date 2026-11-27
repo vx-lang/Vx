@@ -75,7 +75,7 @@ echo "== LLVM/MLIR 22 =="
 # to find out.
 # `clang-22` is the compiler *driver*, and it is separate from `libclang-22-dev`,
 # which is only the library. `build.rs` shells out to `clang++` to compile
-# plugin_loader.cpp, so without the driver the build dies in the build script
+# the Vx MLIR dialect, so without the driver the build dies in the build script
 # with "Failed to execute clang++" -- after cargo has already compiled the
 # dependency tree, which is a slow way to learn about a missing package.
 LLVM_PKGS="llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev clang-22"
