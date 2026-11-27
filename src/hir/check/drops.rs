@@ -38,7 +38,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Left in a block's uses by a `Statement::Drop`, so a body already rewritten is known: a
 /// generic instantiation can be checked again from a copy of it.
@@ -221,14 +221,34 @@ struct TempScan {
     last_temp: Option<usize>,
     /// Moving out: every call up to this one.
     upto: Option<usize>,
-    /// Each call moved out: its local, type, value and drops.
-    found: Vec<(String, Type, Expr, Vec<GluePart>)>,
+    /// Each call moved out.
+    found: Vec<Temp>,
     /// A `&&` or `||` became an `if`, so that a side drops its temporaries when it ends.
     short_circuit_rewritten: bool,
+    /// The mark that each exit inside the statement left for its block, if the statement has
+    /// an exit: see [`exit_mark`].
+    mark: Option<String>,
+    /// The next expression is an operand that a later operand can leave before the call runs.
+    held_next: bool,
+    /// The temporaries that an exit at this point of the statement leaves, as positions in
+    /// `found`.
+    live: Vec<usize>,
+}
+
+/// A call that a statement makes and nothing names, moved out into a `let` before it.
+struct Temp {
+    name: String,
+    ty: Type,
+    value: Expr,
+    /// Its drops. Empty when the statement moves it.
+    glue: Vec<GluePart>,
+    /// An operand that its call takes: the call drops it, and an exit before the call runs
+    /// drops it there.
+    held: bool,
 }
 
 impl TempScan {
-    fn new(upto: Option<usize>) -> Self {
+    fn new(upto: Option<usize>, mark: Option<String>) -> Self {
         Self {
             calls: 0,
             blocked: false,
@@ -236,7 +256,39 @@ impl TempScan {
             upto,
             found: Vec::new(),
             short_circuit_rewritten: false,
+            mark,
+            held_next: false,
+            live: Vec::new(),
         }
+    }
+
+    /// Moving out, an exit inside `e` leaves the temporaries alive now: their drops go at its
+    /// mark, newest first.
+    fn drop_live_at_exits_in(&self, e: &mut Expr) {
+        if let Some((mark, drops)) = self.live_drops() {
+            blocks_in_expr(e, &mut |stmts| drops_before_marks(stmts, mark, &drops));
+        }
+    }
+
+    /// [`Self::drop_live_at_exits_in`] for the statements of a loop body.
+    fn drop_live_at_exits_in_list(&self, stmts: &mut Vec<Statement>) {
+        if let Some((mark, drops)) = self.live_drops() {
+            blocks_in_list(stmts, &mut |s| drops_before_marks(s, mark, &drops));
+        }
+    }
+
+    /// Moving out, in a statement with an exit: its mark, and the drops of the temporaries
+    /// alive now, newest first.
+    fn live_drops(&self) -> Option<(&str, Vec<Statement>)> {
+        let mark = self.mark.as_deref()?;
+        self.upto?;
+        let drops: Vec<Statement> = self
+            .live
+            .iter()
+            .rev()
+            .flat_map(|&i| glue_drops(&self.found[i].name, &self.found[i].glue, None))
+            .collect();
+        (!drops.is_empty()).then_some((mark, drops))
     }
 }
 
@@ -306,6 +358,11 @@ enum FrameKind {
         /// What the statement around the block moved before the block started. Each statement
         /// of the block starts with it, and the statement around gets it back at the block end.
         moved_before: Box<MovedNow>,
+        /// Names the marks of [`exit_mark`] for this block.
+        id: usize,
+        /// The statements of the block with an exit inside them, which left a mark. The block's
+        /// separate value is the position after the last statement.
+        exits_in: BTreeSet<usize>,
     },
 }
 
@@ -499,6 +556,122 @@ fn lifetime_end(name: &str) -> Statement {
         span: Span::default(),
         placement: None,
     })
+}
+
+/// The name of the marks that exits leave for the block frame `frame`.
+fn exit_mark_name(frame: usize) -> String {
+    format!("$exit{frame}")
+}
+
+/// An exit drops the owners of the blocks inside the statement that it leaves, and then the
+/// owners of the block of that statement. The temporaries of the statement are dropped
+/// between the two. They get their names only when the block ends, so the exit leaves this
+/// mark there for them. It frees nothing, and the block removes it when it ends.
+fn exit_mark(frame: usize) -> Statement {
+    lifetime_end(&exit_mark_name(frame))
+}
+
+fn is_exit_mark(s: &Statement, mark: &str) -> bool {
+    matches!(s, Statement::Drop(d) if d.ends_lifetime && d.name.as_ref() == mark)
+}
+
+/// Puts `drops` before each mark `mark` in `stmts`. Before a `return` with a value, they
+/// wait for the value, as the other drops of the `return` do.
+fn drops_before_marks(stmts: &mut Vec<Statement>, mark: &str, drops: &[Statement]) {
+    let mut i = 0;
+    while i < stmts.len() {
+        if is_exit_mark(&stmts[i], mark) {
+            let exit = stmts[i..].iter().find(|s| {
+                matches!(
+                    s,
+                    Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
+                )
+            });
+            let value = matches!(
+                exit,
+                Some(Statement::Return(ReturnStmt { expr: Some(_), .. }))
+            );
+            let at = drops
+                .iter()
+                .cloned()
+                .map(|d| if value { after_value(d) } else { d });
+            stmts.splice(i..i, at);
+            // To the mark again: an outer statement puts its drops after these.
+            i += drops.len();
+        }
+        i += 1;
+    }
+}
+
+/// Whether an exit inside `e` left the mark `mark`.
+fn has_exit_mark(e: &mut Expr, mark: &str) -> bool {
+    let mut found = false;
+    blocks_in_expr(e, &mut |stmts| {
+        found |= stmts.iter().any(|s| is_exit_mark(s, mark))
+    });
+    found
+}
+
+/// The statement lists that `e` holds itself: the branches of an `if`, the arms of a `match`,
+/// and the statements of a block.
+fn block_lists(e: &mut Expr) -> Vec<&mut Vec<Statement>> {
+    match e {
+        Expr::UnsafeBlock(b) => vec![&mut b.stmts],
+        Expr::ComptimeBlock(b) => vec![&mut b.stmts],
+        Expr::SpawnOn(b) => vec![&mut b.stmts],
+        Expr::TaskBlock(b) => vec![&mut b.stmts],
+        Expr::If(i) => std::iter::once(&mut i.then_block)
+            .chain(i.else_block.as_mut())
+            .collect(),
+        Expr::Match(m) => m.arms.iter_mut().map(|a| &mut a.body).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Calls `f` on `stmts` and on the bodies of the loops in it, but not on the blocks of its
+/// expressions.
+fn loop_bodies(stmts: &mut Vec<Statement>, f: &mut dyn FnMut(&mut Vec<Statement>)) {
+    f(stmts);
+    for s in stmts.iter_mut() {
+        match s {
+            Statement::ForLoop(l) => loop_bodies(&mut l.body, f),
+            Statement::Loop(l) => loop_bodies(&mut l.body, f),
+            _ => {}
+        }
+    }
+}
+
+/// Calls `f` on each statement list inside `e`, once.
+fn blocks_in_expr(e: &mut Expr, f: &mut dyn FnMut(&mut Vec<Statement>)) {
+    crate::syntax::visit_expr_mut(e, &mut |x| {
+        for stmts in block_lists(x) {
+            loop_bodies(stmts, f);
+        }
+    });
+}
+
+/// Calls `f` on `stmts` and on each statement list inside it, once.
+fn blocks_in_list(stmts: &mut Vec<Statement>, f: &mut dyn FnMut(&mut Vec<Statement>)) {
+    loop_bodies(stmts, f);
+    crate::syntax::visit_exprs_mut(stmts, &mut |x| {
+        for stmts in block_lists(x) {
+            loop_bodies(stmts, f);
+        }
+    });
+}
+
+/// Calls `f` on each statement list inside `stmt`, once.
+fn blocks_in_stmt(stmt: &mut Statement, f: &mut dyn FnMut(&mut Vec<Statement>)) {
+    match stmt {
+        Statement::ForLoop(l) => loop_bodies(&mut l.body, f),
+        Statement::Loop(l) => loop_bodies(&mut l.body, f),
+        _ => {}
+    }
+    crate::syntax::visit_exprs_mut(std::slice::from_mut(stmt), &mut |x| {
+        for stmts in block_lists(x) {
+            loop_bodies(stmts, f);
+        }
+    });
 }
 
 /// `*call() = ..` becomes `*reference = ..`, and `(*call()).f = ..` becomes `reference.f = ..`.
@@ -1394,7 +1567,11 @@ impl<'a> TypeChecker<'a> {
             Some(FrameKind::Block { .. } | FrameKind::Loop) => Box::new(d.moved_now.clone()),
             _ => Box::default(),
         };
+        let id = d.counter;
+        d.counter += 1;
         d.frames.push(FrameKind::Block {
+            id,
+            exits_in: BTreeSet::new(),
             late_borrows: Vec::new(),
             owners,
             uses: BlockUseList::new(body, value),
@@ -2454,11 +2631,14 @@ impl<'a> TypeChecker<'a> {
             hidden,
             late_borrows,
             moved_before,
+            id,
+            exits_in,
             ..
         }) = self.borrow.drops.frames.pop()
         else {
             panic!("a block frame closes a block");
         };
+        let mut value = value;
         self.borrow.drops.moved_now = *moved_before;
         if self.speculating {
             return;
@@ -2480,10 +2660,22 @@ impl<'a> TypeChecker<'a> {
             for h in &hidden {
                 moves.extend(rename_hidden_owner(body, &mut edits, h));
             }
-            self.drops_hoist_temporaries(body, &mut edits, value_used);
-            if let Some((value, Type::Scalar(e) | Type::Simd(e, _))) = value {
+            let mark = exit_mark_name(id);
+            let marked = |i: usize| exits_in.contains(&i).then(|| mark.clone());
+            self.drops_hoist_temporaries(body, &mut edits, value_used, &marked);
+            if let Some((value, Type::Scalar(e) | Type::Simd(e, _))) = &mut value {
                 if !matches!(e, ElementType::Generic(_)) {
-                    (value_lets, value_drops) = self.drops_hoist_value_temporaries(value);
+                    (value_lets, value_drops) =
+                        self.drops_hoist_value_temporaries(value, marked(body.len()));
+                }
+            }
+            // Each mark has its drops now.
+            let mut remove = |stmts: &mut Vec<Statement>| stmts.retain(|s| !is_exit_mark(s, &mark));
+            for &i in &exits_in {
+                match (body.get_mut(i), &mut value) {
+                    (Some(stmt), _) => blocks_in_stmt(stmt, &mut remove),
+                    (None, Some((value, _))) => blocks_in_expr(value, &mut remove),
+                    (None, None) => {}
                 }
             }
         }
@@ -2605,11 +2797,15 @@ impl<'a> TypeChecker<'a> {
     /// or after a call whose type is not known, stays where it is and is not dropped. The
     /// condition of an `if` and the value of a `match` run before the branch, so their
     /// temporaries move out too. A `&&` or `||` whose sides make temporaries becomes an `if`.
+    /// An operand of a call that a later operand can leave, as `make()` in `take(make(), f()?)`,
+    /// moves out too, and the exit drops it. `marked` gives the mark that the exits inside a
+    /// statement left, by the statement's position.
     fn drops_hoist_temporaries(
         &mut self,
         body: &mut [Statement],
         edits: &mut Edits,
         value_used: bool,
+        marked: &dyn Fn(usize) -> Option<String>,
     ) {
         let last = body.len().saturating_sub(1);
         for (i, stmt) in body.iter_mut().enumerate() {
@@ -2630,8 +2826,15 @@ impl<'a> TypeChecker<'a> {
                             .entry(i)
                             .or_default()
                             .push(let_stmt(&name, true, ty, value));
+                        let drops = glue_drops(&name, &glue, None);
+                        // A `return` in the loop leaves it too.
+                        if let Some(mark) = marked(i) {
+                            blocks_in_list(&mut f.body, &mut |stmts| {
+                                drops_before_marks(stmts, &mark, &drops)
+                            });
+                        }
                         let after = edits.after.entry(i).or_default();
-                        for (k, drop) in glue_drops(&name, &glue, None).into_iter().enumerate() {
+                        for (k, drop) in drops.into_iter().enumerate() {
                             after.insert(k, drop);
                         }
                         continue;
@@ -2639,7 +2842,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             // Where the last temporary that can move out is, counted in calls.
-            let mut probe = TempScan::new(None);
+            let mut probe = TempScan::new(None, marked(i));
             let mut copy = stmt.clone();
             self.drops_scan_stmt(&mut copy, taken, &mut probe);
             let Some(last_temp) = probe.last_temp else {
@@ -2649,18 +2852,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 continue;
             };
-            let mut scan = TempScan::new(Some(last_temp));
+            let mut scan = TempScan::new(Some(last_temp), marked(i));
             self.drops_scan_stmt(stmt, taken, &mut scan);
-            for (name, ty, expr, glue) in scan.found {
+            for t in scan.found {
                 // Mutable, so it has a place in memory: the loop advances it there, and its
                 // `drop` changes it before its fields are dropped.
                 edits
                     .lets
                     .entry(i)
                     .or_default()
-                    .push(let_stmt(&name, true, ty, expr));
+                    .push(let_stmt(&t.name, true, t.ty, t.value));
+                if t.held {
+                    continue;
+                }
                 let after = edits.after.entry(i).or_default();
-                for (k, drop) in glue_drops(&name, &glue, None).into_iter().enumerate() {
+                for (k, drop) in glue_drops(&t.name, &t.glue, None).into_iter().enumerate() {
                     after.insert(k, drop);
                 }
             }
@@ -2672,8 +2878,9 @@ impl<'a> TypeChecker<'a> {
     fn drops_hoist_value_temporaries(
         &mut self,
         value: &mut Expr,
+        mark: Option<String>,
     ) -> (Vec<Statement>, Vec<Statement>) {
-        let mut probe = TempScan::new(None);
+        let mut probe = TempScan::new(None, mark.clone());
         let mut copy = value.clone();
         self.drops_scan_temps(&mut copy, false, &mut probe);
         let Some(last_temp) = probe.last_temp else {
@@ -2682,14 +2889,16 @@ impl<'a> TypeChecker<'a> {
             }
             return (Vec::new(), Vec::new());
         };
-        let mut scan = TempScan::new(Some(last_temp));
+        let mut scan = TempScan::new(Some(last_temp), mark);
         self.drops_scan_temps(value, false, &mut scan);
         let mut lets = Vec::new();
         let mut drops = Vec::new();
-        for (name, ty, expr, glue) in scan.found {
-            lets.push(let_stmt(&name, true, ty, expr));
-            // A later temporary is dropped first.
-            drops.splice(0..0, glue_drops(&name, &glue, None));
+        for t in scan.found {
+            lets.push(let_stmt(&t.name, true, t.ty, t.value));
+            if !t.held {
+                // A later temporary is dropped first.
+                drops.splice(0..0, glue_drops(&t.name, &t.glue, None));
+            }
         }
         (lets, drops)
     }
@@ -2708,7 +2917,9 @@ impl<'a> TypeChecker<'a> {
             // An iterator the loop makes, `for n in v.into_iter()`, lives until the loop ends.
             Statement::ForLoop(f) => {
                 let iterator = f.next_fn.is_some();
-                self.drops_scan_temps(&mut f.iterable, iterator, scan)
+                self.drops_scan_temps(&mut f.iterable, iterator, scan);
+                // A `return` in the loop leaves the iterator.
+                scan.drop_live_at_exits_in_list(&mut f.body);
             }
             _ => {}
         }
@@ -2718,11 +2929,10 @@ impl<'a> TypeChecker<'a> {
     /// `None`), note the last temporary every call before which could move out; otherwise move
     /// out each call up to that one. `borrowed`: `e`'s value is only read or discarded.
     fn drops_scan_temps(&mut self, e: &mut Expr, borrowed: bool, scan: &mut TempScan) {
+        let held = std::mem::take(&mut scan.held_next);
         let ty = match e {
             Expr::FunctionCall(fc) => {
-                for arg in fc.args.iter_mut() {
-                    self.drops_scan_temps(arg, false, scan);
-                }
+                self.drops_scan_operands(fc.args.iter_mut().collect(), scan);
                 self.drops_return_type(&fc.name)
             }
             // A `tasks` block that can fail gives its failure when it fails, also when nothing
@@ -2730,13 +2940,19 @@ impl<'a> TypeChecker<'a> {
             Expr::UnsafeBlock(u)
                 if u.task == Some(crate::syntax::TaskBlockKind::Tasks) && u.fails_as.is_some() =>
             {
-                u.fails_as.clone()
+                let ty = u.fails_as.clone();
+                scan.drop_live_at_exits_in(e);
+                ty
             }
             Expr::StructInit(si) => {
-                for (_, field) in si.fields.iter_mut() {
-                    self.drops_scan_temps(field, false, scan);
-                }
+                self.drops_scan_operands(si.fields.iter_mut().map(|(_, f)| f).collect(), scan);
                 Some(Type::Struct(si.name.clone(), None))
+            }
+            // The type of an enum value is not needed here: nothing after it moves out.
+            Expr::EnumVariant(v) => {
+                let payload = v.payload.iter_mut().flatten().collect();
+                self.drops_scan_operands(payload, scan);
+                None
             }
             Expr::Borrow(b) => return self.drops_scan_temps(&mut b.expr, true, scan),
             Expr::MemberAccess(m) => return self.drops_scan_temps(&mut m.base, true, scan),
@@ -2775,8 +2991,8 @@ impl<'a> TypeChecker<'a> {
                 let first = scan.found.len();
                 self.drops_scan_temps(&mut i.cond, false, scan);
                 let mut drops = Vec::new();
-                for (name, _, _, glue) in &mut scan.found[first..] {
-                    drops.extend(glue_drops(name, &std::mem::take(glue), None));
+                for t in scan.found[first..].iter_mut().filter(|t| !t.held) {
+                    drops.extend(glue_drops(&t.name, &std::mem::take(&mut t.glue), None));
                 }
                 if !drops.is_empty() {
                     i.then_block.splice(0..0, drops.clone());
@@ -2785,6 +3001,11 @@ impl<'a> TypeChecker<'a> {
                         .splice(0..0, drops);
                 }
                 scan.blocked = true;
+                // The condition was scanned: only its branches are left.
+                scan.drop_live_at_exits_in_list(&mut i.then_block);
+                if let Some(b) = &mut i.else_block {
+                    scan.drop_live_at_exits_in_list(b);
+                }
                 return;
             }
             // The value that a `match` matches runs before its arms. Its temporaries drop after
@@ -2792,6 +3013,9 @@ impl<'a> TypeChecker<'a> {
             Expr::Match(m) => {
                 self.drops_scan_temps(&mut m.expr, false, scan);
                 scan.blocked = true;
+                for arm in &mut m.arms {
+                    scan.drop_live_at_exits_in_list(&mut arm.body);
+                }
                 return;
             }
             // Each side of `&&` or `||` drops its temporaries when it ends, as in Rust. The right
@@ -2801,8 +3025,8 @@ impl<'a> TypeChecker<'a> {
                 let first = scan.found.len();
                 self.drops_scan_temps(&mut l.lhs, false, scan);
                 let mut drops = Vec::new();
-                for (name, _, _, glue) in &mut scan.found[first..] {
-                    drops.extend(glue_drops(name, &std::mem::take(glue), None));
+                for t in scan.found[first..].iter_mut().filter(|t| !t.held) {
+                    drops.extend(glue_drops(&t.name, &std::mem::take(&mut t.glue), None));
                 }
                 let rhs = std::mem::replace(&mut *l.rhs, ident("false"));
                 let mut rhs = vec![Statement::ExprStmt(ExprStmtStmt::new(
@@ -2811,7 +3035,8 @@ impl<'a> TypeChecker<'a> {
                     Span::default(),
                 ))];
                 let mut edits = Edits::default();
-                self.drops_hoist_temporaries(&mut rhs, &mut edits, true);
+                let mark = scan.mark.clone();
+                self.drops_hoist_temporaries(&mut rhs, &mut edits, true, &|_| mark.clone());
                 self.drops_apply(&mut rhs, edits);
                 if drops.is_empty() && rhs.len() == 1 {
                     let Some(Statement::ExprStmt(s)) = rhs.pop() else {
@@ -2843,12 +3068,25 @@ impl<'a> TypeChecker<'a> {
                     scan.short_circuit_rewritten = true;
                 }
                 scan.blocked = true;
+                // The left side was scanned: only the right side is left, now perhaps the
+                // branches of an `if`.
+                match e {
+                    Expr::LogicalOp(l) => scan.drop_live_at_exits_in(&mut l.rhs),
+                    Expr::If(i) => {
+                        scan.drop_live_at_exits_in_list(&mut i.then_block);
+                        if let Some(b) = &mut i.else_block {
+                            scan.drop_live_at_exits_in_list(b);
+                        }
+                    }
+                    _ => unreachable!("a `&&` or `||` stays one or becomes an `if`"),
+                }
                 return;
             }
             // A branch or a loop runs its parts only sometimes, and a closure later: nothing at
             // or after it moves out.
             _ => {
                 scan.blocked = true;
+                scan.drop_live_at_exits_in(e);
                 return;
             }
         };
@@ -2860,7 +3098,7 @@ impl<'a> TypeChecker<'a> {
             scan.blocked = true;
         }
         let glue = match &ty {
-            Some(t) if borrowed => self.drops_glue(t),
+            Some(t) if borrowed || held => self.drops_glue(t),
             _ => Vec::new(),
         };
         let is_struct_temp = !glue.is_empty() && !matches!(ty, Some(Type::Tensor(..)));
@@ -2874,10 +3112,42 @@ impl<'a> TypeChecker<'a> {
                 let ty = ty.expect("every call up to the last temporary has a type");
                 let name = self.drops_fresh("temp");
                 let value = std::mem::replace(e, ident(&name));
-                scan.found.push((name, ty, value, glue));
+                if !glue.is_empty() {
+                    scan.live.push(scan.found.len());
+                }
+                let held = held && !glue.is_empty();
+                scan.found.push(Temp {
+                    name,
+                    ty,
+                    value,
+                    glue,
+                    held,
+                });
             }
             Some(_) => {}
         }
+    }
+
+    /// The operands of a call, a struct literal or an enum variant, in the order they are
+    /// evaluated. The call takes them only when it runs. So an operand that a later operand can
+    /// leave, as `make()` in `take(make(), f()?)`, is held until then: it moves out, and the
+    /// exit drops it.
+    fn drops_scan_operands(&mut self, mut operands: Vec<&mut Expr>, scan: &mut TempScan) {
+        let leaves: Vec<bool> = match &scan.mark {
+            Some(mark) => operands
+                .iter_mut()
+                .map(|e| has_exit_mark(e, mark))
+                .collect(),
+            None => vec![false; operands.len()],
+        };
+        let first = scan.found.len();
+        for (k, e) in operands.into_iter().enumerate() {
+            scan.held_next = leaves[k + 1..].contains(&true);
+            self.drops_scan_temps(e, false, scan);
+        }
+        // The call runs, and takes what it held.
+        let TempScan { live, found, .. } = scan;
+        live.retain(|&i| i < first || !found[i].held);
     }
 
     /// Whether `e`, a call or struct literal borrowed with no name (`&make()`), is dropped at
@@ -2995,6 +3265,9 @@ impl<'a> TypeChecker<'a> {
         let mut too_soon = Vec::new();
         let d = &self.borrow.drops;
         let raw_pointers = d.uses_raw_pointers();
+        // The blocks whose statement the exit leaves from inside, and that statement.
+        let mut marked = Vec::new();
+        let innermost = d.frames.len().saturating_sub(1);
         'frames: for (at, f) in d.frames.iter().enumerate().rev() {
             match f {
                 // A `return` inside a region leaves the region, not the function.
@@ -3013,8 +3286,13 @@ impl<'a> TypeChecker<'a> {
                     uses,
                     stmt,
                     late_borrows,
+                    id,
                     ..
                 } => {
+                    if at != innermost {
+                        dropped.push(exit_mark(*id));
+                        marked.push((at, *stmt));
+                    }
                     let moved_now = &d.moved_now.owners;
                     let late = late_borrows_dropped_too_soon(owners, late_borrows, moved_now);
                     too_soon.extend(late.into_iter().map(|k| (at, k)));
@@ -3066,6 +3344,11 @@ impl<'a> TypeChecker<'a> {
         }
         if !rewriting {
             return;
+        }
+        for (at, s) in marked {
+            if let FrameKind::Block { exits_in, .. } = &mut self.borrow.drops.frames[at] {
+                exits_in.insert(s);
+            }
         }
         if tasks_blocks > 0 {
             dropped.insert(0, crate::syntax::tasks_wait_stmt(*span));

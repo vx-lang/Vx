@@ -1,0 +1,291 @@
+//===- a_value_with_no_name_is_dropped_when_its_statement_returns_early.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A statement can make a value that nothing names: `noisy(1)` in `take(noisy(1), fails()?)`.
+// When a `?`, a `return` or a `break` leaves the statement while the statement still holds
+// that value, the value is dropped there. Each `Noisy` prints `gone N` at its drop, once.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=gone
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=gone
+import core::option;
+import core::result;
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("gone {}", self.id);
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : i32,
+}
+
+struct Counter {
+  n : i32,
+}
+
+impl Counter {
+  fn put(self : &mut Counter, _x : Noisy, k : i32) -> i32 {
+    self.n = k;
+    return k;
+  }
+}
+
+fn fails() -> Result<i32, i32> {
+  return Result<i32, i32>::Err(4);
+}
+
+fn works() -> Result<i32, i32> {
+  return Result<i32, i32>::Ok(1);
+}
+
+fn noisy(id : i32) -> Noisy {
+  return Noisy {
+    id : id
+  };
+}
+
+fn take_first(_n : Noisy, k : i32) -> i32 {
+  return k;
+}
+
+fn take_two(_n : Noisy, _r : &Noisy, k : i32) -> i32 {
+  return k;
+}
+
+fn look(n : &Noisy, k : i32) -> i32 {
+  return n.id + k;
+}
+
+fn add(a : i32, b : i32) -> i32 {
+  return a + b;
+}
+
+fn two(a : i32, b : i32) -> Vec<Noisy> {
+  let mut v = Vec<Noisy>::new();
+  v.push(noisy(a));
+  v.push(noisy(b));
+  return v;
+}
+
+fn an_argument() -> Result<i32, i32> {
+  let _k = take_first(noisy(1), fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+// The `?` does not return, so the call runs and drops the value.
+fn the_call_runs() -> Result<i32, i32> {
+  let k = take_first(noisy(2), works()?);
+  return Result<i32, i32>::Ok(k);
+}
+
+// `take_first` runs before the second `?` and drops the value. So that `?` must not drop it
+// again.
+fn in_an_inner_call() -> Result<i32, i32> {
+  let _k = add(take_first(noisy(3), works()?), fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+fn a_borrowed_value() -> Result<i32, i32> {
+  let _k = look(&noisy(4), fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+fn a_field_of_it() -> Result<i32, i32> {
+  let _k = noisy(6).id + fails()?;
+  return Result<i32, i32>::Ok(0);
+}
+
+fn in_a_struct_literal_in_ok() -> Result<Pair, i32> {
+  return Result<Pair, i32>::Ok(Pair {
+    a : noisy(7),
+    b : fails()?
+  });
+}
+
+fn a_method_argument() -> Result<i32, i32> {
+  let mut c = Counter {
+    n : 0
+  };
+  let _k = c.put(noisy(8), fails()?);
+  return Result<i32, i32>::Ok(c.n);
+}
+
+// What the arm made is dropped first, then the value of the statement, then what the function
+// made before the statement.
+fn the_order_of_the_drops() -> Result<i32, i32> {
+  let _before = noisy(9);
+  let _k = take_first(noisy(10), match fails() {
+    Result<i32, i32>::Ok(v) => {
+      v
+    }
+    Result<i32, i32>::Err(e) => {
+      let _inside = noisy(11);
+      return Result<i32, i32>::Err(e);
+    }
+  });
+  return Result<i32, i32>::Ok(0);
+}
+
+// The newer value is dropped first.
+fn two_values() -> Result<i32, i32> {
+  let _k = take_two(noisy(12), &noisy(13), fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+fn a_break() -> i32 {
+  for _i in 0..2 {
+    let _k = take_first(noisy(14), match fails() {
+      Result<i32, i32>::Ok(v) => {
+        v
+      }
+      Result<i32, i32>::Err(_e) => {
+        break;
+      }
+    });
+  }
+  return 0;
+}
+
+// The `return` leaves the loop while its iterator still holds `noisy(16)`.
+fn a_return_in_a_loop_over_a_call() -> i32 {
+  for n in two(15, 16).into_iter() {
+    if n.id == 15 {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+fn a_return_in_a_loop_over_a_variable() -> i32 {
+  let it = two(17, 18).into_iter();
+  for n in it {
+    if n.id == 17 {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+fn in_a_condition() -> Result<i32, i32> {
+  if look(&noisy(19), fails()?) > 0 {
+    println!("not here");
+  }
+  return Result<i32, i32>::Ok(0);
+}
+
+fn on_the_right_of_and(c : bool) -> Result<i32, i32> {
+  if c && look(&noisy(20), fails()?) > 0 {
+    println!("not here");
+  }
+  return Result<i32, i32>::Ok(0);
+}
+
+// The `?` in the condition leaves both values, and drops each one once.
+fn before_and_in_a_condition() -> Result<i32, i32> {
+  let _k = look(&noisy(21), if look(&noisy(22), fails()?) > 0 {
+    1
+  } else {
+    2
+  });
+  return Result<i32, i32>::Ok(0);
+}
+
+// With no early return: the value in the payload is dropped at the end of its statement.
+fn in_an_enum_payload() -> i32 {
+  let o = Option<i32>::Some(noisy(23).id);
+  match o {
+    Option<i32>::Some(v) => {
+      println!("payload {}", v);
+    }
+    Option<i32>::None() => {
+    }
+  }
+  return 0;
+}
+
+fn show(what : *const i8, r : Result<i32, i32>) -> void {
+  match r {
+    Result<i32, i32>::Ok(v) => {
+      println!("{} gave {}", what, v);
+    }
+    Result<i32, i32>::Err(e) => {
+      println!("{} failed with {}", what, e);
+    }
+  }
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}gone 1{{$}}
+  // CHECK-NEXT: {{^}}an argument failed with 4{{$}}
+  show("an argument", an_argument());
+  // CHECK-NEXT: {{^}}gone 2{{$}}
+  // CHECK-NEXT: {{^}}the call runs gave 1{{$}}
+  show("the call runs", the_call_runs());
+  // CHECK-NEXT: {{^}}gone 3{{$}}
+  // CHECK-NEXT: {{^}}in an inner call failed with 4{{$}}
+  show("in an inner call", in_an_inner_call());
+  // CHECK-NEXT: {{^}}gone 4{{$}}
+  // CHECK-NEXT: {{^}}a borrowed value failed with 4{{$}}
+  show("a borrowed value", a_borrowed_value());
+  // CHECK-NEXT: {{^}}gone 6{{$}}
+  // CHECK-NEXT: {{^}}a field of it failed with 4{{$}}
+  show("a field of it", a_field_of_it());
+  // CHECK-NEXT: {{^}}gone 7{{$}}
+  // CHECK-NEXT: {{^}}in a struct literal in ok failed{{$}}
+  match in_a_struct_literal_in_ok() {
+    Result<Pair, i32>::Ok(_p) => {
+      println!("in a struct literal in ok gave a pair");
+    }
+    Result<Pair, i32>::Err(_e) => {
+      println!("in a struct literal in ok failed");
+    }
+  }
+  // CHECK-NEXT: {{^}}gone 8{{$}}
+  // CHECK-NEXT: {{^}}a method argument failed with 4{{$}}
+  show("a method argument", a_method_argument());
+  // CHECK-NEXT: {{^}}gone 11{{$}}
+  // CHECK-NEXT: {{^}}gone 10{{$}}
+  // CHECK-NEXT: {{^}}gone 9{{$}}
+  // CHECK-NEXT: {{^}}the order of the drops failed with 4{{$}}
+  show("the order of the drops", the_order_of_the_drops());
+  // CHECK-NEXT: {{^}}gone 13{{$}}
+  // CHECK-NEXT: {{^}}gone 12{{$}}
+  // CHECK-NEXT: {{^}}two values failed with 4{{$}}
+  show("two values", two_values());
+  // CHECK-NEXT: {{^}}gone 14{{$}}
+  // CHECK-NEXT: {{^}}a break gave 0{{$}}
+  println!("a break gave {}", a_break());
+  // CHECK-NEXT: {{^}}gone 15{{$}}
+  // CHECK-NEXT: {{^}}gone 16{{$}}
+  // CHECK-NEXT: {{^}}a return in a loop over a call gave 1{{$}}
+  println!("a return in a loop over a call gave {}", a_return_in_a_loop_over_a_call());
+  // CHECK-NEXT: {{^}}gone 17{{$}}
+  // CHECK-NEXT: {{^}}gone 18{{$}}
+  // CHECK-NEXT: {{^}}a return in a loop over a variable gave 1{{$}}
+  println!("a return in a loop over a variable gave {}", a_return_in_a_loop_over_a_variable());
+  // CHECK-NEXT: {{^}}gone 19{{$}}
+  // CHECK-NEXT: {{^}}in a condition failed with 4{{$}}
+  show("in a condition", in_a_condition());
+  // CHECK-NEXT: {{^}}gone 20{{$}}
+  // CHECK-NEXT: {{^}}on the right of and failed with 4{{$}}
+  show("on the right of and", on_the_right_of_and(true));
+  // CHECK-NEXT: {{^}}gone 22{{$}}
+  // CHECK-NEXT: {{^}}gone 21{{$}}
+  // CHECK-NEXT: {{^}}before and in a condition failed with 4{{$}}
+  show("before and in a condition", before_and_in_a_condition());
+  // CHECK-NEXT: {{^}}gone 23{{$}}
+  // CHECK-NEXT: {{^}}payload 23{{$}}
+  in_an_enum_payload();
+  return 0;
+}
