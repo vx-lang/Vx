@@ -504,7 +504,7 @@ pub enum DiagnosticCode {
     /// A variable of the body with the name of an extent, or an assignment to an extent name.
     /// `?n` in the type of a parameter makes `n` a variable of the body that nothing changes.
     E3069,
-    /// A shape in `Tensor<T, [..]>::new([..])` or `::uninit([..])` that does not match the type. The shape is a list in brackets with one extent for each dimension,
+    /// A shape in `Tensor<T, [..]>::new([..])`, `::uninit([..])` or `::fill([..], v)` that does not match the type. The shape is a list in brackets with one extent for each dimension,
     /// and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`.
     E3070,
 

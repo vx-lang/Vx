@@ -1,0 +1,54 @@
+//===- tensor_fill_with_a_run_time_shape.vx ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Tensor<T, [?, 2]>::fill([n, 2], v)` takes the shape first and then the value for every
+// element. Each line prints the extents, one element and the sum of all elements, so a missed
+// element shows in the sum. The last line is a fill with a fixed shape, which takes only the value.
+//
+// EXPECT: rows 3 2 1.5 9
+// EXPECT: both 3 4 7 84
+// EXPECT: columns 2 4 0.25 2
+// EXPECT: fixed 2 3 5 30
+
+fn total(t : &Tensor<f32, [?, ?]>) -> f32 {
+  let mut s : f32 = 0.0;
+  for i in 0..t.extent(0) {
+    for j in 0..t.extent(1) {
+      s = s + t[i][j];
+    }
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let n = 3;
+  let m = 4;
+  let a = Tensor<f32, [?, 2]>::fill([n, 2], 1.5);
+  println!("rows {} {} {} {}", a.extent(0), a.extent(1), a[2][1], total(&a));
+
+  let b = Tensor<i32, [?, ?]>::fill([n, m], 7);
+  let mut sb = 0;
+  for i in 0..n {
+    for j in 0..m {
+      sb = sb + b[i][j];
+    }
+  }
+  println!("both {} {} {} {}", b.extent(0), b.extent(1), b[n - 1][m - 1], sb);
+
+  let c = Tensor<f32, [2, ?]>::fill([2, m], 0.25);
+  println!("columns {} {} {} {}", c.extent(0), c.extent(1), c[1][3], total(&c));
+
+  let d = Tensor<i32, [2, 3]>::fill(5);
+  let mut sd = 0;
+  for i in 0..2 {
+    for j in 0..3 {
+      sd = sd + d[i][j];
+    }
+  }
+  println!("fixed {} {} {} {}", d.extent(0), d.extent(1), d[1][2], sd);
+  return 0;
+}

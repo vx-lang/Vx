@@ -171,7 +171,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3067`](/errors/E3067/) | A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an address, for example one that `p as *const void` made to give to a C function. It has no element type, so the compiler does not know what to read. |
 | [`E3068`](/errors/E3068/) | A call that gives one extent name two different extents. In `fn add(a : Tensor<f32, [?n]>, b : Tensor<f32, [?n]>)`, both `?n` are one extent, so `add(x, y)` with the extents 5 and 7 is an error. When the compiler does not know an extent, it does not check it. |
 | [`E3069`](/errors/E3069/) | A variable of the body with the name of an extent, or an assignment to an extent name. `?n` in the type of a parameter makes `n` a variable of the body that nothing changes. |
-| [`E3070`](/errors/E3070/) | A shape in `Tensor<T, [..]>::new([..])` or `::uninit([..])` that does not match the type. The shape is a list in brackets with one extent for each dimension, and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`. |
+| [`E3070`](/errors/E3070/) | A shape in `Tensor<T, [..]>::new([..])`, `::uninit([..])` or `::fill([..], v)` that does not match the type. The shape is a list in brackets with one extent for each dimension, and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`. |
 
 ## Borrow/Ownership Errors
 

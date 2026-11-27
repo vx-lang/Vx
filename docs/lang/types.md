@@ -351,6 +351,9 @@ let z = Tensor<f32, [?, ?], Memory::NPU_HBM>::new([rows, cols]);
 
 // A shape with a runtime extent gives one extent for each dimension, and a fixed one as the type has it
 let w = Tensor<f32, [?, 4], Memory::NPU_HBM>::new([rows, 4]);
+
+// `::fill` takes the shape first and then the value for every element
+let f = Tensor<f32, [?, 4], Memory::NPU_HBM>::fill([rows, 4], 1.5);
 ```
 
 Any other shape list is E3070.
