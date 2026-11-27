@@ -1,0 +1,23 @@
+//===- a_package_that_gets_a_default_method_with_unsafe_has_no_trusted_code.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The package `tests` writes `impl Count for Counter`, which gets the default `add_eight` of the
+// package `traits`. The `unsafe` block of that default is trusted code of `traits`, not of
+// `tests`. So `--no-trusted-code tests` allows the program. The audit of the library lists the
+// block in `count.vx`, and not in the file of the package.
+//
+// RUN: vxc --package tests=tests --package traits=tests/modules/a_package_with_a_trait --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc --package tests=tests --package traits=tests/modules/a_package_with_a_trait --audit-library %s 2>&1 | FileCheck %s --check-prefix=AUDIT --implicit-check-not=a_package_that_gets_a_default_method.vx
+// CHECK: {{^}}8{{$}}
+// AUDIT: a_package_with_a_trait/count.vx:17:14: trusted code: an `unsafe` block
+
+import tests::modules::a_package_that_gets_a_default_method;
+
+fn main() -> i32 {
+  println!("{}", counted());
+  return 0;
+}

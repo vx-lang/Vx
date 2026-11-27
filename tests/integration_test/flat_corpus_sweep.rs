@@ -271,6 +271,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
         "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
         "frontend/pass/packages/import_from_a_package.vx", // needs --package
+        // needs --package traits=..
+        "frontend/pass/packages/a_package_that_gets_a_default_method_with_unsafe_has_no_trusted_code.vx",
         "frontend/pass/jobs_keeps_an_imported_library_flaw_quiet.vx", // needs --std-path
         // needs --std-path
         "frontend/pass/unused_functions_with_type_errors_in_the_standard_library.vx",
