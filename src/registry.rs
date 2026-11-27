@@ -58,6 +58,21 @@ pub struct FnSig {
     /// The length of an `ensures valid(return, n)`, when it is a parameter or a number. The code
     /// generator tells LLVM after each call that the result points at `n` elements.
     pub ret_valid: Option<crate::hir::check::pointer_clauses::Length>,
+    /// Which files can call the function. A program that links the function through a `.vxlib`
+    /// interface is another compile, so it can call only a `pub` function.
+    pub visibility: crate::gid::Visibility,
+    /// The name of the file that declares the function, with no folder, for the error that
+    /// refuses a call of a function that is not `pub`.
+    pub file: Option<crate::symbol::Symbol>,
+}
+
+/// The name of the file `path`, with no folder. An interface keeps only this name, so that it
+/// does not depend on the folder of the build.
+pub fn file_name_only(path: &crate::symbol::Symbol) -> crate::symbol::Symbol {
+    std::path::Path::new(path.as_ref())
+        .file_name()
+        .map(|name| crate::symbol::Symbol::from(name.to_string_lossy().as_ref()))
+        .unwrap_or_else(|| path.clone())
 }
 
 /// The generic field-type information the flat path needs to resolve a member access *through a
@@ -1048,6 +1063,8 @@ mod tests {
             ret_prov: 0,
             is_unsafe: false,
             ret_valid: None,
+            visibility: crate::gid::Visibility::Public,
+            file: None,
         }
     }
 

@@ -1604,7 +1604,8 @@ impl<'a> TypeChecker<'a> {
                     // compile the registry is empty, so this arm is inert and the call falls to E2002.
                     // The signature carries the callee's unsafe-ness precisely so an importing
                     // module can refuse the call without seeing the body. Read it here, or the
-                    // flag crosses the boundary and means nothing.
+                    // flag crosses the boundary and means nothing. The level is the same.
+                    self.refuse_a_private_imported_function(&resolved_name, &sig, span);
                     if sig.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
@@ -1757,6 +1758,39 @@ impl<'a> TypeChecker<'a> {
             _ => format!(
                 "`{shown}` is private to `{file}`. Write `pub fn {short}` there, so that other \
                  files can call it"
+            ),
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E5005,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
+        );
+    }
+
+    /// E5005 for a call of `name`, a function of a library that this program links through its
+    /// `.vxlib` interface. The library is another compile, with its own files and package, so the
+    /// program can call only its `pub` functions.
+    fn refuse_a_private_imported_function(
+        &mut self,
+        name: &str,
+        sig: &crate::registry::FnSig,
+        at: &crate::syntax::Span,
+    ) {
+        if self.speculating || sig.visibility == Visibility::Public {
+            return;
+        }
+        let file = match &sig.file {
+            Some(file) => format!("`{file}`"),
+            None => "its file".to_string(),
+        };
+        let message = match sig.visibility {
+            Visibility::Package => format!(
+                "`{name}` is `pkg` in {file} of a library that this program links, so only that \
+                 library can call it. Write `pub fn {name}` there, so that other packages can call it"
+            ),
+            _ => format!(
+                "`{name}` is private to {file}. Write `pub fn {name}` there, so that other files \
+                 can call it"
             ),
         };
         self.errors.error_with_code(
