@@ -32,9 +32,21 @@ pub enum GapFunction {
     Instance(String),
 }
 
-/// `name`, whose parts the compiler joined with `$`, written the way the program would write it:
-/// `P$get` is `P::get` and `id$i32` is `id::<i32>`. A part that is not a plain name or a type —
-/// a topology key, which is an encoded identity — is not guessed at, and `None` says so.
+/// `name`, whose parts the compiler joined with `$`, written the way the program would write it,
+/// but only where the name settles the question.
+///
+/// A type's own parts are joined with `$` too (`Vec<i32>` is `Vec$i32`, `*mut T` is
+/// `ptr$mut$T`, `&T` is `ref$const$T`), so splitting at every `$` cannot find where a
+/// receiver's type arguments end and a method's name starts. And `instantiate_function` writes
+/// an instance's type arguments in the order of the parameter *names*, not the order of the
+/// declaration. So only three shapes are read:
+///
+/// - a method of a type that takes no type arguments, `P$get`;
+/// - a function or type with one scalar argument, `sum$i64`;
+/// - a method of a type with one scalar argument, `Vec$i32$push`.
+///
+/// Every other name keeps the words the compiler made, because a name that reads right for
+/// some programs and wrong for others is worse than one that says it is made up.
 fn source_spelling_of_instance(name: &str) -> Option<String> {
     let parts: Vec<&str> = name.split('$').collect();
     let plain = |p: &str| {
@@ -42,25 +54,24 @@ fn source_spelling_of_instance(name: &str) -> Option<String> {
             && p.chars().all(|c| c.is_alphanumeric() || c == '_')
             && !p.starts_with(|c: char| c.is_ascii_digit())
     };
-    let (base, rest) = parts.split_first()?;
-    if !plain(base) || rest.is_empty() || !rest.iter().all(|p| plain(p)) {
-        return None;
+    // The compiler's own spelling of a scalar, which is what `ElementType`'s `from_str` reads.
+    let scalar = |p: &str| p.parse::<crate::syntax::ElementType>().is_ok();
+    // A receiver is a type when it is a scalar or starts with an upper-case letter.
+    let type_like =
+        |p: &str| plain(p) && (scalar(p) || p.starts_with(|c: char| c.is_ascii_uppercase()));
+    let method_like =
+        |p: &str| plain(p) && !scalar(p) && p.starts_with(|c: char| c.is_ascii_lowercase());
+    match parts.as_slice() {
+        [receiver, method] if type_like(receiver) && method_like(method) => {
+            Some(format!("{receiver}::{method}"))
+        }
+        // Vx has no turbofish: `Vec::<i32>::new()` is `Vec<i32>::new()`.
+        [base, arg] if plain(base) && scalar(arg) => Some(format!("{base}<{arg}>")),
+        [base, arg, method] if plain(base) && scalar(arg) && method_like(method) => {
+            Some(format!("{base}<{arg}>::{method}"))
+        }
+        _ => None,
     }
-    // A type starts with an upper-case letter or is one of the compiler's scalar names; a
-    // method name is lower case and is not one of them. This is how the two shapes of a made
-    // name are told apart without a type table here.
-    let scalar = |p: &str| {
-        const SCALARS: &[&str] = &[
-            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f16", "f32",
-            "f64", "bf16", "fp8", "fp4", "bool", "str", "char",
-        ];
-        SCALARS.contains(&p)
-    };
-    let is_type = |p: &str| scalar(p) || p.starts_with(|c: char| c.is_ascii_uppercase());
-    if rest.len() == 1 && is_type(rest[0]) {
-        return Some(format!("{base}::<{}>", rest[0]));
-    }
-    Some(format!("{base}::{}", rest.join("::")))
 }
 
 /// Why one function did not lower through the flat path.
@@ -256,10 +267,10 @@ mod tests {
         assert_eq!(named.detail_key(), "emitter-gap(src/example.rs:1)");
     }
 
-    /// The shapes a made name has, written the way the program would write them, and the one
-    /// that has no source spelling.
+    /// The three shapes a made name settles, and the six it does not: a type's own parts are
+    /// joined with `$` too, so a multi-part name could be read two ways.
     #[test]
-    fn an_instance_name_is_shown_the_way_the_source_would_write_it() {
+    fn an_instance_name_is_shown_only_where_the_name_settles_it() {
         let named = |name: &str| {
             Decline::EmitterGap {
                 site: "src/example.rs:1",
@@ -268,27 +279,42 @@ mod tests {
             .in_instance(name)
             .to_string()
         };
-        assert_eq!(
-            named("P$get"),
-            "an emitter gap at src/example.rs:1 in function 'P::get'"
-        );
-        assert_eq!(
-            named("id$i32"),
-            "an emitter gap at src/example.rs:1 in function 'id::<i32>'"
-        );
-        assert_eq!(
-            named("Pair$f32"),
-            "an emitter gap at src/example.rs:1 in function 'Pair::<f32>'"
-        );
-        // A topology key is an encoded identity, not a type, so the message keeps the name the
-        // compiler made and says so.
-        assert_eq!(
-            named("exp_helper$topology$746f706f"),
-            "an emitter gap at src/example.rs:1 in function 'exp_helper$topology$746f706f' \
-             (a name the compiler made)"
-        );
-        // The same for a part that is not a name the source could have written.
-        assert!(named("f$0").contains("(a name the compiler made)"));
+        for (made, source) in [
+            // A method of a type that takes no type arguments.
+            ("P$get", "P::get"),
+            ("f32$abs", "f32::abs"),
+            // One scalar type argument, in Vx spelling: there is no turbofish.
+            ("id$i32", "id<i32>"),
+            ("Pair$f32", "Pair<f32>"),
+            // A method of a type with one scalar argument.
+            ("Vec$i32$push", "Vec<i32>::push"),
+        ] {
+            assert_eq!(
+                named(made),
+                format!("an emitter gap at src/example.rs:1 in function '{source}'"),
+                "{made} should read as {source}"
+            );
+        }
+        // The shapes the name cannot settle keep the words the compiler made and say so: a type
+        // inside a type argument, more than one type argument, a pointer or a reference, a
+        // trait segment, and a topology key.
+        for made in [
+            "id$Vec$i32",
+            "pair$f32$i32",
+            "id$ptr$mut$i32",
+            "id$ref$const$Point",
+            "i64$From$i32$from",
+            "exp_helper$topology$746f706f",
+        ] {
+            assert_eq!(
+                named(made),
+                format!(
+                    "an emitter gap at src/example.rs:1 in function '{made}' (a name the compiler \
+                     made)"
+                ),
+                "{made} should keep the name the compiler made"
+            );
+        }
     }
 
     /// Every other decline already carries the construct it names, so filling in a function
