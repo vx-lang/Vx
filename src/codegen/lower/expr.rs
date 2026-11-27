@@ -6056,8 +6056,9 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
 
                 if let Some(rank) = rank {
                     let target_desc_ty_str = crate::codegen::generator::tensor_descriptor_str(rank);
-                    let target_desc_ty = Type::parse(gen.context, &target_desc_ty_str)
-                        .ok_or(crate::codegen::lower::LowerError::ParseType(target_desc_ty_str))?;
+                    let target_desc_ty = Type::parse(gen.context, &target_desc_ty_str).ok_or(
+                        crate::codegen::lower::LowerError::ParseType(target_desc_ty_str),
+                    )?;
 
                     use melior::ir::operation::{OperationLike, OperationResult};
 
