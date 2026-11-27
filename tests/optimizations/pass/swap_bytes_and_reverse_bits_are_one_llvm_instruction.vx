@@ -1,0 +1,59 @@
+//===- swap_bytes_and_reverse_bits_are_one_llvm_instruction.vx - Vx Compiler -===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `swap_bytes` and `reverse_bits` on an integer use one LLVM instruction each, not a loop.
+// `swap_bytes` needs two bytes or more, so the instruction is used at 16, 32 and 64 bits
+// and not at 8 bits. Each width appears twice, once signed and once unsigned.
+// The values these methods return are checked in core_num_i32.vx, core_num_widths.vx and
+// core_num_unsigned.vx.
+// RUN: vxc %s --emit-mlir | FileCheck %s
+// RUN: vxc %s --legacy-codegen --emit-mlir | FileCheck %s
+import core::num;
+
+fn main() -> i32 {
+  let a : i8 = 6;
+  let b : u8 = 6;
+  let c : i16 = 4660;
+  let d : u16 = 4660;
+  let e : i32 = 305419896;
+  let f : u32 = 305419896;
+  let g : i64 = 72623859790382856;
+  let h : u64 = 72623859790382856;
+  print(a.swap_bytes());
+  print(a.reverse_bits());
+  print(b.swap_bytes());
+  print(b.reverse_bits());
+  print(c.swap_bytes());
+  print(c.reverse_bits());
+  print(d.swap_bytes());
+  print(d.reverse_bits());
+  print(e.swap_bytes());
+  print(e.reverse_bits());
+  print(f.swap_bytes());
+  print(f.reverse_bits());
+  print(g.swap_bytes());
+  print(g.reverse_bits());
+  print(h.swap_bytes());
+  print(h.reverse_bits());
+  return 0;
+}
+
+// The order of the functions in the output is not fixed, and each width is checked twice.
+// CHECK-DAG: llvm.intr.bswap(%{{.*}}) : (i16) -> i16
+// CHECK-DAG: llvm.intr.bswap(%{{.*}}) : (i16) -> i16
+// CHECK-DAG: llvm.intr.bswap(%{{.*}}) : (i32) -> i32
+// CHECK-DAG: llvm.intr.bswap(%{{.*}}) : (i32) -> i32
+// CHECK-DAG: llvm.intr.bswap(%{{.*}}) : (i64) -> i64
+// CHECK-DAG: llvm.intr.bswap(%{{.*}}) : (i64) -> i64
+// CHECK-DAG: llvm.intr.bitreverse(%{{.*}}) : (i8) -> i8
+// CHECK-DAG: llvm.intr.bitreverse(%{{.*}}) : (i8) -> i8
+// CHECK-DAG: llvm.intr.bitreverse(%{{.*}}) : (i16) -> i16
+// CHECK-DAG: llvm.intr.bitreverse(%{{.*}}) : (i16) -> i16
+// CHECK-DAG: llvm.intr.bitreverse(%{{.*}}) : (i32) -> i32
+// CHECK-DAG: llvm.intr.bitreverse(%{{.*}}) : (i32) -> i32
+// CHECK-DAG: llvm.intr.bitreverse(%{{.*}}) : (i64) -> i64
+// CHECK-DAG: llvm.intr.bitreverse(%{{.*}}) : (i64) -> i64
