@@ -28,6 +28,186 @@ mod seam_cert;
 mod stmt;
 mod tensors;
 
+/// The dims of the tensor inside a type, or `None` when the type is not one. The check-level
+/// wrappers (`&T`, `Pinned<T, ..>`, ..) are transparent.
+pub(crate) fn tensor_dims_of(ty: &syntax::Type) -> Option<&Vec<syntax::Dim>> {
+    match ty {
+        syntax::Type::Tensor(_, dims, _) => Some(dims),
+        syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner)
+        | syntax::Type::Ref(inner, _)
+        | syntax::Type::Pinned(inner, _) => tensor_dims_of(inner),
+        syntax::Type::Borrow { inner, .. } | syntax::Type::Pointer(inner, ..) => {
+            tensor_dims_of(inner)
+        }
+        _ => None,
+    }
+}
+
+/// The `name % N == 0` of a `requires` clause, for the extent named `name`, with N a power of
+/// two above one. An `a && b` of clauses looks in both halves; any other clause gives nothing.
+pub(crate) fn requires_mult_of(expr: &syntax::Expr, name: &str) -> Option<u64> {
+    match expr {
+        syntax::Expr::LogicalOp(logic) if logic.op == syntax::LogicalOp::And => {
+            requires_mult_of(&logic.lhs, name).or_else(|| requires_mult_of(&logic.rhs, name))
+        }
+        syntax::Expr::RelationalOp(rel) if rel.op == syntax::RelationalOp::Eq => {
+            // `.. == 0`, where the left side is the remainder.
+            if !matches!(
+                rel.rhs.as_ref(),
+                syntax::Expr::Number(n) if n.value.trim().parse::<u64>().ok() == Some(0)
+            ) {
+                return None;
+            }
+            let syntax::Expr::BinaryOp(rem) = rel.lhs.as_ref() else {
+                return None;
+            };
+            if rem.op != syntax::BinaryOp::Rem {
+                return None;
+            }
+            let syntax::Expr::Identifier(id) = rem.lhs.as_ref() else {
+                return None;
+            };
+            if id.name.as_ref() != name {
+                return None;
+            }
+            let syntax::Expr::Number(divisor) = rem.rhs.as_ref() else {
+                return None;
+            };
+            let n = divisor.value.trim().parse::<u64>().ok()?;
+            (n > 1 && n.is_power_of_two()).then_some(n)
+        }
+        _ => None,
+    }
+}
+
+/// One `(param, axis, N)` for each run-time extent of a parameter that a `requires` of the
+/// function states is a multiple of a power of two. The extent is named by
+/// `?n` in the parameter's type, and the clause says `n % N == 0`.
+///
+/// A kernel that comes from a `.vxlib` has no `requires`, so its facts are empty and
+/// it gets no assume: the promise is only safe where the compiler can read it.
+pub(crate) fn extent_mult_facts(func: &syntax::Function) -> Vec<(usize, usize, u64)> {
+    let mut facts = Vec::new();
+    for (p, (_, ty)) in func.params.iter().enumerate() {
+        let Some(dims) = tensor_dims_of(ty) else {
+            continue;
+        };
+        for (axis, dim) in dims.iter().enumerate() {
+            let syntax::Dim::Dyn(Some(name)) = dim else {
+                continue;
+            };
+            for req in &func.requires {
+                if let Some(n) = requires_mult_of(req, name.as_ref()) {
+                    facts.push((p, axis, n));
+                }
+            }
+        }
+    }
+    facts
+}
+
+/// An `index` constant, the type `memref.dim` speaks.
+fn index_constant<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    v: i64,
+    index_ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    Ok(block
+        .append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[index_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(index_ty, v).into(),
+                )])
+                .build()?,
+        )
+        .result(0)?
+        .into())
+}
+
+/// One `llvm.intr.assume` per fact: `(extent & (N - 1)) == 0` says what the caller proved at
+/// the call, so LLVM folds on it. The op goes where `block` puts it; callers append at the
+/// entry of the code the fact covers, so the assume dominates the accesses that rely on it.
+pub(crate) fn assume_extents_are_multiples<'c>(
+    gen: &MeliorGenerator<'c>,
+    val: Value<'c, 'c>,
+    mlir_ty: Type<'c>,
+    mults: &[(usize, u64)],
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(), LowerError> {
+    if mults.is_empty() {
+        return Ok(());
+    }
+    // A reference to a tensor is a slot, `memref<memref<...>>`, and `memref.dim` reads the
+    // tensor in it.
+    let mut mlir_ty = mlir_ty;
+    let val = expr::load_tensor_slot(gen, &block, val, &mut mlir_ty)?;
+    if !mlir_ty.to_string().starts_with("memref<") {
+        return Ok(());
+    }
+    let index_ty = melior::ir::r#type::Type::index(gen.context);
+    // The empty `op_bundle_sizes` the verifier asks of an assume with no bundle.
+    let empty_bundle_sizes = Attribute::parse(gen.context, "array<i32>")
+        .ok_or_else(|| LowerError::from("failed to parse array<i32> for assume".to_string()))?;
+    for &(axis, n) in mults {
+        if n <= 1 || !n.is_power_of_two() {
+            continue;
+        }
+        let extent: Value = block
+            .append_operation(
+                OperationBuilder::new("memref.dim", gen.loc())
+                    .add_operands(&[val, index_constant(gen, block, axis as i64, index_ty)?])
+                    .add_results(&[index_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let low_bits: Value = block
+            .append_operation(
+                OperationBuilder::new("arith.andi", gen.loc())
+                    .add_operands(&[
+                        extent,
+                        index_constant(gen, block, (n - 1) as i64, index_ty)?,
+                    ])
+                    .add_results(&[index_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let eq: Value = block
+            .append_operation(
+                OperationBuilder::new("arith.cmpi", gen.loc())
+                    .add_operands(&[low_bits, index_constant(gen, block, 0, index_ty)?])
+                    .add_results(&[gen.i1_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "predicate"),
+                        IntegerAttribute::new(
+                            gen.i64_ty,
+                            melior::dialect::arith::CmpiPredicate::Eq as i64,
+                        )
+                        .into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        block.append_operation(
+            OperationBuilder::new("llvm.intr.assume", gen.loc())
+                .add_operands(&[eq])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "op_bundle_sizes"),
+                    empty_bundle_sizes,
+                )])
+                .build()?,
+        );
+    }
+    Ok(())
+}
+
 pub trait LowerToMelior<'c> {
     type Output;
     fn lower(
