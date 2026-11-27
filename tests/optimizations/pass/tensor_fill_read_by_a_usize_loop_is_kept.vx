@@ -1,0 +1,51 @@
+//===- tensor_fill_read_by_a_usize_loop_is_kept.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s -O1 --run | FileCheck %s
+// RUN: vxc %s -O2 --run | FileCheck %s
+// RUN: vxc %s -O1 --emit-mlir | FileCheck %s --check-prefix=FUSED # flat-codegen
+//
+// `main`: the `0..64` loop and the `usize` loop both read `a`. Loop fusion
+// merges the fill of `a` with the `0..64` loop. It once deleted the fill of the
+// real `a` too, because it did not see the `usize` loop, which the compiler
+// writes as branches. The sum of `a` then printed as NaN, not as 64.
+// CHECK: 64 2
+//
+// `before_an_if`: no branch reads `a` or `b`, and only the free of `b` comes
+// after the `if`. So fusion still runs here: one loop adds 1 to the fill value
+// of `a` and writes `b`, and it does not load from `a`.
+// FUSED-LABEL: func.func @before_an_if
+// FUSED: %[[SUM:.*]] = arith.addf %arg0,
+// FUSED-NEXT: memref.store %[[SUM]],
+
+fn before_an_if(x : f32) -> f32 {
+  let a = Tensor<f32, [64]>::fill(x);
+  let mut b = Tensor<f32, [64]>::fill(0.0);
+  for i in 0..64 {
+    b[i] = a[i] + 1.0;
+  }
+  let mut s = 0.0;
+  if b[3] > 1.0 {
+    s = 7.5;
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32, [64]>::fill(1.0);
+  let mut b = Tensor<f32, [64]>::fill(0.0);
+  for i in 0..64 {
+    b[i] = a[i] + 1.0;
+  }
+  let mut s = 0.0;
+  for i in 0usize..64usize {
+    s = s + a[i];
+  }
+  println!("{} {}", s, b[3]);
+  println!("{}", before_an_if(1.0));
+  return 0;
+}

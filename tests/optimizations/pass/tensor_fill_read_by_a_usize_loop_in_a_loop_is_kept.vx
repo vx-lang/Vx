@@ -1,0 +1,34 @@
+//===- tensor_fill_read_by_a_usize_loop_in_a_loop_is_kept.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s -O1 --run | FileCheck %s
+// RUN: vxc %s -O2 --run | FileCheck %s
+//
+// The body of the `j` loop fills `a`, reads it in a `0..64` loop, and reads it
+// again in a `usize` loop, which the compiler writes as branches. Loop fusion
+// once deleted the fill of `a`, and the program printed NaN. Each turn of the
+// `j` loop adds 64 + 2.
+//
+// CHECK: 264
+
+fn main() -> i32 {
+  let mut t = 0.0;
+  for j in 0..4 {
+    let a = Tensor<f32, [64]>::fill(1.0);
+    let mut b = Tensor<f32, [64]>::fill(0.0);
+    for i in 0..64 {
+      b[i] = a[i] + 1.0;
+    }
+    let mut s = 0.0;
+    for i in 0usize..64usize {
+      s = s + a[i];
+    }
+    t = t + s + b[3];
+  }
+  println!("{}", t);
+  return 0;
+}
