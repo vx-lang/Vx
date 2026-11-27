@@ -1,0 +1,22 @@
+//===- derive_attribute_says_vx_has_no_attributes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Unexpected
+//
+// Vx has no attributes. A Rust programmer who writes `#[derive(Debug, Clone, Copy)]` is told so, and is
+// shown the `impl` to write for `Clone` and `Copy`. `Debug` has no `impl` to show, so it is skipped
+// and the traits after it still get one.
+
+// CHECK: Error at {{.*}}derive_attribute_says_vx_has_no_attributes.vx:[[@LINE+1]]:1: Vx has no attributes yet, so `#[...]` does not work. Write the impl yourself: `impl Clone for Type { fn clone(self : &Self) -> Self { ... } }` and `impl Copy for Type {}`.
+#[derive(Debug, Clone, Copy)]
+struct S {
+  x : i32,
+}
+
+fn main() -> i32 {
+  return 0;
+}

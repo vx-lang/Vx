@@ -1,5 +1,5 @@
 use clap::Parser;
-use lsp_server::{Connection, Message, Request, RequestId, Response};
+use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Hover,
     HoverContents, HoverProviderCapability, Position, PublishDiagnosticsParams, Range,
@@ -52,15 +52,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let (connection, io_threads) = Connection::stdio();
 
-    let server_capabilities = serde_json::to_value(&ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
-        hover_provider: Some(HoverProviderCapability::Simple(true)),
-        definition_provider: Some(lsp_types::OneOf::Left(true)),
-        references_provider: Some(lsp_types::OneOf::Left(true)),
-        document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
-        ..Default::default()
-    })
-    .unwrap();
+    let server_capabilities = serde_json::to_value(server_capabilities()).unwrap();
     let _initialization_params = connection.initialize(server_capabilities)?;
 
     log_line!(log_file, "Initialized");
@@ -70,6 +62,17 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     log_line!(log_file, "Shut down");
     Ok(())
+}
+
+/// The requests that `main_loop` answers. Add a capability only when `main_loop` handles it.
+fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
+        document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
+        ..Default::default()
+    }
 }
 
 fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -204,7 +207,15 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                             connection.sender.send(Message::Response(resp))?;
                         }
                     }
-                    _ => {}
+                    _ => {
+                        // The protocol needs an answer to every request.
+                        let resp = Response::new_err(
+                            req.id,
+                            ErrorCode::MethodNotFound as i32,
+                            format!("vx-analyzer does not handle {}", req.method),
+                        );
+                        connection.sender.send(Message::Response(resp))?;
+                    }
                 }
             }
             Message::Response(_resp) => {
@@ -285,4 +296,46 @@ fn send_diagnostics(
     let not = lsp_server::Notification::new("textDocument/publishDiagnostics".to_string(), params);
     connection.sender.send(Message::Notification(not))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_request_the_server_does_not_handle_gets_a_method_not_found_error() {
+        let (server, client) = Connection::memory();
+        let server_thread = std::thread::spawn(move || main_loop(server));
+
+        let request = Request::new(
+            RequestId::from(7),
+            "textDocument/documentSymbol".to_string(),
+            serde_json::json!({ "textDocument": { "uri": "file:///add_one.vx" } }),
+        );
+        client.sender.send(Message::Request(request)).unwrap();
+
+        // Fail after 10 seconds instead of waiting forever when the server sends no answer.
+        let message = client
+            .receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the server did not answer the request");
+        let Message::Response(response) = message else {
+            panic!("expected a response, got {message:?}");
+        };
+        assert_eq!(response.id, RequestId::from(7));
+        assert_eq!(response.result, None);
+        let error = response.error.expect("expected an error response");
+        assert_eq!(error.code, ErrorCode::MethodNotFound as i32);
+
+        // Closing the client ends the server loop.
+        drop(client);
+        server_thread.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn the_server_does_not_advertise_find_references() {
+        // `main_loop` has no code for `textDocument/references`.
+        assert_eq!(server_capabilities().references_provider, None);
+    }
 }

@@ -31,6 +31,9 @@ pub struct SmtProver {
     sorts: std::collections::HashMap<String, Sort>,
     /// Pairs of names that `==` or `!=` compares, so that they have the same sort.
     same_sort: Vec<(String, String)>,
+    /// The name of the unknown value of each `usize` operation that can overflow, by the text
+    /// of the operation.
+    overflow_names: std::collections::HashMap<String, String>,
 }
 
 /// The SMT sort of a term. A name that no fact uses as a condition is an `Int`.
@@ -66,6 +69,7 @@ impl SmtProver {
             nonlinear: false,
             sorts: std::collections::HashMap::new(),
             same_sort: Vec::new(),
+            overflow_names: std::collections::HashMap::new(),
         }
     }
 
@@ -196,6 +200,27 @@ impl SmtProver {
         self.assertions.iter().any(|a| a == smt)
     }
 
+    /// `exact`, an integer `+`, `-` or `*`, with the result the machine gives. A `usize` operation
+    /// stops the program on overflow, so then it has no value. It becomes a name with no facts.
+    /// One operation on the same operands has one name, so that it has one value in a query:
+    /// the fact `a + b < n` proves the goal `a + b < n`. Each other integer type wraps.
+    fn machine_result(&mut self, exact: String, ty: Option<ElementType>) -> Result<String, String> {
+        if ty != Some(ElementType::USize) {
+            return wrap(exact, ty);
+        }
+        let (lo, hi) = int_range(&ElementType::USize).expect("the range of usize");
+        // The name is short. A name that held the text of the operation made the text three
+        // times as long at each step of a chain such as `a + b + c`.
+        let count = self.overflow_names.len();
+        let undefined = self
+            .overflow_names
+            .entry(exact.clone())
+            .or_insert_with(|| format!("overflow.undefined.{count}"))
+            .clone();
+        let undefined = self.name(&undefined, Some(Sort::Int))?;
+        Ok(format!("(ite (<= {lo} {exact} {hi}) {exact} {undefined})"))
+    }
+
     /// `expected` supplies context for literal arithmetic. Remainder requires its own operand type.
     /// `want` is the sort that the place of `expr` needs, when the place tells it.
     fn lower_expr(
@@ -292,7 +317,7 @@ impl SmtProver {
                 {
                     self.nonlinear = true;
                 }
-                wrap(format!("({} {} {})", op, lhs, rhs), ty)
+                self.machine_result(format!("({} {} {})", op, lhs, rhs), ty)
             }
             Expr::RelationalOp(r) => {
                 let side = r
@@ -356,10 +381,15 @@ impl SmtProver {
                     {
                         Ok(format!("(- {inner})"))
                     }
-                    UnaryOp::Neg => wrap(
-                        format!("(- {})", inner),
-                        int_type(&u.expr, type_of).or(expected),
-                    ),
+                    UnaryOp::Neg => {
+                        let exact = format!("(- {inner})");
+                        match int_type(&u.expr, type_of).or(expected) {
+                            // A program cannot negate a usize. The pointer checker does, for
+                            // the offset of `sub(p, n)`, and it means the exact value.
+                            Some(ElementType::USize) => Ok(exact),
+                            ty => wrap(exact, ty),
+                        }
+                    }
                     UnaryOp::Try => Err("the `?` operator".to_string()),
                 }
             }
@@ -722,14 +752,18 @@ fn int_range(ty: &ElementType) -> Option<(String, String)> {
     })
 }
 
-/// `exact`, an integer `+`, `-`, `*` or negation, with the result the machine gives. It wraps at
-/// the width of the type. A `usize` result is exact: an overflow there stops the program. A float
-/// stays as it is. `None` means the type is not known, and the prover cannot model the operation.
+/// `exact`, an integer `+`, `-`, `*` or negation, wrapped at the width of the type, as the machine
+/// does for each integer type but `usize`. A float stays as it is. `None` means the type is not
+/// known, and the prover cannot model the operation.
 fn wrap(exact: String, ty: Option<ElementType>) -> Result<String, String> {
     let Some(ty) = ty else {
         return Err("an operation whose integer type is not known".to_string());
     };
-    if ty.is_float() || ty == ElementType::USize {
+    assert!(
+        ty != ElementType::USize,
+        "a usize operation does not wrap: it stops the program on overflow"
+    );
+    if ty.is_float() {
         return Ok(exact);
     }
     let Some(bits) = ty.int_bits().filter(|_| ty != ElementType::Bool) else {
@@ -844,7 +878,14 @@ pub fn to_source(e: &Expr) -> Option<String> {
                 BinaryOp::Rem => "%",
                 _ => return None,
             };
-            format!("{} {op} {}", to_source(&b.lhs)?, to_source(&b.rhs)?)
+            // The operators group from the left, so a right operand at the same level keeps
+            // its parentheses: `a - (b - c)`.
+            let level = binding_level(e);
+            format!(
+                "{} {op} {}",
+                operand_source(&b.lhs, level)?,
+                operand_source(&b.rhs, level + 1)?
+            )
         }
         Expr::RelationalOp(r) => {
             let op = match r.op {
@@ -855,7 +896,11 @@ pub fn to_source(e: &Expr) -> Option<String> {
                 RelationalOp::Gt => ">",
                 RelationalOp::Ge => ">=",
             };
-            format!("{} {op} {}", to_source(&r.lhs)?, to_source(&r.rhs)?)
+            format!(
+                "{} {op} {}",
+                operand_source(&r.lhs, COMPARISON + 1)?,
+                operand_source(&r.rhs, COMPARISON + 1)?
+            )
         }
         Expr::LogicalOp(l) => {
             let op = match l.op {
@@ -866,13 +911,60 @@ pub fn to_source(e: &Expr) -> Option<String> {
         }
         Expr::UnaryOp(u) => match u.op {
             UnaryOp::Not => format!("!({})", to_source(&u.expr)?),
-            UnaryOp::Neg => format!("-{}", to_source(&u.expr)?),
-            UnaryOp::Try => format!("{}?", to_source(&u.expr)?),
+            UnaryOp::Neg => {
+                let text = operand_source(&u.expr, UNARY)?;
+                // `--x` is not an expression, so the negation of `-x` or `-1` is `-(-x)`.
+                if text.starts_with('-') {
+                    format!("-({text})")
+                } else {
+                    format!("-{text}")
+                }
+            }
+            UnaryOp::Try => format!("{}?", operand_source(&u.expr, POSTFIX)?),
         },
-        Expr::MemberAccess(m) => format!("{}.{}", to_source(&m.base)?, m.member),
-        Expr::IndexAccess(i) => format!("{}[{}]", to_source(&i.base)?, to_source(&i.index)?),
-        Expr::AsCast(c) => format!("{} as {}", to_source(&c.expr)?, c.target_ty),
+        Expr::MemberAccess(m) => format!("{}.{}", operand_source(&m.base, POSTFIX)?, m.member),
+        Expr::IndexAccess(i) => format!(
+            "{}[{}]",
+            operand_source(&i.base, POSTFIX)?,
+            to_source(&i.index)?
+        ),
+        Expr::AsCast(c) => format!("{} as {}", operand_source(&c.expr, UNARY)?, c.target_ty),
         _ => return None,
+    })
+}
+
+// How tightly each kind of expression binds, from loosest to tightest, in the order of the
+// parser.
+const LOGICAL: u8 = 1;
+const COMPARISON: u8 = 2;
+const SUM: u8 = 3;
+const PRODUCT: u8 = 4;
+const CAST: u8 = 5;
+const UNARY: u8 = 6;
+const POSTFIX: u8 = 7;
+
+fn binding_level(e: &Expr) -> u8 {
+    match e {
+        Expr::LogicalOp(_) => LOGICAL,
+        Expr::RelationalOp(_) => COMPARISON,
+        Expr::BinaryOp(b) => match b.op {
+            BinaryOp::Mul | BinaryOp::Rem => PRODUCT,
+            _ => SUM,
+        },
+        Expr::AsCast(_) => CAST,
+        Expr::UnaryOp(u) if u.op != UnaryOp::Try => UNARY,
+        _ => POSTFIX,
+    }
+}
+
+/// `e` as the operand of an operator that binds at `level`. It is in parentheses when it binds
+/// less tightly, so the quote means what the program wrote: `(a + b) * c`, `-(x as i64)`.
+fn operand_source(e: &Expr, level: u8) -> Option<String> {
+    let text = to_source(e)?;
+    Some(if binding_level(e) < level {
+        format!("({text})")
+    } else {
+        text
     })
 }
 
@@ -1038,6 +1130,41 @@ mod tests {
         let first = prover.lower_term(&name_expr("_"), &i64_names).unwrap();
         let second = prover.lower_term(&name_expr("_"), &i64_names).unwrap();
         assert_ne!(first, second, "two `_` got one name");
+    }
+
+    /// `a + b + c` on usize, written twice, has the same term both times. The names of its two
+    /// unknown values are short: they do not hold the text of the operation.
+    #[test]
+    fn a_usize_operation_has_one_short_name_for_its_unknown_value() {
+        let add = |lhs: Expr, rhs: &str| {
+            let mut sum = BinaryOpExpr::new(
+                Box::new(lhs),
+                BinaryOp::Add,
+                Box::new(name_expr(rhs)),
+                Span::default(),
+            );
+            sum.operand_ty = Some(ElementType::USize);
+            Expr::BinaryOp(sum)
+        };
+        let chain = add(add(name_expr("a"), "b"), "c");
+        let usize_names = |e: &Expr| match e {
+            Expr::Identifier(_) => Some((ElementType::USize, true)),
+            _ => None,
+        };
+        let mut prover = SmtProver::new();
+        let first = prover.lower_term(&chain, &usize_names).unwrap();
+        let second = prover.lower_term(&chain, &usize_names).unwrap();
+        assert_eq!(first, second, "one operation got two unknown values");
+        let unknown: Vec<&String> = prover
+            .declarations
+            .iter()
+            .filter(|name| name.contains("overflow.undefined"))
+            .collect();
+        assert_eq!(
+            unknown,
+            ["|overflow.undefined.0|", "|overflow.undefined.1|"],
+            "the names of the unknown values of `a + b` and `a + b + c`"
+        );
     }
 
     #[test]

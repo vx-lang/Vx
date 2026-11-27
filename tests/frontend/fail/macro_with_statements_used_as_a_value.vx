@@ -1,0 +1,24 @@
+//===- macro_with_statements_used_as_a_value.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A macro whose body is a statement gives no value. So a call of it that is used as a value is
+// an error, and the compiler does not drop the statement.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: the body of macro `set_to` is not one expression, so the call at line 22 cannot give a value. Write the call as a statement of its own: `set_to!(..);`
+
+macro_rules set_to {
+  ($place : expr, $value : expr) => {
+    $place = $value;
+  };
+}
+
+fn main() -> i32 {
+  let mut x = 0;
+  let y = set_to!(x, 7);
+  return x;
+}

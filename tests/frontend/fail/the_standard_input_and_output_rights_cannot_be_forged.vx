@@ -1,0 +1,35 @@
+//===- the_standard_input_and_output_rights_cannot_be_forged.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `Stdin`, `Stdout` and `Stderr` are the rights to read standard input and to write to standard
+// output and error. Only `std::io` can make them, and a program gets them in its `Root`. Code in
+// another file cannot:
+// - copy one with an `impl Copy` (E3066),
+// - make one with a struct literal (E8014),
+// - get the right of the program, even in `unsafe`: only `std` can call `stdin_of_the_program`
+//   and the others (E5005).
+import std::io;
+
+impl Copy for Stdin {}
+
+fn forged_output() -> Stdout {
+  return Stdout {};
+}
+
+fn taken_error() -> Stderr {
+  return unsafe { stderr_of_the_program() };
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E3066] at {{.*}}.vx:19:1: `impl Copy for Stdin` is in `the_standard_input_and_output_rights_cannot_be_forged.vx`, and `io.vx` declares `Stdin`
+// CHECK: Error[E8014] at {{.*}}.vx:22:10: this struct literal builds a `Stdout`. `Stdout` has an invariant, so only code in `io.vx` can build it
+// CHECK: Error[E5005] at {{.*}}.vx:26:19: `stderr_of_the_program` is `pkg` in `io.vx`, so only the package `std` can call it

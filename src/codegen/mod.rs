@@ -170,6 +170,9 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
+/// Registers every MLIR pass, the upstream ones and the Vx ones, once in the process. MLIR keeps
+/// the passes in a global map with no lock, so two threads that register at the same time can
+/// corrupt the heap. Call this, and not the MLIR registration functions.
 pub fn init_codegen_globals() {
     INIT.call_once(|| {
         melior::utility::register_all_passes();
@@ -189,7 +192,7 @@ pub fn enable_optimization_remarks(context: &Context) {
     }
 }
 
-pub fn register_vx_passes() {
+fn register_vx_passes() {
     unsafe {
         registerVxPassesC();
     }

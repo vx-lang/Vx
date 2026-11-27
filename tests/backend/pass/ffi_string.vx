@@ -11,8 +11,8 @@
 // CHECK-DAG: func.func private @vx_string_from_c_str(
 // CHECK-DAG: func.func private @vx_string_push_c_str(
 // CHECK-DAG: func.func private @vx_string_len(
-// CHECK-DAG: func.func private @print_str(
-// CHECK-DAG: func.func private @print_i32(
+// CHECK-DAG: func.func private @vx_print_str(
+// CHECK-DAG: func.func private @vx_print_i32(
 // CHECK-DAG: func.func private @vx_string_as_c_str(
 // CHECK-DAG: func.func private @vx_string_free_c_str(
 // CHECK-DAG: func.func private @vx_string_drop(
@@ -20,11 +20,11 @@
 // CHECK: %[[V0:.*]] = call @vx_string_from_c_str(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
 // CHECK: call @vx_string_push_c_str(%[[V0]], %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> i32
 // CHECK: %[[V1:.*]] = call @vx_string_len(%[[V0]]) : (!llvm.ptr) -> i32
-// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK: call @print_i32(%[[V1]]) : (i32) -> i32
+// CHECK: call @vx_print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @vx_print_i32(%[[V1]]) : (i32) -> i32
 // CHECK: %[[V2:.*]] = call @vx_string_as_c_str(%[[V0]]) : (!llvm.ptr) -> !llvm.ptr
-// CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
+// CHECK: call @vx_print_str(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @vx_print_i32(%{{.*}}) : (i32) -> i32
 import std::string;
 import std::io;
 

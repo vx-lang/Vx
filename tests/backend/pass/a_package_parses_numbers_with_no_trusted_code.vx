@@ -1,0 +1,118 @@
+//===- a_package_parses_numbers_with_no_trusted_code.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `i64::parse`, `u64::parse`, `f64::parse`, `f32::parse` and a float's `to_string` are safe. So
+// the package `tests` calls them with no `unsafe` block, and `--no-trusted-code tests` allows
+// the program. Each line of output is the result for one text, in the order of `main`.
+//
+// RUN: vxc --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc --package tests=tests --no-trusted-code tests --legacy-codegen %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// i64: the smallest and the largest i64, one past each, a `+`, a sign alone, no bytes, a
+// letter after the digits, a space before them, and bytes 2..5 of "x=-42;".
+// CHECK: {{^}}-9223372036854775808{{$}}
+// CHECK-NEXT: {{^}}9223372036854775807{{$}}
+// CHECK-NEXT: {{^}}out of range{{$}}
+// CHECK-NEXT: {{^}}out of range{{$}}
+// CHECK-NEXT: {{^}}7{{$}}
+// CHECK-NEXT: {{^}}invalid{{$}}
+// CHECK-NEXT: {{^}}empty{{$}}
+// CHECK-NEXT: {{^}}invalid{{$}}
+// CHECK-NEXT: {{^}}invalid{{$}}
+// CHECK-NEXT: {{^}}-42{{$}}
+//
+// u64: the largest u64, one past it, a `-`, and a `+`.
+// CHECK-NEXT: {{^}}18446744073709551615{{$}}
+// CHECK-NEXT: {{^}}out of range{{$}}
+// CHECK-NEXT: {{^}}invalid{{$}}
+// CHECK-NEXT: {{^}}0{{$}}
+//
+// f64: "0.1", "1e400", "-2.5e-3", ".5", "NaN", a space after the digits, no bytes, bytes 1..5
+// of "[3.25]", and "1e21", whose text has 22 digits.
+// CHECK-NEXT: {{^}}0.1{{$}}
+// CHECK-NEXT: {{^}}inf{{$}}
+// CHECK-NEXT: {{^}}-0.0025{{$}}
+// CHECK-NEXT: {{^}}0.5{{$}}
+// CHECK-NEXT: {{^}}NaN{{$}}
+// CHECK-NEXT: {{^}}invalid{{$}}
+// CHECK-NEXT: {{^}}empty{{$}}
+// CHECK-NEXT: {{^}}3.25{{$}}
+// CHECK-NEXT: {{^}}1000000000000000000000{{$}}
+//
+// f32: "0.1" prints as 0.1, the fewest digits for an f32. 1 + 2^-24 is halfway between two
+// f32 values, and the text is a little above it. Rounded once, it is the upper f32. Rounded
+// to an f64 first, it is exactly halfway, and then it is 1.
+// CHECK-NEXT: {{^}}0.1{{$}}
+// CHECK-NEXT: {{^}}1.0000001{{$}}
+
+import std::string;
+import std::vec;
+import tests::modules::a_package_that_parses_numbers;
+
+// The bytes of a string literal, without the NUL at its end.
+fn bytes(text : *const i8) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  let length = unsafe { string_length(text) };
+  for i in 0..length {
+    v.push(unsafe { text[i] } as u8);
+  }
+  return v;
+}
+
+fn i64_of(text : *const i8) -> void {
+  let b = bytes(text);
+  show_i64(&b, 0, b.len());
+}
+
+fn u64_of(text : *const i8) -> void {
+  let b = bytes(text);
+  show_u64(&b, 0, b.len());
+}
+
+fn f64_of(text : *const i8) -> void {
+  let b = bytes(text);
+  show_f64(&b, 0, b.len());
+}
+
+fn f32_of(text : *const i8) -> void {
+  let b = bytes(text);
+  show_f32(&b, 0, b.len());
+}
+
+fn main() -> i32 {
+  i64_of("-9223372036854775808");
+  i64_of("9223372036854775807");
+  i64_of("9223372036854775808");
+  i64_of("-9223372036854775809");
+  i64_of("+7");
+  i64_of("-");
+  i64_of("");
+  i64_of("12a");
+  i64_of(" 12");
+  let assignment = bytes("x=-42;");
+  show_i64(&assignment, 2, 5);
+
+  u64_of("18446744073709551615");
+  u64_of("18446744073709551616");
+  u64_of("-1");
+  u64_of("+0");
+
+  f64_of("0.1");
+  f64_of("1e400");
+  f64_of("-2.5e-3");
+  f64_of(".5");
+  f64_of("NaN");
+  f64_of("1.5 ");
+  f64_of("");
+  let list = bytes("[3.25]");
+  show_f64(&list, 1, 5);
+  f64_of("1e21");
+
+  f32_of("0.1");
+  f32_of("1.0000000596046447755");
+  return 0;
+}

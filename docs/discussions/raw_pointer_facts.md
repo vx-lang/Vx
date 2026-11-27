@@ -346,7 +346,7 @@ argument that can free memory makes it an event. For the same reason, an impl of
 cannot add a pointer `requires` that the trait method does not have. A call through a trait bound
 reads only the clauses of the trait, so it uses only a `!frees` that the trait method states. The
 checker checks each impl body against that `!frees` by the rules of section 5. A `pub fn` can be
-called from C, which proves nothing. The audit lists each `pub fn` with a pointer `requires`.
+called from C, which proves nothing. The audit lists each `requires` of an `extern fn`.
 
 ## 8. Examples
 

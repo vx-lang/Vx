@@ -271,7 +271,7 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
             let mut shape = Vec::with_capacity(dims.len());
             for d in dims {
                 shape.push(match d {
-                    Dim::Dyn => DYN_DIM.to_string(),
+                    Dim::Dyn(_) => DYN_DIM.to_string(),
                     _ => d.literal()?.parse::<i64>().ok()?.to_string(),
                 });
             }
@@ -1232,20 +1232,20 @@ const RUNTIME_HELPERS: [(&str, &str); 28] = [
     ("printMemrefI32", "(memref<*xi32>)"),
     ("printMemrefI64", "(memref<*xi64>)"),
     ("printMemrefBF16", "(memref<*xbf16>)"),
-    ("print_f32", "(f32) -> i32"),
-    ("print_f64", "(f64) -> i32"),
-    ("print_i32", "(i32) -> i32"),
-    ("print_i64", "(i64) -> i32"),
-    ("print_u8", "(i8) -> i32"),
-    ("print_u16", "(i16) -> i32"),
-    ("print_u32", "(i32) -> i32"),
-    ("print_u64", "(i64) -> i32"),
-    ("print_i128", "(i64, i64) -> i32"),
-    ("print_u128", "(i64, i64) -> i32"),
-    ("print_str", "(!llvm.ptr) -> i32"),
+    ("vx_print_f32", "(f32) -> i32"),
+    ("vx_print_f64", "(f64) -> i32"),
+    ("vx_print_i32", "(i32) -> i32"),
+    ("vx_print_i64", "(i64) -> i32"),
+    ("vx_print_u8", "(i8) -> i32"),
+    ("vx_print_u16", "(i16) -> i32"),
+    ("vx_print_u32", "(i32) -> i32"),
+    ("vx_print_u64", "(i64) -> i32"),
+    ("vx_print_i128", "(i64, i64) -> i32"),
+    ("vx_print_u128", "(i64, i64) -> i32"),
+    ("vx_print_str", "(!llvm.ptr) -> i32"),
     ("vx_print_to_stderr", "(i32) -> i32"),
     ("vx_init_signals", "()"),
-    ("print_bool", "(i32) -> i32"),
+    ("vx_print_bool", "(i32) -> i32"),
     ("printMemrefU32", "(memref<*xi32>)"),
     ("printMemrefU64", "(memref<*xi64>)"),
     ("printMemrefI8", "(memref<*xi8>)"),
@@ -1681,8 +1681,8 @@ pub fn parse_emitted_module<'c>(
 fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String> {
     let mut parts = location.trim_end_matches(')').rsplit(':');
     let _column = parts.next()?;
-    let line: usize = parts.next()?.parse().ok()?;
-    let before: Vec<&str> = text.lines().take(line.checked_sub(1)?).collect();
+    let error_line: usize = parts.next()?.parse().ok()?;
+    let before: Vec<&str> = text.lines().take(error_line.checked_sub(1)?).collect();
     for l in before.into_iter().rev() {
         if l.starts_with(MLIR_BLOCK_END) {
             return None;
@@ -1694,6 +1694,22 @@ fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String>
         let (column, input) = rest.split_once(' ').unwrap_or((rest, ""));
         let block = format!("The `mlir!` block at line {line}, column {column}");
         let Some(input) = input.strip_prefix("input ") else {
+            // MLIR gives this message for every block without a last instruction, also for
+            // the inner region of an operation. The wrapper has a `return` in place of the
+            // `macro.yield`. When no `return` follows the line of the error, the block itself
+            // has no `macro.yield`.
+            let yield_follows = text
+                .lines()
+                .skip(error_line)
+                .take_while(|l| !l.starts_with(MLIR_BLOCK_END))
+                .any(|l| l.trim() == "return" || l.trim_start().starts_with("return "));
+            if message.starts_with("block with no terminator") && !yield_follows {
+                return Some(format!(
+                    "{block} does not end with `macro.yield`. A block with no `returns` ends \
+                     with a bare `macro.yield`. A block with `returns` ends with `macro.yield` \
+                     and the value to return, such as `macro.yield %r : i32`."
+                ));
+            }
             return Some(format!("{block} is not valid MLIR: {message}"));
         };
         let mut fields = input.split(" | ");
@@ -1704,6 +1720,70 @@ fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String>
         ));
     }
     None
+}
+
+/// One function's emitted text, the calls it makes, and the runtime-helper bitmask over
+/// `RUNTIME_HELPERS`.
+type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64);
+
+/// `why`, naming the function it was found in.
+///
+/// `$` is how the compiler joins the parts of a name it made: a generic instance's type
+/// arguments, a method's receiver. Such a name is the one the function is emitted under, not one
+/// the program's author wrote. The function record has no field holding the source spelling, so
+/// the message says the name is an instance rather than presenting it as a source name.
+fn name_the_gap(why: Decline, func: &Function) -> Decline {
+    if func.name.contains('$') {
+        why.in_instance(func.name.as_ref())
+    } else {
+        why.in_function(func.name.as_ref())
+    }
+}
+
+/// Emit one function of the module from its flat HIR, naming the function in any gap the emit
+/// raises.
+///
+/// The naming wraps the whole emit -- signature as well as body -- because a gap found while
+/// spelling a parameter or return type belongs to the same function, and the emitter line alone
+/// does not say which one.
+#[allow(clippy::too_many_arguments)]
+fn emit_one(
+    func: &Function,
+    hir: &[HirInstruction],
+    types: &[TypeId],
+    ctx: &EmitCtx,
+    str_base: usize,
+    strings: &[String],
+    inline_base: usize,
+    inline_blocks: &[crate::hir::flatten::InlineBlock],
+    alias_stores: &[(usize, usize, Vec<usize>)],
+    distinct_ctr: u32,
+    helper_pats: &[String],
+) -> Lowered<FnEmission> {
+    let mut calls = Vec::new();
+    let mut distinct_ctr = distinct_ctr;
+    let text = emit_function_mlir(
+        func,
+        hir,
+        types,
+        ctx,
+        &mut calls,
+        str_base,
+        strings,
+        inline_base,
+        inline_blocks,
+        alias_stores,
+        &mut distinct_ctr,
+    )
+    .map_err(|why| name_the_gap(why, func))?;
+    let helpers = helper_pats.iter().enumerate().fold(0u64, |m, (i, pat)| {
+        if text.contains(pat.as_str()) {
+            m | (1u64 << i)
+        } else {
+            m
+        }
+    });
+    Ok((text, calls, helpers))
 }
 
 /// Generate MLIR for all functions, wrapped in `module { … }`.
@@ -1840,7 +1920,6 @@ pub fn emit_module_mlir(
         .map(|(name, _)| format!("@{name}("))
         .collect();
 
-    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64);
     // An inline block's wrapper is named from a module-wide base, so two functions' do not collide.
     let inline_bases: Vec<usize> = {
         let mut bases = Vec::with_capacity(funcs.len());
@@ -1851,36 +1930,26 @@ pub fn emit_module_mlir(
         }
         bases
     };
-    let emit_one =
+    let emit_at =
         |(fi, (func, hir, types)): (usize, &(&Function, &[HirInstruction], &[TypeId]))| {
-            let mut calls = Vec::new();
-            let mut distinct_ctr = distinct_bases[fi];
-            let text = emit_function_mlir(
+            emit_one(
                 func,
                 hir,
                 types,
                 &ctx,
-                &mut calls,
                 str_bases[fi],
                 string_tables.get(fi).copied().unwrap_or(&[]),
                 inline_bases[fi],
                 inline_tables.get(fi).copied().unwrap_or(&[]),
                 alias_tables.get(fi).copied().unwrap_or(&[]),
-                &mut distinct_ctr,
-            )?;
-            let helpers = helper_pats.iter().enumerate().fold(0u64, |m, (i, pat)| {
-                if text.contains(pat.as_str()) {
-                    m | (1u64 << i)
-                } else {
-                    m
-                }
-            });
-            Ok((text, calls, helpers))
+                distinct_bases[fi],
+                &helper_pats,
+            )
         };
     let mut emitted: Vec<Lowered<FnEmission>> = if sched == crate::config::Schedule::Sequential {
-        funcs.iter().enumerate().map(emit_one).collect()
+        funcs.iter().enumerate().map(emit_at).collect()
     } else {
-        funcs.par_iter().enumerate().map(emit_one).collect()
+        funcs.par_iter().enumerate().map(emit_at).collect()
     };
     crate::intern_mode::record(crate::intern_mode::CODEGEN_EMIT, emit_start.elapsed());
 
@@ -2324,6 +2393,10 @@ pub(crate) struct FnEmit<'a> {
     /// its own alias-scope `distinct[]` id and its disjoint-sibling ids. Numbered from the
     /// module-global counter, so scopes stay distinct across functions.
     pub(crate) alias_scope_of: HashMap<usize, (u32, Vec<u32>)>,
+    /// The `?n` multiple-of assume marks of each open device region: one `(start, end, arg)`
+    /// per parameter assumed, positions into `body`, pushed at `Spawn` and consumed at
+    /// `SpawnEnd`, which prunes the marks for parameters the region body never reads.
+    pub(crate) mult_of_marks: Vec<Vec<(usize, usize, String)>>,
     /// Callees this function reaches, collected so the module can declare them.
     pub(crate) calls: &'a mut Vec<(String, Vec<String>, String)>,
     /// The SSA name each register carries.
@@ -2655,7 +2728,7 @@ impl<'a> FnEmit<'a> {
             // into VMEM/TMEM, and they are dropped otherwise.
             Opcode::Transfer => self.op_transfer(idx, ins),
             // Print a value (no result). A tensor is `memref.cast`'d to an unranked memref and passed
-            // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same
+            // to the `printMemref*` runtime helper; a scalar goes to `vx_print_*`. These are the same
             // helpers the AST path calls; `emit_module_mlir` prepends their `private` declarations.
             Opcode::Print => self.op_print(idx, ins),
             // Open a `vx.spawn` region (generic form). The op is inline in the enclosing block, which
@@ -2711,7 +2784,7 @@ impl<'a> FnEmit<'a> {
                 Ok(())
             }
             // Print a string literal (no result): take the address of the module-level global emitted
-            // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
+            // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@vx_print_str` runtime
             // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
             // Conditional abort -- `assert`, and `abort()` with a constant-false condition.
             // `cf.assert` rather than a hand-written branch onto a call, because MLIR lowers it
@@ -2902,6 +2975,7 @@ pub fn emit_function_mlir(
         ret_slot,
         arg_offset,
         alias_scope_of,
+        mult_of_marks: Vec::new(),
         calls,
         names: vec![String::new(); hir.len()],
         etypes: vec![None; hir.len()],
@@ -2943,6 +3017,7 @@ pub fn emit_function_mlir(
     em.entry += &valid_pointer_assumes(func, &valid, arg_offset);
 
     for (idx, ins) in hir.iter().enumerate() {
+        // Any gap here is named by `emit_one`, which wraps the whole emit of this function.
         em.step(idx, ins)?;
     }
 
@@ -2973,11 +3048,12 @@ pub fn emit_function_mlir(
         Some(t) => format!(" -> {t}"),
         None => String::new(),
     };
-    // A function declared `-> !` is `noreturn` to LLVM. An `extern fn` stays exported:
-    // `vx-hide-program-symbols` skips a function with `vx.pub`.
+    // A function declared `-> !` is `noreturn` to LLVM. A call to it runs at most once, so it is
+    // also `cold` and `noinline`: a small function that calls it stays small enough to inline.
+    // An `extern fn` stays exported: `vx-hide-program-symbols` skips a function with `vx.pub`.
     let mut attrs = Vec::new();
     if crate::syntax::is_never_ty(&func.return_type) {
-        attrs.push("passthrough = [\"noreturn\"]".to_string());
+        attrs.push("passthrough = [\"noreturn\", \"cold\", \"noinline\"]".to_string());
     }
     if func.exported {
         attrs.push("vx.pub".to_string());
@@ -3250,6 +3326,75 @@ mod tests {
             "emitted MLIR failed to verify:\n{mlir}"
         );
         mlir
+    }
+
+    /// A gap found while walking a function's instructions names the function it was found in.
+    ///
+    /// No corpus program reaches a gap: one that did would be an emitter bug, and the corpus
+    /// sweep fails if the flat path declines anything. So the only way to check the walk is to
+    /// hand it a stream it cannot carry. The stream is a field store whose slot nothing
+    /// allocated, which the emitter bails on at its first instruction.
+    #[test]
+    fn a_gap_names_the_function_it_was_found_in() {
+        use crate::bytecode::{Register, TypeIdx};
+        let f = parse_fn("fn check_token() -> i32 { return 0; }");
+        let code = [
+            HirInstruction::new(Opcode::FieldStore, Register(0), Register(0), TypeIdx(0), 0),
+            HirInstruction::new(Opcode::Ret, Register(0), Register(0), TypeIdx(0), 0),
+        ];
+        let types = [scalar_gid(&ElementType::I32)];
+        let decline = emit_one(
+            &f,
+            &code,
+            &types,
+            &EmitCtx::default(),
+            0,
+            &[],
+            0,
+            &[],
+            &[],
+            1,
+            &[],
+        )
+        .expect_err("a field store into a slot nothing allocated has no lowering");
+        let message = decline.to_string();
+        assert!(
+            message.ends_with("in function 'check_token'"),
+            "the gap must name the function the program has, not only the emitter's line: \
+             {message}"
+        );
+    }
+
+    /// A gap found while spelling a function's signature names the function too.
+    ///
+    /// A signature a real program can build is one the module's own registry can spell, so the
+    /// context here is made by hand: it knows the name `Pair` but holds no layout under the GID
+    /// that name maps to. The return type then reaches the signature path's own bail-out. The
+    /// function has no instructions, so the gap can only be the signature's -- a body gap cannot
+    /// happen in an empty stream.
+    #[test]
+    fn a_gap_in_the_signature_names_the_function_it_was_found_in() {
+        let f = parse_fn("fn check_token() -> Pair { }");
+        let missing = TypeId::new(1, 1, 0, 0);
+        let mut ctx = EmitCtx {
+            identities: Arc::new(crate::layout::identity::AggregateIdentities::new([(
+                missing,
+                "Pair".into(),
+            )])),
+            ..EmitCtx::default()
+        };
+        ctx.agg_names.insert("Pair".into(), missing);
+        let decline = emit_one(&f, &[], &[], &ctx, 0, &[], 0, &[], &[], 1, &[])
+            .expect_err("a return type with no layout in the context has no MLIR spelling");
+        let message = decline.to_string();
+        assert!(
+            message.starts_with("an emitter gap at src/codegen/flat.rs:"),
+            "the gap must be the one the signature path raises, not a body gap: {message}"
+        );
+        assert!(
+            message.ends_with("in function 'check_token'"),
+            "a gap found in the signature must name the function as a body gap does: {message}"
+        );
     }
 
     fn emit_module_with_layouts(

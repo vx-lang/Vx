@@ -38,6 +38,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <vector>
 
 namespace vx {
 
@@ -47,7 +48,7 @@ struct NcclUniqueId {
   char internal[128];
 };
 using NcclComm = void *;
-enum NcclDataType : int { NcclFloat32 = 7, NcclBfloat16 = 9 };
+enum NcclDataType : int { NcclInt8 = 0, NcclFloat32 = 7, NcclBfloat16 = 9 };
 enum NcclRedOp : int { NcclSum = 0 };
 
 struct NcclApi {
@@ -141,6 +142,37 @@ struct CollectiveDevice {
   bool (*device_memory)(const void *ptr);
   int (*current_device)();
   void (*set_device)(int);
+
+  // For the buffers that every rank can address (vx_peer_buffer_create).
+
+  /// `bytes` of GPU memory on the current GPU, all 0, after the zeroing ends.
+  /// Null when there is not enough memory.
+  void *(*allocate_zeroed)(size_t bytes);
+  void (*release)(void *ptr);
+  /// Copies `bytes` from host memory to GPU memory, or back, and waits for the
+  /// copy.
+  void (*copy_to_device)(void *device, const void *host, size_t bytes);
+  void (*copy_to_host)(void *host, const void *device, size_t bytes);
+  /// Waits for the work on `stream`.
+  void (*synchronize)(void *stream);
+  /// Writes the handle that another process opens to address the memory at
+  /// `ptr`, `kPeerHandleBytes` bytes, into `handle`. Returns an error or "".
+  std::string (*export_handle)(void *ptr, void *handle);
+  /// Opens another process's memory from its handle, and sets `*ptr` to its
+  /// address in this process. Returns an error or "".
+  std::string (*open_handle)(const void *handle, void **ptr);
+  /// Closes memory that `open_handle` opened. Returns an error or "".
+  std::string (*close_handle)(void *ptr);
+};
+
+/// The size of a handle from `export_handle`, as `cudaIpcMemHandle_t`.
+constexpr size_t kPeerHandleBytes = 64;
+
+/// GPU memory that every rank of a job can address: one part on each rank's
+/// GPU. `parts[r]` is the address of rank r's part in this process.
+struct PeerBuffer {
+  int64_t bytes = 0;
+  std::vector<void *> parts;
 };
 
 /// One process's rank in a job, through NCCL.
@@ -203,6 +235,12 @@ public:
     if (!comm_) {
       return "vx_collective_finish ran before vx_collective_init.";
     }
+    while (!peer_buffers_.empty()) {
+      std::string why = peer_buffer_destroy(peer_buffers_.front().get());
+      if (!why.empty()) {
+        return why;
+      }
+    }
     const int r = api_->CommDestroy(comm_);
     comm_ = nullptr;
     rank_ = -1;
@@ -240,7 +278,181 @@ public:
     });
   }
 
+  /// Makes `bytes` of GPU memory on each rank, which every rank can address,
+  /// and sets `*buffer`. Every rank calls this, with the same `bytes`, in the
+  /// same order. It returns after every rank's part is zeroed and open here.
+  std::string peer_buffer_create(int64_t bytes, void **buffer) {
+    const std::string fn = "vx_peer_buffer_create";
+    if (!comm_) {
+      return fn + " ran before vx_collective_init.";
+    }
+    if (bytes <= 0) {
+      return fn + " needs a size above 0, but got " + std::to_string(bytes) +
+             " bytes.";
+    }
+    if (device_.recording()) {
+      return fn + " ran while the stream records a CUDA graph. Make the "
+                  "buffer before the recording.";
+    }
+    auto made = std::make_unique<PeerBuffer>();
+    made->bytes = bytes;
+    made->parts.assign((size_t)ranks_, nullptr);
+    std::string why = with_device([&]() -> std::string {
+      void *own = device_.allocate_zeroed((size_t)bytes);
+      if (!own) {
+        return fn + " cannot allocate " + std::to_string(bytes) +
+               " bytes of GPU memory.";
+      }
+      made->parts[(size_t)rank_] = own;
+      if (ranks_ == 1) {
+        return "";
+      }
+      // Each rank's handle goes to every rank. The exchange starts after this
+      // rank's zeroing ends, so it ends after every rank's zeroing ends.
+      std::vector<char> handles((size_t)ranks_ * kPeerHandleBytes);
+      std::string why = device_.export_handle(
+          own, &handles[(size_t)rank_ * kPeerHandleBytes]);
+      if (why.empty()) {
+        why = exchange(handles.data(), kPeerHandleBytes);
+      }
+      for (int32_t r = 0; r < ranks_ && why.empty(); ++r) {
+        if (r != rank_) {
+          why = device_.open_handle(&handles[(size_t)r * kPeerHandleBytes],
+                                    &made->parts[(size_t)r]);
+        }
+      }
+      if (!why.empty()) {
+        close_and_release(*made);
+        return fn + ": " + why;
+      }
+      return "";
+    });
+    if (!why.empty()) {
+      return why;
+    }
+    *buffer = made.get();
+    peer_buffers_.push_back(std::move(made));
+    return "";
+  }
+
+  /// Writes the address of each rank's part of `buffer` to `out`, in rank
+  /// order: `ranks()` addresses.
+  std::string peer_buffer_pointers(const void *buffer, uint64_t *out) const {
+    const PeerBuffer *found = find(buffer);
+    if (!found) {
+      return unknown("vx_peer_buffer_pointers");
+    }
+    for (size_t r = 0; r < found->parts.size(); ++r) {
+      out[r] = (uint64_t)(uintptr_t)found->parts[r];
+    }
+    return "";
+  }
+
+  /// Frees `buffer`. Every rank calls this, in the same order. No rank frees
+  /// its part before every rank closed its address of it.
+  std::string peer_buffer_destroy(void *buffer) {
+    const std::string fn = "vx_peer_buffer_destroy";
+    const PeerBuffer *found = find(buffer);
+    if (!found) {
+      return unknown(fn.c_str());
+    }
+    if (device_.recording()) {
+      return fn + " ran while the stream records a CUDA graph. Free the "
+                  "buffer after the recording.";
+    }
+    std::string why = with_device([&]() -> std::string {
+      // `cudaIpcCloseMemHandle` does not say that it waits for kernels. So
+      // wait for this rank's kernels first: one of them can still use another
+      // rank's part.
+      device_.synchronize(device_.stream());
+      std::string why;
+      for (int32_t r = 0; r < ranks_; ++r) {
+        if (r != rank_ && why.empty()) {
+          why = device_.close_handle(found->parts[(size_t)r]);
+        }
+      }
+      // An exchange of one byte is a barrier: after it, every rank closed
+      // its address of this rank's part.
+      if (why.empty() && ranks_ > 1) {
+        std::vector<char> each((size_t)ranks_, 0);
+        why = exchange(each.data(), 1);
+      }
+      if (why.empty()) {
+        device_.release(found->parts[(size_t)rank_]);
+      }
+      return why.empty() ? "" : fn + ": " + why;
+    });
+    for (size_t i = 0; i < peer_buffers_.size(); ++i) {
+      if (peer_buffers_[i].get() == found) {
+        peer_buffers_.erase(peer_buffers_.begin() + (std::ptrdiff_t)i);
+        break;
+      }
+    }
+    return why;
+  }
+
 private:
+  /// Runs `call` on the GPU that joined the job, and restores the current GPU.
+  template <typename Call> std::string with_device(Call call) {
+    const int current = device_.current_device();
+    if (current != device_index_) {
+      device_.set_device(device_index_);
+    }
+    std::string why = call();
+    if (current != device_index_) {
+      device_.set_device(current);
+    }
+    return why;
+  }
+
+  /// Gives every rank the `each` bytes of each rank: `all` holds `ranks_`
+  /// slots of `each` bytes, and this rank's slot is filled. On return every
+  /// slot is filled, and every rank reached this call.
+  std::string exchange(char *all, size_t each) {
+    const size_t total = (size_t)ranks_ * each;
+    char *on_gpu = (char *)device_.allocate_zeroed(total);
+    if (!on_gpu) {
+      return "there is not enough GPU memory to exchange " +
+             std::to_string(total) + " bytes.";
+    }
+    char *mine = on_gpu + (size_t)rank_ * each;
+    device_.copy_to_device(mine, all + (size_t)rank_ * each, each);
+    void *stream = device_.stream();
+    const int r = api_->AllGather(mine, on_gpu, each, NcclInt8, comm_, stream);
+    device_.synchronize(stream);
+    if (!r) {
+      device_.copy_to_host(all, on_gpu, total);
+    }
+    device_.release(on_gpu);
+    return r ? nccl_error("ncclAllGather", r) : "";
+  }
+
+  /// Closes the other ranks' parts that are open, and frees this rank's part.
+  void close_and_release(PeerBuffer &buffer) {
+    for (int32_t r = 0; r < ranks_; ++r) {
+      void *part = buffer.parts[(size_t)r];
+      if (part && r != rank_) {
+        (void)device_.close_handle(part);
+      } else if (part) {
+        device_.release(part);
+      }
+    }
+  }
+
+  const PeerBuffer *find(const void *buffer) const {
+    for (const auto &b : peer_buffers_) {
+      if (b.get() == buffer) {
+        return b.get();
+      }
+    }
+    return nullptr;
+  }
+
+  static std::string unknown(const char *fn) {
+    return std::string(fn) + " got a buffer that vx_peer_buffer_create did "
+                             "not make, or that vx_peer_buffer_destroy freed.";
+  }
+
   std::string check(const void *input, const void *output, int64_t count,
                     const char *name) const {
     const std::string fn = name;
@@ -258,17 +470,12 @@ private:
     return "";
   }
 
-  /// Runs `call` on the GPU that joined the job, and restores the current GPU.
+  /// Runs the NCCL call `call` on the GPU that joined the job.
   template <typename Call> std::string on_device(const char *name, Call call) {
-    const int current = device_.current_device();
-    if (current != device_index_) {
-      device_.set_device(device_index_);
-    }
-    const int r = call(device_.stream());
-    if (current != device_index_) {
-      device_.set_device(current);
-    }
-    return r ? nccl_error(name, r) : "";
+    return with_device([&]() -> std::string {
+      const int r = call(device_.stream());
+      return r ? nccl_error(name, r) : "";
+    });
   }
 
   std::string nccl_error(const char *what, int r) const {
@@ -281,6 +488,7 @@ private:
   int device_index_ = 0;
   int32_t rank_ = -1;
   int32_t ranks_ = 0;
+  std::vector<std::unique_ptr<PeerBuffer>> peer_buffers_;
 };
 
 /// A job of one rank, for a backend that cannot join several. Each collective
@@ -306,8 +514,57 @@ public:
     if (!ranks_) {
       return "vx_collective_finish ran before vx_collective_init.";
     }
+    for (const auto &b : peer_buffers_) {
+      free(b->parts[0]);
+    }
+    peer_buffers_.clear();
     ranks_ = 0;
     return "";
+  }
+
+  /// The buffer of a job of one rank: `bytes` of zeroed host memory.
+  std::string peer_buffer_create(int64_t bytes, void **buffer) {
+    const std::string fn = "vx_peer_buffer_create";
+    if (!ranks_) {
+      return fn + " ran before vx_collective_init.";
+    }
+    if (bytes <= 0) {
+      return fn + " needs a size above 0, but got " + std::to_string(bytes) +
+             " bytes.";
+    }
+    void *part = calloc(1, (size_t)bytes);
+    if (!part) {
+      return fn + " cannot allocate " + std::to_string(bytes) + " bytes.";
+    }
+    auto made = std::make_unique<PeerBuffer>();
+    made->bytes = bytes;
+    made->parts.push_back(part);
+    *buffer = made.get();
+    peer_buffers_.push_back(std::move(made));
+    return "";
+  }
+
+  std::string peer_buffer_pointers(const void *buffer, uint64_t *out) const {
+    for (const auto &b : peer_buffers_) {
+      if (b.get() == buffer) {
+        out[0] = (uint64_t)(uintptr_t)b->parts[0];
+        return "";
+      }
+    }
+    return "vx_peer_buffer_pointers got a buffer that vx_peer_buffer_create "
+           "did not make, or that vx_peer_buffer_destroy freed.";
+  }
+
+  std::string peer_buffer_destroy(void *buffer) {
+    for (size_t i = 0; i < peer_buffers_.size(); ++i) {
+      if (peer_buffers_[i].get() == buffer) {
+        free(peer_buffers_[i]->parts[0]);
+        peer_buffers_.erase(peer_buffers_.begin() + (std::ptrdiff_t)i);
+        return "";
+      }
+    }
+    return "vx_peer_buffer_destroy got a buffer that vx_peer_buffer_create "
+           "did not make, or that vx_peer_buffer_destroy freed.";
   }
 
   int32_t rank() const { return ranks_ ? 0 : -1; }
@@ -332,6 +589,7 @@ public:
 
 private:
   int32_t ranks_ = 0;
+  std::vector<std::unique_ptr<PeerBuffer>> peer_buffers_;
 };
 
 } // namespace vx

@@ -19,10 +19,10 @@ enum Shape {
 fn size(s : &Shape) -> i32 {
   let r : i32 = match s {
     Shape::Circle(r) => {
-      r
+      *r
     }
     Shape::Square(w) => {
-      w
+      *w
     }
     Shape::Point => {
       0

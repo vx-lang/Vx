@@ -29,7 +29,7 @@ enum PrintConfig {
 }
 
 #[derive(Parser)]
-#[command(author, version, about = "Vx Code Formatter")]
+#[command(name = "vx-format", author, version = vxc::driver::VERSION, about = "Vx Code Formatter")]
 struct Cli {
     /// Print built-in configuration as TOML without formatting files
     #[arg(long, value_enum, conflicts_with_all = ["indent", "config", "files", "check"])]

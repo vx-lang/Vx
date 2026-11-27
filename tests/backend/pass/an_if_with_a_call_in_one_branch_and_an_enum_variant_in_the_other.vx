@@ -1,0 +1,81 @@
+//===- an_if_with_a_call_in_one_branch_and_an_enum_variant_in_the_other.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Both branches of each `if` give a `Shape` or an `Option<i32>`. One branch calls a function,
+// and the other one writes a variant.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+import core::option;
+
+enum Shape {
+  Empty,
+  Square(i32),
+}
+
+fn make(n : i32) -> Shape {
+  return Shape::Square(n);
+}
+
+fn nothing() -> Option<i32> {
+  return Option<i32>::None;
+}
+
+fn side(s : Shape) -> i32 {
+  return match s {
+    Shape::Square(n) => {
+      n
+    }
+    _ => {
+      0
+    }
+  };
+}
+
+fn call_first(c : bool) -> i32 {
+  let s = if c {
+    make(3)
+  } else {
+    Shape::Empty
+  };
+  return side(s);
+}
+
+fn variant_first(c : bool) -> i32 {
+  let s = if c {
+    Shape::Square(5)
+  } else {
+    make(7)
+  };
+  return side(s);
+}
+
+fn generic(c : bool) -> i32 {
+  let o = if c {
+    Option<i32>::Some(9)
+  } else {
+    nothing()
+  };
+  return match o {
+    Option<i32>::Some(n) => {
+      n
+    }
+    Option<i32>::None => {
+      0
+    }
+  };
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}call first: 3 0{{$}}
+  println!("call first: {} {}", call_first(true), call_first(false));
+  // CHECK-NEXT: {{^}}variant first: 5 7{{$}}
+  println!("variant first: {} {}", variant_first(true), variant_first(false));
+  // CHECK-NEXT: {{^}}generic: 9 0{{$}}
+  println!("generic: {} {}", generic(true), generic(false));
+  return 0;
+}

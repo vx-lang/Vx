@@ -1,0 +1,91 @@
+//===- strings_and_vectors_hash_and_compare_as_in_rust.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `String` and a `Vec` hash as Rust's `str` and slices do. Each number is what Rust's
+// `DefaultHasher`, which is SipHash-1-3, gives for the same value. A `Vec` is equal to another
+// `Vec` with the same length and equal elements in the same order.
+//
+// EXPECT: string hello 16156531084128653017
+// EXPECT: string empty 3476900567878811119
+// EXPECT: string with a zero byte 2378143915019200139
+// EXPECT: bytes 1 2 3 8086395815454877121
+// EXPECT: bytes none 13646096770106105413
+// EXPECT: i32 1 -2 960643749345645536
+// EXPECT: strings a bc 15866285593205758745
+// EXPECT: strings ab c 7215913676102199440
+// EXPECT: equal true false false false true false
+// `Eq` has no method, so a function whose `T` must be `Eq` shows that `Vec<u8>` is one.
+// EXPECT: a Vec of bytes is Eq
+
+import core::hash;
+import core::result;
+import std::string;
+import std::vec;
+
+fn sip<T : Hash>(v : &T) -> u64 {
+  let mut h = SipHasher13::new();
+  let _hashed = v.hash(&mut h);
+  return h.finish();
+}
+
+fn bytes(a : i32, b : i32, c : i32) -> Vec<u8> {
+  let mut v = Vec<u8>::new();
+  for x in [a, b, c] {
+    if x >= 0 {
+      v.push(x as u8);
+    }
+  }
+  return v;
+}
+
+fn text(a : i32, b : i32, c : i32) -> String {
+  return String::from_utf8(&bytes(a, b, c)).unwrap();
+}
+
+fn says_eq<T : Eq>(_v : &T) -> void {
+  println!("a Vec of bytes is Eq");
+}
+
+fn hello() -> String {
+  let mut v = bytes(104, 101, 108);
+  v.push(108u8);
+  v.push(111u8);
+  return String::from_utf8(&v).unwrap();
+}
+
+fn main() -> i32 {
+  println!("string hello {}", sip(&hello()));
+  println!("string empty {}", sip(&String::new()));
+  println!("string with a zero byte {}", sip(&text(97, 0, 98)));
+  println!("bytes 1 2 3 {}", sip(&bytes(1, 2, 3)));
+  println!("bytes none {}", sip(&Vec<u8>::new()));
+  let mut ints = Vec<i32>::new();
+  ints.push(1);
+  ints.push(-2);
+  println!("i32 1 -2 {}", sip(&ints));
+  let mut a_bc = Vec<String>::new();
+  a_bc.push(text(97, -1, -1));
+  a_bc.push(text(98, 99, -1));
+  println!("strings a bc {}", sip(&a_bc));
+  let mut ab_c = Vec<String>::new();
+  ab_c.push(text(97, 98, -1));
+  ab_c.push(text(99, -1, -1));
+  println!("strings ab c {}", sip(&ab_c));
+
+  let same = bytes(1, 2, 3) == bytes(1, 2, 3);
+  let shorter = bytes(1, 2, 3) == bytes(1, 2, -1);
+  let longer = bytes(1, 2, -1) == bytes(1, 2, 3);
+  let other_last = bytes(1, 2, 3) == bytes(1, 2, 4);
+  let mut a_bc_again = Vec<String>::new();
+  a_bc_again.push(text(97, -1, -1));
+  a_bc_again.push(text(98, 99, -1));
+  let same_strings = a_bc == a_bc_again;
+  let other_strings = a_bc == ab_c;
+  println!("equal {} {} {} {} {} {}", same, shorter, longer, other_last, same_strings, other_strings);
+  says_eq(&bytes(1, 2, 3));
+  return 0;
+}

@@ -1,0 +1,72 @@
+//===- a_let_that_hides_a_value_with_drop_drops_the_hidden_value.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `let p` that hides an earlier `p` of the same block (warning W1005) does not end the earlier
+// value. Its `drop` runs at the end of the block, on the earlier value, also when the new `p` is a
+// number that has nothing to drop.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped --implicit-check-not=peeked
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped --implicit-check-not=peeked
+// CHECK: {{^}}p 5{{$}}
+// CHECK-NEXT: {{^}}dropped 7{{$}}
+// CHECK-NEXT: {{^}}p 6{{$}}
+// CHECK-NEXT: {{^}}dropped 8{{$}}
+// CHECK-NEXT: {{^}}p 9{{$}}
+// CHECK-NEXT: {{^}}peeked 10{{$}}
+import core::ops;
+
+struct Loud {
+  n : i64
+}
+
+impl Drop for Loud {
+  fn drop(self : &mut Loud) -> void {
+    println!("dropped {}", self.n);
+  }
+}
+
+struct Peek {
+  r : &i64
+}
+
+impl Drop for Peek {
+  fn drop(self : &mut Peek) -> void {
+    println!("peeked {}", *self.r);
+  }
+}
+
+fn hidden_by_an_i64() -> void {
+  let p = Loud {
+    n : 7i64
+  };
+  let p = 5i64;
+  println!("p {}", p);
+}
+
+fn hidden_by_an_i32() -> void {
+  let p = Loud {
+    n : 8i64
+  };
+  let p = 6;
+  println!("p {}", p);
+}
+
+fn a_drop_that_reads_a_reference() -> void {
+  let t : i64 = 10i64;
+  let p = Peek {
+    r : &t
+  };
+  let p = 9;
+  println!("p {}", p);
+}
+
+fn main() -> i32 {
+  hidden_by_an_i64();
+  hidden_by_an_i32();
+  a_drop_that_reads_a_reference();
+  return 0;
+}

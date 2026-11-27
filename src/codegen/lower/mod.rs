@@ -28,6 +28,186 @@ mod seam_cert;
 mod stmt;
 mod tensors;
 
+/// The dims of the tensor inside a type, or `None` when the type is not one. The check-level
+/// wrappers (`&T`, `Pinned<T, ..>`, ..) are transparent.
+pub(crate) fn tensor_dims_of(ty: &syntax::Type) -> Option<&Vec<syntax::Dim>> {
+    match ty {
+        syntax::Type::Tensor(_, dims, _) => Some(dims),
+        syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner)
+        | syntax::Type::Ref(inner, _)
+        | syntax::Type::Pinned(inner, _) => tensor_dims_of(inner),
+        syntax::Type::Borrow { inner, .. } | syntax::Type::Pointer(inner, ..) => {
+            tensor_dims_of(inner)
+        }
+        _ => None,
+    }
+}
+
+/// The `name % N == 0` of a `requires` clause, for the extent named `name`, with N a power of
+/// two above one. An `a && b` of clauses looks in both halves; any other clause gives nothing.
+pub(crate) fn requires_mult_of(expr: &syntax::Expr, name: &str) -> Option<u64> {
+    match expr {
+        syntax::Expr::LogicalOp(logic) if logic.op == syntax::LogicalOp::And => {
+            requires_mult_of(&logic.lhs, name).or_else(|| requires_mult_of(&logic.rhs, name))
+        }
+        syntax::Expr::RelationalOp(rel) if rel.op == syntax::RelationalOp::Eq => {
+            // `.. == 0`, where the left side is the remainder.
+            if !matches!(
+                rel.rhs.as_ref(),
+                syntax::Expr::Number(n) if n.value.trim().parse::<u64>().ok() == Some(0)
+            ) {
+                return None;
+            }
+            let syntax::Expr::BinaryOp(rem) = rel.lhs.as_ref() else {
+                return None;
+            };
+            if rem.op != syntax::BinaryOp::Rem {
+                return None;
+            }
+            let syntax::Expr::Identifier(id) = rem.lhs.as_ref() else {
+                return None;
+            };
+            if id.name.as_ref() != name {
+                return None;
+            }
+            let syntax::Expr::Number(divisor) = rem.rhs.as_ref() else {
+                return None;
+            };
+            let n = divisor.value.trim().parse::<u64>().ok()?;
+            (n > 1 && n.is_power_of_two()).then_some(n)
+        }
+        _ => None,
+    }
+}
+
+/// One `(param, axis, N)` for each run-time extent of a parameter that a `requires` of the
+/// function states is a multiple of a power of two. The extent is named by
+/// `?n` in the parameter's type, and the clause says `n % N == 0`.
+///
+/// A kernel that comes from a `.vxlib` has no `requires`, so its facts are empty and
+/// it gets no assume: the promise is only safe where the compiler can read it.
+pub(crate) fn extent_mult_facts(func: &syntax::Function) -> Vec<(usize, usize, u64)> {
+    let mut facts = Vec::new();
+    for (p, (_, ty)) in func.params.iter().enumerate() {
+        let Some(dims) = tensor_dims_of(ty) else {
+            continue;
+        };
+        for (axis, dim) in dims.iter().enumerate() {
+            let syntax::Dim::Dyn(Some(name)) = dim else {
+                continue;
+            };
+            for req in &func.requires {
+                if let Some(n) = requires_mult_of(req, name.as_ref()) {
+                    facts.push((p, axis, n));
+                }
+            }
+        }
+    }
+    facts
+}
+
+/// An `index` constant, the type `memref.dim` speaks.
+fn index_constant<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    v: i64,
+    index_ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    Ok(block
+        .append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[index_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(index_ty, v).into(),
+                )])
+                .build()?,
+        )
+        .result(0)?
+        .into())
+}
+
+/// One `llvm.intr.assume` per fact: `(extent & (N - 1)) == 0` says what the caller proved at
+/// the call, so LLVM folds on it. The op goes where `block` puts it; callers append at the
+/// entry of the code the fact covers, so the assume dominates the accesses that rely on it.
+pub(crate) fn assume_extents_are_multiples<'c>(
+    gen: &MeliorGenerator<'c>,
+    val: Value<'c, 'c>,
+    mlir_ty: Type<'c>,
+    mults: &[(usize, u64)],
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(), LowerError> {
+    if mults.is_empty() {
+        return Ok(());
+    }
+    // A reference to a tensor is a slot, `memref<memref<...>>`, and `memref.dim` reads the
+    // tensor in it.
+    let mut mlir_ty = mlir_ty;
+    let val = expr::load_tensor_slot(gen, &block, val, &mut mlir_ty)?;
+    if !mlir_ty.to_string().starts_with("memref<") {
+        return Ok(());
+    }
+    let index_ty = melior::ir::r#type::Type::index(gen.context);
+    // The empty `op_bundle_sizes` the verifier asks of an assume with no bundle.
+    let empty_bundle_sizes = Attribute::parse(gen.context, "array<i32>")
+        .ok_or_else(|| LowerError::from("failed to parse array<i32> for assume".to_string()))?;
+    for &(axis, n) in mults {
+        if n <= 1 || !n.is_power_of_two() {
+            continue;
+        }
+        let extent: Value = block
+            .append_operation(
+                OperationBuilder::new("memref.dim", gen.loc())
+                    .add_operands(&[val, index_constant(gen, block, axis as i64, index_ty)?])
+                    .add_results(&[index_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let low_bits: Value = block
+            .append_operation(
+                OperationBuilder::new("arith.andi", gen.loc())
+                    .add_operands(&[
+                        extent,
+                        index_constant(gen, block, (n - 1) as i64, index_ty)?,
+                    ])
+                    .add_results(&[index_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let eq: Value = block
+            .append_operation(
+                OperationBuilder::new("arith.cmpi", gen.loc())
+                    .add_operands(&[low_bits, index_constant(gen, block, 0, index_ty)?])
+                    .add_results(&[gen.i1_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "predicate"),
+                        IntegerAttribute::new(
+                            gen.i64_ty,
+                            melior::dialect::arith::CmpiPredicate::Eq as i64,
+                        )
+                        .into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        block.append_operation(
+            OperationBuilder::new("llvm.intr.assume", gen.loc())
+                .add_operands(&[eq])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "op_bundle_sizes"),
+                    empty_bundle_sizes,
+                )])
+                .build()?,
+        );
+    }
+    Ok(())
+}
+
 pub trait LowerToMelior<'c> {
     type Output;
     fn lower(
@@ -661,11 +841,16 @@ pub(crate) fn integer_constant<'c>(
         .unwrap_or_else(|| panic!("integer literal out of range for {ty}: {text}"))
 }
 
+/// The address of the matched enum and the enum's type, for a `match` that binds references.
+pub type MatchedReference<'c> = (melior::ir::Value<'c, 'c>, syntax::Type);
+
+#[allow(clippy::too_many_arguments)]
 pub fn generate_match_chain<'c>(
     gen: &mut MeliorGenerator<'c>,
     arms: &[MatchArm],
     match_val: melior::ir::Value<'c, 'c>,
     _match_ty: melior::ir::Type<'c>,
+    matched_reference: Option<&MatchedReference<'c>>,
     block: melior::ir::BlockRef<'c, 'c>,
     merge_block: melior::ir::BlockRef<'c, 'c>,
     value_ty: Option<melior::ir::Type<'c>>,
@@ -844,6 +1029,58 @@ pub fn generate_match_chain<'c>(
             let Pattern::Identifier(name) = pattern else {
                 continue;
             };
+            // Through a reference, the name is the address of the payload's slot.
+            if let Some((
+                address,
+                syntax::Type::Borrow {
+                    inner: enum_ty,
+                    is_mut,
+                    ..
+                },
+            )) = matched_reference
+            {
+                let payload = crate::codegen::lower::expr::variant_payload_type(
+                    gen,
+                    en,
+                    vn,
+                    position,
+                    Some(enum_ty),
+                )
+                .ok_or_else(|| {
+                    LowerError::from(format!("no payload type for {en}::{vn} at {position}"))
+                })?;
+                let gep = OperationBuilder::new("llvm.getelementptr", gen.loc())
+                    .add_attributes(&[
+                        (
+                            Identifier::new(gen.context, "rawConstantIndices"),
+                            melior::ir::attribute::DenseI32ArrayAttribute::new(
+                                gen.context,
+                                &[0, position as i32 + 1],
+                            )
+                            .into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "elem_type"),
+                            melior::ir::attribute::TypeAttribute::new(_match_ty).into(),
+                        ),
+                    ])
+                    .add_operands(&[*address])
+                    .add_results(&[gen.ptr_ty])
+                    .build()?;
+                let slot = then_block.append_operation(gep).result(0)?.into();
+                gen.ast_env.insert(
+                    name.to_string().into(),
+                    syntax::Type::Borrow {
+                        inner: Box::new(payload),
+                        mem_space: None,
+                        is_mut: *is_mut,
+                        region_id: 0,
+                    },
+                );
+                gen.note_shadow(name.as_ref());
+                gen.env.insert(name.to_string().into(), (slot, gen.ptr_ty));
+                continue;
+            }
             // The Vx type of the name, so a later `transfer` of it knows where its data is.
             match crate::codegen::lower::expr::variant_payload_type(gen, en, vn, position, None) {
                 Some(ty) => gen.ast_env.insert(name.to_string().into(), ty),
@@ -1005,6 +1242,7 @@ pub fn generate_match_chain<'c>(
         &arms[1..],
         match_val,
         _match_ty,
+        matched_reference,
         else_block,
         merge_block,
         value_ty,
@@ -1390,7 +1628,7 @@ pub(crate) fn lower_print_call<'c>(
     let (mut arg_val, arg_ty, block) = gen.generate_expr(print_arg, block)?;
 
     // Scalar fast-path (#185): `printMemref*` only accepts ranked memrefs/tensors, so a
-    // bare scalar must route through the scalar `print_*` runtime helpers instead.
+    // bare scalar must route through the scalar `vx_print_*` runtime helpers instead.
     if let Some((fn_name, arg_val, arg_ty_str)) =
         pick_scalar_print(gen, block, print_arg, arg_val, arg_ty)?
     {
@@ -1398,9 +1636,9 @@ pub(crate) fn lower_print_call<'c>(
         return Ok((result, gen.none_ty, block));
     }
 
-    // A string is a pointer to its bytes: the `print_str` helper, as `print!` uses.
+    // A string is a pointer to its bytes: the `vx_print_str` helper, as `print!` uses.
     if arg_ty.to_string() == "!llvm.ptr" {
-        let result = call_scalar_print(gen, block, "print_str", arg_val, "!llvm.ptr")?;
+        let result = call_scalar_print(gen, block, "vx_print_str", arg_val, "!llvm.ptr")?;
         return Ok((result, gen.none_ty, block));
     }
 
@@ -1488,7 +1726,7 @@ pub(crate) fn lower_print_call<'c>(
     ))
 }
 
-/// Picks the runtime `print_*` function for a scalar and returns it with the value to pass
+/// Picks the runtime `vx_print_*` function for a scalar and returns it with the value to pass
 /// and that value's MLIR type. MLIR integers carry no sign, so an unsigned value is known by
 /// the `x as u64` cast the checker wraps it in. Narrow signed integers and `f16`/`bf16` have
 /// no helper of their own and are widened (#320). `None` for anything that is not a scalar.
@@ -1520,23 +1758,23 @@ pub(crate) fn pick_scalar_print<'c>(
     };
     let ty_str = arg_ty.to_string();
     let (fn_name, widen): (&'static str, Option<(&str, &str)>) = match (ty_str.as_str(), unsigned) {
-        ("i8", true) => ("print_u8", None),
-        ("i16", true) => ("print_u16", None),
-        ("i32", true) => ("print_u32", None),
-        ("i64", true) => ("print_u64", None),
-        ("i1", _) => ("print_bool", Some(("arith.extui", "i32"))),
-        ("i8" | "i16", false) => ("print_i32", Some(("arith.extsi", "i32"))),
-        ("i32", false) => ("print_i32", None),
-        ("i64", false) => ("print_i64", None),
-        ("i128", true) => ("print_u128", None),
-        ("i128", false) => ("print_i128", None),
+        ("i8", true) => ("vx_print_u8", None),
+        ("i16", true) => ("vx_print_u16", None),
+        ("i32", true) => ("vx_print_u32", None),
+        ("i64", true) => ("vx_print_u64", None),
+        ("i1", _) => ("vx_print_bool", Some(("arith.extui", "i32"))),
+        ("i8" | "i16", false) => ("vx_print_i32", Some(("arith.extsi", "i32"))),
+        ("i32", false) => ("vx_print_i32", None),
+        ("i64", false) => ("vx_print_i64", None),
+        ("i128", true) => ("vx_print_u128", None),
+        ("i128", false) => ("vx_print_i128", None),
         // A `for` variable over a range is an `index` here.
-        ("index", _) => ("print_i64", Some(("arith.index_cast", "i64"))),
+        ("index", _) => ("vx_print_i64", Some(("arith.index_cast", "i64"))),
         ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16", _) => {
-            ("print_f32", Some(("arith.extf", "f32")))
+            ("vx_print_f32", Some(("arith.extf", "f32")))
         }
-        ("f32", _) => ("print_f32", None),
-        ("f64", _) => ("print_f64", None),
+        ("f32", _) => ("vx_print_f32", None),
+        ("f64", _) => ("vx_print_f64", None),
         _ => return Ok(None),
     };
     let Some((op_name, wide_ty_str)) = widen else {

@@ -1,0 +1,126 @@
+//===- blocks_that_write_the_same_rows_run_on_one_thread.vx -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` loop with a loop in it can run as blocks and threads. A pass of the outer loop is a
+// block, and a pass of the inner loop is a thread. Every block runs the inner loop. So a row that
+// only `j` picks is a row of every block, and the blocks race on it. The first four loops run on
+// one thread. The last three pick a different element in each block, and run as blocks and
+// threads. Each loop has its own number of blocks, sorted here as text:
+//
+// RUN: vxc %s --action emit-mlir 2>/dev/null | grep -o 'vx_parallel_t[a-z]* = [^}]*' | LC_ALL=C sort | FileCheck %s --implicit-check-not=vx_parallel
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>/dev/null | grep -o 'vx_parallel_t[a-z]* = [^}]*' | LC_ALL=C sort | FileCheck %s --implicit-check-not=vx_parallel
+// CHECK: vx_parallel_threads = 4 : i64, vx_parallel_trip = 10 : i64, vx_parallel_two_level
+// CHECK-NEXT: vx_parallel_threads = 4 : i64, vx_parallel_trip = 32 : i64, vx_parallel_two_level
+// CHECK-NEXT: vx_parallel_threads = 4 : i64, vx_parallel_trip = 9 : i64, vx_parallel_two_level
+
+Memory CPU_DRAM {}
+
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM,
+  capacity: 24 GiB,
+  bandwidth: 300 GB/s,
+  managed: cached,
+  scope: device
+}
+
+fn same_row_in_every_block(m : &mut Tensor<i32, [128, 4], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..20 {
+      for j in 0..4 {
+        m[j][0] = m[j][0] + 1;
+      }
+    }
+  }
+  return;
+}
+
+fn row_at_an_offset(m : &mut Tensor<i32, [128, 4], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..24 {
+      for j in 0..4 {
+        m[j + 1][0] = 1;
+      }
+    }
+  }
+  return;
+}
+
+fn every_other_row(m : &mut Tensor<i32, [128, 4], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..28 {
+      for j in 0..4 {
+        if j % 2 == 0 {
+          m[j / 2][0] = 1;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Block 3 writes `c[j][3][2]` in the first line, and block 2 writes it in the second line.
+fn block_variable_in_two_places(c : &mut Tensor<i32, [4, 8, 8], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..6 {
+      for j in 0..4 {
+        c[j][i][2] = 1;
+        c[j][3][i] = 2;
+      }
+    }
+  }
+  return;
+}
+
+fn own_rows(m : &mut Tensor<i32, [128, 4], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..32 {
+      for j in 0..4 {
+        m[i * 4 + j][0] = m[i * 4 + j][0] + 1;
+      }
+    }
+  }
+  return;
+}
+
+fn copy_transposed(c : &mut Tensor<i32, [4, 9], Memory::GPU_HBM>, a : &Tensor<i32, [9, 4], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..9 {
+      for j in 0..4 {
+        c[j][i] = a[i][j];
+      }
+    }
+  }
+  return;
+}
+
+fn block_variable_in_one_place(c : &mut Tensor<i32, [4, 10, 4], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for i in 0..10 {
+      for j in 0..4 {
+        c[j][i][2] = 1;
+        c[j][i][3] = c[j][i][2] + 1;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut m = transfer(Tensor<i32, [128, 4]>::new(), Memory::GPU_HBM);
+  let mut c = transfer(Tensor<i32, [4, 8, 8]>::new(), Memory::GPU_HBM);
+  let mut t = transfer(Tensor<i32, [4, 9]>::new(), Memory::GPU_HBM);
+  let a = transfer(Tensor<i32, [9, 4]>::new(), Memory::GPU_HBM);
+  let mut d = transfer(Tensor<i32, [4, 10, 4]>::new(), Memory::GPU_HBM);
+  same_row_in_every_block(&mut m);
+  row_at_an_offset(&mut m);
+  every_other_row(&mut m);
+  block_variable_in_two_places(&mut c);
+  own_rows(&mut m);
+  copy_transposed(&mut t, &a);
+  block_variable_in_one_place(&mut d);
+  return 0;
+}

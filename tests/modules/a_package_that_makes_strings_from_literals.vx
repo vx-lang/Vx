@@ -1,0 +1,64 @@
+//===- a_package_that_makes_strings_from_literals.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with no trusted code. It makes strings from the bytes of string literals.
+
+import core::result;
+import std::string;
+import std::vec;
+
+/// The 5 bytes of "hello".
+pub fn hello() -> String {
+  match String::from_bytes("hello" as *const u8, 5) {
+    Result::Ok(s) => {
+      return s;
+    }
+    Result::Err(_e) => {
+      return String::new();
+    }
+  }
+}
+
+/// The length of the copy of the 8 bytes of a literal, through a name for the literal.
+pub fn through_a_name() -> i32 {
+  let greeting = "hi there";
+  match String::from_bytes(greeting as *const u8, 8) {
+    Result::Ok(s) => {
+      return s.len();
+    }
+    Result::Err(_e) => {
+      return -1;
+    }
+  }
+}
+
+/// The length of the copy of a literal, plus the length of `v` after it grows. A `Vec` of the
+/// caller can free memory when it grows, but not the memory of a literal.
+pub fn after_a_vec_grows(v : &mut Vec<u8>) -> i32 {
+  let greeting = "hi";
+  v.push(1u8);
+  match String::from_bytes(greeting as *const u8, 2) {
+    Result::Ok(s) => {
+      return s.len() + v.len();
+    }
+    Result::Err(_e) => {
+      return -1;
+    }
+  }
+}
+
+/// The length of the copy of "a\n", which is 2 bytes.
+pub fn with_an_escape() -> i32 {
+  match String::from_bytes("a\n" as *const u8, 2) {
+    Result::Ok(s) => {
+      return s.len();
+    }
+    Result::Err(_e) => {
+      return -1;
+    }
+  }
+}

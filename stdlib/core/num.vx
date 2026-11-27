@@ -1130,8 +1130,20 @@ impl u8 {
 /// `mlir!` blocks that skip the trap.
 ///
 /// Absent because their answer could set the top bit: `rotate_left`, `rotate_right`,
-/// `swap_bytes`, `reverse_bits`. `leading_ones` is absent too, since it is always zero.
+/// `swap_bytes`, `reverse_bits`, and so `to_be` and `from_be`. `leading_ones` is absent too,
+/// since it is always zero. `to_le` and `from_le` are here: on a little-endian target they
+/// change nothing.
 impl usize {
+  /// The value in little-endian order. On a little-endian target nothing changes.
+  pub fn to_le(self : usize) -> usize {
+    return self;
+  }
+
+  /// Reads a little-endian value. On a little-endian target nothing changes.
+  pub fn from_le(self : usize) -> usize {
+    return self;
+  }
+
   /// Zero.
   pub fn min_value(self : usize) -> usize {
     return 0;

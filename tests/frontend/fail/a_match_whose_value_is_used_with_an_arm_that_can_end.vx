@@ -1,0 +1,132 @@
+//===- a_match_whose_value_is_used_with_an_arm_that_can_end.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that ends with a `match` returns the value of the `match`. Each function here has
+// an arm that can end with no value and no `return`, so the function could return no value.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+enum Light {
+  Red,
+  Green,
+}
+
+struct Pair {
+  a : i32,
+  b : i32,
+}
+
+fn an_empty_arm(x : i32, a : &i64) -> &i64 {
+  match x {
+    0 => {
+      return a;
+    }
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: this arm can end with no value, but the code uses the value of the `match`. End the arm with a value or a `return`.
+    _ => {}
+  }
+}
+
+fn an_arm_with_a_statement(x : i32, a : &i64) -> &i64 {
+  match x {
+    0 => {
+      return a;
+    }
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: this arm can end
+    _ => {
+      println!("no arm for {}", x);
+    }
+  }
+}
+
+fn a_written_return(x : i32, a : &i64) -> &i64 {
+  return match x {
+    0 => {
+      return a;
+    }
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: this arm can end
+    _ => {}
+  };
+}
+
+fn on_an_enum(l : Light) -> i32 {
+  match l {
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: this arm can end
+    Light::Red => {}
+    Light::Green => {
+      return 2;
+    }
+  }
+}
+
+fn a_struct_result(x : i32) -> Pair {
+  match x {
+    0 => {
+      return Pair {
+        a : 1, b : 2
+      };
+    }
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: this arm can end
+    _ => {}
+  }
+}
+
+fn an_if_with_no_else(x : i32, c : bool) -> i32 {
+  match x {
+    0 => {
+      return 1;
+    }
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: this arm can end
+    _ => {
+      if c {
+        return 2;
+      };
+    }
+  }
+}
+
+fn a_let(x : i32, a : &i64) -> &i64 {
+  let r : &i64 = match x {
+    0 => {
+      return a;
+    }
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: this arm can end
+    _ => {}
+  };
+  return r;
+}
+
+// In a function declared `-> !`, the `match` takes the type `!`.
+fn in_a_function_that_never_returns(x : i32) -> ! {
+  let r : &i64 = match x {
+    0 => {
+      abort();
+    }
+    // CHECK: Error[E3028] at {{.*}}.vx:[[@LINE+1]]:5: this arm can end
+    _ => {}
+  };
+  println!("{}", *r);
+  abort();
+}
+
+// The arm has an error of its own, so it gets no second error for its end.
+fn an_arm_with_an_error(x : i32) -> i32 {
+  match x {
+    0 => {
+      return 1;
+    }
+    _ => {
+      // CHECK: Error[E3001] at {{.*}}.vx:[[@LINE+1]]:7: 'y' is declared i32 but its initializer is bool
+      let y : i32 = true;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 9 error(s) emitted

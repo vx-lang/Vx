@@ -5,11 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// An `if`, `match`, `unsafe` or `spawn` block that starts a statement ends at its closing brace, so
-// the next line is a statement of its own even when it starts with `*` or `-`.
+// An `if`, `match`, `unsafe`, `spawn` or `tasks` block that starts a statement ends at its closing
+// brace. So the next line is a statement of its own even when it starts with `*`, `-`, `(` or `[`.
+// A `(` or `[` there is not a call or an index on the block.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s
 // CHECK: after_if=10; after_match=11; after_unsafe=12; after_spawn=13; after_else=20;
+// CHECK-SAME: after_tasks=2 1; after_inner_spawn=1 2; after_spawn_on=5;
 
 fn main() -> i32 {
   let c = true;
@@ -53,6 +55,26 @@ fn main() -> i32 {
   *x = 20i64;
   print!("after_else=");
   print(*x);
-  print!(";");
+  print!("; ");
+  let mut a = 1i64;
+  let mut b = 2i64;
+  tasks {
+    print!("");
+  }
+  (a, b) = (b, a);
+  print!("after_tasks={} {}; ", a, b);
+  tasks {
+    spawn {
+      print!("");
+    }
+    (a, b) = (b, a);
+  }
+  print!("after_inner_spawn={} {}; ", a, b);
+  let row = [4i64, 5i64];
+  spawn on(Topology::CPU) {
+    print!("");
+  }
+  [row[1]][0];
+  print!("after_spawn_on={};", row[1]);
   return 0;
 }
