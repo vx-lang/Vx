@@ -1,0 +1,21 @@
+//===- name_declared_by_three_imports.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Three imports declare `Point`, so its use here is ambiguous. The error names all three.
+// RUN: not vxc --package tests=tests %s --action print-ast 2>&1 | FileCheck %s
+import tests::modules::clash_left;
+import tests::modules::clash_middle;
+import tests::modules::clash_right;
+
+fn main() -> i32 {
+  let p = Point {
+    x : 1i64
+  };
+  return 0;
+}
+
+// CHECK: line 15: `Point` is declared by `tests::modules::clash_left`, `tests::modules::clash_middle` and `tests::modules::clash_right`, and this module sees each of them through its imports

@@ -1,0 +1,22 @@
+//===- functions_that_an_importer_cannot_call_do_not_clash.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Three imports declare `write_bytes`: `core::ptr` with `pub`, one module with no `pub`, and one
+// module with `pkg` in the package `tests`. This file is not in that package, so it can call only
+// the one of `core::ptr`. So `write_bytes` here is not ambiguous.
+import core::ptr;
+import tests::modules::a_module_with_a_private_write_bytes;
+import tests::modules::a_module_with_a_pkg_write_bytes;
+
+fn main() -> i32 {
+  let mut x : u8 = 7u8;
+  unsafe { write_bytes((&mut x) as *mut u8, 0u8, 1usize); }
+  println!("{} {} {}", x, one(), two());
+  return 0;
+}
+
+// EXPECT: 0 1 2

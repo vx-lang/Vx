@@ -1,0 +1,11 @@
+//===- clash_middle.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares `Point`, as clash_left and clash_right do.
+struct Point {
+  w : i64,
+}

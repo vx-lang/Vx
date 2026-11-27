@@ -1,0 +1,19 @@
+//===- a_pkg_function_clashes_in_its_own_package.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `a_module_that_sees_two_write_bytes` is in the package `tests`. It imports the `pub`
+// `write_bytes` of `core::ptr` and a `pkg` `write_bytes` of the same package. It can call both,
+// so its call of `write_bytes` is ambiguous.
+// RUN: not vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s
+import tests::modules::a_module_that_sees_two_write_bytes;
+
+fn main() -> i32 {
+  println!("{}", three());
+  return 0;
+}
+
+// CHECK: line 14: `write_bytes` is declared by both `core::ptr` and `tests::modules::a_module_with_a_pkg_write_bytes`, and this module sees both through its imports

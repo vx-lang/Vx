@@ -12,13 +12,16 @@
 //
 // A module sees its own declaration of a name first. A module that declares none sees what its
 // direct imports see; if they see different declarations, the name is ambiguous there, and an
-// error if that module uses it. This is how a local item shadows a glob import in Rust.
+// error if that module uses it. This is how a local item shadows a glob import in Rust. Through an
+// import, a module sees only a function that it can call: a `pub` one, or a `pkg` one of its own
+// package.
 //
 // A C function in an `extern` block cannot be renamed, so a Vx function with its name is renamed
 // in every module, and the modules that see only the C function call it. An `extern fn` with the
 // name of a C function is an error, because the object file must export it under its own name.
 //
 //===----------------------------------------------------------------------===//
+use crate::gid::Visibility;
 use crate::lexer::{Token, TokenTypeBase};
 use crate::symbol::Symbol;
 use crate::syntax::Program;
@@ -201,7 +204,8 @@ fn sees<'p>(
         for import in &p.imports {
             let imported = module_name(&import.path);
             if let Some((key, _)) = by_name.get_key_value(&imported) {
-                out.extend(sees(key, name, by_name, memo, visiting));
+                let seen = sees(key, name, by_name, memo, visiting);
+                out.extend(seen.into_iter().filter(|d| may_use(by_name[d], name, p)));
             }
         }
         out
@@ -209,6 +213,19 @@ fn sees<'p>(
     visiting.remove(module);
     memo.insert(module, out.clone());
     out
+}
+
+/// Whether `user` may use the declaration of `name` in `declarer`: a type, or a function that is
+/// `pub`, or `pkg` in the package of `user`.
+fn may_use(declarer: &Program, name: &Symbol, user: &Program) -> bool {
+    let Some(f) = declarer.functions.iter().find(|f| &f.name == name) else {
+        return true;
+    };
+    match f.visibility {
+        Visibility::Public => true,
+        Visibility::Package => declarer.package.is_some() && declarer.package == user.package,
+        Visibility::Private => false,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -288,12 +305,19 @@ pub fn rename_tokens<'a>(
                     match rename {
                         Rename::To(new) => tokens[i].kind = TokenTypeBase::Identifier(new),
                         Rename::Ambiguous(from) => {
-                            let from: Vec<String> = from.iter().map(|m| format!("`{m}`")).collect();
+                            let mut from: Vec<String> =
+                                from.iter().map(|m| format!("`{m}`")).collect();
+                            let last = from.pop().unwrap_or_default();
+                            let (all, each) = if from.len() == 1 {
+                                ("both ", "both")
+                            } else {
+                                ("", "each of them")
+                            };
                             return Err(format!(
-                                "line {}: `{text}` is declared by both {}, and this module \
-                                 sees both through its imports",
+                                "line {}: `{text}` is declared by {all}{} and {last}, and this \
+                                 module sees {each} through its imports",
                                 tokens[i].line,
-                                from.join(" and ")
+                                from.join(", ")
                             ));
                         }
                     }

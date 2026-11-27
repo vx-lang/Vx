@@ -1,0 +1,17 @@
+//===- a_module_with_a_private_write_bytes.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module for `functions_that_an_importer_cannot_call_do_not_clash.vx`. `core::ptr` also has a
+// `write_bytes`. This one has no `pub`, so only this file can call it.
+
+fn write_bytes(n : i64) -> i64 {
+  return n + 1;
+}
+
+pub fn one() -> i64 {
+  return write_bytes(0);
+}
