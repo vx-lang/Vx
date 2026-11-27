@@ -1160,6 +1160,305 @@ stamp_unsigned_int!(u16 , i16 , 16 , 65535);
 stamp_unsigned_int!(u32 , i32 , 32 , 4294967295);
 stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 
+// The bytes of an integer, and an integer from its bytes, as `Tensor<u8, [N]>`: a Vx array is
+// a tensor. Each macro stamps one width, because the number of bytes is part of the type.
+// The signed width converts through its unsigned twin, since a cast between the two keeps
+// the bits. Vx cannot ask for the target's byte order yet, so the `ne` forms assume a
+// little-endian target, as `to_le` does.
+
+/// Stamps the byte conversions for `u8` and `i8`.
+macro_rules stamp_int_bytes_1 {
+  ($u : ident , $s : ident) => {
+    impl $u {
+      /// The one byte of this value.
+      pub fn to_le_bytes(self : $u) -> Tensor<u8, [1]> {
+        return [self as u8];
+      }
+
+      /// The one byte of this value.
+      pub fn to_be_bytes(self : $u) -> Tensor<u8, [1]> {
+        return [self as u8];
+      }
+
+      /// The one byte of this value.
+      pub fn to_ne_bytes(self : $u) -> Tensor<u8, [1]> {
+        return [self as u8];
+      }
+
+      /// The value of the byte `b[0]`. Static: `u8::from_le_bytes(b)`.
+      pub fn from_le_bytes(b : Tensor<u8, [1]>) -> $u {
+        return b[0] as $u;
+      }
+
+      /// The value of the byte `b[0]`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [1]>) -> $u {
+        return b[0] as $u;
+      }
+
+      /// The value of the byte `b[0]`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [1]>) -> $u {
+        return b[0] as $u;
+      }
+    }
+
+    impl $s {
+      /// The one byte of this value.
+      pub fn to_le_bytes(self : $s) -> Tensor<u8, [1]> {
+        return [self as u8];
+      }
+
+      /// The one byte of this value.
+      pub fn to_be_bytes(self : $s) -> Tensor<u8, [1]> {
+        return [self as u8];
+      }
+
+      /// The one byte of this value.
+      pub fn to_ne_bytes(self : $s) -> Tensor<u8, [1]> {
+        return [self as u8];
+      }
+
+      /// The value of the byte `b[0]`. Static: `i8::from_le_bytes(b)`.
+      pub fn from_le_bytes(b : Tensor<u8, [1]>) -> $s {
+        return b[0] as $s;
+      }
+
+      /// The value of the byte `b[0]`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [1]>) -> $s {
+        return b[0] as $s;
+      }
+
+      /// The value of the byte `b[0]`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [1]>) -> $s {
+        return b[0] as $s;
+      }
+    }
+  };
+}
+
+/// Stamps the byte conversions for `u16` and `i16`.
+macro_rules stamp_int_bytes_2 {
+  ($u : ident , $s : ident) => {
+    impl $u {
+      /// The 2 bytes of this value, the least significant byte first.
+      pub fn to_le_bytes(self : $u) -> Tensor<u8, [2]> {
+        return [self as u8, (self >> 8) as u8];
+      }
+
+      /// The 2 bytes of this value, the most significant byte first.
+      pub fn to_be_bytes(self : $u) -> Tensor<u8, [2]> {
+        return [(self >> 8) as u8, self as u8];
+      }
+
+      /// The 2 bytes of this value in the target's byte order (little-endian).
+      pub fn to_ne_bytes(self : $u) -> Tensor<u8, [2]> {
+        return self.to_le_bytes();
+      }
+
+      /// The value whose bytes, the least significant first, are `b`. Static:
+      /// `u16::from_le_bytes(b)`.
+      pub fn from_le_bytes(b : Tensor<u8, [2]>) -> $u {
+        return (b[0] as $u) | ((b[1] as $u) << 8);
+      }
+
+      /// The value whose bytes, the most significant first, are `b`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [2]>) -> $u {
+        return (b[1] as $u) | ((b[0] as $u) << 8);
+      }
+
+      /// The value whose bytes, in the target's byte order (little-endian), are `b`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [2]>) -> $u {
+        return $u::from_le_bytes(b);
+      }
+    }
+
+    impl $s {
+      /// The 2 bytes of this value, the least significant byte first.
+      pub fn to_le_bytes(self : $s) -> Tensor<u8, [2]> {
+        return (self as $u).to_le_bytes();
+      }
+
+      /// The 2 bytes of this value, the most significant byte first.
+      pub fn to_be_bytes(self : $s) -> Tensor<u8, [2]> {
+        return (self as $u).to_be_bytes();
+      }
+
+      /// The 2 bytes of this value in the target's byte order (little-endian).
+      pub fn to_ne_bytes(self : $s) -> Tensor<u8, [2]> {
+        return (self as $u).to_ne_bytes();
+      }
+
+      /// The value whose bytes, the least significant first, are `b`. Static:
+      /// `i16::from_le_bytes(b)`.
+      pub fn from_le_bytes(b : Tensor<u8, [2]>) -> $s {
+        return $u::from_le_bytes(b) as $s;
+      }
+
+      /// The value whose bytes, the most significant first, are `b`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [2]>) -> $s {
+        return $u::from_be_bytes(b) as $s;
+      }
+
+      /// The value whose bytes, in the target's byte order (little-endian), are `b`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [2]>) -> $s {
+        return $u::from_ne_bytes(b) as $s;
+      }
+    }
+  };
+}
+
+/// Stamps the byte conversions for `u32` and `i32`.
+macro_rules stamp_int_bytes_4 {
+  ($u : ident , $s : ident) => {
+    impl $u {
+      /// The 4 bytes of this value, the least significant byte first.
+      pub fn to_le_bytes(self : $u) -> Tensor<u8, [4]> {
+        return [self as u8, (self >> 8) as u8, (self >> 16) as u8, (self >> 24) as u8];
+      }
+
+      /// The 4 bytes of this value, the most significant byte first.
+      pub fn to_be_bytes(self : $u) -> Tensor<u8, [4]> {
+        return [(self >> 24) as u8, (self >> 16) as u8, (self >> 8) as u8, self as u8];
+      }
+
+      /// The 4 bytes of this value in the target's byte order (little-endian).
+      pub fn to_ne_bytes(self : $u) -> Tensor<u8, [4]> {
+        return self.to_le_bytes();
+      }
+
+      /// The value whose bytes, the least significant first, are `b`. Static:
+      /// `u32::from_le_bytes(b)`.
+      pub fn from_le_bytes(b : Tensor<u8, [4]>) -> $u {
+        return (b[0] as $u) | ((b[1] as $u) << 8) | ((b[2] as $u) << 16) | ((b[3] as $u) << 24);
+      }
+
+      /// The value whose bytes, the most significant first, are `b`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [4]>) -> $u {
+        return (b[3] as $u) | ((b[2] as $u) << 8) | ((b[1] as $u) << 16) | ((b[0] as $u) << 24);
+      }
+
+      /// The value whose bytes, in the target's byte order (little-endian), are `b`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [4]>) -> $u {
+        return $u::from_le_bytes(b);
+      }
+    }
+
+    impl $s {
+      /// The 4 bytes of this value, the least significant byte first.
+      pub fn to_le_bytes(self : $s) -> Tensor<u8, [4]> {
+        return (self as $u).to_le_bytes();
+      }
+
+      /// The 4 bytes of this value, the most significant byte first.
+      pub fn to_be_bytes(self : $s) -> Tensor<u8, [4]> {
+        return (self as $u).to_be_bytes();
+      }
+
+      /// The 4 bytes of this value in the target's byte order (little-endian).
+      pub fn to_ne_bytes(self : $s) -> Tensor<u8, [4]> {
+        return (self as $u).to_ne_bytes();
+      }
+
+      /// The value whose bytes, the least significant first, are `b`. Static:
+      /// `i32::from_le_bytes(b)`.
+      pub fn from_le_bytes(b : Tensor<u8, [4]>) -> $s {
+        return $u::from_le_bytes(b) as $s;
+      }
+
+      /// The value whose bytes, the most significant first, are `b`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [4]>) -> $s {
+        return $u::from_be_bytes(b) as $s;
+      }
+
+      /// The value whose bytes, in the target's byte order (little-endian), are `b`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [4]>) -> $s {
+        return $u::from_ne_bytes(b) as $s;
+      }
+    }
+  };
+}
+
+/// Stamps the byte conversions for `u64` and `i64`.
+macro_rules stamp_int_bytes_8 {
+  ($u : ident , $s : ident) => {
+    impl $u {
+      /// The 8 bytes of this value, the least significant byte first.
+      pub fn to_le_bytes(self : $u) -> Tensor<u8, [8]> {
+        return [self as u8, (self >> 8) as u8, (self >> 16) as u8, (self >> 24) as u8,
+        (self >> 32) as u8, (self >> 40) as u8, (self >> 48) as u8, (self >> 56) as u8];
+      }
+
+      /// The 8 bytes of this value, the most significant byte first.
+      pub fn to_be_bytes(self : $u) -> Tensor<u8, [8]> {
+        return [(self >> 56) as u8, (self >> 48) as u8, (self >> 40) as u8, (self >> 32) as u8,
+        (self >> 24) as u8, (self >> 16) as u8, (self >> 8) as u8, self as u8];
+      }
+
+      /// The 8 bytes of this value in the target's byte order (little-endian).
+      pub fn to_ne_bytes(self : $u) -> Tensor<u8, [8]> {
+        return self.to_le_bytes();
+      }
+
+      /// The value whose bytes, the least significant first, are `b`. Static:
+      /// `u64::from_le_bytes(b)`.
+      pub fn from_le_bytes(b : Tensor<u8, [8]>) -> $u {
+        return (b[0] as $u) | ((b[1] as $u) << 8) | ((b[2] as $u) << 16) | ((b[3] as $u) << 24)
+        | ((b[4] as $u) << 32) | ((b[5] as $u) << 40) | ((b[6] as $u) << 48)
+        | ((b[7] as $u) << 56);
+      }
+
+      /// The value whose bytes, the most significant first, are `b`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [8]>) -> $u {
+        return (b[7] as $u) | ((b[6] as $u) << 8) | ((b[5] as $u) << 16) | ((b[4] as $u) << 24)
+        | ((b[3] as $u) << 32) | ((b[2] as $u) << 40) | ((b[1] as $u) << 48)
+        | ((b[0] as $u) << 56);
+      }
+
+      /// The value whose bytes, in the target's byte order (little-endian), are `b`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [8]>) -> $u {
+        return $u::from_le_bytes(b);
+      }
+    }
+
+    impl $s {
+      /// The 8 bytes of this value, the least significant byte first.
+      pub fn to_le_bytes(self : $s) -> Tensor<u8, [8]> {
+        return (self as $u).to_le_bytes();
+      }
+
+      /// The 8 bytes of this value, the most significant byte first.
+      pub fn to_be_bytes(self : $s) -> Tensor<u8, [8]> {
+        return (self as $u).to_be_bytes();
+      }
+
+      /// The 8 bytes of this value in the target's byte order (little-endian).
+      pub fn to_ne_bytes(self : $s) -> Tensor<u8, [8]> {
+        return (self as $u).to_ne_bytes();
+      }
+
+      /// The value whose bytes, the least significant first, are `b`. Static:
+      /// `i64::from_le_bytes(b)`.
+      pub fn from_le_bytes(b : Tensor<u8, [8]>) -> $s {
+        return $u::from_le_bytes(b) as $s;
+      }
+
+      /// The value whose bytes, the most significant first, are `b`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [8]>) -> $s {
+        return $u::from_be_bytes(b) as $s;
+      }
+
+      /// The value whose bytes, in the target's byte order (little-endian), are `b`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [8]>) -> $s {
+        return $u::from_ne_bytes(b) as $s;
+      }
+    }
+  };
+}
+
+stamp_int_bytes_1!(u8 , i8);
+stamp_int_bytes_2!(u16 , i16);
+stamp_int_bytes_4!(u32 , i32);
+stamp_int_bytes_8!(u64 , i64);
+
 /// The integer methods for `usize`, written out rather than stamped.
 ///
 /// A `usize` holds 0 to the largest `i64`, and its `+`, `-` and `*` trap when the answer
@@ -1169,9 +1468,9 @@ stamp_unsigned_int!(u64 , i64 , 64 , 18446744073709551615);
 /// `mlir!` blocks that skip the trap.
 ///
 /// Absent because their answer could set the top bit: `rotate_left`, `rotate_right`,
-/// `swap_bytes`, `reverse_bits`, and so `to_be` and `from_be`. `leading_ones` is absent too,
-/// since it is always zero. `to_le` and `from_le` are here: on a little-endian target they
-/// change nothing.
+/// `swap_bytes`, `reverse_bits`, and so `to_be` and `from_be`, and the `from_*_bytes`
+/// functions. `leading_ones` is absent too, since it is always zero. `to_le` and `from_le` are
+/// here: on a little-endian target they change nothing. So are the `to_*_bytes` functions.
 impl usize {
   /// The value in little-endian order. On a little-endian target nothing changes.
   pub fn to_le(self : usize) -> usize {
@@ -1181,6 +1480,22 @@ impl usize {
   /// Reads a little-endian value. On a little-endian target nothing changes.
   pub fn from_le(self : usize) -> usize {
     return self;
+  }
+
+  /// The 8 bytes of this value, the least significant byte first. There is no
+  /// `from_le_bytes`, because 8 bytes can hold a value above the largest `usize`.
+  pub fn to_le_bytes(self : usize) -> Tensor<u8, [8]> {
+    return (self as u64).to_le_bytes();
+  }
+
+  /// The 8 bytes of this value, the most significant byte first.
+  pub fn to_be_bytes(self : usize) -> Tensor<u8, [8]> {
+    return (self as u64).to_be_bytes();
+  }
+
+  /// The 8 bytes of this value in the target's byte order (little-endian).
+  pub fn to_ne_bytes(self : usize) -> Tensor<u8, [8]> {
+    return (self as u64).to_ne_bytes();
   }
 
   /// Zero.
@@ -3096,6 +3411,47 @@ macro_rules stamp_float_bits {
 
 stamp_float_bits!(f32 , u32 , i32 , 2147483649 , 2147483647 , 24 , 6 , -125 , 128 , -37 , 38);
 stamp_float_bits!(f64 , u64 , i64 , 9223372036854775809 , 9223372036854775807 , 53 , 15 , -1021 , 1024 , -307 , 308);
+
+/// Stamps the byte conversions for one float width, through the bits of `to_bits`. `$u` is the
+/// unsigned integer of the same width and `$n` its number of bytes. A NaN keeps its bits.
+macro_rules stamp_float_bytes {
+  ($t : ident , $u : ident , $n : expr) => {
+    impl $t {
+      /// The bytes of this value, the least significant byte first.
+      pub fn to_le_bytes(self : $t) -> Tensor<u8, [$n]> {
+        return self.to_bits().to_le_bytes();
+      }
+
+      /// The bytes of this value, the most significant byte first.
+      pub fn to_be_bytes(self : $t) -> Tensor<u8, [$n]> {
+        return self.to_bits().to_be_bytes();
+      }
+
+      /// The bytes of this value in the target's byte order (little-endian).
+      pub fn to_ne_bytes(self : $t) -> Tensor<u8, [$n]> {
+        return self.to_bits().to_ne_bytes();
+      }
+
+      /// The value whose bytes, the least significant first, are `b`. Static.
+      pub fn from_le_bytes(b : Tensor<u8, [$n]>) -> $t {
+        return $t::from_bits($u::from_le_bytes(b));
+      }
+
+      /// The value whose bytes, the most significant first, are `b`. Static.
+      pub fn from_be_bytes(b : Tensor<u8, [$n]>) -> $t {
+        return $t::from_bits($u::from_be_bytes(b));
+      }
+
+      /// The value whose bytes, in the target's byte order (little-endian), are `b`. Static.
+      pub fn from_ne_bytes(b : Tensor<u8, [$n]>) -> $t {
+        return $t::from_bits($u::from_ne_bytes(b));
+      }
+    }
+  };
+}
+
+stamp_float_bytes!(f32 , u32 , 4);
+stamp_float_bytes!(f64 , u64 , 8);
 
 /// Stamps the text forms of a float width, from `core::num::float_to_decimal`. `$from_bits`
 /// reads the value's bits into a `FloatDecimal` with the shortest digits for this width.
