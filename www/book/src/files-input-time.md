@@ -1,8 +1,8 @@
 # Files, input and time
 
 A program often needs text, files, the clock or the network. This chapter shows the parts of the
-standard library for these jobs: `std::string`, `std::env`, `std::fs`, `std::io`, `std::time` and
-`std::net`.
+standard library for these jobs: `std::string`, `std::env`, `std::fs`, `std::io`, `std::time`,
+`std::net` and `std::process`.
 
 Many of these functions take a raw pointer, such as a string literal or a buffer. The compiler
 cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block. Files and
@@ -346,6 +346,11 @@ no other right.
 `IpAddress` holds 4 bytes for IPv4 or 16 bytes for IPv6, in network order. It takes the network
 right too, because the lookup can send the name to the network.
 
+`UnixStream::connect(&root.network, &path)` connects to a Unix-domain socket, whose address is
+the path of a socket file. `UnixListener::bind` makes one and `accept` takes its connections. A
+`UnixStream` has the same `read`, `write`, `read_exact` and `write_all` as a `TcpStream`. They
+take the network right, because a connection to a local server is a connection too.
+
 The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
 The length of the vector is the size of the buffer. Each type also has methods that take raw
 pointers. Their names end in `_c_str` or `_raw`.
@@ -436,3 +441,54 @@ only the task that waits, so the other task runs on the same OS thread
 
 A `UdpSocket` has `recv(&mut buffer)`, which waits for one datagram and gives its length, and
 `send_to(&buffer, &addr)`, which sends one datagram.
+
+## Other programs
+
+To start another program, a call needs the right to start programs: a `&Processes`. `main` gets
+it in `root.processes`. Only `std::process` can make a `Processes`, so a function that gets no
+`&Processes` cannot start a program.
+
+`processes.run(&program, &args)` starts the program, waits until it ends, and gives a `Result`:
+
+- `Ok` holds the exit code of the program.
+- `Err(ProcessError::NotStarted)` means that the program did not start, for example because no
+  program has the name.
+- `Err(ProcessError::Killed(signal))` means that a signal stopped the program, so it gave no exit
+  code.
+
+A name with no `/` names a program in a folder of `PATH`. Each `String` in `args` is one argument,
+and no shell splits it. The program uses the standard input, output and error of this program, and
+gets its environment variables.
+
+The compiler does not check the program that `run` starts. That program can open files, use the
+network and read the environment variables. So a `&Processes` gives every other right in practice.
+Give it only to code that you trust with all of them.
+
+```vx
+import core::result;
+import std::process;
+import std::root;
+import std::string;
+import std::vec;
+
+// Runs `ls -l`. A function needs a `&Processes` to start a program.
+fn list(processes : &Processes) -> i32 {
+  let program = unsafe { String::from_c_str("ls") };
+  let mut args : Vec<String> = Vec::new();
+  args.push(unsafe { String::from_c_str("-l") });
+  match processes.run(&program, &args) {
+    Result<i32, ProcessError>::Ok(code) => {
+      return code;
+    }
+    Result<i32, ProcessError>::Err(_e) => {
+      return 1;
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  return list(&root.processes);
+}
+```
+
+The test is `a_program_starts_other_programs.vx`.

@@ -19,4 +19,5 @@ pub mod env;
 pub mod ffi;
 pub mod io;
 pub mod net;
+pub mod process;
 pub mod simd;
