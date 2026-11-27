@@ -171,7 +171,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3067`](/errors/E3067/) | A read or a write through a `void` pointer, as `*p` or `p[i]`. A `*const void` is only an address, for example one that `p as *const void` made to give to a C function. It has no element type, so the compiler does not know what to read. |
 | [`E3068`](/errors/E3068/) | A call that gives one extent name two different extents. In `fn add(a : Tensor<f32, [?n]>, b : Tensor<f32, [?n]>)`, both `?n` are one extent, so `add(x, y)` with the extents 5 and 7 is an error. When the compiler does not know an extent, it does not check it. |
 | [`E3069`](/errors/E3069/) | A variable of the body with the name of an extent, or an assignment to an extent name. `?n` in the type of a parameter makes `n` a variable of the body that nothing changes. |
-| [`E3070`](/errors/E3070/) | A shape in `Tensor<T, [..]>::new([..])` or `::uninit([..])` that does not match the type. The shape is a list in brackets with one extent for each dimension, and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`. |
+| [`E3070`](/errors/E3070/) | A shape in `Tensor<T, [..]>::new([..])`, `::uninit([..])` or `::fill([..], v)` that does not match the type. The shape is a list in brackets with one extent for each dimension, and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`. |
 
 ## Borrow/Ownership Errors
 
@@ -205,7 +205,7 @@ Raised where an operation needs an `unsafe` context and does not have one.
 | --- | --- |
 | [`E5001`](/errors/E5001/) | Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements hold whatever the memory held, so the program says with `unsafe` that it writes each one before reading it. |
 | [`E5002`](/errors/E5002/) | An operation that only an `unsafe` block allows, outside one. An access through a raw pointer, `*p`, `p[i]`, `p.field` or a method call `p.f()`, is one: the compiler cannot know that the value is still at the address. So is `assume`. |
-| [`E5003`](/errors/E5003/) | Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`. The program that uses the package gives the flag, so a new version of the package cannot add trusted code without an error. `vxc --audit` lists the trusted code of a program. |
+| [`E5003`](/errors/E5003/) | Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl`, an `unsafe impl`, or a `requires` of an `extern fn`, which a call from C does not prove. The program that uses the package gives the flag, so a new version of the package cannot add trusted code without an error. `vxc --audit` lists the trusted code of a program. |
 | [`E5004`](/errors/E5004/) | A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that takes a `Root` makes the capabilities of the program, so a second start would give them to code that did not get them. |
 | [`E5005`](/errors/E5005/) | A call of a private function from another file, or such a function used as a value. A function, an associated function or a method with no `pub` is private to its file, as in Rust. A `pkg` function is visible to the files of its package only. So a library can keep a helper that only its own code may call, such as one that reads through a raw pointer. |
 

@@ -135,6 +135,60 @@ pub fn lookup(addr: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
     })
 }
 
+/// The IP addresses of `host`, a name or an address with no port, as for `lookup`.
+fn lookup_host(host: &str) -> std::io::Result<Vec<std::net::IpAddr>> {
+    off_the_worker(|| {
+        let addrs: Vec<_> = std::net::ToSocketAddrs::to_socket_addrs(&(host, 0u16))
+            .map_err(|_| std::io::Error::other(BadAddress))?
+            .map(|a| a.ip())
+            .collect();
+        if addrs.is_empty() {
+            return Err(std::io::Error::other(BadAddress));
+        }
+        Ok(addrs)
+    })
+}
+
+/// Look up the IP addresses of the C string `host`, for `std::net::lookup`. Each address goes
+/// into `out` as one byte with its length, 4 or 16, and then its bytes in network order. It
+/// writes the addresses that fit in `cap` bytes, and puts their number in `*count`. 0, or a
+/// status of `net_status`.
+///
+/// # Safety
+/// `host` must be a C string, `out` must have room for `cap` bytes, and `count` must point at a
+/// `u64`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_net_lookup_host(
+    host: *const std::ffi::c_char,
+    out: *mut u8,
+    cap: u64,
+    count: *mut u64,
+) -> i32 {
+    assert!(!host.is_null() && !out.is_null() && !count.is_null());
+    unsafe { *count = 0 };
+    let host = unsafe { std::ffi::CStr::from_ptr(host) }.to_string_lossy();
+    let addrs = match lookup_host(&host) {
+        Ok(addrs) => addrs,
+        Err(e) => return net_status(&e),
+    };
+    let out = unsafe { std::slice::from_raw_parts_mut(out, cap as usize) };
+    let mut at = 0;
+    for a in addrs {
+        let bytes = match a {
+            std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
+            std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
+        };
+        if at + 1 + bytes.len() > out.len() {
+            break;
+        }
+        out[at] = bytes.len() as u8;
+        out[at + 1..at + 1 + bytes.len()].copy_from_slice(&bytes);
+        at += 1 + bytes.len();
+        unsafe { *count += 1 };
+    }
+    0
+}
+
 /// Connects to `addr`, written as `host:port`, and tries each address of the host in turn. The
 /// wait for each connection is as for `when_ready`.
 pub fn connect(addr: &str) -> std::io::Result<std::net::TcpStream> {

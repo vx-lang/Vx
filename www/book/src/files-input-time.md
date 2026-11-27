@@ -38,7 +38,8 @@ program gets the length before it prints `greeting`.
 
 A string literal is its bytes and a NUL at the end, and the compiler knows how many bytes it has.
 `"hello" as *const u8` gives those bytes as a `*const u8`, the type that `String::from_bytes`
-below takes. So `String::from_bytes("hello" as *const u8, 5)` makes a `String` with no `unsafe`.
+below takes. So `String::from_bytes("hello" as *const u8, 5)` makes a `String` with no `unsafe`. A length of
+6 would also copy the NUL, and the compiler refuses it (E8006).
 
 `String::from_utf8(&v)` copies the bytes of a `Vec<u8>`, and `String::from_bytes(p, n)` copies
 the `n` bytes at the raw pointer `p`. Neither one needs `unsafe`. But a call of `from_bytes` in
@@ -46,6 +47,11 @@ safe code must prove that `p` points at `n` bytes, as `v.as_mut_ptr()` and `v.le
 give a `Result`. Its `Err` holds a `Utf8Error` when the bytes are not UTF-8, and `e.valid_up_to`
 is the number of bytes before the first bad one. `s.to_bytes()` goes the other way: it copies the
 bytes of a `String` into a new `Vec<u8>`.
+
+`s.byte(i)` gives byte `i` of a `String` as a `u8`. `s.push_str(&t)` adds the bytes of `t` to the
+end of `s`. `s.byte_range(from, to)` copies bytes `from` to `to` into a new `String`. It gives a
+`Utf8Error` when the range cuts a character in two. An index or a range outside the string stops
+the program, as `v[i]` does. None of the three needs `unsafe`.
 
 `parse_int` stops at the first byte that is not a digit. So `"12abc"` gives 12, and `"abc"`
 gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
@@ -192,6 +198,13 @@ folder, and no others. For example, a model server can give the code that loads 
 `Folder`, and give the code that reads requests no right at all
 (`a_folder_right_reads_only_the_files_inside_its_folder.vx`).
 
+A `PendingFile` is narrower still: the right to open one path in one mode, later.
+`PendingFile::new(files, path, mode)` opens nothing, and `pending.open()` opens the path once. So
+a program can make or empty an output file only when the first byte arrives, and the code that
+writes it needs no `&Files`. `remove_file(files, path)` removes a file. `file_kind(files, path)` gives
+`FileKind::Regular`, `Folder` or `Other`, and follows a symbolic link, so a program can leave a
+device such as `/dev/null` alone (`a_file_can_be_opened_later_removed_and_asked_its_kind.vx`).
+
 `file.map()` gives the whole file in memory, read-only, as a `Mapping`. It copies nothing: the
 system reads each part of the file when the program first reads it. So a program can map a file
 of many gigabytes and read only the parts that it needs.
@@ -219,7 +232,12 @@ Only `std::io` can make them, so a library reads or writes them only when its ca
 - `out.write_all(&bytes)` writes all of the bytes. They keep their order with `print!`.
 - A `select` can wait on a `Stdin`, as it waits on a socket.
 
-`println!` and `print!` do not need the right yet. The older `unsafe` functions `stdin_read`,
+`print_s!` and `println_s!` print as `print!` and `println!` do, but their first argument is the
+right to print: a `Stdout` or a `Stderr`, or a reference to one. With a `Stderr`, the text goes
+to standard error. So `println_s!(out, "{} lines", n)` in a library prints only when its caller
+gave it `out`. `print!` and `println!` still need no right.
+
+The older `unsafe` functions `stdin_read`,
 `stdout_write` and `stderr_write` take a raw pointer and a length. This loop counts the lines of
 the input:
 
@@ -323,6 +341,10 @@ To open a connection or to bind an address, a call needs the right to use the ne
 `TcpStream::connect`, `TcpListener::bind` and `UdpSocket::bind`, or to a function that calls them. Only `std::net` can make a `Network`, so a
 function that gets no `&Network` cannot open a connection. A connection that `accept` gives needs
 no other right.
+
+`lookup(&root.network, &host)` gives the IP addresses of a host name, with no port. Each
+`IpAddress` holds 4 bytes for IPv4 or 16 bytes for IPv6, in network order. It takes the network
+right too, because the lookup can send the name to the network.
 
 `UnixStream::connect(&root.network, &path)` connects to a Unix-domain socket, whose address is
 the path of a socket file. `UnixListener::bind` makes one and `accept` takes its connections. A

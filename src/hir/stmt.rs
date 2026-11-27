@@ -1027,7 +1027,8 @@ impl<'a> TypeChecker<'a> {
         let value = self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr));
         // In `let y = y + 1`, the `y` on the right is the old variable, and the fact
         // `y == y + 1` would be false. Each change of a `let mut` ends its facts. Its fact
-        // must be one that the prover can model, so that no new program warns.
+        // must be one that the prover can model, so that no new program warns. The `ensures`
+        // facts of a call are always ones that it can model.
         let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
         if matches!(value, Expr::StructInit(_)) {
             let place = Expr::Identifier(IdentifierExpr {
@@ -1037,7 +1038,7 @@ impl<'a> TypeChecker<'a> {
             let ty = self.lookup(name.as_ref()).map(|(t, _)| t.clone());
             let facts = ty.map(|ty| self.facts_of_a_struct_literal(&place, &ty, &value, name));
             self.consteval.constraints.extend(facts.unwrap_or_default());
-        } else if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
+        } else if !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
             // A call can change its arguments. Re-evaluating it in a later proof would use
             // their new values, not the values from when the result was returned.
             let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
@@ -1045,7 +1046,7 @@ impl<'a> TypeChecker<'a> {
             // A fact reads each variable as it is after the `let`. A variable that the value
             // read before a call in the value changed it had another value at the read.
             let read_before_a_change = self.variables_read_before_a_change(&value);
-            if !changes_an_argument && read_before_a_change.is_empty() {
+            if recorded && !changes_an_argument && read_before_a_change.is_empty() {
                 let id_expr = Expr::Identifier(IdentifierExpr {
                     name: name.clone(),
                     span: Span::default(),

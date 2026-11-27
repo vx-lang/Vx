@@ -606,15 +606,13 @@ impl<'a> TypeChecker<'a> {
         // Each branch starts from the values known before the `if`, and the paths join after it.
         let taken = taken.or_else(|| self.known_condition(&if_expr.cond));
         let values_before = self.consteval.env.clone();
-        // A branch that is only a number with no suffix, such as `else { 0.0 }`, takes the type
-        // of the other branch.
-        let then_literal =
-            unsuffixed_number_tail(&mut if_expr.then_block).is_some_and(|n| n.ty.is_none());
+        // A branch that is only numbers with no suffix, such as `else { 0.0 }`, `else { 2 * 3 }`
+        // or `else { if d { 1 } else { 2 } }`, takes the type of the other branch.
+        let then_literal = untyped_number_value(&mut if_expr.then_block);
         let else_literal = if_expr
             .else_block
             .as_mut()
-            .and_then(|b| unsuffixed_number_tail(b))
-            .is_some_and(|n| n.ty.is_none());
+            .is_some_and(|b| untyped_number_value(b));
         let (then_name, else_name) = Self::pointer_branch_names(if_expr).unzip();
         let named = then_name.is_some();
         self.pointer_branches.extend(then_name);
@@ -686,10 +684,20 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         (&mut *else_b, &then_ty)
                     };
-                    let n = unsuffixed_number_tail(literal_block)
-                        .expect("a literal branch ends in a number");
-                    if let Some(e) = crate::hir::expr::expected_numeric_elem(other_ty, &n.value) {
-                        n.ty = Some(e);
+                    // The checker gave the numbers the type `i32` or `f64`. They had no suffix
+                    // before it, so they take the type of the other branch instead.
+                    let mut parts = NumberParts::default();
+                    let fits = number_value(literal_block, &mut parts)
+                        && parts.numbers.iter().all(|n| {
+                            crate::hir::expr::expected_numeric_elem(other_ty, &n.value).is_some()
+                        });
+                    if let (true, Type::Scalar(e)) = (fits, other_ty) {
+                        for n in parts.numbers {
+                            n.ty = Some(e.clone());
+                        }
+                        for operand_ty in parts.operations {
+                            *operand_ty = Some(e.clone());
+                        }
                         if then_literal {
                             then_ty = else_ty.clone();
                         } else {
@@ -2329,6 +2337,66 @@ fn join_with(facts: Vec<Expr>, op: LogicalOp) -> Expr {
             })
         })
         .expect("a list with a fact")
+}
+
+/// The numbers of a value that is made only of numbers, and the operand types of the operations
+/// between them.
+#[derive(Default)]
+struct NumberParts<'a> {
+    numbers: Vec<&'a mut NumberExpr>,
+    operations: Vec<&'a mut Option<ElementType>>,
+}
+
+/// Whether a block's value is only numbers with no suffix, as in `{ 0 }`, `{ -1 }`, `{ 2 * 3 }`
+/// or `{ if d { 1 } else { 2 } }`.
+fn untyped_number_value(body: &mut [Statement]) -> bool {
+    let mut parts = NumberParts::default();
+    number_value(body, &mut parts) && parts.numbers.iter().all(|n| n.ty.is_none())
+}
+
+/// Whether a block's value is only numbers. Its parts go into `out`.
+fn number_value<'a>(body: &'a mut [Statement], out: &mut NumberParts<'a>) -> bool {
+    match body.last_mut() {
+        Some(Statement::ExprStmt(ExprStmtStmt {
+            expr,
+            has_semi: false,
+            ..
+        })) => numbers_only(expr, out),
+        _ => false,
+    }
+}
+
+/// Whether `e` is only numbers, with a `-` in front or joined by `+`, `-`, `*`, `/`, `%` or an
+/// `if`. Its parts go into `out`.
+fn numbers_only<'a>(e: &'a mut Expr, out: &mut NumberParts<'a>) -> bool {
+    match e {
+        Expr::Number(n) => {
+            out.numbers.push(n);
+            true
+        }
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        }) => numbers_only(expr, out),
+        Expr::BinaryOp(BinaryOpExpr {
+            lhs,
+            op: BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem,
+            rhs,
+            operand_ty,
+            ..
+        }) => {
+            out.operations.push(operand_ty);
+            numbers_only(lhs, out) && numbers_only(rhs, out)
+        }
+        Expr::If(IfExpr {
+            is_comptime: false,
+            then_block,
+            else_block: Some(else_block),
+            ..
+        }) => number_value(then_block, out) && number_value(else_block, out),
+        _ => false,
+    }
 }
 
 /// The number that a block's value is, as in `{ 0 }` or `{ -1 }`.

@@ -30,6 +30,8 @@ import std::sync::select;
 import std::vec;
 
 extern {
+  /// The Rust core behind `lookup`.
+  pkg fn vx_net_lookup_host(host : *const i8, out : *mut u8, cap : u64, count : *mut u64) -> i32;
   /// The Rust core behind `TcpStream::connect_c_str`.
   pub fn vx_tcp_stream_connect(c_addr : *const i8, out : *mut *mut i8) -> i32;
   /// The Rust core behind `TcpStream::read_raw`.
@@ -164,6 +166,54 @@ impl Drop for CAddress {
   fn drop(self : &mut CAddress) -> void {
     let _freed = unsafe { vx_string_free_c_str(self.ptr) };
   }
+}
+
+/// An IP address: 4 bytes for IPv4, or 16 bytes for IPv6, in network order.
+struct IpAddress {
+  bytes : Vec<u8>,
+}
+
+impl IpAddress {
+  /// Whether it is an IPv4 address.
+  pub fn is_v4(self : &IpAddress) -> bool {
+    return self.bytes.len() == 4;
+  }
+}
+
+/// The most addresses that `lookup` gives.
+const LOOKUP_LIMIT : i32 = 64;
+
+/// The IP addresses of `host`, in the order that the resolver gives them, at most 64. `host` is a
+/// name such as `example.com`, or an address such as `127.0.0.1` or `::1`, with no port. The
+/// caller needs the network right, a `&Network`, because the lookup can send the name to the
+/// network. A task of the shared runtime parks while it waits. A host with no address gives
+/// `BadAddress`.
+pub fn lookup(_network : &Network, host : &String) -> Result<Vec<IpAddress>, NetError> {
+  let c_host = CAddress::of(host)?;
+  // Each address takes one byte for its length and at most 16 for its bytes.
+  let cap = LOOKUP_LIMIT * 17;
+  let buffer = unsafe { Vec<u8>::zeroed(cap) };
+  let mut count : u64 = 0;
+  let status = unsafe {
+    vx_net_lookup_host(c_host.ptr, buffer.as_mut_ptr(), cap as u64, (&mut count) as *mut u64)
+  };
+  let mut addresses = Vec<IpAddress>::new();
+  if status != 0 {
+    return Result<Vec<IpAddress>, NetError>::Err(net_error(status));
+  }
+  let mut at = 0;
+  for _k in 0..count as i32 {
+    let len = buffer.get(at) as i32;
+    let mut bytes = Vec<u8>::new();
+    for j in 0..len {
+      bytes.push(buffer.get(at + 1 + j));
+    }
+    addresses.push(IpAddress {
+      bytes : bytes
+    });
+    at = at + 1 + len;
+  }
+  return Result<Vec<IpAddress>, NetError>::Ok(addresses);
 }
 
 /// A connected TCP socket, held by the Rust core behind an opaque pointer.

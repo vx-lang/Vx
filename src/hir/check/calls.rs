@@ -1604,7 +1604,8 @@ impl<'a> TypeChecker<'a> {
                     // compile the registry is empty, so this arm is inert and the call falls to E2002.
                     // The signature carries the callee's unsafe-ness precisely so an importing
                     // module can refuse the call without seeing the body. Read it here, or the
-                    // flag crosses the boundary and means nothing.
+                    // flag crosses the boundary and means nothing. The level is the same.
+                    self.refuse_a_private_imported_function(&resolved_name, &sig, span);
                     if sig.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
@@ -1757,6 +1758,39 @@ impl<'a> TypeChecker<'a> {
             _ => format!(
                 "`{shown}` is private to `{file}`. Write `pub fn {short}` there, so that other \
                  files can call it"
+            ),
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E5005,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
+        );
+    }
+
+    /// E5005 for a call of `name`, a function of a library that this program links through its
+    /// `.vxlib` interface. The library is another compile, with its own files and package, so the
+    /// program can call only its `pub` functions.
+    fn refuse_a_private_imported_function(
+        &mut self,
+        name: &str,
+        sig: &crate::registry::FnSig,
+        at: &crate::syntax::Span,
+    ) {
+        if self.speculating || sig.visibility == Visibility::Public {
+            return;
+        }
+        let file = match &sig.file {
+            Some(file) => format!("`{file}`"),
+            None => "its file".to_string(),
+        };
+        let message = match sig.visibility {
+            Visibility::Package => format!(
+                "`{name}` is `pkg` in {file} of a library that this program links, so only that \
+                 library can call it. Write `pub fn {name}` there, so that other packages can call it"
+            ),
+            _ => format!(
+                "`{name}` is private to {file}. Write `pub fn {name}` there, so that other files \
+                 can call it"
             ),
         };
         self.errors.error_with_code(
@@ -3309,7 +3343,10 @@ impl<'a> TypeChecker<'a> {
             let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn(_))));
             let wanted = usize::from(dynamic) + usize::from(fills);
             if args.len() != wanted {
-                let why = if fills {
+                let why = if fills && dynamic {
+                    "a run-time extent is not in the type, so `::fill` takes the shape and then \
+                     the value: `::fill([n, m], v)`"
+                } else if fills {
                     "`::fill` takes the value to write into every element"
                 } else if wanted == 0 {
                     "a Tensor's shape is part of its type, so the constructor takes no arguments"
@@ -4740,7 +4777,17 @@ impl<'a> TypeChecker<'a> {
                     // A method that is not found might have changed its receiver; assume so,
                     // so the error does not also bring a warning that its `mut` is not needed.
                     self.changed_vars.extend(receiver_root.clone());
-                    if !self.speculating {
+                    if _method.as_ref() == "is_standard_error" {
+                        // `print_s!` and `println_s!` call it on their first argument.
+                        if !self.speculating {
+                            self.errors.push(format!(
+                                "the first argument of `print_s!` or `println_s!` is the right to \
+                                 print: a `Stdout` or a `Stderr` from `root`, or a reference to \
+                                 one. Its type is `{base_ty}`"
+                            ));
+                        }
+                        base_ty = Type::Scalar(ElementType::Bool);
+                    } else if !self.speculating {
                         self.errors.push(format!(
                             "Method '{}' not found on type {}",
                             _method, base_ty

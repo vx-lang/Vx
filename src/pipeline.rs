@@ -1076,6 +1076,8 @@ pub fn build_frozen_registry_with(
                                 &crate::hir::provenance::ReturnProvenance::AnyParam,
                             ),
                             is_unsafe: !ext.is_safe,
+                            visibility: ext.visibility,
+                            file: ext.file.as_ref().map(crate::registry::file_name_only),
                             ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
                                 &ext.params,
                                 &ext.return_type,
@@ -1140,6 +1142,14 @@ pub fn build_frozen_registry_with(
                                     &m.return_type,
                                     &m.ensures,
                                 ),
+                                // A method of a trait impl has the level of the trait, and
+                                // each trait is public.
+                                visibility: if imp.trait_name.is_some() {
+                                    crate::gid::Visibility::Public
+                                } else {
+                                    m.visibility
+                                },
+                                file: m.file.as_ref().map(crate::registry::file_name_only),
                             },
                         );
                     }
@@ -1179,6 +1189,8 @@ pub fn fn_sig_of(module_hash: u64, f: &syntax::Function) -> crate::registry::FnS
             &f.return_type,
             &f.ensures,
         ),
+        visibility: f.visibility,
+        file: f.file.as_ref().map(crate::registry::file_name_only),
     }
 }
 
@@ -2635,7 +2647,7 @@ mod gid_stream_tests {
         // interface. `pick` exists ONLY here and in the resulting registry — never in the consumer.
         let lib = parse_and_resolve(
             "crate::lib",
-            "fn pick(a: &i32, b: &i32) -> &i32 { return b; }",
+            "pub fn pick(a: &i32, b: &i32) -> &i32 { return b; }",
         );
         let lib_reg = build_frozen_registry(std::slice::from_ref(&lib)).expect("acyclic");
         let imported = deserialize_registry_interface(&serialize_registry_interface(&lib_reg))

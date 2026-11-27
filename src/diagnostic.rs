@@ -504,7 +504,7 @@ pub enum DiagnosticCode {
     /// A variable of the body with the name of an extent, or an assignment to an extent name.
     /// `?n` in the type of a parameter makes `n` a variable of the body that nothing changes.
     E3069,
-    /// A shape in `Tensor<T, [..]>::new([..])` or `::uninit([..])` that does not match the type. The shape is a list in brackets with one extent for each dimension,
+    /// A shape in `Tensor<T, [..]>::new([..])`, `::uninit([..])` or `::fill([..], v)` that does not match the type. The shape is a list in brackets with one extent for each dimension,
     /// and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`.
     E3070,
 
@@ -607,9 +607,10 @@ pub enum DiagnosticCode {
     /// know that the value is still at the address. So is `assume`.
     E5002,
     /// Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or
-    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`.
-    /// The program that uses the package gives the flag, so a new version of the package cannot
-    /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
+    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl`, an `unsafe impl`, or
+    /// a `requires` of an `extern fn`, which a call from C does not prove. The program that uses
+    /// the package gives the flag, so a new version of the package cannot add trusted code
+    /// without an error. `vxc --audit` lists the trusted code of a program.
     E5003,
     /// A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that
     /// takes a `Root` makes the capabilities of the program, so a second start would give them to

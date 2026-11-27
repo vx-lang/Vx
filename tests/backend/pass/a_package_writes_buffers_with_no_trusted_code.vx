@@ -1,0 +1,25 @@
+//===- a_package_writes_buffers_with_no_trusted_code.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `core::fmt::write_buffer(w, p, n)` gives `n` bytes at `p` to a `Write`. The package `tests`
+// calls it on a literal and on a `Vec` with no `unsafe` block, and `--no-trusted-code tests`
+// allows the program. The program writes the bytes that the `Write` got.
+//
+// RUN: vxc --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc --package tests=tests --no-trusted-code tests --legacy-codegen %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}hello!!{{$}}
+
+import std::io;
+import std::root;
+import std::vec;
+import tests::modules::a_package_that_writes_buffers;
+
+fn main(root : Root) -> i32 {
+  let mut out = root.stdout;
+  let _w = out.write_all(&literal_then_vec());
+  return 0;
+}

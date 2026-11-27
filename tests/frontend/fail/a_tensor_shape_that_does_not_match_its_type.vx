@@ -5,9 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `Tensor<T, [?, 4]>::new([n, 4])` and `::uninit([n, 4])` make the tensor from the list of
-// extents. So the list has one extent for each dimension, and a fixed dimension gets the extent
-// of the type. A shape in a variable is not a list.
+// `Tensor<T, [?, 4]>::new([n, 4])`, `::uninit([n, 4])` and `::fill([n, 4], v)` make the tensor
+// from the list of extents. So the list has one extent for each dimension, and a fixed dimension
+// gets the extent of the type. A shape in a variable is not a list.
 //
 // RUN: not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 
@@ -34,8 +34,13 @@ fn main() -> i32 {
   let shape = [n, 4];
   // CHECK: Error[E3070] at {{.*}}:[[#@LINE+1]]:40: write the shape of `Tensor<i32, [?, ?]>` as a list of extents in brackets, such as `[n, m]`
   let named = Tensor<i32, [?, ?]>::new(shape);
+  // CHECK: Error[E3070] at {{.*}}:[[#@LINE+1]]:46: dimension 1 of `Tensor<f32, [?, 2]>` has the extent 2, so write 2 for it in the shape
+  let filled = Tensor<f32, [?, 2]>::fill([n, 3], 1.5);
+  // CHECK: Error at {{.*}}:[[#@LINE+2]]:3: 'Tensor::fill' expects 2 argument(s): a run-time extent is not in the type, so `::fill` takes the shape and then the value: `::fill([n, m], v)`
+  // CHECK: Error[E3070] at {{.*}}:[[#@LINE+1]]:44: write the shape of `Tensor<f32, [?, 2]>` as a list of extents in brackets, such as `[n, m]`
+  let no_shape = Tensor<f32, [?, 2]>::fill(1.5);
   // CHECK: Error[E3070] at {{.*}}:15:40: dimension 1 of `Tensor<i32, [?, 5]>` has the extent 5, so write 5 for it in the shape
   let r = with_a_parameter<5>(n, 5) + from_a_parameter(n, 4);
-  println!("{} {} {} {} {}", few.extent(0), many.extent(0), other.extent(0), named.extent(0), r);
+  println!("{} {} {} {} {} {} {}", few.extent(0), many.extent(0), other.extent(0), named.extent(0), filled.extent(0), no_shape.extent(0), r);
   return 0;
 }

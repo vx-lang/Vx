@@ -1,0 +1,89 @@
+//===- lookup_gives_the_addresses_of_a_host.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lookup` takes the network right and gives the IP addresses of a host, each as 4 or 16 bytes.
+// An address that is already written as one gives itself. `localhost` has 127.0.0.1 on every
+// machine that runs the tests. A name in `.invalid` never has an address, and a name with a NUL
+// byte cannot reach the system.
+//
+// EXPECT: 127.0.0.1 gives 1 address: v4 127 0 0 1
+// EXPECT: ::1 gives 1 address: v6 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1
+// EXPECT: localhost has 127.0.0.1: true
+// EXPECT: no-such-host.invalid: BadAddress
+// EXPECT: a name with a NUL byte: BadAddress
+
+import core::result;
+import std::net;
+import std::root;
+import std::string;
+import std::vec;
+
+fn text(bytes : &Vec<u8>) -> String {
+  return String::from_utf8(bytes).unwrap();
+}
+
+fn name(s : *const i8) -> String {
+  return unsafe { String::from_c_str(s) };
+}
+
+fn show(network : &Network, label : *const i8, host : &String) -> void {
+  match lookup(network, host) {
+    Result::Ok(addresses) => {
+      print!("{} gives {} address:", label, addresses.len());
+      for a in addresses.iter() {
+        if a.is_v4() {
+          print!(" v4");
+        } else {
+          print!(" v6");
+        }
+        for b in a.bytes.iter() {
+          print!(" {}", *b);
+        }
+      }
+      println!("");
+    }
+    Result::Err(e) => {
+      match e {
+        NetError::BadAddress => {
+          println!("{}: BadAddress", label);
+        }
+        _ => {
+          println!("{}: another error", label);
+        }
+      }
+    }
+  }
+}
+
+fn has_loopback(network : &Network) -> bool {
+  match lookup(network, &name("localhost")) {
+    Result::Ok(addresses) => {
+      for a in addresses.iter() {
+        if a.is_v4() && a.bytes.get(0) == 127u8 && a.bytes.get(3) == 1u8 {
+          return true;
+        }
+      }
+      return false;
+    }
+    Result::Err(_e) => {
+      return false;
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  show(&root.network, "127.0.0.1", &name("127.0.0.1"));
+  show(&root.network, "::1", &name("::1"));
+  println!("localhost has 127.0.0.1: {}", has_loopback(&root.network));
+  show(&root.network, "no-such-host.invalid", &name("no-such-host.invalid"));
+  let mut with_nul = Vec<u8>::new();
+  with_nul.push(97u8);
+  with_nul.push(0u8);
+  with_nul.push(98u8);
+  show(&root.network, "a name with a NUL byte", &text(&with_nul));
+  return 0;
+}

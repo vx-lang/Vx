@@ -1,0 +1,55 @@
+//===- a_package_reads_and_builds_strings_with_no_trusted_code.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `s.byte(i)`, `s.push_str(&t)` and `s.byte_range(from, to)` are safe. So the package `tests`
+// calls them with no `unsafe` block, and `--no-trusted-code tests` allows the program.
+//
+// RUN: vxc --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc --package tests=tests --no-trusted-code tests --legacy-codegen %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The bytes of "héllo": the "é" is the two bytes 195 and 169.
+// CHECK: {{^}}104 195 169 108 108 111{{$}}
+// CHECK-NEXT: {{^}}3 spaces{{$}}
+//
+// `join` appends "hello", ", " and "world". The two strings it reads do not change.
+// CHECK-NEXT: {{^}}12 bytes{{$}}
+// CHECK-NEXT: {{^}}hello, world{{$}}
+// CHECK-NEXT: {{^}}hello world{{$}}
+//
+// Bytes 0..1, 1..3, 3..3 and 0..6 of "héllo". Then 0..2 ends inside the "é", and 2..4 starts
+// inside it.
+// CHECK-NEXT: {{^}}[h]{{$}}
+// CHECK-NEXT: {{^}}[é]{{$}}
+// CHECK-NEXT: {{^}}[]{{$}}
+// CHECK-NEXT: {{^}}[héllo]{{$}}
+// CHECK-NEXT: {{^}}cuts a character after 1 bytes{{$}}
+// CHECK-NEXT: {{^}}cuts a character after 0 bytes{{$}}
+
+import std::string;
+import tests::modules::a_package_that_reads_and_builds_strings;
+
+fn main() -> i32 {
+  let accent = unsafe { String::from_c_str("héllo") };
+  show_bytes(&accent);
+  let spaced = unsafe { String::from_c_str("a b  c") };
+  println!("{} spaces", count_spaces(&spaced));
+
+  let hello = unsafe { String::from_c_str("hello") };
+  let world = unsafe { String::from_c_str("world") };
+  let joined = join(&hello, &world);
+  println!("{} bytes", joined.len());
+  println!("{}", joined);
+  println!("{} {}", hello, world);
+
+  show_range(&accent, 0, 1);
+  show_range(&accent, 1, 3);
+  show_range(&accent, 3, 3);
+  show_range(&accent, 0, 6);
+  show_range(&accent, 0, 2);
+  show_range(&accent, 2, 4);
+  return 0;
+}
