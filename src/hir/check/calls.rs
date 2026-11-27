@@ -2747,13 +2747,7 @@ impl<'a> TypeChecker<'a> {
 
             let mut modified_func = generic_func.clone();
             modified_func.name = format!("{}::{}{}", struct_name, chosen_seg, method_name).into();
-            modified_func.generics = found_mapping
-                .keys()
-                .map(|k| decl::GenericParam::Type {
-                    name: k.clone(),
-                    bounds: Vec::new(),
-                })
-                .collect();
+            modified_func.generics = instance_generics(&found_generics, &found_mapping);
 
             let inst_func = self.instantiate_function(
                 &modified_func,
@@ -3966,15 +3960,16 @@ impl<'a> TypeChecker<'a> {
         base_ty: &Type,
         ib: &decl::ImplBlock,
     ) -> Option<(Function, String)> {
-        // Provide generic mapping to the method itself by copying impl block generics
+        // The method gets the parameters of its impl block, then its own, in the order that
+        // they are written. The name of the instance lists the type arguments in that order.
         let mut modified_func = generic_method.clone();
-        modified_func.generics = mapping
-            .keys()
-            .map(|k| decl::GenericParam::Type {
-                name: k.clone(),
-                bounds: Vec::new(),
-            })
+        let declared: Vec<decl::GenericParam> = ib
+            .generics
+            .iter()
+            .chain(&generic_method.generics)
+            .cloned()
             .collect();
+        modified_func.generics = instance_generics(&declared, mapping);
         let mut method_func =
             self.instantiate_function(&modified_func, mapping, &std::collections::HashMap::new())?;
 
@@ -5399,4 +5394,34 @@ fn standard_type_module(type_name: &str) -> Option<&'static str> {
         "String" => Some("std::string"),
         _ => None,
     }
+}
+
+/// The parameters of an instance: each name of `declared` that `mapping` binds, in the order that
+/// `declared` lists them and once, then any other name of `mapping`, sorted. The name of the
+/// instance lists its type arguments in this order, so it must not depend on a `HashMap`.
+fn instance_generics(
+    declared: &[decl::GenericParam],
+    mapping: &std::collections::HashMap<crate::symbol::Symbol, Type>,
+) -> Vec<decl::GenericParam> {
+    let mut names: Vec<crate::symbol::Symbol> = Vec::new();
+    for g in declared {
+        let name = crate::symbol::Symbol::from(g.name());
+        if mapping.contains_key(&name) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let mut rest: Vec<crate::symbol::Symbol> = mapping
+        .keys()
+        .filter(|k| !names.contains(k))
+        .cloned()
+        .collect();
+    rest.sort();
+    names.extend(rest);
+    names
+        .into_iter()
+        .map(|name| decl::GenericParam::Type {
+            name,
+            bounds: Vec::new(),
+        })
+        .collect()
 }

@@ -26,13 +26,13 @@
 // FLAT: {topology_name = "NPU[0]", vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64} : i32
 // FLAT: {arch = "nvptx64", topology_name = "GPU[0]", vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64} : i32
 // FLAT: {arch = "nvptx64", topology_name = "GPU[0]", vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64} : i32
-// FLAT-LABEL: func.func @stage$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(
+// FLAT-LABEL: func.func @stage$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029$topology$746f706f6c6f6779286b696e64333a43505529(
 // FLAT: {topology_name = "CPU", vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64} : i32
 // FLAT-LABEL: func.func @run_on$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(
 // FLAT: {arch = "nvptx64", topology_name = "GPU[0]", vx.file = "{{.*}}", vx.line = {{[0-9]+}} : i64}
 // FLAT-LABEL: func.func @pipeline$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a4e5055696e646578393a6e756d626572313a3029(
 // FLAT: "vx.transfer"(%arg0) <{target_topology = 0 : i32}> {source_topology = 500 : i32, space = "CPU_DRAM"}
-// FLAT-LABEL: func.func @move_between$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(
+// FLAT-LABEL: func.func @move_between$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029$topology$746f706f6c6f6779286b696e64333a43505529(
 // FLAT: "vx.transfer"(%arg0) <{target_topology = 0 : i32}> {source_topology = 500 : i32, space = "CPU_DRAM"}
 //
 //   identity_on   -- signature-level `<D: Topology>` monomorphization
@@ -156,7 +156,7 @@ fn main() -> i32 {
 // CHECK:       %c7_i32 = arith.constant 7 : i32
 // CHECK:       vx.yield %c7_i32 : i32
 // CHECK:     } : i32
-// CHECK:     %6 = call @move_between$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(%4, %5) : (i32, i32) -> i32
+// CHECK:     %6 = call @move_between$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029$topology$746f706f6c6f6779286b696e64333a43505529(%4, %5) : (i32, i32) -> i32
 // CHECK:     %7 = vx.spawn topology(500) {
 // CHECK:       %c1_i32 = arith.constant 1 : i32
 // CHECK:       vx.yield %c1_i32 : i32
@@ -174,7 +174,7 @@ fn main() -> i32 {
 // CHECK:       %c5_i32 = arith.constant 5 : i32
 // CHECK:       vx.yield %c5_i32 : i32
 // CHECK:     } : i32
-// CHECK:     %12 = call @stage$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(%11) : (i32) -> i32
+// CHECK:     %12 = call @stage$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029$topology$746f706f6c6f6779286b696e64333a43505529(%11) : (i32) -> i32
 // CHECK:     %13 = vx.spawn topology(500) {
 // CHECK:       %c5_i32 = arith.constant 5 : i32
 // CHECK:       vx.yield %c5_i32 : i32
@@ -184,7 +184,7 @@ fn main() -> i32 {
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }
-// CHECK:   func.func @stage$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(%arg0: i32) -> i32 {
+// CHECK:   func.func @stage$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029$topology$746f706f6c6f6779286b696e64333a43505529(%arg0: i32) -> i32 {
 // CHECK:     %0 = vx.spawn topology(0) {
 // CHECK:       %c0_i32 = arith.constant 0 : i32
 // CHECK:       vx.yield %c0_i32 : i32
@@ -209,7 +209,7 @@ fn main() -> i32 {
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }
-// CHECK:   func.func @move_between$topology$746f706f6c6f6779286b696e64333a43505529$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029(%arg0: i32, %arg1: i32) -> i32 {
+// CHECK:   func.func @move_between$topology$746f706f6c6f6779286b696e64333a475055696e646578393a6e756d626572313a3029$topology$746f706f6c6f6779286b696e64333a43505529(%arg0: i32, %arg1: i32) -> i32 {
 // `source_topology` is where the datum is coming *from*, which `target_topology`
 // does not say: a transfer home names the host and nothing else, so a backend
 // reading only the target cannot tell a fetch from a device apart from a copy

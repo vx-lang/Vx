@@ -21,7 +21,7 @@
 // CHECK-NOT: {{drop|vx_string_as_c_str}}
 // CHECK: call @String$drop(
 // CHECK-NOT: drop
-// CHECK: call @Result$String$i32$unwrap$i32$String(
+// CHECK: call @Result$String$i32$unwrap$String$i32(
 // CHECK-NOT: drop
 // CHECK: call @vx_string_as_c_str(
 // CHECK-NOT: {{drop|vx_string_as_c_str}}

@@ -285,6 +285,7 @@ Internally, the compiler uses a deterministic mangling scheme based on the `$` c
 - Tensors: `Tensor$<element_type>$<rank>` (e.g., `Tensor$f32$2`).
 - Vectors: `Simd$<element_type>$<width>` (e.g., `Simd$f32$4`).
 - Methods: `<struct_name>$<method_name>` (e.g., `Point$distance`).
+- Generic instances: `<name>$<arg1>$<arg2>…`, with the type arguments in the order that the parameters are declared. `fn pair<B, A>` called with an `f32` and an `i32` is `pair$f32$i32`.
 - Shadowed Variables: Appended with `_mangled<index>` starting from `_mangled1` when a local variable shadows an earlier variable in the same scope or parent scope (e.g., `x_mangled1`).
 
 *Note: The user-facing syntax uses `< >` for generics and `::` for paths. The `$` symbol is strictly reserved for backend lowering and internal compiler representation.*
