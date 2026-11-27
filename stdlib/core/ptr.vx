@@ -18,13 +18,20 @@
 // while it is in use, as any result made from a parameter does. It also keeps the memory
 // of its argument, such as `in Memory::GPU_HBM`. `read` and `write` take a host pointer.
 //
+// `NonNull<T>` is a `*mut T` that is never null. It is a struct with one pointer field,
+// because a raw pointer cannot have methods. It has `new`, `new_unchecked` and `as_ptr`. `new`
+// answers an `Option`, so this file imports `core::option`, and so does every file that imports
+// this one.
+//
 // Still missing:
 //
 //   `copy`                   wants `llvm.intr.memmove` through `mlir!`, as
 //                            `copy_nonoverlapping` uses `llvm.intr.memcpy`.
 //   `read_volatile`,         want the volatile forms of the load and store.
 //   `write_volatile`
-//   `NonNull<T>`             not written yet.
+
+import core::marker;
+import core::option;
 
 /// A pointer to nothing.
 pub fn null<T>() -> *const T {
@@ -126,4 +133,40 @@ pub fn is_null<T>(p : *const T) -> bool {
 /// `is_null` for a mutable pointer.
 pub fn is_null_mut<T>(p : *mut T) -> bool {
   return is_null(p as *const T);
+}
+
+/// A `*mut T` that is never null. It copies, as a raw pointer does. It has an invariant, so only
+/// code in this file can build one from its field. That keeps a null pointer out of it.
+struct NonNull<T> {
+  ptr : *mut T,
+
+  invariant true,
+}
+
+impl<T> Copy for NonNull<T> {}
+
+impl<T> NonNull<T> {
+  /// `None` when `p` is null, and `Some` of the same pointer otherwise.
+  pub fn new(p : *mut T) -> Option<NonNull<T>> {
+    if is_null_mut(p) {
+      return Option<NonNull<T>>::None;
+    }
+    return Option<NonNull<T>>::Some(NonNull<T> {
+      ptr : p
+    });
+  }
+
+  /// A `NonNull` of `p`. The caller promises that `p` is not null. A null `p` fails an `assert`
+  /// rather than making a `NonNull` that holds null.
+  pub unsafe fn new_unchecked(p : *mut T) -> NonNull<T> {
+    assert(!is_null_mut(p), "new_unchecked: the pointer is null");
+    return NonNull<T> {
+      ptr : p
+    };
+  }
+
+  /// The pointer.
+  pub fn as_ptr(self : NonNull<T>) -> *mut T {
+    return self.ptr;
+  }
 }

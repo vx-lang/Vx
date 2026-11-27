@@ -1,0 +1,81 @@
+//===- if_with_a_branch_of_numbers_takes_the_other_branch_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A branch of an `if` that is only numbers with no suffix takes the type of the other branch.
+// This is true for arithmetic on numbers and for a nested `if` of numbers. The operations take
+// that type too, so `200 / 3` divides two `u8` values and gives 66.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}2 6 66 5 40001 -2 3{{$}}
+
+fn nested_if(c : bool, d : bool, x : u8) -> u8 {
+  let r = if c {
+    if d {
+      1
+    } else {
+      2
+    }
+  } else {
+    x
+  };
+  return r;
+}
+
+fn product(c : bool, x : i64) -> i64 {
+  let r = if c {
+    x
+  } else {
+    2 * 3
+  };
+  return r;
+}
+
+fn quotient(c : bool, x : u8) -> u8 {
+  let r = if c {
+    x
+  } else {
+    200 / 3
+  };
+  return r;
+}
+
+fn remainder(c : bool, x : u8) -> u8 {
+  let r = if c {
+    250 % 7
+  } else {
+    x
+  };
+  return r;
+}
+
+fn nested_if_of_sums(c : bool, d : bool, x : i64) -> i64 {
+  let r = if c {
+    if d {
+      40000 + 1
+    } else {
+      -2
+    }
+  } else {
+    x
+  };
+  return r;
+}
+
+fn float_product(c : bool, x : f32) -> f32 {
+  let r = if c {
+    x
+  } else {
+    1.5 * 2.0
+  };
+  return r;
+}
+
+fn main() -> i32 {
+  println!("{} {} {} {} {} {} {}", nested_if(true, false, 9), product(false, 9), quotient(false, 9), remainder(true, 9), nested_if_of_sums(true, true, 9), nested_if_of_sums(true, false, 9), float_product(false, 1.0));
+  return 0;
+}

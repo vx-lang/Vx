@@ -40,6 +40,31 @@ pub(crate) fn is_builtin_type_name(name: &str) -> bool {
 }
 
 impl<'a> Parser<'a> {
+    /// The `n` of `?n`, a name right after the `?` with no space.
+    fn parse_extent_name(
+        &mut self,
+        question: &Token<'a>,
+    ) -> ParseResult<'a, Option<crate::symbol::Symbol>> {
+        let next = self.peek();
+        let TokenType::Identifier(name) = &next.kind else {
+            return Ok(None);
+        };
+        if next.line != question.line || next.column != question.column + question.length {
+            return Ok(None);
+        }
+        if !self.extent_names_allowed {
+            return Err(self.error_at(
+                next,
+                &format!(
+                    "`?{name}` gives a run-time extent a name, and only the type of a parameter \
+                     of a function with a body can do that"
+                ),
+            ));
+        }
+        self.advance();
+        Ok(Some(crate::symbol::Symbol::from(name.to_string().as_str())))
+    }
+
     pub(crate) fn parse_topology(&mut self) -> ParseResult<'a, Topology> {
         let topology = self.parse_topology_or_any()?;
         if topology == Topology::Custom(crate::syntax::ANY_TOPOLOGY.into(), None) {
@@ -324,9 +349,12 @@ impl<'a> Parser<'a> {
             Ok(Type::Scalar(ElementType::I32))
         } else if self.match_token(&TokenType::LeftAngle) {
             let n = match &self.advance().kind {
-                TokenType::Number(s) => s
-                    .parse::<usize>()
-                    .map_err(|_| self.error("Expected integer for SIMD size"))?,
+                // The spellings of any other literal: `<0x4 x f32>`, but no type suffix.
+                TokenType::Number(s) => match crate::parser::expr::infer_number_literal(s) {
+                    Ok((text, None)) => text.parse::<usize>().ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| self.error("Expected integer for SIMD size"))?,
                 _ => return Err(self.error("Expected number after '<' in SIMD type")),
             };
             match &self.advance().kind {
@@ -467,6 +495,17 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_named_type(&mut self) -> ParseResult<'a, Type> {
+        if self.check(&TokenType::Impl) {
+            // Name the trait the user wrote, so the example matches their code.
+            let trait_name = match &self.peek_n(1).kind {
+                TokenType::Identifier(name) => name.to_string(),
+                _ => "Trait".to_string(),
+            };
+            return Err(self.error(&format!(
+                "Vx has no `impl Trait` type yet. In a parameter, write a generic parameter \
+                 instead, as in `fn show<T : {trait_name}>(g : &T)`"
+            )));
+        }
         let ident = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),
@@ -538,8 +577,9 @@ impl<'a> Parser<'a> {
                             while !self.check(&TokenType::RightBracket)
                                 && !self.check(&TokenType::Eof)
                             {
+                                let question = self.peek();
                                 if self.match_token(&TokenType::Question) {
-                                    dims.push(Dim::Dyn);
+                                    dims.push(Dim::Dyn(self.parse_extent_name(question)?));
                                 } else {
                                     let mut dim = self.parse_expr()?;
                                     super::expr::stamp_dim_literals(&mut dim);

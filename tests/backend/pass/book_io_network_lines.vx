@@ -61,7 +61,7 @@ fn server(listener : TcpListener) -> Result<u64, NetError> {
 
 fn main(root : Root) -> i32 {
   let network = &root.network;
-  let addr = unsafe { String::from_c_str("127.0.0.1:41765") };
+  let addr = unsafe { String::from_c_str("127.0.0.1:21765") };
   match TcpListener::bind(network, &addr) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {

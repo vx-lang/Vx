@@ -1,0 +1,33 @@
+//===- a_method_of_another_file_first_called_by_a_question_mark.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The compiler checks the body of a method of another file at its first call. The only call of
+// `finish` has a `?` after it, and the error in its body is still reported.
+// CHECK: Error[E4008] at tests/modules/a_method_that_moves_a_field_out_of_self.vx:19:22: {{.*}}`self.parts` cannot be moved out
+// CHECK: 1 error(s) emitted
+
+import core::result;
+import tests::modules::a_method_that_moves_a_field_out_of_self;
+
+struct Sinks {
+  body : Output,
+}
+
+fn end_body(sinks : &mut Sinks) -> Result<i32, i32> {
+  let _n = sinks.body.finish()?;
+  return Result<i32, i32>::Ok(0);
+}
+
+fn main() -> i32 {
+  let mut sinks = Sinks {
+    body : new_output()
+  };
+  let _r = end_body(&mut sinks);
+  return 0;
+}

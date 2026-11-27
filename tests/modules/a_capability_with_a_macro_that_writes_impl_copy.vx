@@ -1,0 +1,18 @@
+//===- a_capability_with_a_macro_that_writes_impl_copy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares a capability, `AdminCap`, and a macro that writes `impl Copy` for a type.
+
+struct AdminCap {
+  invariant true,
+}
+
+macro_rules copyable {
+  ($t : ident) => {
+    impl Copy for $t {}
+  };
+}

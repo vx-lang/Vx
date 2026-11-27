@@ -96,10 +96,14 @@ impl Analysis {
             let mut line = 1;
             let mut col = 1;
 
-            // The header reads `Error at FILE:LINE:COL: message`. The position is the first
-            // pair of numbers after the file, which may itself hold colons.
-            if let Some(idx) = err_str.find("Error at ") {
-                let header = err_str[idx + 9..].lines().next().unwrap_or("");
+            // The header reads `Error at FILE:LINE:COL: message`, or `Error[E1001] at ...` when
+            // the error has a code. The position is the first pair of numbers after the file,
+            // which may itself hold colons.
+            let header_start = err_str
+                .find("Error")
+                .and_then(|e| err_str[e..].find(" at ").map(|a| e + a + 4));
+            if let Some(idx) = header_start {
+                let header = err_str[idx..].lines().next().unwrap_or("");
                 let fields: Vec<&str> = header.split(':').collect();
                 if let Some((l, c)) = fields
                     .windows(2)
@@ -388,7 +392,7 @@ mod tests {
         );
     }
 
-    /// The parse error header reads `Error at FILE:LINE:COL: ...`, and the position is read
+    /// The parse error header reads `Error[E1001] at FILE:LINE:COL: ...`, and the position is read
     /// from after the file, which used to put every parse error at 1:1.
     #[test]
     fn a_parse_error_is_placed_at_its_line_and_column() {

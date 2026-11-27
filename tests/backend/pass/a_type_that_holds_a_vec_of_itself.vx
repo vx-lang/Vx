@@ -1,0 +1,59 @@
+//===- a_type_that_holds_a_vec_of_itself.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum and a struct that hold a `Vec` of their own type, as a JSON value or a tree does.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+import std::vec;
+
+enum Value {
+  Null,
+  Number(i32),
+  Array(Vec<Value>),
+}
+
+struct Node {
+  id : i32,
+  kids : Vec<Node>,
+}
+
+fn count(v : &Value) -> i32 {
+  return match v {
+    Value::Array(items) => {
+      items.len()
+    }
+    _ => {
+      0
+    }
+  };
+}
+
+fn leaf(id : i32) -> Node {
+  return Node {
+    id : id,
+    kids : Vec<Node>::new()
+  };
+}
+
+fn main() -> i32 {
+  let mut items = Vec<Value>::new();
+  items.push(Value::Number(1));
+  items.push(Value::Null);
+  let v = Value::Array(items);
+  // CHECK: {{^}}an array of 2{{$}}
+  println!("an array of {}", count(&v));
+  let n = Value::Null;
+  // CHECK-NEXT: {{^}}null has 0{{$}}
+  println!("null has {}", count(&n));
+  let mut root = leaf(1);
+  root.kids.push(leaf(2));
+  root.kids.push(leaf(3));
+  // CHECK-NEXT: {{^}}node 1 has 2 kids{{$}}
+  println!("node {} has {} kids", root.id, root.kids.len());
+  return 0;
+}

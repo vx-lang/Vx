@@ -358,6 +358,17 @@ impl<'a> TypeChecker<'a> {
             {
                 return target_ty;
             }
+            // A pointer to an integer to a pointer to an integer of the same width, as
+            // `"text" as *const u8`: the same bytes, read with the other sign.
+            (Type::Pointer(from, from_space, _), Type::Pointer(to, to_space, _))
+                if from_space == to_space
+                    && matches!(
+                        (from.as_ref(), to.as_ref()),
+                        (Type::Scalar(a), Type::Scalar(b)) if a.is_int_of_the_same_width(b)
+                    ) =>
+            {
+                return target_ty;
+            }
             // Any pointer to `*const void` in the same memory: an address that no program can
             // read through, as C's `void *`.
             (Type::Pointer(_, from_space, _), Type::Pointer(to, to_space, _))
@@ -526,6 +537,22 @@ impl<'a> TypeChecker<'a> {
             Type::GenericInstance(base, _) => matches!(**base, Type::Struct(..) | Type::Enum(..)),
             _ => false,
         }
+    }
+
+    /// `operand_type` of `e`, with the diagnostics of the probe dropped. A function body that
+    /// the probe checks for the first time keeps its diagnostics, because no later check
+    /// repeats that body.
+    pub(crate) fn operand_type_without_diagnostics(&mut self, e: &Expr) -> Type {
+        let start = self.errors.len();
+        let outer = self.kept_from_probe.replace(Vec::new());
+        let ty = self.operand_type(e);
+        self.errors.inner.truncate(start);
+        let kept = std::mem::replace(&mut self.kept_from_probe, outer).expect("set above");
+        match &mut self.kept_from_probe {
+            Some(outer) => outer.extend(kept),
+            None => self.errors.inner.extend(kept),
+        }
+        ty
     }
 
     /// The type of an operator's left operand, worked out without checking it: the quick
@@ -1327,13 +1354,15 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn check_logicalop_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
-            Expr::LogicalOp(LogicalOpExpr {
-                lhs,
-                op: _,
-                rhs,
-                span,
-            }) => {
+            Expr::LogicalOp(LogicalOpExpr { lhs, op, rhs, span }) => {
                 let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false);
+                // `Unknown` is an error reported already.
+                let is_bool = |t: &Type| {
+                    matches!(
+                        t,
+                        Type::Scalar(ElementType::Bool) | Type::Generic(..) | Type::Unknown
+                    )
+                };
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3006,
@@ -1341,6 +1370,16 @@ impl<'a> TypeChecker<'a> {
                             "Type mismatch in logical operation: {} vs {}",
                             lhs_ty, rhs_ty
                         ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                } else if !is_bool(&lhs_ty) || !is_bool(&rhs_ty) {
+                    let op = match op {
+                        LogicalOp::And => "&&",
+                        LogicalOp::Or => "||",
+                    };
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3006,
+                        format!("`{op}` takes two `bool` values, but both sides are {lhs_ty}"),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
@@ -1379,7 +1418,15 @@ impl<'a> TypeChecker<'a> {
                 expr: inner,
                 span,
             }) => {
-                let inner_ty = self.check_expr_type(inner);
+                let mut inner_ty = self.check_expr_type(inner);
+                // An untyped literal is past the largest `i64`, but `-9223372036854775808` is
+                // the smallest `i64`.
+                if let (UnaryOp::Neg, Expr::Number(n)) = (&*op, &mut **inner) {
+                    if n.ty.is_none() && format!("-{}", n.value).parse::<i64>().is_ok() {
+                        n.ty = Some(ElementType::I64);
+                        inner_ty = Type::Scalar(ElementType::I64);
+                    }
+                }
                 if let (UnaryOp::Neg, Expr::Number(n)) = (&*op, &**inner) {
                     if Self::scalar_elem(&inner_ty).is_some_and(|e| e.is_narrow_float()) {
                         let value = match n.value.as_ref().strip_prefix('-') {

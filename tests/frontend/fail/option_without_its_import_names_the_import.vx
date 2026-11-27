@@ -1,0 +1,17 @@
+//===- option_without_its_import_names_the_import.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that calls `Option<i64>::Some` without `import core::option;` gets an
+// error that names the import.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Undefined static method 'Option<i64>::Some'. 'Option' is in 'core::option'. Add `import core::option;`.
+
+fn main() -> i32 {
+  let o = Option<i64>::Some(3i64);
+  return o.unwrap() as i32;
+}

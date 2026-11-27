@@ -182,6 +182,13 @@ macro_rules! instantiate_string_ffi {
             unsafe { s.as_mut_vec().as_mut_ptr() }
         }
 
+        /// The string's bytes, for reading only.
+        #[no_mangle]
+        pub extern "C" fn vx_string_bytes(ptr: *mut std::ffi::c_void) -> *const u8 {
+            assert!(!ptr.is_null(), "vx_string_bytes: null string");
+            unsafe { (*(ptr as *mut String)).as_ptr() }
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_string_from_c_str(
             c_str: *const std::ffi::c_char,
@@ -192,6 +199,86 @@ macro_rules! instantiate_string_ffi {
             let c_str = unsafe { std::ffi::CStr::from_ptr(c_str) };
             let s: Box<String> = Box::new(c_str.to_string_lossy().into_owned());
             Box::into_raw(s) as *mut std::ffi::c_void
+        }
+
+        /// A copy of a NUL-terminated C string, or null when its bytes are not UTF-8.
+        /// `vx_string_from_c_str` replaces such bytes instead.
+        #[no_mangle]
+        pub extern "C" fn vx_string_try_from_c_str(
+            c_str: *const std::ffi::c_char,
+        ) -> *mut std::ffi::c_void {
+            if c_str.is_null() {
+                return vx_string_new();
+            }
+            let c_str = unsafe { std::ffi::CStr::from_ptr(c_str) };
+            match c_str.to_str() {
+                Ok(text) => Box::into_raw(Box::new(text.to_owned())) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+
+        /// A copy of the `len` bytes at `ptr`, or null when they are not UTF-8. It copies a
+        /// 0 byte like any other byte.
+        #[no_mangle]
+        pub extern "C" fn vx_string_try_from_bytes(
+            ptr: *const u8,
+            len: i64,
+        ) -> *mut std::ffi::c_void {
+            assert!(
+                !ptr.is_null() && len >= 0,
+                "vx_string_try_from_bytes: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes) {
+                Ok(text) => Box::into_raw(Box::new(text.to_owned())) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+
+        /// How many of the `len` bytes at `ptr` are UTF-8 before the first byte that is not.
+        #[no_mangle]
+        pub extern "C" fn vx_utf8_valid_up_to(ptr: *const u8, len: i64) -> i64 {
+            assert!(
+                !ptr.is_null() && len >= 0,
+                "vx_utf8_valid_up_to: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes) {
+                Ok(_) => len,
+                Err(e) => e.valid_up_to() as i64,
+            }
+        }
+
+        /// Read the `len` bytes at `ptr` as a float, as Rust's `str::parse` does, and write it
+        /// to `out`. Gives 0 for a number, 1 for no bytes and 2 for text that is not a number.
+        fn vx_parse_float<T: std::str::FromStr>(ptr: *const u8, len: i64, out: *mut T) -> i32 {
+            if len == 0 {
+                return 1;
+            }
+            assert!(
+                !ptr.is_null() && len > 0 && !out.is_null(),
+                "vx_parse_float: bad buffer"
+            );
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            match std::str::from_utf8(bytes).map(str::parse::<T>) {
+                Ok(Ok(value)) => {
+                    unsafe { out.write(value) };
+                    0
+                }
+                _ => 2,
+            }
+        }
+
+        /// `vx_parse_float` for an `f64`.
+        #[no_mangle]
+        pub extern "C" fn vx_parse_f64(ptr: *const u8, len: i64, out: *mut f64) -> i32 {
+            vx_parse_float(ptr, len, out)
+        }
+
+        /// `vx_parse_float` for an `f32`. It rounds the text to `f32` once, not to `f64` first.
+        #[no_mangle]
+        pub extern "C" fn vx_parse_f32(ptr: *const u8, len: i64, out: *mut f32) -> i32 {
+            vx_parse_float(ptr, len, out)
         }
 
         #[no_mangle]
@@ -205,6 +292,27 @@ macro_rules! instantiate_string_ffi {
             let s = unsafe { &mut *(ptr as *mut String) };
             let c_str = unsafe { std::ffi::CStr::from_ptr(c_str) };
             s.push_str(&c_str.to_string_lossy());
+        }
+
+        /// Append the bytes of `other` to `ptr`. The two may be the same string.
+        #[no_mangle]
+        pub extern "C" fn vx_string_push_str(
+            ptr: *mut std::ffi::c_void,
+            other: *mut std::ffi::c_void,
+        ) {
+            assert!(
+                !ptr.is_null() && !other.is_null(),
+                "vx_string_push_str: null string"
+            );
+            if ptr == other {
+                let s = unsafe { &mut *(ptr as *mut String) };
+                let copy = s.clone();
+                s.push_str(&copy);
+                return;
+            }
+            let s = unsafe { &mut *(ptr as *mut String) };
+            let other = unsafe { &*(other as *const String) };
+            s.push_str(other);
         }
 
         #[no_mangle]
@@ -425,6 +533,18 @@ macro_rules! instantiate_file_ffi {
             c_path: *const std::ffi::c_char,
             opts: &std::fs::OpenOptions,
         ) -> std::io::Result<std::fs::File> {
+            unsafe { vx_file_with_path(c_path, |path| opts.open(path)) }
+        }
+
+        /// Runs `call` with the path of the NUL-terminated `c_path`, as a fiber runs a file call.
+        /// A null path, or off Unix a path that is not UTF-8, gives `InvalidInput`.
+        ///
+        /// # Safety
+        /// A non-null `c_path` must point at a NUL-terminated string.
+        unsafe fn vx_file_with_path<T>(
+            c_path: *const std::ffi::c_char,
+            call: impl FnOnce(&std::path::Path) -> std::io::Result<T>,
+        ) -> std::io::Result<T> {
             let bad_path = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
             if c_path.is_null() {
                 return Err(bad_path());
@@ -437,7 +557,62 @@ macro_rules! instantiate_file_ffi {
             };
             #[cfg(not(unix))]
             let path = c_path.to_str().map_err(|_| bad_path())?;
-            $off_the_worker(|| opts.open(path))
+            $off_the_worker(|| call(std::path::Path::new(path)))
+        }
+
+        /// Remove the file at `c_path`, for `std::fs::remove_file`. The status is as for
+        /// `vx_file_try_open`.
+        ///
+        /// # Safety
+        /// `c_path` is as for `vx_file_try_open`, and `native_code` must be writable.
+        #[no_mangle]
+        pub unsafe extern "C" fn vx_file_try_remove(
+            c_path: *const std::ffi::c_char,
+            native_code: *mut i32,
+        ) -> i32 {
+            unsafe { *native_code = 0 };
+            match unsafe { vx_file_with_path(c_path, |path| std::fs::remove_file(path)) } {
+                Ok(()) => VX_FILE_STATUS_OK,
+                Err(error) => {
+                    let mut has_native_code = false;
+                    unsafe { vx_file_store_error(&error, native_code, &mut has_native_code) }
+                }
+            }
+        }
+
+        /// The kind of the file at `c_path`, following symbolic links as `stat` does: 1 for a
+        /// regular file, 2 for a folder and 3 for anything else, in `*kind`. The status is as
+        /// for `vx_file_try_open`.
+        ///
+        /// # Safety
+        /// `c_path` is as for `vx_file_try_open`, and `kind` and `native_code` must be writable.
+        #[no_mangle]
+        pub unsafe extern "C" fn vx_file_try_kind(
+            c_path: *const std::ffi::c_char,
+            kind: *mut i32,
+            native_code: *mut i32,
+        ) -> i32 {
+            unsafe {
+                *kind = 0;
+                *native_code = 0;
+            }
+            match unsafe { vx_file_with_path(c_path, |path| std::fs::metadata(path)) } {
+                Ok(meta) => {
+                    let found = if meta.is_file() {
+                        1
+                    } else if meta.is_dir() {
+                        2
+                    } else {
+                        3
+                    };
+                    unsafe { *kind = found };
+                    VX_FILE_STATUS_OK
+                }
+                Err(error) => {
+                    let mut has_native_code = false;
+                    unsafe { vx_file_store_error(&error, native_code, &mut has_native_code) }
+                }
+            }
         }
 
         #[no_mangle]
@@ -920,7 +1095,12 @@ macro_rules! instantiate_stdio_ffi {
                 return 0;
             }
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
-            std::io::Write::write(&mut std::io::stdout(), buf_slice).unwrap_or(0) as u64
+            let mut out = std::io::stdout().lock();
+            let taken = std::io::Write::write(&mut out, buf_slice).unwrap_or(0) as u64;
+            // `print!` flushes after each write too. Nothing flushes this buffer when a Vx
+            // program ends, so the bytes after the last newline would be lost.
+            let _ = std::io::Write::flush(&mut out);
+            taken
         }
 
         #[no_mangle]

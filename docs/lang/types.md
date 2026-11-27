@@ -348,7 +348,15 @@ let y = unsafe { Tensor<f32, [8, 8], Memory::NPU_HBM>::uninit() };
 
 // Runtime extents, so they stay an argument
 let z = Tensor<f32, [?, ?], Memory::NPU_HBM>::new([rows, cols]);
+
+// A shape with a runtime extent gives one extent for each dimension, and a fixed one as the type has it
+let w = Tensor<f32, [?, 4], Memory::NPU_HBM>::new([rows, 4]);
+
+// `::fill` takes the shape first and then the value for every element
+let f = Tensor<f32, [?, 4], Memory::NPU_HBM>::fill([rows, 4], 1.5);
 ```
+
+Any other shape list is E3070.
 
 Both allocation kinds are explicit, and neither is the unmarked default. `::uninit()` exists
 because zeroing a buffer that is about to be written in full is wasted bandwidth, and in this
@@ -432,6 +440,36 @@ Each of these is refused with E3001:
 | `let x : Tensor<f32, [16]> = t;` with `t : Tensor<f32, [4, 4]>` | the ranks differ |
 | `let x : Tensor<f32, []> = t;` with `t : Tensor<f32, [4, 4]>` | rank 0 is not rank 2 |
 | `let x : Tensor<f64, [4]> = t;` with `t : Tensor<f32, [4]>` | the element types differ |
+
+### A name for a run-time extent
+
+`?n` in the tensor type of a parameter gives that run-time extent the name `n`. The type is still
+`?`, so any extent fits it. In the body and in the contracts of the function, `n` is a `usize` that
+nothing changes.
+
+```vx
+fn quarter(t : &Tensor<f32, [?n]>) -> usize
+requires n % 4 == 0
+{
+  return n / 4;
+}
+
+fn main() -> i32 {
+  let t = Tensor<f32, [8]>::fill(1.0);
+  println!("{}", quarter(&t));
+  return 0;
+}
+```
+
+- **Each `?n` of a function is one extent.** The compiler refuses a call of `fn dot(a : &Tensor<f32, [?n]>, b : &Tensor<f32, [?n]>)` with the extents 6 and 8 (E3068). When the
+  compiler does not know an extent, it does not check it.
+- **A call shows the `requires`.** At the call, the prover knows that `n` is the extent of the
+  argument (E8006). So the compiler refuses `quarter(&t)` with `t : Tensor<f32, [6]>`.
+- **The name is the extent.** No parameter and no variable of the body can have the name `n`, and
+  no assignment can change `n` (E3069). A constant or a const parameter with the name `n` gets
+  W1039: in the function, `n` is the extent.
+- **Only a parameter names an extent.** A `let`, a return type and a struct field cannot name one
+  yet ([Vx#3874](https://github.com/vx-lang/Vx/issues/3874)).
 
 ## 8. Primitive Types and Arrays
 

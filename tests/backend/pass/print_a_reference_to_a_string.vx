@@ -1,0 +1,37 @@
+//===- print_a_reference_to_a_string.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `println!` prints the text of a `String` that it gets through a reference, as it does for the
+// `String` itself. A `*const i8` is a C string, and it prints as one.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+import std::string;
+import std::vec;
+
+fn main() -> i32 {
+  let s = unsafe { String::from_c_str("zero") };
+  // CHECK: {{^}}start{{$}}
+  println!("start");
+  // CHECK-NEXT: {{^}}zero{{$}}
+  println!("{}", &s);
+  // CHECK-NEXT: {{^}}1 zero{{$}}
+  println!("{} {}", 1, &s);
+  let mut v = Vec<String>::new();
+  v.push(unsafe { String::from_c_str("one") });
+  // CHECK-NEXT: {{^}}one{{$}}
+  println!("{}", v.get_ref(0));
+  let r = &s;
+  // CHECK-NEXT: {{^}}zero{{$}}
+  println!("{}", r);
+  // CHECK-NEXT: {{^}}zero{{$}}
+  println!("{}", s);
+  let c : *const i8 = "a C string";
+  // CHECK-NEXT: {{^}}a C string{{$}}
+  println!("{}", c);
+  return 0;
+}

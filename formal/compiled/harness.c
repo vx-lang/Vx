@@ -172,8 +172,8 @@ void vx_channel_forget_skips(atomic_long *words) {}
 // Printing and signals. A panic prints its message and calls `abort`, and GenMC
 // reports the `abort`.
 long write(int fd, const void *buf, long n) { return n; }
-int print_i32(int v) { return 0; }
-int print_str(const char *s) { return 0; }
+int vx_print_i32(int v) { return 0; }
+int vx_print_str(const char *s) { return 0; }
 int vx_print_to_stderr(int on) { return 0; }
 void vx_init_signals(void) {}
 void vx_cancel_off(double limit) {}

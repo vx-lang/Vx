@@ -13,12 +13,12 @@
 // Items are matched by name. An item's GID includes a hash of the path the library was compiled
 // from, so one library built in two directories has two sets of GIDs.
 //
-// Every item in a `.vxlib` counts as public API: a program can call a function through a
-// `.vxlib` whether or not the function is `pub`.
+// Only a `pub` function or method is API, because a program can call no other function through
+// a `.vxlib`. A change to any other function is no change to the interface.
 //
 //===----------------------------------------------------------------------===//
 
-use crate::gid::TypeId;
+use crate::gid::{TypeId, Visibility};
 use crate::registry::{FnSig, ImmutableGlobalRegistry, StructFields};
 use crate::symbol::Symbol;
 use crate::syntax::ElementType;
@@ -181,11 +181,16 @@ fn compare_functions(
     old: &BTreeMap<String, &FnSig>,
     new: &BTreeMap<String, &FnSig>,
 ) {
-    for (name, old_sig) in old {
+    let public = |sig: &FnSig| sig.visibility == Visibility::Public;
+    for (name, old_sig) in old.iter().filter(|(_, sig)| public(sig)) {
         let Some(new_sig) = new.get(name) else {
             diff.push(Bump::Major, format!("{kind} `{name}` was removed"));
             continue;
         };
+        if !public(new_sig) {
+            diff.push(Bump::Major, format!("{kind} `{name}` is no longer `pub`"));
+            continue;
+        }
         if shape(old_sig) != shape(new_sig) {
             diff.push(
                 Bump::Major,
@@ -211,8 +216,14 @@ fn compare_functions(
             _ => {}
         }
     }
-    for name in new.keys().filter(|name| !old.contains_key(*name)) {
-        diff.push(Bump::Minor, format!("{kind} `{name}` was added"));
+    for (name, _) in new.iter().filter(|(_, sig)| public(sig)) {
+        match old.get(name) {
+            None => diff.push(Bump::Minor, format!("{kind} `{name}` was added")),
+            Some(old_sig) if !public(old_sig) => {
+                diff.push(Bump::Minor, format!("{kind} `{name}` became `pub`"))
+            }
+            Some(_) => {}
+        }
     }
 }
 

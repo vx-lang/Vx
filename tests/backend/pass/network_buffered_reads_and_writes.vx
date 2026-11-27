@@ -114,7 +114,7 @@ fn report(who : *const i8, result : Result<u64, NetError>) -> void {
 }
 
 fn long_line_client(network : &Network) -> Result<u64, NetError> {
-  let mut out = TcpBufWriter::new(TcpStream::connect(network, &address("127.0.0.1:41774"))?);
+  let mut out = TcpBufWriter::new(TcpStream::connect(network, &address("127.0.0.1:21774"))?);
   let _a = out.write(&repeat(97u8, 3000))?;
   let _b = out.write(&repeat(98u8, 2000))?;
   let _c = out.write(&repeat(99u8, 5000))?;
@@ -138,7 +138,7 @@ fn long_line_server(listener : TcpListener) -> Result<u64, NetError> {
 }
 
 fn drop_client(network : &Network) -> Result<u64, NetError> {
-  let mut out = TcpBufWriter::new(TcpStream::connect(network, &address("127.0.0.1:41775"))?);
+  let mut out = TcpBufWriter::new(TcpStream::connect(network, &address("127.0.0.1:21775"))?);
   return out.write(&bytes("dropped\n"));
 }
 
@@ -152,7 +152,7 @@ fn drop_server(listener : TcpListener) -> Result<u64, NetError> {
 }
 
 fn body_client(network : &Network) -> Result<u64, NetError> {
-  let mut stream = TcpStream::connect(network, &address("127.0.0.1:41776"))?;
+  let mut stream = TcpStream::connect(network, &address("127.0.0.1:21776"))?;
   let _first = stream.write_all(&bytes("head\nxyzab"))?;
   let mut go = repeat(0u8, 2);
   let _go = stream.read_exact(&mut go)?;
@@ -208,8 +208,8 @@ fn wait_for_a_line(listener : TcpListener) -> void {
 /// The client connects before the block, so that its end of the connection stays open until the
 /// cancelled task ends. A close would end `read_line` with 0 bytes.
 fn cancel_a_read_line(network : &Network) -> i32 {
-  let listener = TcpListener::bind(network, &address("127.0.0.1:41777"));
-  let client = TcpStream::connect(network, &address("127.0.0.1:41777"));
+  let listener = TcpListener::bind(network, &address("127.0.0.1:21777"));
+  let client = TcpStream::connect(network, &address("127.0.0.1:21777"));
   match listener {
     Result<TcpListener, NetError>::Ok(l) => {
       match client {
@@ -238,7 +238,7 @@ fn cancel_a_read_line(network : &Network) -> i32 {
 
 fn main(root : Root) -> i32 {
   let network = &root.network;
-  match TcpListener::bind(network, &address("127.0.0.1:41774")) {
+  match TcpListener::bind(network, &address("127.0.0.1:21774")) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
@@ -251,7 +251,7 @@ fn main(root : Root) -> i32 {
       println!("long line: bind gave {}", name(e));
     }
   }
-  match TcpListener::bind(network, &address("127.0.0.1:41775")) {
+  match TcpListener::bind(network, &address("127.0.0.1:21775")) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
@@ -264,7 +264,7 @@ fn main(root : Root) -> i32 {
       println!("drop: bind gave {}", name(e));
     }
   }
-  match TcpListener::bind(network, &address("127.0.0.1:41776")) {
+  match TcpListener::bind(network, &address("127.0.0.1:21776")) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {

@@ -1,0 +1,23 @@
+//===- other_std_types_without_their_imports_name_the_imports.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that uses `Option::None`, `Result`, `Vec` or `String` without the import
+// gets an error that names the module and the import.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Unknown enum Option<i64>. 'Option' is in 'core::option'. Add `import core::option;`.
+// CHECK: Undefined static method 'Result<i32, i32>::Ok'. 'Result' is in 'core::result'. Add `import core::result;`.
+// CHECK: Undefined static method 'Vec<i32>::new'. 'Vec' is in 'std::vec'. Add `import std::vec;`.
+// CHECK: Undefined static method 'String::new'. 'String' is in 'std::string'. Add `import std::string;`.
+
+fn main() -> i32 {
+  let _o = Option<i64>::None;
+  let _r = Result<i32, i32>::Ok(1);
+  let _v = Vec<i32>::new();
+  let _s = String::new();
+  return 0;
+}

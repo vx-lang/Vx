@@ -7,7 +7,7 @@ use super::super::*;
 
 impl FnEmit<'_> {
     // Print a value (no result). A tensor is `memref.cast`'d to an unranked memref and passed
-    // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same
+    // to the `printMemref*` runtime helper; a scalar goes to `vx_print_*`. These are the same
     // helpers the AST path calls; `emit_module_mlir` prepends their `private` declarations.
     pub(crate) fn op_print(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let arg = self
@@ -56,22 +56,22 @@ impl FnEmit<'_> {
             // Each unsigned width has a helper of its own, so the element type alone decides
             // which one, and nothing has to reason about where a value still fits.
             let unsigned_helper = match e {
-                ElementType::U8 => Some("print_u8"),
-                ElementType::U16 => Some("print_u16"),
-                ElementType::U32 => Some("print_u32"),
-                ElementType::U64 => Some("print_u64"),
-                ElementType::U128 => Some("print_u128"),
+                ElementType::U8 => Some("vx_print_u8"),
+                ElementType::U16 => Some("vx_print_u16"),
+                ElementType::U32 => Some("vx_print_u32"),
+                ElementType::U64 => Some("vx_print_u64"),
+                ElementType::U128 => Some("vx_print_u128"),
                 _ => None,
             };
             // The narrow *signed* scalars have none, so they widen to one that does -- the same
             // widening the AST path applies, so a program prints the same text either way.
             let (arg, et) = match et {
-                // A `bool` goes to `print_bool` as an `i32`, the width C passes reliably.
+                // A `bool` goes to `vx_print_bool` as an `i32`, the width C passes reliably.
                 "i1" => {
                     let w = format!("%pw{idx}");
                     self.body += &format!("  {w} = arith.extui {arg} : i1 to i32\n");
                     let n = format!("%v{idx}");
-                    self.body += &format!("  {n} = func.call @print_bool({w}) : (i32) -> i32\n");
+                    self.body += &format!("  {n} = func.call @vx_print_bool({w}) : (i32) -> i32\n");
                     return Ok(());
                 }
                 "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16" => {
@@ -89,11 +89,11 @@ impl FnEmit<'_> {
             let helper = match unsigned_helper {
                 Some(h) => h,
                 None => match et {
-                    "f32" => "print_f32",
-                    "f64" => "print_f64",
-                    "i32" => "print_i32",
-                    "i64" => "print_i64",
-                    "i128" => "print_i128",
+                    "f32" => "vx_print_f32",
+                    "f64" => "vx_print_f64",
+                    "i32" => "vx_print_i32",
+                    "i64" => "vx_print_i64",
+                    "i128" => "vx_print_i128",
                     _ => {
                         return Err(Decline::TypeNotModelled {
                             what: "a print of an element type with no helper",
@@ -124,9 +124,9 @@ impl FnEmit<'_> {
             .copied()
             .unwrap_or(false)
         {
-            // A pointer value is a C string: the `print_str` helper, as for a literal.
+            // A pointer value is a C string: the `vx_print_str` helper, as for a literal.
             let n = format!("%v{idx}");
-            self.body += &format!("  {n} = func.call @print_str({arg}) : (!llvm.ptr) -> i32\n");
+            self.body += &format!("  {n} = func.call @vx_print_str({arg}) : (!llvm.ptr) -> i32\n");
         } else {
             return Err(crate::emitter_gap!());
         }
@@ -166,7 +166,7 @@ impl FnEmit<'_> {
         let p = format!("%pstrp{idx}");
         let r = format!("%pstr{idx}");
         self.body += &format!("  {p} = llvm.mlir.addressof @\".str.{n}\" : !llvm.ptr\n");
-        self.body += &format!("  {r} = func.call @print_str({p}) : (!llvm.ptr) -> i32\n");
+        self.body += &format!("  {r} = func.call @vx_print_str({p}) : (!llvm.ptr) -> i32\n");
         Ok(())
     }
 

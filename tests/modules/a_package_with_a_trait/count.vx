@@ -1,0 +1,19 @@
+//===- count.vx - Vx Compiler -------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A package that may have trusted code. The default method of its trait has an `unsafe` block.
+
+trait Count {
+  fn add(self : &mut Self, n : i64) -> void;
+
+  /// Add 8, read through a pointer.
+  fn add_eight(self : &mut Self) -> void {
+    let x : i64 = 8;
+    let p = (&x) as *const i64;
+    self.add(unsafe { p[0] });
+  }
+}

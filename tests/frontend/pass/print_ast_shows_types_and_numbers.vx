@@ -1,0 +1,20 @@
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// `--print-ast` writes a type as it is written in source, and a number with its type after a colon.
+
+struct Point {
+  x : i32,
+  y : f64,
+}
+
+fn main() -> i32 {
+  let a = 0i64;
+  let b = 2.5f32;
+  return 0;
+}
+
+// CHECK: Struct: Point
+// CHECK-NEXT: x: i32
+// CHECK-NEXT: y: f64
+// CHECK: Number(0 : i64)
+// CHECK: Number(2.5 : f32)

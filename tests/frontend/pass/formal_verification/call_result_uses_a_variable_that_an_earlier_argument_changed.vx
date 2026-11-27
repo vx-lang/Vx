@@ -1,0 +1,98 @@
+//===- call_result_uses_a_variable_that_an_earlier_argument_changed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `halve(&mut c)` changes `c` in the first argument, and nothing reads `c` before that.
+// So the result is at most the new `c.n`, and the compiler proves it. A call that only
+// reads `c`, through a `&` parameter, does not change `c`, so the compiler proves it then too.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+
+struct Counter {
+  n : i32,
+}
+
+fn halve(c : &mut Counter) -> i32
+ensures return == c.n {
+  c.n = c.n / 2;
+  return c.n;
+}
+
+fn read(c : &Counter) -> i32
+ensures return == c.n {
+  return c.n;
+}
+
+impl Counter {
+  fn get(self : &Counter) -> i32
+  ensures return == self.n {
+    return self.n;
+  }
+}
+
+fn first_of_two(n : i32, m : i32) -> i32
+ensures return <= n {
+  return n + m - m;
+}
+
+fn first(n : i32, m : i32, other : &mut i32) -> i32
+ensures return <= n {
+  *other = m;
+  return n;
+}
+
+fn consume_index(limit : i32, index : i32) -> i32
+requires index <= limit {
+  return index;
+}
+
+fn no_argument_reads_the_variable() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  let mut other = 0;
+  let index = first(halve(&mut c), 0, &mut other);
+  return consume_index(read(&c), index);
+}
+
+fn later_argument_reads_the_variable() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  let mut other = 0;
+  let index = first(halve(&mut c), read(&c), &mut other);
+  return consume_index(read(&c), index);
+}
+
+fn two_arguments_call_a_method_that_reads() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  c.n = 9;
+  let index = first_of_two(c.get(), c.get());
+  return consume_index(c.get(), index);
+}
+
+fn two_arguments_read_through_a_mut_reference(c : &mut Counter) -> i32 {
+  let index = first_of_two(read(c), read(c));
+  return consume_index(read(c), index);
+}
+
+fn two_arguments_call_a_method_on_a_mut_reference(c : &mut Counter) -> i32 {
+  let index = first_of_two(c.get(), c.get());
+  return consume_index(c.get(), index);
+}
+
+fn main() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  return no_argument_reads_the_variable() + later_argument_reads_the_variable()
+  + two_arguments_call_a_method_that_reads() + two_arguments_read_through_a_mut_reference(&mut c)
+  + two_arguments_call_a_method_on_a_mut_reference(&mut c);
+}
+
+// CHECK: func.func @main

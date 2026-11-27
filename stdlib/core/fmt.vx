@@ -17,8 +17,8 @@
 //
 //   `Result<(), Error>`     a `Result<void, E>` cannot be built, so a write answers
 //                           `Result<i32, Error>` with `Ok(0)` instead.
-//   `write_str`             wants a `str` type; `write_c_str` takes a NUL-terminated
-//                           string literal meanwhile.
+//   `write_str`             wants a `str` type; `write_buffer` takes a pointer and a
+//                           length meanwhile.
 //   `Formatter`, `Display`, these traits each name their method `fmt`, and a type with
 //   `Debug`, `LowerHex` ..  two of them cannot be called: there is no `Display::fmt(&x)`.
 //   `Arguments`, `write!`,  need a macro that can read a format string.
@@ -44,28 +44,31 @@ enum Alignment {
 
 impl Copy for Alignment {}
 
-/// A byte sink. Only `write_u8` is required; the rest are written in terms of it.
+/// A byte sink. The functions below write through its `write_u8`.
 trait Write {
   /// Write one byte.
   fn write_u8(self : &mut Self, b : u8) -> Result<i32, Error>;
+}
 
-  /// Write the bytes of a string literal, without its closing NUL. Any other pointer must
-  /// also end in a NUL; a trait method cannot be marked `unsafe` yet to say so.
-  fn write_c_str(self : &mut Self, s : *const i8) -> Result<i32, Error> {
-    let mut i : i64 = 0i64;
-    loop {
-      let b : u8 = unsafe { s[i] as u8 };
-      if b == 0u8 {
-        break;
-      }
-      let r = self.write_u8(b);
-      if r.is_err() {
-        return r;
-      }
-      i = i + 1i64;
+/// Write the `n` bytes at `p` to `w`, for example the bytes of a string literal:
+/// `write_buffer(&mut w, "hello" as *const u8, 5)`. A call in safe code proves that `p` points
+/// at `n` bytes that hold values.
+pub fn write_buffer<W : Write>(w : &mut W, p : *const u8, n : i32) -> Result<i32, Error>
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut i = 0;
+  loop {
+    if i >= n {
+      break;
     }
-    return Result<i32, Error>::Ok(0);
+    let r = w.write_u8(unsafe { p[i] });
+    if r.is_err() {
+      return r;
+    }
+    i = i + 1;
   }
+  return Result<i32, Error>::Ok(0);
 }
 
 /// The options of a Rust format spec `{:[fill]align][+][#][0][width]}` that apply to an

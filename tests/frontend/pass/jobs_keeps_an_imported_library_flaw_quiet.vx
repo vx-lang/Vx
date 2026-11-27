@@ -5,16 +5,17 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A compile reports what is wrong with the program it was asked to build, not with the library
-// that program imports. `jobs_library_with_a_flaw` holds a function this file never calls whose
+// A compile reports what is wrong with the program it was asked to build, not with a library of
+// the standard library that the program imports. `--std-path .` makes the repository a root of
+// the standard library. `jobs_library_with_a_flaw` holds a function this file never calls whose
 // body does not type check; the import is there for `library_good` alone.
 //
 // Both driver paths run the same checks here, so both RUN lines carry the same assertions: `-j`
 // used to walk every module and report all of it, which refused this program while the default
 // driver built it.
 //
-// RUN: vxc --package tests=tests -j 4 --emit-mlir %s 2>&1 | FileCheck %s
-// RUN: vxc --package tests=tests --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc --std-path . -j 4 --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: vxc --std-path . --emit-mlir %s 2>&1 | FileCheck %s
 
 import tests::modules::jobs_library_with_a_flaw;
 

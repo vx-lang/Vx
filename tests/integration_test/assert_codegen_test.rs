@@ -185,7 +185,7 @@ fn main() -> i32 {
 /// call. The distinction is the whole point: `cf` is device-lowerable, and
 /// `convert-gpu-to-nvvm` (already in the device pipeline) expands `cf.assert`
 /// into `__assertfail` with the message, file, line and `noreturn`. A
-/// hand-desugared `print_str` + `abort` pair is `func` ops, which are NOT
+/// hand-desugared `vx_print_str` + `abort` pair is `func` ops, which are NOT
 /// device-lowerable -- a kernel containing one is classified not-device-ready
 /// and dropped from GPU compilation entirely, silently.
 ///
@@ -229,7 +229,7 @@ fn main() -> i32 {
             ir.contains("cf.assert"),
             "{path}: a kernel assertion must survive as the device-lowerable op:\n{ir}"
         );
-        for host_only in ["func.call @abort", "func.call @print_str"] {
+        for host_only in ["func.call @abort", "func.call @vx_print_str"] {
             assert!(
                 !ir.contains(host_only),
                 "{path}: `{host_only}` is a `func` op -- not device-lowerable, so a kernel \
