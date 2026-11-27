@@ -3217,6 +3217,19 @@ impl<'r> Lowerer<'r> {
         if let Ok((slot, _)) = self.lower_agg_base(subj) {
             return Ok(slot);
         }
+        // `match &o` or `match &mut o`: the slot of the local, as for `match o`. This needs no AST
+        // type of `o`, which a `let` of a `match` or an `if` value does not record.
+        if let Expr::Borrow(b) = subj {
+            if let Expr::Identifier(id) = &*b.expr {
+                if let Some(Binding::Slot {
+                    reg,
+                    ty: LoweredTy::Aggregate(_),
+                }) = self.scope.get(&id.name).cloned()
+                {
+                    return Ok(reg);
+                }
+            }
+        }
         // `match <value>`: a by-value enum aggregate — spill it to a slot to address its fields.
         let v = self.lower_expr(subj)?;
         if matches!(v.ty, LoweredTy::Aggregate(_)) {
