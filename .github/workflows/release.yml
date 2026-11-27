@@ -120,6 +120,9 @@ jobs:
           # present, so a toolkit-only build is the correct thing to ship.
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          # The runner image lists Microsoft's apt repository, which no step here uses. A failure of
+          # that server makes `apt-get update` fail, so the step removes the repository first.
+          sudo rm -f $(grep -l packages.microsoft.com /etc/apt/sources.list.d/*)
           sudo apt-get update -qq
           # cuda-nvcc is needed for its headers, not for the compiler: cuda_runtime.h pulls in
           # driver_types.h, which includes <crt/host_defines.h>, and the crt directory ships with
