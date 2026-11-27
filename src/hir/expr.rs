@@ -334,6 +334,22 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // The arguments of a call move their values when the call runs, after every argument.
+        // With one operand, no later operand can leave before the call runs, so the moves
+        // happen at once. A join of a task has only its handle, and the join that fails leaves
+        // after it takes the handle.
+        let operands = match &*expr {
+            Expr::FunctionCall(c) => Some(c.args.len()),
+            Expr::MethodCall(c) => Some(c.args.len() + 1),
+            Expr::IndirectCall(c) => Some(c.args.len() + 1),
+            Expr::StructInit(s) => Some(s.fields.len()),
+            Expr::EnumVariant(v) => Some(v.payload.as_ref().map_or(0, Vec::len)),
+            _ => None,
+        };
+        let call = operands.is_some();
+        if let Some(n) = operands {
+            self.drops_enter_call(n >= 2);
+        }
         let ty = match expr {
             Expr::Identifier(..) => self.check_identifier_expr(expr, consume),
             Expr::EnumVariant(..) => self.check_enumvariant_expr(expr, consume),
@@ -551,6 +567,9 @@ impl<'a> TypeChecker<'a> {
                 // Fallback type
             }
         };
+        if call {
+            self.drops_exit_call();
+        }
 
         // A raw pointer can point into a struct on the stack. A string literal points at a global.
         if Self::is_raw_pointer(&ty) && !matches!(expr, Expr::StringLiteral(_)) {

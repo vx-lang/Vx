@@ -361,6 +361,22 @@ pub(crate) struct DropFrames {
     /// For each open `tasks` block, the statement of its body that joins its tasks before the
     /// drops of what they use, if it has one.
     tasks_joins: Vec<Option<usize>>,
+    /// For each call being checked, the moves of its arguments. They happen when the call runs,
+    /// so a `?` in a later argument returns while the value is still there to drop.
+    calls: Vec<CallMoves>,
+}
+
+/// The moves of the arguments of one call, a struct literal or an enum variant.
+#[derive(Clone, Default)]
+struct CallMoves {
+    /// With one operand, the moves happen at once: no later operand can leave first.
+    defers: bool,
+    /// The depth of the drop frames and of the scopes at the call. Only an argument at this
+    /// depth waits for the call: a move in a block inside an argument happens in that block.
+    frames: usize,
+    scopes: usize,
+    /// Each moved owner, and the path of the moved field.
+    moves: Vec<(String, Option<Vec<String>>)>,
 }
 
 impl DropFrames {
@@ -1462,10 +1478,62 @@ impl<'a> TypeChecker<'a> {
         self.drops_note_move_at(name, Some(path), again);
     }
 
+    /// A call, a struct literal or an enum variant starts. With `defers`, its arguments move
+    /// nothing until it runs.
+    pub(crate) fn drops_enter_call(&mut self, defers: bool) {
+        let call = CallMoves {
+            defers,
+            frames: self.borrow.drops.frames.len(),
+            scopes: self.scopes.len(),
+            moves: Vec::new(),
+        };
+        self.borrow.drops.calls.push(call);
+    }
+
+    /// The call runs: the moves of its arguments happen now.
+    pub(crate) fn drops_exit_call(&mut self) {
+        let call = self.borrow.drops.calls.pop().expect("a call was entered");
+        // A call around this one takes the result, not these values. So the moves happen now,
+        // also when that call is still being checked.
+        let outer = std::mem::take(&mut self.borrow.drops.calls);
+        for (name, field) in call.moves {
+            self.drops_note_move_at(&name, field.as_deref(), false);
+        }
+        self.borrow.drops.calls = outer;
+    }
+
     fn drops_note_move_at(&mut self, name: &str, field: Option<&[String]>, again: bool) {
         // A speculative check only asks what a type is; it moves nothing.
         if self.speculating {
             return;
+        }
+        let (frames, scopes) = (self.borrow.drops.frames.len(), self.scopes.len());
+        if !again && !self.borrow.drops.arm_takes {
+            if let Some(call) = self.borrow.drops.calls.last_mut() {
+                if call.defers && (call.frames, call.scopes) == (frames, scopes) {
+                    call.moves
+                        .push((name.to_string(), field.map(<[String]>::to_vec)));
+                    return;
+                }
+            }
+        }
+        // A new value after a move that waits for its call: the move came first.
+        if again {
+            let mut waiting = Vec::new();
+            for call in self.borrow.drops.calls.iter_mut() {
+                call.moves.retain(|m| {
+                    let this = m.0 == name;
+                    if this {
+                        waiting.push(m.clone());
+                    }
+                    !this
+                });
+            }
+            let outer = std::mem::take(&mut self.borrow.drops.calls);
+            for (name, field) in waiting {
+                self.drops_note_move_at(&name, field.as_deref(), false);
+            }
+            self.borrow.drops.calls = outer;
         }
         // A move at the top of a task body happens at its `spawn` (T4). The task runs on a
         // thread of its own, so a flag that the task set would come too late for a drop after
