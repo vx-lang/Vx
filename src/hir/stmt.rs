@@ -2528,7 +2528,12 @@ impl<'a> TypeChecker<'a> {
         };
         self.checking_assign_lhs = false;
         self.check_field_change(lhs, "this assignment changes");
-        let temporary_place = matches!(lhs, Expr::Dereference(d)
+        // `(*v.index_mut(i)).n = x`, from `v[i].n = x`, writes through such a reference too.
+        let mut place = &*lhs;
+        while let Expr::MemberAccess(m) = place {
+            place = &m.base;
+        }
+        let temporary_place = matches!(place, Expr::Dereference(d)
             if matches!(*d.expr, Expr::FunctionCall(_) | Expr::MethodCall(_)));
         // The place runs before the value, so its mutable borrow is only reserved while the
         // right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.

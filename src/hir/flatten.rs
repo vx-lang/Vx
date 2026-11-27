@@ -7843,6 +7843,25 @@ impl<'r> Lowerer<'r> {
                     });
                     return self.lower_assign(&a.lhs, &value, false);
                 }
+                // `v[i].n += x` is `(*v.index_mut(i)).n += x`. The call runs once, and the field
+                // is read and written at the one address it gives.
+                if let Expr::MemberAccess(m) = &a.lhs {
+                    let (base_reg, gid) = self.lower_agg_base(&m.base)?;
+                    let (access, field) = self.field_of(&gid, m.member.as_ref())?;
+                    if !matches!(field, FieldTy::Scalar(_)) {
+                        return Err(Decline::Unsupported {
+                            what: "a compound assignment to a field that is not a number",
+                        });
+                    }
+                    let cur = self.load_field(base_reg, &gid, m.member.as_ref())?;
+                    let rhs = self.lower_expr(&a.rhs)?;
+                    let op = binop_opcode(&a.op).ok_or(Decline::Unsupported {
+                        what: "this compound-assignment operator",
+                    })?;
+                    let combined = self.emit_typed(op, cur.reg, rhs.reg, cur.ty.clone(), 0);
+                    self.emit_effect(Opcode::FieldStore, base_reg, combined.reg, access);
+                    return Ok(());
+                }
                 // Save the base and index registers so the read and write share one evaluation.
                 let indexed_place = if matches!(&a.lhs, Expr::IndexAccess(_)) {
                     Some(self.lower_place(&a.lhs)?)
