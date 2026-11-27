@@ -24,7 +24,9 @@ fn fill(out: &mut Tensor<i32, [64]>) -> void {
   let s = Slot::Has(out);
   for i in 0..64 {
     match s {
-      Slot::Has(t) => { t[0] = i; }
+      Slot::Has(t) => {
+        t[0] = i;
+      }
       Slot::Empty => {}
     }
   }
