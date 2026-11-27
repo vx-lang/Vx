@@ -1,0 +1,108 @@
+//===- a_reference_into_a_vec_element_keeps_the_vec_borrowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A number read from `q[0]` holds no borrow of `q`, but a reference into `q` does. So `q`
+// cannot change while the reference is still used. A number variable that hides a reference of
+// the same name does not end the borrow of that reference.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+import std::vec;
+
+struct P {
+  a : i64,
+}
+
+fn one() -> Vec<P> {
+  let mut q = Vec<P>::new();
+  q.push(P {
+    a : 5i64
+  });
+  return q;
+}
+
+fn a_number_read_through_a_reference() -> i64 {
+  let mut q = one();
+  let r = &q[0];
+  let x = r.a;
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'q' as mutable
+  q.push(P {
+    a : x
+  });
+  return r.a;
+}
+
+fn a_reference_to_a_number_field() -> i64 {
+  let mut q = one();
+  let x = &q[0].a;
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'q' as mutable
+  q.push(P {
+    a : 1i64
+  });
+  return *x;
+}
+
+fn a_number_let_hides_a_reference() -> i64 {
+  let mut q = one();
+  let x = &q[0];
+  if q.len() > 0 {
+    let x = q[0].a;
+    println!("{}", x);
+  } else {
+    let x = q[0].a + 1i64;
+    println!("{}", x);
+  }
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'q' as mutable
+  q.push(P {
+    a : 1i64
+  });
+  return x.a;
+}
+
+fn a_number_assignment_under_a_hidden_reference() -> i64 {
+  let mut q = one();
+  let x = &q[0];
+  if q.len() > 0 {
+    let mut x = 0i64;
+    x = q[0].a;
+    println!("{}", x);
+  } else {
+    let mut x = 1i64;
+    x = q[0].a;
+    println!("{}", x);
+  }
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'q' as mutable
+  q.push(P {
+    a : 1i64
+  });
+  return x.a;
+}
+
+// The outer `x` takes `&q` in the same block as the number `x`.
+fn a_number_let_beside_a_borrow_of_the_outer_variable() -> i32 {
+  let mut q = one();
+  let other = one();
+  let mut x = &other;
+  if q.len() > 0 {
+    x = &q;
+    let x = q[0].a;
+    println!("{}", x);
+  } else {
+    x = &q;
+    let x = q[0].a;
+    println!("{}", x);
+  }
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'q' as mutable
+  q.push(P {
+    a : 1i64
+  });
+  return x.len();
+}
+
+// CHECK: 5 error(s) emitted
+fn main() -> i32 {
+  return 0;
+}

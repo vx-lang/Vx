@@ -805,6 +805,7 @@ impl<'a> TypeChecker<'a> {
         // The parser's `let` for the sum in `let r = (v + w)[1]` holds what was the base of an
         // index. Reading an index does not move its base, so `v` and `w` stay usable.
         let consume = consume && !name.starts_with(crate::syntax::expr::INDEXED_TEMPORARY);
+        let borrows_before = self.borrow.snapshot();
         let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
@@ -922,6 +923,10 @@ impl<'a> TypeChecker<'a> {
             }
             ty
         };
+        if matches!(binding_ty, Type::Scalar(_)) && !self.speculating {
+            self.borrow
+                .forget_new_borrows_of(name.as_ref(), &borrows_before);
+        }
         let depth = self.current_scope_depth();
         if let Some(len) = text_len {
             self.string_literal_lets
@@ -2620,6 +2625,13 @@ impl<'a> TypeChecker<'a> {
             c.check_expr_expecting(e, Some(lhs_ty.clone()), consume && !copies_into_tensor)
         });
         rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
+        // `x = q[0].a` with `x : i64`: a number holds no borrow.
+        if let (Expr::Identifier(id), Type::Scalar(_)) = (&*lhs, &lhs_ty) {
+            if !self.speculating {
+                self.borrow
+                    .forget_new_borrows_of(id.name.as_ref(), &before_rhs);
+            }
+        }
         // What the value left in the target is stored there, not borrowed only for a call.
         if let Some(target) = self.current_assignment_target.take() {
             let stored: Vec<_> = self
