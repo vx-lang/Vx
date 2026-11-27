@@ -19,7 +19,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1039` (30 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3070` (69 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3072` (70 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4017` (17 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5005` (5 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6042` (42 codes)
@@ -172,6 +172,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3068`](/errors/E3068/) | A call that gives one extent name two different extents. In `fn add(a : Tensor<f32, [?n]>, b : Tensor<f32, [?n]>)`, both `?n` are one extent, so `add(x, y)` with the extents 5 and 7 is an error. When the compiler does not know an extent, it does not check it. |
 | [`E3069`](/errors/E3069/) | A variable of the body with the name of an extent, or an assignment to an extent name. `?n` in the type of a parameter makes `n` a variable of the body that nothing changes. |
 | [`E3070`](/errors/E3070/) | A shape in `Tensor<T, [..]>::new([..])`, `::uninit([..])` or `::fill([..], v)` that does not match the type. The shape is a list in brackets with one extent for each dimension, and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`. |
+| [`E3072`](/errors/E3072/) | Two `extern` declarations of one C function with different types. Both name one C symbol, so only one of the types can be right. Declare the function once, or give each declaration the same type. A raw pointer or a reference can point at any type. |
 
 ## Borrow/Ownership Errors
 
@@ -294,4 +295,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-203 diagnostics.
+204 diagnostics.
