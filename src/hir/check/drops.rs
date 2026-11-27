@@ -2159,10 +2159,12 @@ impl<'a> TypeChecker<'a> {
     /// The block ends. `terminated_at` is its `return`, `break` or `continue`, whose own drops
     /// were found when it was checked. When drops are written into the program, the block's
     /// edits are made now.
-    /// `value_used`: something takes the value of the block's last statement.
+    /// `value_used`: something takes the value of the block's last statement. `value` is the
+    /// block's separate value and its type, as in `unsafe { ..; v }` or the body of a closure.
     pub(crate) fn drops_exit_block(
         &mut self,
         body: &mut Vec<Statement>,
+        value: Option<(&mut Expr, Type)>,
         terminated_at: Option<usize>,
         value_used: bool,
     ) {
@@ -2185,11 +2187,21 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let mut moves = Vec::new();
+        // The temporaries of the block's separate value: their `let`s end the block, and they
+        // are dropped once the value is computed. Only when the value is a number: another
+        // value, such as `&String::from_c_str(..)`, can point at a temporary after the block.
+        let mut value_lets = Vec::new();
+        let mut value_drops = Vec::new();
         if rewriting {
             for h in &hidden {
                 moves.extend(rename_hidden_owner(body, &mut edits, h));
             }
             self.drops_hoist_temporaries(body, &mut edits, value_used);
+            if let Some((value, Type::Scalar(e) | Type::Simd(e, _))) = value {
+                if !matches!(e, ElementType::Generic(_)) {
+                    (value_lets, value_drops) = self.drops_hoist_value_temporaries(value);
+                }
+            }
         }
         // A parameter or a name of an arm moves to its new name before the block starts.
         if !moves.is_empty() {
@@ -2272,12 +2284,14 @@ impl<'a> TypeChecker<'a> {
         if rewriting {
             // The block's separate value comes after its statements, so what waits for it goes
             // at the end of the block. It runs once the value is computed.
-            let mut after_the_value = Vec::new();
+            // The temporaries of the value are dropped before the owners of the block.
+            let mut after_the_value = value_drops;
             if let Some(v) = value_at {
                 after_the_value.extend(edits.before.remove(&v).unwrap_or_default());
                 after_the_value.extend(edits.after.remove(&v).unwrap_or_default());
             }
             self.drops_apply(body, *edits);
+            body.extend(value_lets);
             if !after_tasks.is_empty() {
                 let span = body.last().map_or_else(Span::default, |s| s.span());
                 *self
@@ -2366,6 +2380,33 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+    }
+
+    /// `drops_hoist_temporaries` for the separate value of a block, which something takes.
+    /// Gives the `let`s that go before the value, and the drops that go after it.
+    fn drops_hoist_value_temporaries(
+        &mut self,
+        value: &mut Expr,
+    ) -> (Vec<Statement>, Vec<Statement>) {
+        let mut probe = TempScan::new(None);
+        let mut copy = value.clone();
+        self.drops_scan_temps(&mut copy, false, &mut probe);
+        let Some(last_temp) = probe.last_temp else {
+            if probe.short_circuit_rewritten {
+                *value = copy;
+            }
+            return (Vec::new(), Vec::new());
+        };
+        let mut scan = TempScan::new(Some(last_temp));
+        self.drops_scan_temps(value, false, &mut scan);
+        let mut lets = Vec::new();
+        let mut drops = Vec::new();
+        for (name, ty, expr, glue) in scan.found {
+            lets.push(let_stmt(&name, true, ty, expr));
+            // A later temporary is dropped first.
+            drops.splice(0..0, glue_drops(&name, &glue, None));
+        }
+        (lets, drops)
     }
 
     fn drops_scan_stmt(&mut self, stmt: &mut Statement, taken: bool, scan: &mut TempScan) {
