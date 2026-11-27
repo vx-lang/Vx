@@ -1,0 +1,28 @@
+//===- main.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// wide.vx and narrow.vx declare the same four C functions. Each pair names one C function, so
+// only one type of it can be right:
+// - `labs` takes an `i64` in wide.vx and an `i32` in narrow.vx. This is an error.
+// - `atoi` returns an `i32` in one file and an `i64` in the other. This is an error.
+// - `strlen` takes a `*const i8` in one file and a `*const u8` in the other. A C pointer can
+//   point at any type, so this is not an error.
+// - `abs` has the same type in both files.
+// The error is at the declaration that comes later in source order: the file name, then the
+// line.
+//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc --package tests=tests -j 4 %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E3072] at {{.*}}/wide.vx:14:3: the C function `labs` has another declaration at {{.*}}/narrow.vx:14:3, with a different type. Both declarations name one C function, so give them one type. Here it is `fn labs(i64) -> i64`, and there it is `fn labs(i32) -> i32`.
+// CHECK: Error[E3072] at {{.*}}/wide.vx:15:3: the C function `atoi` has another declaration at {{.*}}/narrow.vx:15:3, with a different type. {{.*}} Here it is `fn atoi(*const i8) -> i32`, and there it is `fn atoi(*const u8) -> i64`.
+// CHECK: 2 error(s) emitted
+import tests::frontend::fail::two_extern_declarations_of_one_c_function_with_different_types::wide;
+import tests::frontend::fail::two_extern_declarations_of_one_c_function_with_different_types::narrow;
+
+fn main() -> i32 {
+  return unsafe { abs(-3) } - 3;
+}

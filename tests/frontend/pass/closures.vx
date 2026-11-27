@@ -1,5 +1,5 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s # flat-codegen
-// CHECK-DAG: func.func private @print_i32(
+// CHECK-DAG: func.func private @vx_print_i32(
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @Closure_1_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
 // CHECK: call @Closure_2_call(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
@@ -10,7 +10,7 @@
 // CHECK-NOT: call @Closure_7_call
 // CHECK: call @Closure_8_call(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: call @apply_lambda$Closure_9(%{{.*}}, %{{.*}}) : (!llvm.struct<(struct<(i32)>, i32)>, i32) -> i32
-// CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
+// CHECK: call @vx_print_i32(%{{.*}}) : (i32) -> i32
 // CHECK-LABEL: func.func @apply_lambda$Closure_9(%arg0: !llvm.struct<(struct<(i32)>, i32)>, %arg1: i32) -> i32
 // CHECK: call @Closure_9_call(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
 // The capture's slot is allocated in the entry block, ahead of the loads that

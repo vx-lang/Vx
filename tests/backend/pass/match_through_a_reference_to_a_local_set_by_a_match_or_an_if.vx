@@ -1,0 +1,142 @@
+//===- match_through_a_reference_to_a_local_set_by_a_match_or_an_if.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `match &v` and `match &mut v`, where the `let` of `v` takes the value of a `match` or an `if`.
+// The `let` has no type, so the compiler must find the type of `v` from that value.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+import std::vec;
+
+enum Value {
+  Null,
+  List(Vec<i32>),
+}
+
+fn make(n : i32) -> Value {
+  let mut v = Vec<i32>::new();
+  v.push(n);
+  return Value::List(v);
+}
+
+fn nothing() -> Value {
+  return Value::Null;
+}
+
+fn get(n : i32) -> Result<Value, i32> {
+  return Result<Value, i32>::Ok(make(n));
+}
+
+fn length(v : &Value) -> i32 {
+  return match v {
+    Value::List(items) => {
+      items.len()
+    }
+    _ => {
+      0
+    }
+  };
+}
+
+fn set_by_a_match() -> i32 {
+  let v = match get(3) {
+    Result<Value, i32>::Ok(x) => {
+      x
+    }
+    // This `x` is an `i32`. It is not the `x` of the arm above.
+    Result<Value, i32>::Err(x) => {
+      return x;
+    }
+  };
+  let n = match &v {
+    Value::List(items) => {
+      items.len()
+    }
+    _ => {
+      0
+    }
+  };
+  return n;
+}
+
+fn set_by_an_if(c : bool) -> i32 {
+  let v = if c {
+    make(3)
+  } else {
+    nothing()
+  };
+  let n = match &v {
+    Value::List(items) => {
+      items.len()
+    }
+    _ => {
+      0
+    }
+  };
+  return n;
+}
+
+// The arm writes to `v` itself, not to a copy of it.
+fn changed_through_match_mut() -> i32 {
+  let mut v = match get(3) {
+    Result<Value, i32>::Ok(x) => {
+      x
+    }
+    Result<Value, i32>::Err(_e) => {
+      return 100;
+    }
+  };
+  match &mut v {
+    Value::List(items) => {
+      items.push(4);
+      items.push(5);
+    }
+    _ => {}
+  }
+  return length(&v);
+}
+
+fn none_of() -> Option<i64> {
+  return Option<i64>::None;
+}
+
+fn ten_times(k : i64) -> Option<i64> {
+  return Option<i64>::Some(k * 10);
+}
+
+// The type arguments of `Option<i64>` come from the arms of the first `match`.
+fn a_generic_enum(k : i64) -> i64 {
+  let o = match k {
+    0 => {
+      none_of()
+    }
+    _ => {
+      ten_times(k)
+    }
+  };
+  let n = match &o {
+    Option<i64>::Some(x) => {
+      *x + 0
+    }
+    Option<i64>::None => {
+      -1
+    }
+  };
+  return n;
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}set by a match: 1{{$}}
+  println!("set by a match: {}", set_by_a_match());
+  // CHECK-NEXT: {{^}}set by an if: 1 0{{$}}
+  println!("set by an if: {} {}", set_by_an_if(true), set_by_an_if(false));
+  // CHECK-NEXT: {{^}}changed through match mut: 3{{$}}
+  println!("changed through match mut: {}", changed_through_match_mut());
+  // CHECK-NEXT: {{^}}a generic enum: 70 -1{{$}}
+  println!("a generic enum: {} {}", a_generic_enum(7), a_generic_enum(0));
+  return 0;
+}

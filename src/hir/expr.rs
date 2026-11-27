@@ -163,6 +163,7 @@ impl<'a> TypeChecker<'a> {
         let mut terminated_at = None;
         let mut type_at_end = None;
         let mut state_at_end = None;
+        let mut never_statement = false;
         let last = stmts.len().saturating_sub(1);
         // An `if` or `match` arm is a block of its own: what it declares is dropped inside it,
         // and a borrow made in it ends at its last use there.
@@ -217,6 +218,7 @@ impl<'a> TypeChecker<'a> {
                 let prev_statement_span = self.errors.enter_statement(*stmt_span);
                 let ty = self.check_expr_type_flag(expr, consume);
                 self.errors.at = prev_statement_span;
+                never_statement |= crate::syntax::is_never_ty(&ty);
                 if !*has_semi {
                     // A last expression that never finishes, `todo()`, gives the block the type
                     // `!` but no value: it is a statement, after which nothing runs.
@@ -251,6 +253,7 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
+        let mut value_expr = None;
         let value_ty = value.map(|(value, unused)| {
             self.borrow.set_stmt(stmts.len());
             self.drops_set_stmt(stmts.len());
@@ -262,6 +265,7 @@ impl<'a> TypeChecker<'a> {
             }
             let ty = self.check_expr_type_flag(value, consume);
             self.expected_type = outer;
+            value_expr = Some((value, ty.clone()));
             ty
         });
         if let Some(ty) = type_at_end {
@@ -273,8 +277,14 @@ impl<'a> TypeChecker<'a> {
         if let Some(state) = state_at_end {
             self.restore_flow_state(state);
         }
-        self.drops_exit_block(stmts, terminated_at, !block_unused && !has_value);
+        self.drops_exit_block(
+            stmts,
+            value_expr,
+            terminated_at,
+            !block_unused && !has_value,
+        );
         self.borrow.exit_block();
+        self.last_block_has_a_never_statement = never_statement;
         ret_ty
     }
 
@@ -324,6 +334,22 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // The arguments of a call move their values when the call runs, after every argument.
+        // With one operand, no later operand can leave before the call runs, so the moves
+        // happen at once. A join of a task has only its handle, and the join that fails leaves
+        // after it takes the handle.
+        let operands = match &*expr {
+            Expr::FunctionCall(c) => Some(c.args.len()),
+            Expr::MethodCall(c) => Some(c.args.len() + 1),
+            Expr::IndirectCall(c) => Some(c.args.len() + 1),
+            Expr::StructInit(s) => Some(s.fields.len()),
+            Expr::EnumVariant(v) => Some(v.payload.as_ref().map_or(0, Vec::len)),
+            _ => None,
+        };
+        let call = operands.is_some();
+        if let Some(n) = operands {
+            self.drops_enter_call(n >= 2);
+        }
         let ty = match expr {
             Expr::Identifier(..) => self.check_identifier_expr(expr, consume),
             Expr::EnumVariant(..) => self.check_enumvariant_expr(expr, consume),
@@ -541,6 +567,9 @@ impl<'a> TypeChecker<'a> {
                 // Fallback type
             }
         };
+        if call {
+            self.drops_exit_call();
+        }
 
         // A raw pointer can point into a struct on the stack. A string literal points at a global.
         if Self::is_raw_pointer(&ty) && !matches!(expr, Expr::StringLiteral(_)) {

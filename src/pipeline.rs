@@ -1308,6 +1308,8 @@ fn by_value_nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
     use syntax::Type;
     match ty {
         Type::Struct(_, id) | Type::Enum(_, id) => *id,
+        // A closure value is the pair `{ env, func }`, held by value.
+        Type::Closure(..) => Some(crate::hir::flatten::closure_pair_gid()),
         Type::Pinned(inner, _)
         | Type::Verified(inner)
         | Type::Distinct(inner)

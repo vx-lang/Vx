@@ -15,7 +15,7 @@
 // Each unsigned width has a helper of its own, so the element type alone decides the call.
 //
 // The three at the end are the control, and two of them are the narrow *signed* widths on
-// purpose: those have no helper and still widen to reach `print_i32`, and a zero extension
+// purpose: those have no helper and still widen to reach `vx_print_i32`, and a zero extension
 // there would turn -5 into 251.
 //
 // EXPECT: 18446744073709551615 9223372036854775808 4294967295 2147483648 65535 32768 255 128 -7 -5 -300

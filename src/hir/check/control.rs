@@ -492,6 +492,52 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// Whether no path reaches the end of `stmts`. This is `branch_ends_early`, but it also looks
+    /// for a `break` or a `continue` in each `if`, `match` and `unsafe` block, and it knows
+    /// `while true`.
+    fn no_path_reaches_the_end(&self, stmts: &[Statement]) -> bool {
+        stmts.iter().any(|s| match s {
+            Statement::ExprStmt(ExprStmtStmt {
+                expr:
+                    Expr::If(IfExpr {
+                        then_block,
+                        else_block: Some(else_block),
+                        ..
+                    }),
+                ..
+            }) => {
+                self.no_path_reaches_the_end(then_block) && self.no_path_reaches_the_end(else_block)
+            }
+            Statement::ExprStmt(ExprStmtStmt {
+                expr: Expr::Match(m),
+                ..
+            }) => {
+                !m.arms.is_empty() && m.arms.iter().all(|a| self.no_path_reaches_the_end(&a.body))
+            }
+            Statement::ExprStmt(ExprStmtStmt {
+                expr: Expr::UnsafeBlock(u),
+                ..
+            }) => self.no_path_reaches_the_end(&u.stmts),
+            // The parser writes `while true { .. }` as `loop { if true { .. } else { break } }`.
+            Statement::Loop(l) => match l.body.as_slice() {
+                [Statement::ExprStmt(ExprStmtStmt {
+                    expr:
+                        Expr::If(IfExpr {
+                            cond,
+                            then_block,
+                            else_block: Some(_),
+                            ..
+                        }),
+                    ..
+                })] if matches!(&**cond, Expr::Identifier(id) if id.name.as_ref() == "true") => {
+                    !crate::syntax::expr::breaks_out_of_loop(then_block)
+                }
+                _ => self.branch_ends_early(std::slice::from_ref(s)),
+            },
+            _ => self.branch_ends_early(std::slice::from_ref(s)),
+        })
+    }
+
     /// The values known after paths join: a value stays known only when every path leaves it
     /// the same. Each path is the checker's scopes of known values at the join.
     fn join_known_values(
@@ -705,7 +751,11 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if !if_expr.is_comptime && then_ty != else_ty {
+                // Each branch type must fit where the other one is expected. One enum has two
+                // spellings: a call gives `Struct("Shape")`, and a variant gives `Enum("Shape")`.
+                let one_type = self.is_assignable(&then_ty, &else_ty)
+                    && self.is_assignable(&else_ty, &then_ty);
+                if !if_expr.is_comptime && !one_type {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3007,
                         format!(
@@ -1493,6 +1543,8 @@ impl<'a> TypeChecker<'a> {
                 let matched_number = (integer && crate::hir::prover::is_modelled(match_expr))
                     .then(|| (**match_expr).clone());
                 let mut literals_above: Vec<Expr> = Vec::new();
+                // The arms that can end with no value and no `return`.
+                let mut arms_that_can_end: Vec<Span> = Vec::new();
                 let uncertain = (arms.len() > 1) as u32;
                 for (i, arm) in arms.iter_mut().enumerate() {
                     let literal_arm = self.expected_type.is_none()
@@ -1576,15 +1628,27 @@ impl<'a> TypeChecker<'a> {
                         literals_above.push((**lit).clone());
                     }
 
-                    let arm_ty = if !self.speculating {
+                    // The check keeps one branch of an `if comptime` and empties the other one,
+                    // so this looks at the arm before the check too.
+                    let ends_before_check = self.no_path_reaches_the_end(&arm.body);
+                    let errors_before_arm = self.errors.error_count();
+                    let (arm_ty, never_statement) = if !self.speculating {
                         self.value_unused = unused;
                         self.consteval.uncertain_branch_depth += uncertain;
                         let ty = self.check_expr_block(&mut arm.body, None, consume);
                         self.consteval.uncertain_branch_depth -= uncertain;
-                        ty
+                        (ty, self.last_block_has_a_never_statement)
                     } else {
-                        Type::Struct("void".into(), None)
+                        (Type::Struct("void".into(), None), false)
                     };
+                    // An arm with an error of its own gets no second error for its end.
+                    if !ends_before_check
+                        && !never_statement
+                        && self.errors.error_count() == errors_before_arm
+                        && !self.no_path_reaches_the_end(&arm.body)
+                    {
+                        arms_that_can_end.push(arm.span);
+                    }
                     self.pop_scope();
                     self.pointer_branches.pop();
                     every_arm_ends &= self.branch_ends_early(&arm.body);
@@ -1710,6 +1774,29 @@ impl<'a> TypeChecker<'a> {
                 // whose value nothing uses is a statement, and has no value at all.
                 if unused && match_ty.is_none() {
                     return Type::Struct("void".into(), None);
+                }
+                // The parser writes a `match` at the end of a function as `return match ..`. A
+                // `void` function reads no value, but `is_void_ty` is true for `!` too.
+                let read = self.current_return_type.as_ref().is_some_and(|ty| {
+                    *ty != Type::Unknown
+                        && (!crate::syntax::is_void_ty(ty) || crate::syntax::is_never_ty(ty))
+                });
+                if match_ty.is_none() && read && !self.speculating {
+                    for arm in arms_that_can_end {
+                        // An arm that the compiler wrote has no place in the source.
+                        let at = if arm == Span::default() {
+                            *match_span
+                        } else {
+                            arm
+                        };
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3028,
+                            "this arm can end with no value, but the code uses the value of the \
+                             `match`. End the arm with a value or a `return`."
+                                .to_string(),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                        );
+                    }
                 }
                 match_ty.unwrap_or_else(|| {
                     self.current_return_type.clone().unwrap_or(Type::Tensor(

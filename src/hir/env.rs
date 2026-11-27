@@ -672,6 +672,9 @@ pub struct TypeChecker<'a> {
     /// type that a `return` of the closure gave, after the statements, which reset
     /// `expected_type`.
     pub(crate) closure_body_next: bool,
+    /// Whether a statement of the block that the checker finished last has the type `!`, as a
+    /// call of a `-> !` method has. No path reaches the end of such a block.
+    pub(crate) last_block_has_a_never_statement: bool,
     /// Inside the body of an `unsafe fn`, whose caller keeps the promises the body cannot check.
     pub(crate) in_unsafe_fn: bool,
     /// Inside an `unsafe` block someone wrote, not only one the compiler made for `vec![..]`.
@@ -861,6 +864,7 @@ impl<'a> TypeChecker<'a> {
             in_unsafe_block: false,
             tokens: Vec::new(),
             closure_body_next: false,
+            last_block_has_a_never_statement: false,
             in_unsafe_fn: false,
             in_written_unsafe_block: false,
             unsafe_op_seen: false,

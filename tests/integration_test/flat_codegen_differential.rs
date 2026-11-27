@@ -883,7 +883,7 @@ fn flat_matches_ast_unsafe_extern_call() {
 fn flat_matches_ast_print_string_literal() {
     // A bare string `print!` (the `print!("Success: ")` shape from the ffi corpus, #225): the flat
     // path records the bytes in a string side table, emits an `llvm.mlir.global` for them, and calls
-    // `@print_str`. Stdout must match the AST oracle, which does the same.
+    // `@vx_print_str`. Stdout must match the AST oracle, which does the same.
     assert_output_parity("fn main() -> i32 { print!(\"Stdio Success: \"); return 0; }");
 }
 
@@ -897,7 +897,7 @@ fn flat_matches_ast_print_string_and_scalar() {
 #[test]
 fn flat_matches_ast_println_string() {
     // `println!` prints its args then a trailing newline. The flat path reuses `PrintStr` for the
-    // newline (a `"\n"` string is byte-identical to the AST path's `println()` runtime call), so the
+    // newline (a `"\n"` string is byte-identical to the AST path's `vx_println()` runtime call), so the
     // full line — label, value, newline — matches the oracle.
     assert_output_parity("fn main() -> i32 { let v = 7; println!(\"count: \", v); return 0; }");
 }
@@ -1398,38 +1398,6 @@ const READ_INNER: &str = "enum Inner { Value(i64), Empty }\n\
      fn inner_value(i : Inner) -> i64 { match i { \
        Inner::Value(n) => { return n; } Inner::Empty => { return 0; } } }\n";
 
-fn assert_enum_layout_declines(src: &str) {
-    let mut program = parse(src);
-    program.module_path = "crate::diff".into();
-    let mut mods = vec![program];
-    let symbol_map = vxc::resolver::build_symbol_map(&mods);
-    mods[0].resolve_names(&symbol_map, &[]);
-    let registry = vxc::pipeline::build_frozen_registry(&mods).expect("registry builds");
-    let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
-    let env_mods = mods.clone();
-    let env = GlobalAstEnv::build(&env_mods);
-    let mut worker = LocalWorkerState::new(session);
-    {
-        let mut checker = TypeChecker::new(&env, &mut worker);
-        for function in &mut mods[0].functions {
-            checker.check_function(function);
-        }
-        assert_eq!(checker.errors.error_count(), 0, "fixture must type-check");
-    }
-    let main = mods[0]
-        .functions
-        .iter()
-        .find(|function| function.name.as_ref() == "main")
-        .expect("fixture has main");
-    assert_eq!(
-        lower_function_to_hir(main, &mut worker),
-        Err(vxc::decline::Decline::TypeNotModelled {
-            what: "an enum with no modelled instance layout",
-        }),
-        "the unsupported payload must decline during layout resolution"
-    );
-}
-
 #[test]
 fn flat_matches_ast_for_an_enum_with_a_nested_payload() {
     assert_parity(
@@ -1460,13 +1428,18 @@ fn flat_matches_ast_for_the_first_variant_of_an_enum_with_a_nested_payload() {
     );
 }
 
+/// A closure payload is the pair of its captured values and its function, so a call of the
+/// closure that the match takes out of the enum uses both.
 #[test]
-fn flat_declines_an_enum_with_an_unsupported_nested_payload() {
-    // A closure payload has no layout on the flat path. The enum declines even when the program
-    // builds only the number variant.
-    assert_enum_layout_declines(
+fn flat_matches_ast_for_an_enum_with_a_closure_payload() {
+    assert_parity(
         "enum Outer { Number(i32), Nested(|i32| -> i32) }\n\
-         fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
+         fn wrap(g : |i32| -> i32) -> Outer { return Outer::Nested(g); }\n\
+         fn read(o : Outer) -> i32 { match o { \
+           Outer::Number(n) => { return n; } \
+           Outer::Nested(g) => { return g(2); } } }\n\
+         fn main() -> i32 { let k : i32 = 40; return read(wrap(|x : i32| x + k)); }",
+        42,
     );
 }
 
@@ -1486,11 +1459,15 @@ fn flat_matches_ast_for_a_nested_payload_after_another_payload() {
 }
 
 #[test]
-fn flat_declines_an_enum_with_an_unsupported_first_variant() {
-    // Even constructing the supported variant must reject the incomplete enum layout.
-    assert_enum_layout_declines(
+fn flat_matches_ast_for_a_closure_payload_in_the_first_variant() {
+    assert_parity(
         "enum Outer { Nested(|i32| -> i32), Number(i32) }\n\
-         fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
+         fn wrap(g : |i32| -> i32) -> Outer { return Outer::Nested(g); }\n\
+         fn read(o : Outer) -> i32 { match o { \
+           Outer::Nested(g) => { return g(2); } \
+           Outer::Number(n) => { return n; } } }\n\
+         fn main() -> i32 { let k : i32 = 40; return read(wrap(|x : i32| x + k)); }",
+        42,
     );
 }
 
@@ -1509,10 +1486,15 @@ fn flat_matches_ast_for_a_nested_payload_in_the_first_variant() {
 }
 
 #[test]
-fn flat_declines_an_enum_with_an_unsupported_second_payload() {
-    assert_enum_layout_declines(
+fn flat_matches_ast_for_a_closure_payload_after_another_payload() {
+    assert_parity(
         "enum Outer { Numbers(i32, i32), Nested(i32, |i32| -> i32) }\n\
-         fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
+         fn wrap(a : i32, g : |i32| -> i32) -> Outer { return Outer::Nested(a, g); }\n\
+         fn read(o : Outer) -> i32 { match o { \
+           Outer::Numbers(a, b) => { return a * b; } \
+           Outer::Nested(a, g) => { return g(a); } } }\n\
+         fn main() -> i32 { let k : i32 = 40; return read(wrap(2, |x : i32| x + k)); }",
+        42,
     );
 }
 
@@ -1532,27 +1514,41 @@ fn flat_matches_ast_for_a_generic_enum_with_a_nested_payload() {
 }
 
 #[test]
-fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant() {
-    assert_enum_layout_declines(
+fn flat_matches_ast_for_a_closure_payload_after_another_payload_in_the_first_variant() {
+    assert_parity(
         "enum Outer { Nested(i32, |i32| -> i32), Numbers(i32, i32) }\n\
-         fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
+         fn wrap(a : i32, g : |i32| -> i32) -> Outer { return Outer::Nested(a, g); }\n\
+         fn read(o : Outer) -> i32 { match o { \
+           Outer::Nested(a, g) => { return g(a); } \
+           Outer::Numbers(a, b) => { return a * b; } } }\n\
+         fn main() -> i32 { let k : i32 = 40; return read(wrap(2, |x : i32| x + k)); }",
+        42,
     );
 }
 
 #[test]
-fn flat_declines_an_enum_with_a_closure_payload_inside_distinct() {
-    // `Distinct` does not change how a value is stored, so the closure inside still has no layout.
-    assert_enum_layout_declines(
+fn flat_matches_ast_for_an_enum_with_a_closure_payload_inside_distinct() {
+    // `Distinct` does not change how a value is stored, so the payload has the closure's layout.
+    assert_parity(
         "enum Outer { Number(i32), Nested(Distinct<|i32| -> i32>) }\n\
-         fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
+         fn main() -> i32 { let value = Outer::Number(42); match value { \
+           Outer::Number(n) => { return n; } \
+           Outer::Nested(_) => { return 0; } } }",
+        42,
     );
 }
 
 #[test]
-fn flat_declines_an_enum_with_an_unsupported_generic_payload() {
-    assert_enum_layout_declines(
+fn flat_matches_ast_for_a_generic_enum_with_a_closure_payload() {
+    assert_parity(
         "enum Outer<T> { Number(i32), Nested(T) }\n\
-         fn main() -> i32 { let _value = Outer<|i32| -> i32>::Number(7); return 0; }",
+         fn wrap(g : |i32| -> i32) -> Outer<|i32| -> i32> { \
+           return Outer<|i32| -> i32>::Nested(g); }\n\
+         fn read(o : Outer<|i32| -> i32>) -> i32 { match o { \
+           Outer<|i32| -> i32>::Number(n) => { return n; } \
+           Outer<|i32| -> i32>::Nested(g) => { return g(2); } } }\n\
+         fn main() -> i32 { let k : i32 = 40; return read(wrap(|x : i32| x + k)); }",
+        42,
     );
 }
 
@@ -1649,20 +1645,21 @@ fn enum_payload_with_empty_fields_runs(
     );
 }
 
-fn assert_nested_enum_takes_the_flat_path(jobs: Option<usize>) {
+const NESTED_ENUM: &str = "enum Inner { Value(i64), Empty }\n\
+     enum Outer { Number(i32), Nested(Inner) }\n\
+     fn main() -> i32 { \
+       let _value = Outer::Nested(Inner::Value(9223372036854775807i64)); \
+       return 0; }";
+
+const CLOSURE_PAYLOAD: &str = "enum Outer { Number(i32), Nested(|i32| -> i32) }\n\
+     fn main() -> i32 { let _value = Outer::Number(7); return 0; }";
+
+fn assert_enum_takes_the_flat_path(src: &str, jobs: Option<usize>) {
     use melior::ir::operation::OperationLike;
 
     let dir = tempfile::tempdir().expect("create fixture directory");
-    let path = dir.path().join("nested_enum.vx");
-    std::fs::write(
-        &path,
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Number(i32), Nested(Inner) }\n\
-         fn main() -> i32 { \
-           let _value = Outer::Nested(Inner::Value(9223372036854775807i64)); \
-           return 0; }",
-    )
-    .expect("write fixture");
+    let path = dir.path().join("enum.vx");
+    std::fs::write(&path, src).expect("write fixture");
     let mut command = super::time_limit::vxc();
     command
         .arg(&path)
@@ -1698,7 +1695,7 @@ fn assert_nested_enum_takes_the_flat_path(jobs: Option<usize>) {
 
 #[test]
 fn driver_takes_the_flat_path_for_a_nested_enum() {
-    assert_nested_enum_takes_the_flat_path(None);
+    assert_enum_takes_the_flat_path(NESTED_ENUM, None);
 }
 
 #[test]
@@ -1707,65 +1704,21 @@ fn parallel_driver_takes_the_flat_path_for_a_nested_enum() {
         eprintln!("two-worker compilation requires leaving two CPU cores idle");
         return;
     }
-    assert_nested_enum_takes_the_flat_path(Some(2));
-}
-
-fn assert_enum_layout_falls_back(jobs: Option<usize>) {
-    use melior::ir::operation::OperationLike;
-
-    let dir = tempfile::tempdir().expect("create fixture directory");
-    let path = dir.path().join("enum_with_a_closure_payload.vx");
-    std::fs::write(
-        &path,
-        "enum Outer { Number(i32), Nested(|i32| -> i32) }\n\
-         fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
-    )
-    .expect("write fixture");
-    let mut command = super::time_limit::vxc();
-    command
-        .arg(&path)
-        .arg("--emit-mlir")
-        .env("VX_FLAT_DBG", "1");
-    if let Some(jobs) = jobs {
-        command.arg("-j").arg(jobs.to_string());
-    }
-    // Stop before execution: a broken guard could generate an out-of-bounds store.
-    let output = command.output().expect("run compiler");
-    let log = String::from_utf8_lossy(&output.stderr);
-    let context = make_context();
-    let valid_mlir = melior::ir::Module::parse(&context, &String::from_utf8_lossy(&output.stdout))
-        .is_some_and(|module| module.as_operation().verify());
-    let decline = "[flat-codegen] declined main: an enum with no modelled instance layout \
-                   [type-not-modelled(an enum with no modelled instance layout)]";
-    assert_eq!(
-        (
-            output.status.success(),
-            log.contains(decline),
-            log.contains("[flat-codegen] program outside the flat subset; using the AST path"),
-            log.contains("emitted module via the flat path"),
-            jobs.is_none()
-                || log.contains("[parallel-frontend] the flat emitter did not take this program; using the sequential driver"),
-            valid_mlir,
-        ),
-        (true, true, true, false, true, true),
-        "compilation with jobs={jobs:?}: flags are (success, layout decline, AST fallback, \
-         flat module, parallel fallback, valid MLIR)\n{log}\nMLIR:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    assert_enum_takes_the_flat_path(NESTED_ENUM, Some(2));
 }
 
 #[test]
-fn driver_falls_back_for_an_unsupported_enum_layout() {
-    assert_enum_layout_falls_back(None);
+fn driver_takes_the_flat_path_for_an_enum_with_a_closure_payload() {
+    assert_enum_takes_the_flat_path(CLOSURE_PAYLOAD, None);
 }
 
 #[test]
-fn parallel_driver_falls_back_for_an_unsupported_enum_layout() {
+fn parallel_driver_takes_the_flat_path_for_an_enum_with_a_closure_payload() {
     if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
         eprintln!("two-worker compilation requires leaving two CPU cores idle");
         return;
     }
-    assert_enum_layout_falls_back(Some(2));
+    assert_enum_takes_the_flat_path(CLOSURE_PAYLOAD, Some(2));
 }
 
 fn assert_enum_variants_with_different_structs_run(jobs: Option<usize>) {
@@ -2120,7 +2073,7 @@ fn flat_matches_ast_matmul_with_run_time_extents() {
 
 #[test]
 fn flat_matches_ast_print_of_a_string_local() {
-    // A string bound to a local is a pointer value; printing it goes through `print_str`, as
+    // A string bound to a local is a pointer value; printing it goes through `vx_print_str`, as
     // a literal does.
     assert_output_parity(
         "fn main() -> i32 { let s = \"hi|\"; let st : i32 = print!(s); print!(s); \
@@ -2158,7 +2111,7 @@ fn flat_matches_ast_reborrow_of_a_raw_pointer() {
 
 #[test]
 fn flat_prints_a_string_value() {
-    // A `String` value prints its C string through `print_str`. Flat-only: the AST path types
+    // A `String` value prints its C string through `vx_print_str`. Flat-only: the AST path types
     // a print argument by its MLIR spelling and has no case for the struct.
     let flat = flat_llvm(
         "extern \"C\" { fn vx_string_from_c_str(c_str : *const i8) -> *mut i8; \

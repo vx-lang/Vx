@@ -507,6 +507,10 @@ pub enum DiagnosticCode {
     /// A shape in `Tensor<T, [..]>::new([..])`, `::uninit([..])` or `::fill([..], v)` that does not match the type. The shape is a list in brackets with one extent for each dimension,
     /// and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`.
     E3070,
+    /// Two `extern` declarations of one C function with different types. Both name one C
+    /// symbol, so only one of the types can be right. Declare the function once, or give each
+    /// declaration the same type. A raw pointer or a reference can point at any type.
+    E3072,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

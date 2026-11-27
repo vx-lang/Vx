@@ -347,6 +347,12 @@ impl TcpStream {
       self.write_all_raw(buffer.as_mut_ptr() as *const u8, len)
     };
   }
+
+  /// The file descriptor of the socket, for code that runs a protocol on it, such as TLS. The
+  /// number gives no right by itself: only trusted code can use it.
+  pub fn fd(self : &TcpStream) -> i32 {
+    return unsafe { vx_tcp_stream_fd(self.ptr) };
+  }
 }
 
 impl WaitSource for TcpStream {

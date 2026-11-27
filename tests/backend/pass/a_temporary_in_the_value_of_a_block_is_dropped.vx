@@ -1,0 +1,92 @@
+//===- a_temporary_in_the_value_of_a_block_is_dropped.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each `make(N)` below makes a temporary `Noisy`, which prints `dN` at its drop. The temporary is
+// in the last expression of a closure, an `unsafe` block, a `match` arm or an `if` branch. It is
+// dropped once that value is computed, as it is after `return`.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+struct Noisy {
+  v : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.v);
+  }
+}
+
+fn make(v : i32) -> Noisy {
+  return Noisy {
+    v : v
+  };
+}
+
+fn read(n : &Noisy) -> i32 {
+  return n.v;
+}
+
+fn call(body : || -> bool) -> bool {
+  return body();
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}d1 the last expression of a closure: true{{$}}
+  let a = call(|| -> bool {
+    make(1).v == 1
+  });
+  println!("the last expression of a closure: {}", a);
+  // CHECK-NEXT: {{^}}d2 after a statement: true{{$}}
+  let b = call(|| -> bool {
+    let k = 1;
+    make(2).v == k + 1
+  });
+  println!("after a statement: {}", b);
+  // The temporary made last is dropped first.
+  // CHECK-NEXT: {{^}}d4 d3 two temporaries: true{{$}}
+  let c = call(|| -> bool {
+    make(3).v + make(4).v == 7
+  });
+  println!("two temporaries: {}", c);
+  // The temporary is dropped before `n`, a variable of the closure.
+  // CHECK-NEXT: {{^}}d21 d20 a temporary and a variable: true{{$}}
+  let g = call(|| -> bool {
+    let n = make(20);
+    make(21).v == n.v + 1
+  });
+  println!("a temporary and a variable: {}", g);
+  // CHECK-NEXT: {{^}}d5 an unsafe block: true{{$}}
+  let mut five : i32 = 5;
+  let p = &mut five as *mut i32;
+  let d = unsafe { make(5).v == *p };
+  println!("an unsafe block: {}", d);
+  // CHECK-NEXT: {{^}}d6 a match arm: true{{$}}
+  let e = match d {
+    true => {
+      make(6).v == 6
+    }
+    false => {
+      false
+    }
+  };
+  println!("a match arm: {}", e);
+  // CHECK-NEXT: {{^}}d7 an if branch: true{{$}}
+  let f = if e {
+    make(7).v == 7
+  } else {
+    false
+  };
+  println!("an if branch: {}", f);
+  // The value is a reference to the temporary, and the call reads it. So the block does not
+  // drop the temporary when it ends.
+  // CHECK-NEXT: {{^}}a reference to a temporary: 8{{$}}
+  let h = read(unsafe { let _five = *p; &make(8) });
+  println!("a reference to a temporary: {}", h);
+  return 0;
+}

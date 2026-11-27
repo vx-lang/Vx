@@ -2668,13 +2668,25 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     /// The type arguments of a generic instance, joined into a name that is safe inside a
-    /// struct name: `[i32, f32]` becomes `i32_f32`.
+    /// struct name: `[i32, f32]` becomes `i32_f32`. A struct or an enum gives its own name. Its
+    /// layout can hold this instance, as `enum Value { Array(Vec<Value>) }` does, so lowering
+    /// it here would not end.
     fn type_args_name(&self, args: &[syntax::Type]) -> Result<String, LowerError> {
         let names = args
             .iter()
             .map(|a| {
-                let lowered = self.lower_type_str(a)?;
+                let lowered = match a {
+                    syntax::Type::Struct(name, _) | syntax::Type::Enum(name, _) => name.to_string(),
+                    syntax::Type::GenericInstance(base, inner) => match &**base {
+                        syntax::Type::Struct(name, _) | syntax::Type::Enum(name, _) => {
+                            format!("{name}_{}", self.type_args_name(inner)?)
+                        }
+                        _ => self.lower_type_str(a)?,
+                    },
+                    _ => self.lower_type_str(a)?,
+                };
                 Ok(lowered
+                    .replace("::", "_")
                     .replace("!", "")
                     .replace("<", "_")
                     .replace(">", "_")
@@ -2730,10 +2742,23 @@ impl<'c> MeliorGenerator<'c> {
                     syntax::Type::Pointer(..) => None,
                     _ => unreachable!(),
                 };
-                let inner_str = self.lower_type_str(inner)?;
                 // A raw pointer is a pointer, whatever it points at. Only a borrow of a tensor is
                 // the cell that holds the tensor's descriptor.
                 let is_pointer = matches!(ty, syntax::Type::Pointer(..));
+                // The pointee is lowered only to find a tensor. A struct or an enum is not one,
+                // and lowering it can come back here: `Vec<Value>` in `Value` holds a
+                // `*mut Value`.
+                let nominal = matches!(
+                    &**inner,
+                    syntax::Type::Struct(..)
+                        | syntax::Type::Enum(..)
+                        | syntax::Type::GenericInstance(..)
+                );
+                let inner_str = if is_pointer || nominal {
+                    String::new()
+                } else {
+                    self.lower_type_str(inner)?
+                };
                 if inner_str.starts_with("memref<") && !is_pointer {
                     // A borrowed tensor is the slot holding its descriptor, and every tensor
                     // this backend allocates is dynamically shaped. Naming the static shape
@@ -3064,6 +3089,24 @@ impl<'c> MeliorGenerator<'c> {
                 syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
                 _ => None,
             },
+            // A `match` that gives a value has the type of an arm's last expression. That is often
+            // a name that the arm's pattern binds, as `x` in `Ok(x) => { x }`.
+            Expr::Match(m) => {
+                let scrutinee = self.infer_ast_type(&m.expr);
+                m.arms.iter().find_map(|arm| match arm.body.last()? {
+                    syntax::Statement::ExprStmt(e) if !e.has_semi => {
+                        crate::codegen::lower::expr::payload_binding_type(
+                            self,
+                            arm,
+                            &e.expr,
+                            scrutinee.as_ref(),
+                            m.binds_references,
+                        )
+                        .or_else(|| self.infer_ast_type(&e.expr))
+                    }
+                    _ => None,
+                })
+            }
             // A number has the type the checker gave it.
             Expr::Number(n) => n.ty.clone().map(syntax::Type::Scalar),
             // `let p = &mut x` binds a reference. Recording that is what tells a later read of

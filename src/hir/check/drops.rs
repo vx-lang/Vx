@@ -398,6 +398,22 @@ pub(crate) struct DropFrames {
     /// the variable that holds the borrow. The end of the statement reads them, while the two
     /// names still mean the same variables.
     given: Vec<(String, String)>,
+    /// For each call being checked, the moves of its arguments. They happen when the call runs,
+    /// so a `?` in a later argument returns while the value is still there to drop.
+    calls: Vec<CallMoves>,
+}
+
+/// The moves of the arguments of one call, a struct literal or an enum variant.
+#[derive(Clone, Default)]
+struct CallMoves {
+    /// With one operand, the moves happen at once: no later operand can leave first.
+    defers: bool,
+    /// The depth of the drop frames and of the scopes at the call. Only an argument at this
+    /// depth waits for the call: a move in a block inside an argument happens in that block.
+    frames: usize,
+    scopes: usize,
+    /// Each moved owner, and the path of the moved field.
+    moves: Vec<(String, Option<Vec<String>>)>,
 }
 
 impl DropFrames {
@@ -1446,6 +1462,9 @@ impl<'a> TypeChecker<'a> {
     /// A struct or enum with nothing to drop is an owner too, so that its stack slot's
     /// lifetime ends after its last use.
     pub(crate) fn drops_note_owner(&mut self, name: &str, ty: &Type) {
+        // An owner of this name in this block keeps its drop, also when the new variable owns
+        // nothing.
+        self.drops_hide_owner(name);
         // `let (a, b) = e` holds `e` in a `$tuple` local and moves each part out of it, so the
         // parts are dropped as `a` and `b`, and the local owns nothing.
         // The same for the `$value` an `unsafe` block's value is moved into.
@@ -1462,7 +1481,6 @@ impl<'a> TypeChecker<'a> {
         }
         let scope = self.scopes.len() - 1;
         let drop_reads_borrows = self.drop_reads_a_reference(ty);
-        self.drops_hide_owner(name);
         if let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut() {
             owners.push(Owner {
                 name: name.to_string(),
@@ -1668,10 +1686,62 @@ impl<'a> TypeChecker<'a> {
         self.drops_note_move_at(name, Some(path), again);
     }
 
+    /// A call, a struct literal or an enum variant starts. With `defers`, its arguments move
+    /// nothing until it runs.
+    pub(crate) fn drops_enter_call(&mut self, defers: bool) {
+        let call = CallMoves {
+            defers,
+            frames: self.borrow.drops.frames.len(),
+            scopes: self.scopes.len(),
+            moves: Vec::new(),
+        };
+        self.borrow.drops.calls.push(call);
+    }
+
+    /// The call runs: the moves of its arguments happen now.
+    pub(crate) fn drops_exit_call(&mut self) {
+        let call = self.borrow.drops.calls.pop().expect("a call was entered");
+        // A call around this one takes the result, not these values. So the moves happen now,
+        // also when that call is still being checked.
+        let outer = std::mem::take(&mut self.borrow.drops.calls);
+        for (name, field) in call.moves {
+            self.drops_note_move_at(&name, field.as_deref(), false);
+        }
+        self.borrow.drops.calls = outer;
+    }
+
     fn drops_note_move_at(&mut self, name: &str, field: Option<&[String]>, again: bool) {
         // A speculative check only asks what a type is; it moves nothing.
         if self.speculating {
             return;
+        }
+        let (frames, scopes) = (self.borrow.drops.frames.len(), self.scopes.len());
+        if !again && !self.borrow.drops.arm_takes {
+            if let Some(call) = self.borrow.drops.calls.last_mut() {
+                if call.defers && (call.frames, call.scopes) == (frames, scopes) {
+                    call.moves
+                        .push((name.to_string(), field.map(<[String]>::to_vec)));
+                    return;
+                }
+            }
+        }
+        // A new value after a move that waits for its call: the move came first.
+        if again {
+            let mut waiting = Vec::new();
+            for call in self.borrow.drops.calls.iter_mut() {
+                call.moves.retain(|m| {
+                    let this = m.0 == name;
+                    if this {
+                        waiting.push(m.clone());
+                    }
+                    !this
+                });
+            }
+            let outer = std::mem::take(&mut self.borrow.drops.calls);
+            for (name, field) in waiting {
+                self.drops_note_move_at(&name, field.as_deref(), false);
+            }
+            self.borrow.drops.calls = outer;
         }
         // A move at the top of a task body happens at its `spawn` (T4). The task runs on a
         // thread of its own, so a flag that the task set would come too late for a drop after
@@ -2365,10 +2435,12 @@ impl<'a> TypeChecker<'a> {
     /// The block ends. `terminated_at` is its `return`, `break` or `continue`, whose own drops
     /// were found when it was checked. When drops are written into the program, the block's
     /// edits are made now.
-    /// `value_used`: something takes the value of the block's last statement.
+    /// `value_used`: something takes the value of the block's last statement. `value` is the
+    /// block's separate value and its type, as in `unsafe { ..; v }` or the body of a closure.
     pub(crate) fn drops_exit_block(
         &mut self,
         body: &mut Vec<Statement>,
+        value: Option<(&mut Expr, Type)>,
         terminated_at: Option<usize>,
         value_used: bool,
     ) {
@@ -2399,11 +2471,21 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let mut moves = Vec::new();
+        // The temporaries of the block's separate value: their `let`s end the block, and they
+        // are dropped once the value is computed. Only when the value is a number: another
+        // value, such as `&String::from_c_str(..)`, can point at a temporary after the block.
+        let mut value_lets = Vec::new();
+        let mut value_drops = Vec::new();
         if rewriting {
             for h in &hidden {
                 moves.extend(rename_hidden_owner(body, &mut edits, h));
             }
             self.drops_hoist_temporaries(body, &mut edits, value_used);
+            if let Some((value, Type::Scalar(e) | Type::Simd(e, _))) = value {
+                if !matches!(e, ElementType::Generic(_)) {
+                    (value_lets, value_drops) = self.drops_hoist_value_temporaries(value);
+                }
+            }
         }
         // A parameter or a name of an arm moves to its new name before the block starts.
         if !moves.is_empty() {
@@ -2487,12 +2569,14 @@ impl<'a> TypeChecker<'a> {
         if rewriting {
             // The block's separate value comes after its statements, so what waits for it goes
             // at the end of the block. It runs once the value is computed.
-            let mut after_the_value = Vec::new();
+            // The temporaries of the value are dropped before the owners of the block.
+            let mut after_the_value = value_drops;
             if let Some(v) = value_at {
                 after_the_value.extend(edits.before.remove(&v).unwrap_or_default());
                 after_the_value.extend(edits.after.remove(&v).unwrap_or_default());
             }
             self.drops_apply(body, *edits);
+            body.extend(value_lets);
             if !after_tasks.is_empty() {
                 let span = body.last().map_or_else(Span::default, |s| s.span());
                 *self
@@ -2581,6 +2665,33 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+    }
+
+    /// `drops_hoist_temporaries` for the separate value of a block, which something takes.
+    /// Gives the `let`s that go before the value, and the drops that go after it.
+    fn drops_hoist_value_temporaries(
+        &mut self,
+        value: &mut Expr,
+    ) -> (Vec<Statement>, Vec<Statement>) {
+        let mut probe = TempScan::new(None);
+        let mut copy = value.clone();
+        self.drops_scan_temps(&mut copy, false, &mut probe);
+        let Some(last_temp) = probe.last_temp else {
+            if probe.short_circuit_rewritten {
+                *value = copy;
+            }
+            return (Vec::new(), Vec::new());
+        };
+        let mut scan = TempScan::new(Some(last_temp));
+        self.drops_scan_temps(value, false, &mut scan);
+        let mut lets = Vec::new();
+        let mut drops = Vec::new();
+        for (name, ty, expr, glue) in scan.found {
+            lets.push(let_stmt(&name, true, ty, expr));
+            // A later temporary is dropped first.
+            drops.splice(0..0, glue_drops(&name, &glue, None));
+        }
+        (lets, drops)
     }
 
     fn drops_scan_stmt(&mut self, stmt: &mut Statement, taken: bool, scan: &mut TempScan) {

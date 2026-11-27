@@ -335,7 +335,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(root) = carried_root {
             self.borrow.forget_carried(root);
         }
-        self.drops_exit_block(body, terminated_at, false);
+        self.drops_exit_block(body, None, terminated_at, false);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
     }
