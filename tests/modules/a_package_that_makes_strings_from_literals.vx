@@ -23,10 +23,10 @@ pub fn hello() -> String {
   }
 }
 
-/// The length of the copy of the 8 bytes of a literal and its NUL, through a name for the literal.
-pub fn with_its_nul() -> i32 {
+/// The length of the copy of the 8 bytes of a literal, through a name for the literal.
+pub fn through_a_name() -> i32 {
   let greeting = "hi there";
-  match String::from_bytes(greeting as *const u8, 9) {
+  match String::from_bytes(greeting as *const u8, 8) {
     Result::Ok(s) => {
       return s.len();
     }
