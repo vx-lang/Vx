@@ -209,12 +209,12 @@ impl FnEmit<'_> {
             }
             _ => None,
         };
-        let load_ty = if pointer {
+        let load_ty = if payload.is_some() && result_is_tensor {
+            fty.clone()
+        } else if pointer {
             "!llvm.ptr".to_string()
         } else if let Some(v) = &vector {
             v.to_string()
-        } else if payload.is_some() && result_is_tensor {
-            fty.clone()
         } else {
             match self
                 .types
@@ -241,7 +241,7 @@ impl FnEmit<'_> {
             let d = self.names[idx].clone();
             let m = format!("%fm{idx}");
             self.body +=
-                &format!("  {m} = builtin.unrealized_conversion_cast {d} : {fty} to {memty}\n");
+                &format!("  {m} = builtin.unrealized_conversion_cast {d} : {load_ty} to {memty}\n");
             self.names[idx] = m;
             self.mem_of[idx] = Some(memty);
             return Ok(());

@@ -1215,6 +1215,24 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                             }
                             None => (rhs_val, rhs_ty),
                         };
+                    let (mut rhs_val, mut rhs_ty) =
+                        match crate::codegen::lower::expr::buffer_rank(gen, rhs_ty) {
+                            Some(rank) => {
+                                let d = crate::codegen::lower::expr::tensor_into_field(
+                                    gen, &new_b, rhs_val, rhs_ty, rhs_ty, rank,
+                                )?;
+                                (d, d.r#type())
+                            }
+                            None => (rhs_val, rhs_ty),
+                        };
+                    if rhs_val.r#type() == Type::index(gen.context) {
+                        let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
+                            .add_operands(&[rhs_val])
+                            .add_results(&[gen.i64_ty])
+                            .build()?;
+                        rhs_val = new_b.append_operation(cast_op).result(0)?.into();
+                        rhs_ty = gen.i64_ty;
+                    }
                     let i64_ty = gen.i64_ty;
                     let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                         .add_operands(&[indices[0]])

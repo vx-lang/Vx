@@ -2528,15 +2528,23 @@ impl<'c> MeliorGenerator<'c> {
                 };
                 let mut lowered = self.lower_type_str(&ty)?;
                 // A tensor is its descriptor, as in a struct field, so its shape travels with it.
-                if let (syntax::Type::Tensor(_, dims, _), true) =
-                    (&ty, lowered.starts_with("memref<"))
+                // A `&Tensor`/`&mut Tensor` is the descriptor of the tensor it borrows, also as
+                // in a struct field (`tensor_field_rank`): a bare pointer would carry no shape,
+                // and the match arm would read raw memory through it. The arm reads the
+                // descriptor back as the tensor itself, not as the cell a borrow of it is, so
+                // what the variant records is the tensor's own memref, dynamically shaped as
+                // every tensor this backend allocates is.
+                if let Some(tensor_ty) =
+                    tensor_payload_of(&ty).filter(|_| lowered.starts_with("memref<"))
                 {
+                    let rank = tensor_field_rank(&ty).expect("a tensor payload has a rank");
+                    let tensor_memref = erase_memref_extents(&self.lower_type_str(tensor_ty)?);
                     self.enum_tensor_payloads
                         .borrow_mut()
                         .entry(struct_name.to_string())
                         .or_default()
-                        .insert((v_name.to_string(), position), lowered);
-                    lowered = tensor_descriptor_str(dims.len());
+                        .insert((v_name.to_string(), position), tensor_memref);
+                    lowered = tensor_descriptor_str(rank);
                 } else if lowered.starts_with("memref<") {
                     lowered = "!llvm.ptr".to_string();
                 }
@@ -3428,6 +3436,23 @@ pub(crate) fn tensor_field_rank(ty: &syntax::Type) -> Option<usize> {
         | syntax::Type::DisjointRanges(inner) => tensor_field_rank(inner),
         syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
             tensor_field_rank(inner)
+        }
+        _ => None,
+    }
+}
+
+/// The tensor a payload holds, through the wrappers a payload may name. A `&Tensor` is the
+/// descriptor of the tensor it borrows, as a struct field is, so a match arm reads its
+/// binding back as the tensor itself, not as the cell a borrow of it is.
+fn tensor_payload_of(ty: &syntax::Type) -> Option<&syntax::Type> {
+    match ty {
+        syntax::Type::Tensor(..) => Some(ty),
+        syntax::Type::Pinned(inner, _)
+        | syntax::Type::Verified(inner)
+        | syntax::Type::Distinct(inner)
+        | syntax::Type::DisjointRanges(inner) => tensor_payload_of(inner),
+        syntax::Type::Borrow { inner, .. } if matches!(**inner, syntax::Type::Tensor(..)) => {
+            tensor_payload_of(inner)
         }
         _ => None,
     }

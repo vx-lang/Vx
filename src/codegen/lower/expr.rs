@@ -5830,7 +5830,46 @@ pub(crate) fn fit_payload_to_slot_text<'c>(
     payload_ty: &Type<'c>,
     slot_text: &str,
 ) -> Result<Value<'c, 'c>, LowerError> {
+    use melior::ir::operation::{OperationLike, OperationResult};
+
     let slot_text = full_llvm_type_text(slot_text);
+    let payload_text = payload_ty.to_string();
+    if payload_text.starts_with("memref<")
+        && (slot_text.starts_with("!llvm.struct<") || slot_text.starts_with("!llvm.ptr"))
+    {
+        let target_ty = Type::parse(gen.context, &slot_text)
+            .ok_or_else(|| LowerError::ParseType(slot_text.clone()))?;
+
+        if let Some(defining_op) = OperationResult::try_from(payload_val)
+            .ok()
+            .map(|res| res.owner())
+        {
+            if defining_op.name().as_string_ref().as_str()
+                == Ok("builtin.unrealized_conversion_cast")
+            {
+                if let Ok(operand0) = defining_op.operand(0) {
+                    if operand0.r#type().to_string() == target_ty.to_string() {
+                        return Ok(operand0);
+                    }
+                }
+            }
+        }
+
+        let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+            .add_operands(&[payload_val])
+            .add_results(&[target_ty])
+            .build()?;
+        let cast_val: Value = block.append_operation(cast).result(0)?.into();
+        return Ok(cast_val);
+    } else if slot_text.starts_with("!llvm.ptr<") && payload_ty.to_string() == slot_text {
+        let val = payload_val;
+        let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+            .add_operands(&[val])
+            .add_results(&[gen.ptr_ty])
+            .build()?;
+        let cast_val: Value = block.append_operation(cast).result(0)?.into();
+        return Ok(cast_val);
+    }
     // A byte slot holds payloads of different kinds. The payload goes in as its bits.
     if slot_text.starts_with("!llvm.array<") && payload_ty.to_string() != slot_text {
         if payload_ty.to_string().starts_with("memref<") {
@@ -5993,7 +6032,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             // Each element of the payload goes in the slot for its position.
             let slots = enum_payload_slot_texts(&struct_ty.to_string());
             for (i, payload_expr) in payload_exprs.iter().enumerate() {
-                let rank = match gen.infer_ast_type(payload_expr) {
+                let mut rank = match gen.infer_ast_type(payload_expr) {
                     Some(syntax::Type::Tensor(_, dims, _)) => Some(dims.len()),
                     _ => None,
                 };
@@ -6002,24 +6041,56 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                 block = next;
                 // A memref that goes in a slot for a descriptor is a tensor whose type the
                 // expression does not show, such as `unsafe { Distinct(t) }`.
-                let rank = rank.or_else(|| {
-                    let memref = melior::ir::r#type::MemRefType::try_from(payload_val_ty).ok()?;
-                    let rank = memref.rank();
-                    (full_llvm_type_text(slots.get(i)?)
-                        == crate::codegen::generator::tensor_descriptor_str(rank))
-                    .then_some(rank)
-                });
-                // A tensor goes in as its descriptor.
+                if rank.is_none() {
+                    if let Ok(memref) = melior::ir::r#type::MemRefType::try_from(payload_val_ty) {
+                        let memref_rank = memref.rank();
+                        if slots.get(i).map(|s| full_llvm_type_text(s))
+                            == Some(crate::codegen::generator::tensor_descriptor_str(
+                                memref_rank,
+                            ))
+                        {
+                            rank = Some(memref_rank);
+                        }
+                    }
+                }
+
                 if let Some(rank) = rank {
-                    payload_val = tensor_into_field(
-                        gen,
-                        &block,
-                        payload_val,
-                        payload_val_ty,
-                        payload_val_ty,
-                        rank,
-                    )?;
-                    payload_val_ty = payload_val.r#type();
+                    let target_desc_ty_str = crate::codegen::generator::tensor_descriptor_str(rank);
+                    let target_desc_ty = Type::parse(gen.context, &target_desc_ty_str)
+                        .ok_or(crate::codegen::lower::LowerError::ParseType(target_desc_ty_str))?;
+
+                    use melior::ir::operation::{OperationLike, OperationResult};
+
+                    let mut already_desc = false;
+                    if let Some(defining_op) = OperationResult::try_from(payload_val)
+                        .ok()
+                        .map(|res| res.owner())
+                    {
+                        if defining_op.name().as_string_ref().as_str()
+                            == Ok("builtin.unrealized_conversion_cast")
+                        {
+                            if let Ok(operand0) = defining_op.operand(0) {
+                                let op0_ty = operand0.r#type();
+                                if op0_ty.to_string().starts_with("!llvm.struct<") {
+                                    payload_val = operand0;
+                                    payload_val_ty = op0_ty;
+                                    already_desc = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if !already_desc {
+                        payload_val = tensor_into_field(
+                            gen,
+                            &block,
+                            payload_val,
+                            payload_val_ty,
+                            target_desc_ty,
+                            rank,
+                        )?;
+                        payload_val_ty = payload_val.r#type();
+                    }
                 }
                 let slot = slots.get(i).ok_or_else(|| {
                     crate::codegen::lower::LowerError::from(format!(
@@ -6994,13 +7065,17 @@ pub(crate) fn tensor_into_field<'c>(
         val_ty = plain_ty;
     }
     if val_ty != field_ty {
-        // `memref<?xf32>` into a `memref<4xf32>` field, or the reverse: a `memref.cast`.
+        let field_is_desc = field_ty.to_string().starts_with("!llvm.struct<");
         val = if gen.is_memref(&val_ty) && gen.is_memref(&field_ty) {
             super::cast_memref(gen, block, val, val_ty, field_ty)?
+        } else if gen.is_memref(&val_ty) && field_is_desc {
+            // Keep `val` as the `memref` so `descriptor_of` extracts the descriptor
+            // instead of `coerce_type` falling back to a bitcast warning.
+            val
         } else {
             gen.coerce_type(block, val, val_ty, field_ty)?
         };
-        val_ty = field_ty;
+        val_ty = val.r#type();
     }
     descriptor_of(gen, block, val, val_ty, rank)
 }

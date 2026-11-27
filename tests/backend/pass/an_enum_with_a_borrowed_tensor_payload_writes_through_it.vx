@@ -1,0 +1,39 @@
+//===- an_enum_with_a_borrowed_tensor_payload_writes_through_it.vx --------===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A payload that is a `&mut Tensor` is the descriptor of the tensor it borrows, as a
+// struct field of one is, so the match arm reads its binding back as the tensor and a
+// write through the binding reaches the borrowed buffer. The payload used to be a bare
+// pointer that carried no shape: the arm read raw memory through it, and the pipeline
+// was left with an unrealized conversion cast no backend could translate (#3824).
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}63{{$}}
+
+enum Slot {
+  Has(&mut Tensor<i32, [64]>),
+  Empty,
+}
+
+fn fill(out: &mut Tensor<i32, [64]>) -> void {
+  let s = Slot::Has(out);
+  for i in 0..64 {
+    match s {
+      Slot::Has(t) => { t[0] = i; }
+      Slot::Empty => {}
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut out = Tensor<i32>([64]);
+  fill(&mut out);
+  println!("{}", out[0]);
+  return 0;
+}
