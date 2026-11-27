@@ -198,6 +198,13 @@ folder, and no others. For example, a model server can give the code that loads 
 `Folder`, and give the code that reads requests no right at all
 (`a_folder_right_reads_only_the_files_inside_its_folder.vx`).
 
+A `PendingFile` is narrower still: the right to open one path in one mode, later.
+`PendingFile::new(files, path, mode)` opens nothing, and `pending.open()` opens the path once. So
+a program can make or empty an output file only when the first byte arrives, and the code that
+writes it needs no `&Files`. `remove_file(files, path)` removes a file. `file_kind(files, path)` gives
+`FileKind::Regular`, `Folder` or `Other`, and follows a symbolic link, so a program can leave a
+device such as `/dev/null` alone (`a_file_can_be_opened_later_removed_and_asked_its_kind.vx`).
+
 `file.map()` gives the whole file in memory, read-only, as a `Mapping`. It copies nothing: the
 system reads each part of the file when the program first reads it. So a program can map a file
 of many gigabytes and read only the parts that it needs.
