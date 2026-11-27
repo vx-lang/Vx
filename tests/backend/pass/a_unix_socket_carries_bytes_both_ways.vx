@@ -7,13 +7,16 @@
 //===----------------------------------------------------------------------===//
 // A `UnixListener` listens on a socket file, and a `UnixStream` connects to it. Both take the
 // network right. The server task reads 5 bytes and sends them back with one more. A `select`
-// waits for the answer, and gets it before its deadline. The client also connects to a path with no socket, and binds a path
-// that is in use.
+// waits for the answer, and gets it before its deadline. The client also connects to a path with
+// no socket, and binds a path that is in use.
 //
-// RUN: rm -f %t.sock
-// RUN: vxc %s -- %t.sock 2>&1 | FileCheck %s --implicit-check-not=Error
-// RUN: rm -f %t.sock
-// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s -- %t.sock 2>&1 | FileCheck %s --implicit-check-not=Error
+// A socket path holds at most 107 bytes, so the program runs in %t and binds the short path
+// `s.sock` there.
+//
+// RUN: rm -rf %t && mkdir -p %t
+// RUN: cd %t && vxc %s -- s.sock 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: rm -f %t/s.sock
+// RUN: cd %t && env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s -- s.sock 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}server read hello{{$}}
 // CHECK: {{^}}select gave 0, the stream, before its deadline{{$}}
 // CHECK: {{^}}client read hello!{{$}}
