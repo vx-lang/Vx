@@ -251,6 +251,8 @@ A literal stays on several lines when it holds a `{` that does not start a struc
 Examples are a block such as `unsafe { ... }` and an empty literal such as `PhantomData<T> {}`.
 A literal with a comment between its fields gets one field on each line, and each comment stays on its line.
 A literal with a comment before a comma, or before its `{`, gets the base formatting.
+A short `unsafe` block that holds a struct literal stays on one line, as in `unsafe { *p = Pair { a: 1, b: 2 }; }`.
+This happens when the literal goes on one line and the block fits in 80 columns and in `max_width`.
 The rule formats a struct literal inside a field value the same way.
 The base formatting formats the field values themselves.
 
@@ -271,6 +273,8 @@ match dot {
 
 A comment between arms stays on its line, and so does a comment at the end of an arm's line.
 One blank line between arms stays.
+A comma after an arm goes on the line of the arm, as in `},`.
+After an arm that ends with `;`, a comma on the next line stays there.
 A match with a comment before its `{`, or between an arm and its comma, gets the base formatting.
 
 ## If values
@@ -283,6 +287,7 @@ let a = if c > 0 { 1 } else { 0 };
 
 A value goes after `=`, `(`, `,`, `:`, `return`, or `=>`.
 A macro call such as `vec![1]` can be the value of a branch.
+An `if comptime` value follows the same rules.
 The base formatting gives each branch lines of its own in these cases:
 
 - an `if` statement,

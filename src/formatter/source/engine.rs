@@ -321,6 +321,10 @@ impl<'a> FileRenderer<'a, '_> {
                         }
                         _ => self.render_macro_call(&roots[index].0, state),
                     },
+                    &|index| match roots[index].1 {
+                        Work::Syntax(node) => self.one_line_width(node, &roots[index].0),
+                        _ => None,
+                    },
                 )?);
             }
             roots.clear();
@@ -381,6 +385,23 @@ impl<'a> FileRenderer<'a, '_> {
         .find(|token| !matches!(token.token.kind, TokenType::Whitespace(_)))
         .is_some_and(|token| matches!(token.token.kind, TokenType::Comma));
         width + usize::from(inside_syntax && comma_follows)
+    }
+
+    /// The width of a root when its rule puts it on one line, laid out on its own. `None` when
+    /// the rule needs several lines. Nothing that this layout does stays: not its warnings either.
+    fn one_line_width(&self, node: SyntaxNode<'_>, bytes: &Range<usize>) -> Option<usize> {
+        let warnings = self.warnings.borrow().len();
+        let mut state = RenderState::new(Shape {
+            column: 1,
+            indent_level: 0,
+            indent_spaces: self.config.indent,
+            width: self.config.max_width,
+        });
+        let text = self.render_root(node, bytes, 0, &mut state);
+        self.warnings.borrow_mut().truncate(warnings);
+        text.ok()
+            .filter(|text| !text.contains('\n'))
+            .map(|text| text.chars().count())
     }
 
     fn render_root(

@@ -128,3 +128,12 @@ fn an_if_value_with_macro_calls_in_its_branches_is_joined() {
         in_main("  let v = if n > 0 { vec![ 1 ] } else { vec![ 2 ] };")
     );
 }
+
+#[test]
+fn a_short_comptime_if_value_is_joined() {
+    let body = "  let a = if comptime true {\n    1\n  } else {\n    0\n  };";
+    assert_eq!(
+        format_body(body, &FormatConfig::default()),
+        in_main("  let a = if comptime true { 1 } else { 0 };")
+    );
+}

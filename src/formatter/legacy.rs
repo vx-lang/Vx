@@ -25,10 +25,14 @@ fn is_unit(kind: &TokenType<'_>) -> bool {
             || *text == MACRO_CALL_ON_SEVERAL_LINES)
 }
 
-/// Whether the width of the unit is known only after a rule lays it out.
-fn has_unknown_width(kind: &TokenType<'_>) -> bool {
-    is_unit(kind) && !matches!(kind, TokenType::Identifier(text) if *text == MACRO_CALL)
+/// Whether the unit is code that a rule lays out, whose width is known only after it does.
+fn is_rule_unit(kind: &TokenType<'_>) -> bool {
+    matches!(kind, TokenType::Identifier(text) if *text == UNIT || *text == UNIT_ENDING_IN_SPACE)
 }
+
+/// Gives the width of unit `index` when its rule puts it on one line, and `None` when the rule
+/// needs several lines.
+pub(super) type MeasureUnit<'a> = dyn Fn(usize) -> Option<usize> + 'a;
 
 fn breaks_a_line(kind: &TokenType<'_>) -> bool {
     match kind {
@@ -39,7 +43,8 @@ fn breaks_a_line(kind: &TokenType<'_>) -> bool {
 }
 
 /// Format `bytes` with the base formatting. Each range in `units` is formatted by `render_unit`,
-/// with the unit's index, at its place in the output.
+/// with the unit's index, at its place in the output. `measure_unit` gives the width of a unit
+/// that a rule puts on one line.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render(
     source: &SourceFileView<'_>,
@@ -50,6 +55,7 @@ pub(super) fn render(
     inside_syntax: bool,
     units: &[Range<usize>],
     render_unit: &mut dyn FnMut(usize, &mut RenderState) -> Result<String, String>,
+    measure_unit: &MeasureUnit<'_>,
 ) -> Result<String, String> {
     let mut cursor = bytes.start;
     for unit in units.iter().chain(std::iter::once(&(bytes.end..bytes.end))) {
@@ -88,6 +94,9 @@ pub(super) fn render(
                         },
                     );
                     token.length = unit.len();
+                    // A placeholder has no position of its own, so its column holds the index
+                    // of its unit.
+                    token.column = next_unit;
                     input.push(token);
                     next_unit += 1;
                 }
@@ -110,7 +119,12 @@ pub(super) fn render(
         return Err("A unit does not end at a source token".into());
     }
     let mut unit_index = 0;
-    let tokens = adjust_spacing(normalize_and_expand_blocks(input, state.column));
+    let tokens = adjust_spacing(normalize_and_expand_blocks(
+        input,
+        state.column,
+        config.max_width,
+        measure_unit,
+    ));
     let mut tokens = tokens.iter().peekable();
     let mut output = String::new();
     while let Some(token) = tokens.next() {
@@ -185,7 +199,20 @@ fn emit(text: &str, state: &mut RenderState, output: &mut String) {
 }
 
 /// `start_column` is the column of the first token, where the code before it on the line ended.
-fn normalize_and_expand_blocks(mut tokens: Vec<Token>, start_column: usize) -> Vec<Token> {
+fn normalize_and_expand_blocks<'a>(
+    mut tokens: Vec<Token<'a>>,
+    start_column: usize,
+    max_width: usize,
+    measure_unit: &MeasureUnit<'_>,
+) -> Vec<Token<'a>> {
+    // The width of a token on one line. A rule's unit that needs several lines has none.
+    let width = |token: &Token| {
+        if is_rule_unit(&token.kind) {
+            measure_unit(token.column)
+        } else {
+            Some(token.length)
+        }
+    };
     // Pass 1a: Ensure spaces before `{`
     let mut spaced_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 10);
     for token in &tokens {
@@ -257,12 +284,23 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>, start_column: usize) -> V
                 let holds_comment = tokens[lb_idx..=rb_idx]
                     .iter()
                     .any(|t| matches!(t.kind, TokenType::Comment(_) | TokenType::DocComment(_)));
-                // A unit's width is known only after a rule lays it out, so the length test
-                // below cannot measure it.
-                let holds_unit = tokens[lb_idx..=rb_idx]
+                // A rule's unit can go on the line only when the rule puts it on one line. A
+                // macro call on several lines cannot.
+                let breaks = tokens[lb_idx..=rb_idx].iter().any(|t| {
+                    (breaks_a_line(&t.kind) && is_unit(&t.kind))
+                        || (is_unsafe_block && width(t).is_none())
+                });
+                // With a rule's unit on the line, the whole line must fit in max_width, so that
+                // the rule keeps it on one line there too.
+                let limit = if tokens[lb_idx..=rb_idx]
                     .iter()
-                    .any(|t| has_unknown_width(&t.kind));
-                if is_unsafe_block && !holds_comment && !holds_unit {
+                    .any(|t| is_rule_unit(&t.kind))
+                {
+                    80.min(max_width)
+                } else {
+                    80
+                };
+                if is_unsafe_block && !holds_comment && !breaks {
                     // Try to measure the total length if we collapsed it to a single line
                     // With no line break before the block, its line starts before these tokens.
                     let mut collapsed_len = start_column;
@@ -275,7 +313,7 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>, start_column: usize) -> V
                                 collapsed_len += new_tokens[j].length;
                             }
                         } else {
-                            collapsed_len += new_tokens[j].length;
+                            collapsed_len += width(&new_tokens[j]).unwrap_or(new_tokens[j].length);
                         }
                     }
                     for t in &tokens[lb_idx..=rb_idx] {
@@ -286,11 +324,11 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>, start_column: usize) -> V
                                 collapsed_len += t.length;
                             }
                         } else {
-                            collapsed_len += t.length;
+                            collapsed_len += width(t).unwrap_or(t.length);
                         }
                     }
 
-                    if collapsed_len + 2 <= 80 {
+                    if collapsed_len + 2 <= limit {
                         // Collapse it! Replace all newlines inside with spaces.
                         new_tokens.push(tokens[lb_idx].clone());
 

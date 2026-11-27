@@ -72,7 +72,23 @@ impl NodeFormatter for MatchArmsFormatter {
                 indent_level: inner,
             });
             document.push(region(arm.clone(), inner));
-            document.extend(comma.map(Document::Token));
+            // After an arm that ends with `;`, a comma on the next line stays there: `;,` is
+            // hard to read.
+            let ends_with_semicolon =
+                matches!(source.tokens[arm.end - 1].token.kind, TokenType::Semicolon);
+            if let Some(comma) = comma {
+                if ends_with_semicolon
+                    && (arm.end..comma.0).any(|index| {
+                        matches!(&source.tokens[index].token.kind,
+                            TokenType::Whitespace(text) if text.contains('\n'))
+                    })
+                {
+                    document.push(Document::Line {
+                        indent_level: inner,
+                    });
+                }
+                document.push(Document::Token(*comma));
+            }
             previous_end = comma.map_or(arm.end, |comma| comma.0 + 1);
         }
         let last = gap(source, previous_end..view.close.0);

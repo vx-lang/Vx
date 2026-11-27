@@ -76,3 +76,9 @@ fn no_blank_line_follows_the_opening_brace() {
         in_main("  match c {\n    A => {\n      n = 1;\n    }\n  }")
     );
 }
+
+#[test]
+fn a_comma_on_the_line_after_an_arm_that_ends_with_a_semicolon_stays_there() {
+    let body = "  match x {\n    1 => out = 10;\n    ,\n    _ => out = 20;\n    ,\n  }";
+    assert_eq!(format_body(body, &FormatConfig::default()), in_main(body));
+}

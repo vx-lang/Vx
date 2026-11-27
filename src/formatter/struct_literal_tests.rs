@@ -164,3 +164,14 @@ fn a_struct_literal_that_holds_a_block_keeps_one_field_on_each_line() {
     let body = "  let i = Instant {\n    ns: unsafe { clock_ns() }\n  };\n  let a = Arc<T> {\n    count: count,\n    value: PhantomData<T> {}\n  };";
     assert_eq!(format_body(body, &FormatConfig::default()), in_main(body));
 }
+
+#[test]
+fn a_short_unsafe_block_that_holds_a_short_struct_literal_stays_on_one_line() {
+    let body = "  unsafe { *p = Pair { a : 1, b : 2 }; }";
+    assert_eq!(format_body(body, &FormatConfig::default()), in_main(body));
+    let written_on_lines = "  unsafe {\n    *p = Pair {\n      a : 1,\n      b : 2\n    };\n  }";
+    assert_eq!(
+        format_body(written_on_lines, &FormatConfig::default()),
+        in_main(body)
+    );
+}

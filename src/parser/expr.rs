@@ -1721,11 +1721,7 @@ impl<'a> Parser<'a> {
             )
         };
         if let (Some(else_range), Some(else_statements)) = (&else_range, &else_block) {
-            if self.recording()
-                && !is_comptime
-                && one_value(&then_block)
-                && one_value(else_statements)
-            {
+            if self.recording() && one_value(&then_block) && one_value(else_statements) {
                 if let Some(records) = &mut self.recorder {
                     for tokens in [then_start..then_end, else_range.clone()] {
                         records.push(SyntaxRecord {

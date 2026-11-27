@@ -32,6 +32,8 @@ Directive-like comments and declaration-like text inside macros cannot escape th
 The engine keeps the bytes of a macro call exactly as written.
 The base formatting sees the call as one placeholder, so the line of the call still gets its indentation.
 A call that spans several lines counts as a line break for the block that holds it.
+The base formatting puts a short `unsafe` block on one line only when it can measure what is inside.
+It measures a rule's root by laying it out once on its own, and only a root that the rule puts on one line counts.
 A `macro_rules!` definition keeps its complete lines.
 
 The formatter parses each file once with the compiler's own parser, so the two use one grammar.
