@@ -5503,7 +5503,12 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
     ) -> Self::Output {
         // Read before the scrutinee is generated, which may set it for its own operands.
         let outer_expected = gen.expected_type;
-        let (mut match_val, mut match_ty, block) = gen.generate_expr(&self.expr, block)?;
+        // The matched value is a value even when this `match` is a statement. A `match` that
+        // `?` became must not read `none` here and give no value.
+        gen.expected_type = None;
+        let scrutinee = gen.generate_expr(&self.expr, block);
+        gen.expected_type = outer_expected;
+        let (mut match_val, mut match_ty, block) = scrutinee?;
         let mut matched_reference = None;
         // `match self` with `self : &Op`: the scrutinee is a pointer, and the arms read the
         // tag out of the enum it points at.
