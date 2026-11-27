@@ -129,7 +129,10 @@ level of the item that a change touches sets what the change needs.
   levels are a partial order, not a line. `b` must still only grow along it.
 
 `src/api_diff.rs` compares the `.vxlib` files of two versions and reports patch, minor or major
-(#2251). The interface file keeps no level yet, so it counts each item as `pub` (#3900).
+(#2251). The interface file keeps the level of each function and method, and a program that links
+the library through it can call only the `pub` ones. So the comparison counts only those, and a
+function that loses `pub` needs a major release. Types have no level yet (section 7), so it counts
+each struct and enum as `pub`.
 
 ## 7. Levels for other items
 

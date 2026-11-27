@@ -1,0 +1,33 @@
+//===- no_trusted_code_refuses_a_requires_that_c_does_not_prove.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc -j 4 --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc --package tests=tests %s 2>&1 | FileCheck %s --check-prefix=ALLOWED
+// RUN: vxc --package tests=tests --audit %s 2>&1 | FileCheck %s --check-prefix=AUDIT
+//
+// C code can call an exported function of the package `tests` with any arguments, so each
+// `requires` of one is trusted code. `vxc --no-trusted-code tests` refuses each one: the two
+// pointer clauses of `length_of`, and `n > 0` of `twice`. `add_one` requires nothing, so the
+// flag allows it. Without the flag, the program runs, and the audit lists the same three clauses.
+import tests::modules::a_package_that_exports_functions_to_c;
+
+fn main() -> i32 {
+  print(add_one(twice(21)));
+  return 0;
+}
+
+// CHECK: Error[E5003] at {{.*}}a_package_that_exports_functions_to_c.vx:12:10: `--no-trusted-code tests` refuses trusted code in the package `tests`, and this is the `requires valid(p, n)` of the exported function `length_of`, which a call from C does not prove
+// CHECK: Error[E5003] at {{.*}}a_package_that_exports_functions_to_c.vx:13:10: {{.*}}and this is the `requires initialized(p, n)` of the exported function `length_of`, which a call from C does not prove
+// CHECK: Error[E5003] at {{.*}}a_package_that_exports_functions_to_c.vx:19:12: {{.*}}and this is the `requires n > 0` of the exported function `twice`, which a call from C does not prove
+// CHECK: Semantic check failed on '{{.*}}no_trusted_code_refuses_a_requires_that_c_does_not_prove.vx': 3 error(s) emitted
+
+// ALLOWED: {{^}}43{{$}}
+
+// AUDIT: a_package_that_exports_functions_to_c.vx:12:10: the exported function `length_of` requires `valid(p, n)`, and a call from C proves nothing
+// AUDIT: a_package_that_exports_functions_to_c.vx:13:10: the exported function `length_of` requires `initialized(p, n)`, and a call from C proves nothing
+// AUDIT: a_package_that_exports_functions_to_c.vx:19:12: the exported function `twice` requires `n > 0`, and a call from C proves nothing

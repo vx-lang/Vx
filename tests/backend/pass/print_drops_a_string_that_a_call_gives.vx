@@ -1,0 +1,51 @@
+//===- print_drops_a_string_that_a_call_gives.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `println!` and `print!` only read what they print. So a `String` that a call gives them is
+// dropped after the statement, once for each print.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @make_greeting(
+// CHECK-NOT: drop
+// CHECK: call @vx_string_as_c_str(
+// CHECK-NOT: {{drop|vx_string_as_c_str}}
+// CHECK: call @String$drop(
+// CHECK-NOT: drop
+// CHECK: call @make_greeting(
+// CHECK-NOT: drop
+// CHECK: call @vx_string_as_c_str(
+// CHECK-NOT: {{drop|vx_string_as_c_str}}
+// CHECK: call @String$drop(
+// CHECK-NOT: drop
+// CHECK: call @Result$String$i32$unwrap$i32$String(
+// CHECK-NOT: drop
+// CHECK: call @vx_string_as_c_str(
+// CHECK-NOT: {{drop|vx_string_as_c_str}}
+// CHECK: call @String$drop(
+// CHECK-NOT: drop
+// CHECK: return
+import core::result;
+import std::string;
+
+fn make_greeting() -> String {
+  let mut s = String::new();
+  unsafe { s.push_c_str("hi"); }
+  return s;
+}
+
+fn main() -> i32 {
+  println!("from a call {}", make_greeting());
+  print!(make_greeting());
+  println!("");
+  let r : Result<String, i32> = Result<String, i32>::Ok(make_greeting());
+  println!("from unwrap {}", r.unwrap());
+  return 0;
+}
+
+// EXPECT: from a call hi
+// EXPECT: hi
+// EXPECT: from unwrap hi

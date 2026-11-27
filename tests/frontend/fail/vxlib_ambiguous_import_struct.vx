@@ -11,9 +11,9 @@
 // the two messages cannot drift (#294).
 //
 // RUN: mkdir -p %t.d
-// RUN: printf 'struct Val { a : i32 }\nfn geta() -> i32 { return 1; }\n' > %t.d/sa.vx
+// RUN: printf 'struct Val { a : i32 }\npub fn geta() -> i32 { return 1; }\n' > %t.d/sa.vx
 // RUN: vxc %t.d/sa.vx --action emit-interface -o %t.d/sa.vxlib
-// RUN: printf 'struct Val { a : i32, b : i32 }\nfn getb() -> i32 { return 2; }\n' > %t.d/sb.vx
+// RUN: printf 'struct Val { a : i32, b : i32 }\npub fn getb() -> i32 { return 2; }\n' > %t.d/sb.vx
 // RUN: vxc %t.d/sb.vx --action emit-interface -o %t.d/sb.vxlib
 // RUN: rm %t.d/sa.vx %t.d/sb.vx
 // RUN: not vxc %s --std-path %t.d --action emit-mlir -o /dev/null 2>&1 | FileCheck %s

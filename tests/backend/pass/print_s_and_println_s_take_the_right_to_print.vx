@@ -1,0 +1,32 @@
+//===- print_s_and_println_s_take_the_right_to_print.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `print_s!` and `println_s!` print as `print!` and `println!` do. Their first argument is the
+// right to print: a `Stdout` or a `Stderr`, or a reference to one. With a `Stderr`, the text
+// goes to standard error. The package `tests` has no trusted code, and prints with the rights
+// that `main` gives it.
+//
+// RUN: vxc --package tests=tests --no-trusted-code tests %s 2>/dev/null | FileCheck %s --check-prefix=OUT
+// RUN: vxc --package tests=tests --no-trusted-code tests %s 2>&1 >/dev/null | FileCheck %s --check-prefix=ERR
+// OUT: {{^}}count 4 and 5{{$}}
+// OUT-NEXT: {{^}}4{{$}}
+// OUT-EMPTY:
+// OUT-NEXT: {{^}}after an empty line{{$}}
+// OUT-NEXT: {{^}}main prints too{{$}}
+// OUT-NOT: standard error
+// ERR: {{^}}to standard error 4{{$}}
+// ERR-NOT: count
+
+import std::io;
+import std::root;
+import tests::modules::a_package_that_prints_with_the_right;
+
+fn main(root : Root) -> i32 {
+  report(&root.stdout, &root.stderr, 4);
+  println_s!(root.stdout, "main prints too");
+  return 0;
+}

@@ -755,11 +755,12 @@ impl<'a> TypeChecker<'a> {
                 v
             }
             // A string literal of `n` bytes is `n` bytes and a NUL, in memory that lives as long
-            // as the program: `Valid` and `Init` for its `n + 1` elements.
+            // as the program: `Valid` and `Init` for its `n` bytes. The NUL is left out, so a
+            // length that counts it is an error, and the NUL cannot reach a `String` by mistake.
             Expr::StringLiteral(l) => {
                 let base = self.new_base(Memory::Static);
                 let len = Expr::Number(NumberExpr::new(
-                    (l.value.as_ref().len() + 1).to_string(),
+                    l.value.as_ref().len().to_string(),
                     None,
                     Span::default(),
                 ));

@@ -25,7 +25,9 @@
 // a `return`, a block's last expression or an assignment is marked `after_value`: it runs once
 // that statement has computed its value, which may read the tensor, and before it is returned
 // or stored. A flag is a `bool` local, set after the statement that moves the owner, in the
-// block where it moves, and named by the drop, which then frees nothing once it is set.
+// block where it moves, and named by the drop, which then frees nothing once it is set. An exit
+// inside that statement, such as the `return` of a `?`, comes before the flag is set. So it
+// skips what the statement moved before it, also from a block inside the statement.
 //
 //===----------------------------------------------------------------------===//
 
@@ -268,6 +270,9 @@ enum FrameKind {
         value_at: Option<usize>,
         /// The owners that a later `let` of the block hid, now under a name of their own.
         hidden: Vec<Hidden>,
+        /// What the statement around the block moved before the block started. Each statement
+        /// of the block starts with it, and the statement around gets it back at the block end.
+        moved_before: Box<MovedNow>,
     },
 }
 
@@ -312,6 +317,30 @@ impl BlockUseList {
     }
 }
 
+/// What the statement being checked moved: whole owners, and fields as `(owner, path)`.
+#[derive(Clone, Default)]
+pub(crate) struct MovedNow {
+    owners: HashSet<String>,
+    fields: HashSet<(String, Vec<String>)>,
+}
+
+impl MovedNow {
+    /// `owner` with the fields that the statement moved marked as moved, so that its drop leaves
+    /// them out.
+    fn without_moved_fields<'o>(&self, owner: &'o Owner) -> std::borrow::Cow<'o, Owner> {
+        if !self.fields.iter().any(|(name, _)| *name == owner.name) {
+            return std::borrow::Cow::Borrowed(owner);
+        }
+        let mut owner = owner.clone();
+        for (name, path) in &self.fields {
+            if *name == owner.name {
+                *owner.state(Some(path)).0 = Moved::Yes;
+            }
+        }
+        std::borrow::Cow::Owned(owner)
+    }
+}
+
 /// The drop-point state of the function being checked: one frame per open block, loop and
 /// function or closure body.
 #[derive(Clone, Default)]
@@ -325,8 +354,8 @@ pub(crate) struct DropFrames {
     /// certain, so the owner gets a flag. `pending_sets` set the flags at the start of the arm.
     arm_takes: bool,
     pending_sets: Vec<Statement>,
-    /// The names moved by the statement being checked. A `return t` moves `t` on its way out.
-    moved_now: HashSet<String>,
+    /// What the statement being checked moved. A `return t` moves `t` on its way out.
+    moved_now: MovedNow,
     /// Makes the names of the locals the rewrite adds unique.
     counter: usize,
     /// For each open `tasks` block, the statement of its body that joins its tasks before the
@@ -1241,6 +1270,12 @@ impl<'a> TypeChecker<'a> {
                 ty,
             })
             .collect();
+        // A block in a statement, such as the `Err` arm of a `?`, runs after what the statement
+        // moved before it. A function, closure or task body starts with nothing moved.
+        let moved_before = match d.frames.last() {
+            Some(FrameKind::Block { .. } | FrameKind::Loop) => Box::new(d.moved_now.clone()),
+            _ => Box::default(),
+        };
         d.frames.push(FrameKind::Block {
             owners,
             uses: BlockUseList::new(body, value),
@@ -1253,6 +1288,7 @@ impl<'a> TypeChecker<'a> {
             edits,
             value_at: value.map(|_| body.len()),
             hidden: Vec::new(),
+            moved_before,
         });
     }
 
@@ -1270,10 +1306,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn drops_set_stmt(&mut self, i: usize) {
-        if let Some(FrameKind::Block { stmt, .. }) = self.borrow.drops.frames.last_mut() {
-            *stmt = i;
-        }
-        self.borrow.drops.moved_now.clear();
+        let d = &mut self.borrow.drops;
+        d.moved_now = match d.frames.last_mut() {
+            Some(FrameKind::Block {
+                stmt, moved_before, ..
+            }) => {
+                *stmt = i;
+                (**moved_before).clone()
+            }
+            _ => MovedNow::default(),
+        };
     }
 
     /// `tensor_view_1d(..)` or `tensor_view_2d(..)`, also as the value of an `unsafe` block: a
@@ -1432,8 +1474,14 @@ impl<'a> TypeChecker<'a> {
         }
         let rewriting = self.drops_rewriting();
         let arm = self.borrow.drops.arm_takes;
-        if !again && field.is_none() {
-            self.borrow.drops.moved_now.insert(name.to_string());
+        // The flag of an arm that takes the value is set at the arm's start, and the take must
+        // not reach the other arms of the `match`.
+        if !again && !arm {
+            let now = &mut self.borrow.drops.moved_now;
+            match field {
+                None => now.owners.insert(name.to_string()),
+                Some(path) => now.fields.insert((name.to_string(), path.to_vec())),
+            };
         }
         let top = self.borrow.drops.frames.len();
         let mut found = None;
@@ -1830,7 +1878,7 @@ impl<'a> TypeChecker<'a> {
         // statement, where it would free the new value. The drop moves before the store.
         let operand_drop = !self.speculating
             && self.drops_rewriting()
-            && self.borrow.drops.moved_now.contains(name)
+            && self.borrow.drops.moved_now.owners.contains(name)
             && match self.borrow.drops.frames.last_mut() {
                 Some(FrameKind::Block { stmt, edits, .. }) => {
                     let queued = edits.after.entry(*stmt).or_default();
@@ -1841,7 +1889,9 @@ impl<'a> TypeChecker<'a> {
                 _ => false,
             };
         // `t = f(t)` moved the old value into the call; a flag still has to be cleared.
-        if !operand_drop && (moved == Moved::Yes || self.borrow.drops.moved_now.contains(name)) {
+        if !operand_drop
+            && (moved == Moved::Yes || self.borrow.drops.moved_now.owners.contains(name))
+        {
             if self.speculating || !self.drops_rewriting() {
                 return;
             }
@@ -2024,7 +2074,12 @@ impl<'a> TypeChecker<'a> {
         for &(e, ty) in operands {
             let Expr::Identifier(id) = e else { continue };
             if !matches!(ty, Type::Tensor(..))
-                || !self.borrow.drops.moved_now.contains(id.name.as_ref())
+                || !self
+                    .borrow
+                    .drops
+                    .moved_now
+                    .owners
+                    .contains(id.name.as_ref())
                 || self.drops_owner_state(id.name.as_ref()).is_none()
             {
                 continue;
@@ -2117,11 +2172,13 @@ impl<'a> TypeChecker<'a> {
             mut edits,
             value_at,
             hidden,
+            moved_before,
             ..
         }) = self.borrow.drops.frames.pop()
         else {
             panic!("a block frame closes a block");
         };
+        self.borrow.drops.moved_now = *moved_before;
         if self.speculating {
             return;
         }
@@ -2369,17 +2426,18 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::UnaryOp(u) => return self.drops_scan_temps(&mut u.expr, false, scan),
             Expr::Identifier(_) | Expr::Number(_) | Expr::StringLiteral(_) => return,
-            // A value that `println!` prints is not borrowed here, so it is dropped as before. A
-            // value borrowed inside one, as in `count(&make())`, is dropped after the statement.
+            // `print!` and `println!` only read what they print. So a value that a call gives
+            // them, as in `println!("{}", make())`, is dropped after the statement, as the value
+            // of `&make()` is.
             Expr::Print(p) => {
                 for arg in p.args.iter_mut() {
-                    self.drops_scan_temps(arg, false, scan);
+                    self.drops_scan_temps(arg, true, scan);
                 }
                 return;
             }
             Expr::Println(p) => {
                 for arg in p.args.iter_mut() {
-                    self.drops_scan_temps(arg, false, scan);
+                    self.drops_scan_temps(arg, true, scan);
                 }
                 return;
             }
@@ -2622,7 +2680,7 @@ impl<'a> TypeChecker<'a> {
                     owners, uses, stmt, ..
                 } => {
                     for owner in owners.iter().rev() {
-                        if owner.moved == Moved::Yes || d.moved_now.contains(&owner.name) {
+                        if owner.moved == Moved::Yes || d.moved_now.owners.contains(&owner.name) {
                             continue;
                         }
                         // Not used from this statement on, or never: dropped already.
@@ -2637,7 +2695,8 @@ impl<'a> TypeChecker<'a> {
                             continue;
                         }
                         self.drops_print(owner, format!("before the {what} on line {line}"));
-                        dropped.extend(owner_drop(owner, raw_pointers));
+                        let owner = d.moved_now.without_moved_fields(owner);
+                        dropped.extend(owner_drop(&owner, raw_pointers));
                         if tasks_blocks > 0 && outside_inner.is_none() {
                             outside_inner = Some(owner.name.clone());
                         }
