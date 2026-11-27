@@ -1,0 +1,48 @@
+//===- a_value_in_a_vec_lives_until_the_drop_that_reads_it.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Vec` holds a `Peek`, whose `drop` prints the first number of the tensor that it holds a
+// reference to. The `Vec` drops the `Peek`, so the tensor lives until that `drop`, and the
+// `drop` prints 7. a_value_lives_until_the_drop_that_reads_it.vx has the other cases.
+//
+// Default code generator only: with the legacy one, a `Vec` of a struct that holds a `&Tensor`
+// frees the tensor twice (#4199).
+//
+// REQUIRES: flat-codegen
+// EXPECT: vec 1 7 | done
+
+import core::ops;
+import std::vec;
+
+struct Peek {
+  r : &Tensor<i64, [4]>,
+}
+
+impl Drop for Peek {
+  fn drop(self : &mut Peek) -> void {
+    print!("{} ", self.r[0]);
+  }
+}
+
+fn in_a_vec() -> i32 {
+  print!("vec ");
+  let t : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let mut v = Vec<Peek>::new();
+  v.push(Peek {
+    r : &t
+  });
+  let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+  print!("{} ", u[0]);
+  return 0;
+}
+
+fn main() -> i32 {
+  if in_a_vec() == 0 {
+    println!("| done");
+  }
+  return 0;
+}

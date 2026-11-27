@@ -50,13 +50,29 @@ impl<'a> TypeChecker<'a> {
             Statement::CompoundAssign(CompoundAssignStmt { rhs, .. }) => {
                 self.check_escape_in_calls(rhs)
             }
-            Statement::Return(ReturnStmt {
-                expr: Some(expr), ..
-            }) => self.check_escape_in_calls(expr),
             Statement::ExprStmt(ExprStmtStmt { expr, .. }) => self.check_escape_in_calls(expr),
             Statement::ForLoop(floop) => self.check_escape_in_calls(&floop.iterable),
             Statement::Assert(a) => self.check_escape_in_calls(&a.expr),
             _ => {}
+        }
+        // The calls above can record a borrow, so this comes last. The value of a block has
+        // no place as a statement, and a statement that the compiler wrote has no place at all.
+        let value = match stmt {
+            Statement::ExprStmt(ExprStmtStmt { expr, .. }) => expr.span(),
+            _ => crate::syntax::Span::default(),
+        };
+        let at = [stmt.span(), value]
+            .into_iter()
+            .find(|span| *span != crate::syntax::Span::default())
+            .unwrap_or(self.errors.at);
+        self.drops_note_borrows_of_holders(at);
+    }
+
+    /// The calls in the value of a `return`. They are checked before the `return` drops what
+    /// it leaves, because a call can store a reference in a value that is dropped there.
+    pub(crate) fn check_frame_escape_of_a_return(&mut self, value: &Expr) {
+        if !self.speculating {
+            self.check_escape_in_calls(value);
         }
     }
 

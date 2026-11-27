@@ -929,6 +929,9 @@ impl<'a> TypeChecker<'a> {
                                 .copy_borrows(id.name.as_ref(), &holder, self.scopes.len());
                             self.reborrow_mut_variable(id.name.as_ref(), &holder);
                         }
+                        if let Some(holder) = self.current_assignment_target.clone() {
+                            self.hold_borrows_of_a_field_read(&holder, f_expr, expected_type);
+                        }
                         if f_type != Type::Unknown
                             && !self.is_assignable(expected_type, &f_type)
                             && !self.speculating

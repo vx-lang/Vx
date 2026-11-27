@@ -529,7 +529,11 @@ pub enum DiagnosticCode {
     /// at a variable declared inside it. Nor can a variable keep a reference into a value with
     /// no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at
     /// the end of its statement. A closure cannot return a reference to its own parameter, or to
-    /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
+    /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame. A value
+    /// whose `drop` can read a reference cannot hold a reference to a variable that is declared
+    /// after it in the same block, when the type of that variable implements `Drop`. A block
+    /// drops its variables in reverse order of declaration, so that variable is dropped first.
+    /// Declare it before the value that holds the reference.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a

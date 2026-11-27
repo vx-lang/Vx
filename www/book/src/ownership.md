@@ -140,6 +140,19 @@ closure holding one, cannot be returned, stored through a reference, or passed t
 store it. Inside a function, a variable declared outside a block cannot be given a reference to a
 variable declared inside it.
 
+A value whose `drop` reads a reference follows one more rule, because a block drops its values
+in reverse order of declaration ([Dropping values](#dropping-values)). The value cannot hold a
+reference to a variable that is declared after it, when the type of that variable implements
+`Drop`. That variable is dropped first, and the `drop` of the value would read it afterwards:
+
+```rust
+let mut p = Peek { r : &a };   // `Peek` has a `drop` that reads `r`
+let b = Vec<i64>::new();
+p.r = &b;                      // E4005: `b` is dropped before `p`
+```
+
+Declare `b` before `p`.
+
 ## Views of a tensor
 
 A row `q[i]`, a field `h.t` that holds a tensor, and a view of either are *views*: they share
@@ -194,7 +207,8 @@ The checker tells a view from an owner by where the value came from, since both 
 When its owner goes away, a value is *dropped*: what it owns is released. A value that was moved
 is not dropped, because its new owner drops it. Giving a variable a new value drops the old one.
 
-- **Memory only:** a tensor, or a `Vec` of numbers, is freed after its last use.
+- **Memory only:** a tensor is freed after its last use. The `drop` of a value that holds a
+  reference to it is a use, so it is freed after that `drop`.
 - **A `Drop` implementation:** a value whose type implements `Drop` waits for the end of its block,
   and values in one block are dropped in reverse order of declaration. Its `drop` runs first, then
   its fields are dropped in the order they are declared. Dropping an enum drops the payload of the
