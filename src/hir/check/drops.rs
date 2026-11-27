@@ -1343,6 +1343,9 @@ impl<'a> TypeChecker<'a> {
     /// A struct or enum with nothing to drop is an owner too, so that its stack slot's
     /// lifetime ends after its last use.
     pub(crate) fn drops_note_owner(&mut self, name: &str, ty: &Type) {
+        // An owner of this name in this block keeps its drop, also when the new variable owns
+        // nothing.
+        self.drops_hide_owner(name);
         // `let (a, b) = e` holds `e` in a `$tuple` local and moves each part out of it, so the
         // parts are dropped as `a` and `b`, and the local owns nothing.
         // The same for the `$value` an `unsafe` block's value is moved into.
@@ -1359,7 +1362,6 @@ impl<'a> TypeChecker<'a> {
         }
         let scope = self.scopes.len() - 1;
         let drop_reads_borrows = self.drop_reads_a_reference(ty);
-        self.drops_hide_owner(name);
         if let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut() {
             owners.push(Owner {
                 name: name.to_string(),
