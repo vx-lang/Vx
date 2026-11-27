@@ -70,7 +70,7 @@ fn connect_to(what : *const i8, addr : *const i8) -> void {
 }
 
 fn send_one_byte() -> void {
-  match unsafe { TcpStream::connect_c_str("127.0.0.1:41753") } {
+  match unsafe { TcpStream::connect_c_str("127.0.0.1:21753") } {
     Result<TcpStream, NetError>::Ok(s) => {
       let mut stream = s;
       let byte : u8 = 86;
@@ -131,7 +131,7 @@ fn wait_for_a_connection(listener : TcpListener) -> void {
 }
 
 fn cancel_an_accept() -> i32 {
-  match unsafe { TcpListener::bind_c_str("127.0.0.1:41754") } {
+  match unsafe { TcpListener::bind_c_str("127.0.0.1:21754") } {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
@@ -150,10 +150,10 @@ fn cancel_an_accept() -> i32 {
 fn main() -> i32 {
   connect_to("connect to a closed port", "127.0.0.1:1");
   connect_to("connect to an address with no port", "127.0.0.1");
-  match unsafe { TcpListener::bind_c_str("127.0.0.1:41753") } {
+  match unsafe { TcpListener::bind_c_str("127.0.0.1:21753") } {
     Result<TcpListener, NetError>::Ok(listener) => {
       println!("the first listener works");
-      match unsafe { TcpListener::bind_c_str("127.0.0.1:41753") } {
+      match unsafe { TcpListener::bind_c_str("127.0.0.1:21753") } {
         Result<TcpListener, NetError>::Ok(_second) => {
           println!("the second listener works too");
         }

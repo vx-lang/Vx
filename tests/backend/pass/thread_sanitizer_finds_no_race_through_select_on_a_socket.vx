@@ -86,7 +86,7 @@ fn say(what : *const i8, r : Result<i32, SelectError>) -> void {
 }
 
 fn connect(network : &Network) -> void {
-  match TcpStream::connect(network, &address("127.0.0.1:41784")) {
+  match TcpStream::connect(network, &address("127.0.0.1:21784")) {
     Result<TcpStream, NetError>::Ok(_s) => {}
     Result<TcpStream, NetError>::Err(_e) => {
       println!("connect: Error");
@@ -141,7 +141,7 @@ fn serve(network : &Network, listener : TcpListener) -> void {
 
 fn main(root : Root) -> i32 {
   let network = &root.network;
-  match TcpListener::bind(network, &address("127.0.0.1:41784")) {
+  match TcpListener::bind(network, &address("127.0.0.1:21784")) {
     Result<TcpListener, NetError>::Ok(listener) => {
       serve(network, listener);
     }
