@@ -346,6 +346,11 @@ no other right.
 `IpAddress` holds 4 bytes for IPv4 or 16 bytes for IPv6, in network order. It takes the network
 right too, because the lookup can send the name to the network.
 
+`UnixStream::connect(&root.network, &path)` connects to a Unix-domain socket, whose address is
+the path of a socket file. `UnixListener::bind` makes one and `accept` takes its connections. A
+`UnixStream` has the same `read`, `write`, `read_exact` and `write_all` as a `TcpStream`. They
+take the network right, because a connection to a local server is a connection too.
+
 The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
 The length of the vector is the size of the buffer. Each type also has methods that take raw
 pointers. Their names end in `_c_str` or `_raw`.
