@@ -1,0 +1,212 @@
+//===- a_match_whose_value_is_used_with_arms_that_never_end.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function that ends with a `match` returns the value of the `match`. In each function here,
+// every arm gives a value or never reaches its end, so the compiler must accept it. The fail
+// test is tests/frontend/fail/a_match_whose_value_is_used_with_an_arm_that_can_end.vx.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+struct Failure {
+  code : i32,
+}
+
+impl Failure {
+  fn stop(self : &Failure) -> ! {
+    println!("stop {}", self.code);
+    abort();
+  }
+}
+
+const SHORT : bool = true;
+
+fn arms_that_return(x : i32, a : &i64, b : &i64) -> &i64 {
+  match x {
+    0 => {
+      return a;
+    }
+    _ => {
+      return b;
+    }
+  }
+}
+
+fn an_arm_with_a_value(x : i32, a : &i64, b : &i64) -> &i64 {
+  match x {
+    0 => {
+      return a;
+    }
+    _ => {
+      b
+    }
+  }
+}
+
+fn an_arm_that_stops(x : i32) -> i32 {
+  match x {
+    0 => {
+      return 1;
+    }
+    _ => {
+      panic("no arm for this number");
+    }
+  }
+}
+
+fn an_arm_that_calls_a_method_that_never_returns(x : i32, f : &Failure) -> i32 {
+  match x {
+    0 => {
+      return 1;
+    }
+    _ => {
+      f.stop();
+    }
+  }
+}
+
+fn an_arm_with_an_if_comptime(x : i32) -> i32 {
+  match x {
+    0 => {
+      if comptime SHORT {
+        return 1;
+      } else {
+        return 2;
+      }
+    }
+    _ => {
+      return 5;
+    }
+  }
+}
+
+fn an_arm_with_a_while_true_loop(x : i32) -> i32 {
+  match x {
+    0 => {
+      return 1;
+    }
+    _ => {
+      let mut i = x;
+      while true {
+        i = i - 1;
+        if i <= 0 {
+          return 50;
+        }
+      }
+    }
+  }
+}
+
+// The arm for 0 leaves the loop or starts its next turn.
+fn an_arm_that_leaves_a_loop(x : i32) -> i32 {
+  let mut turns : i32 = 0;
+  loop {
+    turns = turns + 1;
+    return match x {
+      0 => {
+        if turns > 2 {
+          break;
+        } else {
+          continue;
+        }
+      }
+      _ => {
+        return 7;
+      }
+    };
+  }
+  return 40 + turns;
+}
+
+// In the arm for 0, each arm of the inner `match` leaves the loop or starts its next turn.
+// The arm for 1 leaves the loop from an `unsafe` block.
+fn a_match_and_an_unsafe_block_that_leave_a_loop(x : i32) -> i32 {
+  let mut turns : i32 = 0;
+  let mut extra : i32 = 0;
+  let p = &mut extra as *mut i32;
+  loop {
+    turns = turns + 1;
+    return match x {
+      0 => {
+        match turns {
+          1 => {
+            continue;
+          }
+          _ => {
+            break;
+          }
+        }
+      }
+      1 => {
+        unsafe { *p = *p + 10; break; };
+      }
+      _ => {
+        return 7;
+      }
+    };
+  }
+  return 40 + turns + extra;
+}
+
+fn a_match_in_an_arm(x : i32, y : i32) -> i32 {
+  match x {
+    0 => {
+      match y {
+        0 => {
+          return 1;
+        }
+        _ => {
+          return 2;
+        }
+      }
+    }
+    _ => {
+      return 5;
+    }
+  }
+}
+
+// A `void` function reads no value, so an arm can end.
+fn returns_no_value(x : i32) -> void {
+  match x {
+    0 => {
+      println!("zero");
+      return;
+    }
+    _ => {}
+  }
+}
+
+fn main() -> i32 {
+  let a : i64 = 10;
+  let b : i64 = 20;
+  // CHECK: {{^}}arms that return: 10 20{{$}}
+  println!("arms that return: {} {}", *arms_that_return(0, &a, &b), *arms_that_return(5, &a, &b));
+  // CHECK-NEXT: {{^}}an arm with a value: 10 20{{$}}
+  println!("an arm with a value: {} {}", *an_arm_with_a_value(0, &a, &b), *an_arm_with_a_value(5, &a, &b));
+  // CHECK-NEXT: {{^}}an arm that stops: 1{{$}}
+  println!("an arm that stops: {}", an_arm_that_stops(0));
+  // CHECK-NEXT: {{^}}if comptime: 1 5{{$}}
+  println!("if comptime: {} {}", an_arm_with_an_if_comptime(0), an_arm_with_an_if_comptime(5));
+  // CHECK-NEXT: {{^}}while true: 1 50{{$}}
+  println!("while true: {} {}", an_arm_with_a_while_true_loop(0), an_arm_with_a_while_true_loop(5));
+  // CHECK-NEXT: {{^}}an arm that leaves a loop: 43 7{{$}}
+  println!("an arm that leaves a loop: {} {}", an_arm_that_leaves_a_loop(0), an_arm_that_leaves_a_loop(1));
+  // CHECK-NEXT: {{^}}a match and an unsafe block that leave a loop: 42 51 7{{$}}
+  println!("a match and an unsafe block that leave a loop: {} {} {}", a_match_and_an_unsafe_block_that_leave_a_loop(0), a_match_and_an_unsafe_block_that_leave_a_loop(1), a_match_and_an_unsafe_block_that_leave_a_loop(5));
+  // CHECK-NEXT: {{^}}a match in an arm: 1 2 5{{$}}
+  println!("a match in an arm: {} {} {}", a_match_in_an_arm(0, 0), a_match_in_an_arm(0, 5), a_match_in_an_arm(5, 0));
+  // CHECK-NEXT: {{^}}zero{{$}}
+  returns_no_value(0);
+  returns_no_value(5);
+  let f = Failure {
+    code : 3
+  };
+  // CHECK-NEXT: {{^}}method: 1{{$}}
+  println!("method: {}", an_arm_that_calls_a_method_that_never_returns(0, &f));
+  return 0;
+}

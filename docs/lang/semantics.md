@@ -133,8 +133,9 @@ The model is `formal/memory_model/vx.cat`. [`formal/memory_model/README.md`](../
 
 When its owner goes away, a value is *dropped*: the drop releases what the value owns. A moved value is not dropped, because its new owner drops it. An assignment drops the old value of the variable. The checker writes each drop into the program, so both code generators drop a value at the same point.
 
-- A value that only holds memory, such as a tensor or a `Vec` of numbers, drops after its last use.
+- A value that only holds memory, such as a tensor, drops after its last use. The `drop` method of a value that holds a reference to it is a use. Thus it drops after that value, also when its declaration comes later.
 - A value whose type implements `Drop` waits for the end of its block. The values of one block drop in reverse order of declaration. The `drop` method of a value runs first, and then its fields drop in the order of their declaration. An enum drops the payload of the variant that it holds.
+- A value whose `drop` method can read a reference cannot hold a reference to a variable that is declared after it in the same block, when the type of that variable implements `Drop` (E4005). That variable drops first.
 - `core::mem::drop(x)` drops `x` at once.
 
 **A pattern that takes a value owns all of it.** At the end of its scope, the pattern drops the names that it binds. Then it drops the parts that it does not name, such as a `_` part.

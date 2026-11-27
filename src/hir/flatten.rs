@@ -912,7 +912,7 @@ impl<'r> Lowerer<'r> {
     /// Bind a fresh local name to a value: an SSA alias in straight-line mode, or an `Alloca` slot
     /// (+ initializing `Store`) in memory mode.
     /// Emit a `Print` for a value: `type_idx` carries the value's type (scalar or tensor) so codegen
-    /// routes to the right `print_*` / `printMemref*` runtime helper.
+    /// routes to the right `vx_print_*` / `printMemref*` runtime helper.
     /// A scalar returned from a function whose return type is a dims-less tensor wraps into a
     /// rank-0 buffer -- the return-position analogue of the let-binding materialization (Vx#396).
     /// Any other value passes through.
@@ -1001,7 +1001,7 @@ impl<'r> Lowerer<'r> {
 
     /// Emit a `PrintStr` for a string literal (no result): record the bytes in the string side table
     /// and carry that entry's index in `imm`. Codegen emits an `llvm.mlir.global` for the bytes and
-    /// calls `@print_str` — matching the AST path's string `print!` argument.
+    /// calls `@vx_print_str` — matching the AST path's string `print!` argument.
     fn emit_print_str(&mut self, s: &str) {
         let imm = self.strings.len() as u64;
         self.strings.push(s.to_string());
@@ -1082,13 +1082,13 @@ impl<'r> Lowerer<'r> {
 
     /// Lower one `print!`/`println!` argument to what is printed: a string literal is text, and
     /// any other argument is lowered as a value, which `emit_print` routes to the scalar or tensor
-    /// `print_*` helper by its type.
+    /// `vx_print_*` helper by its type.
     fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<PrintPiece> {
         if let Expr::StringLiteral(sl) = arg {
             return Ok(PrintPiece::Text(sl.value.to_string()));
         }
         // A `String` value prints its bytes: the runtime hands out a C copy of the handle in
-        // the `ptr` field, `print_str` prints it, and the copy is freed. The runtime's entry
+        // the `ptr` field, `vx_print_str` prints it, and the copy is freed. The runtime's entry
         // points are the ones `std::string` declares, so a program that has not brought them
         // into scope declines.
         let is_string = self.infer_ast_type(arg).is_some_and(
@@ -2152,11 +2152,22 @@ impl<'r> Lowerer<'r> {
             // *local* that lives in a slot (`&v` where `v` is a struct slot, or `&x` where `x` is an
             // address-taken scalar demoted to a slot by the pre-pass, #230) yields the slot's
             // `!llvm.ptr` — the pointer a `&Vec<T>` method receives so `v.len()` lowers (#242), or the
-            // `&i32` a `pick(a : &i32, ..)` argument passes. A tensor local in a slot is the
-            // exception: the slot holds the tensor, and borrowing a tensor gives the tensor.
+            // `&i32` a `pick(a : &i32, ..)` argument passes. A tensor can be slotted too, and the
+            // read below gives the tensor for it.
             Expr::Borrow(b) => {
                 if let Expr::Identifier(id) = &*b.expr {
                     if let Some(Binding::Slot { reg, ty }) = self.scope.get(&id.name).cloned() {
+                        // Every tensor slot holds the tensor's memref, not its address. That
+                        // is why this read gives the tensor. A tensor local gets a slot in
+                        // four cases:
+                        //   - a `let` given a new value in code with control flow (see
+                        //     `LetDecl`)
+                        //   - any tensor local in a memory-mode function (see `bind_local`)
+                        //   - a tensor that a `match` takes out of an enum's payload (see
+                        //     `bind_local`)
+                        //   - the result slot of `let x : T = if ..` (see `LetDecl`)
+                        // Borrowing a tensor is transparent, so the borrow is the memref read
+                        // out of the slot.
                         if matches!(ty, LoweredTy::Tensor { .. }) {
                             return Ok(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0));
                         }
@@ -3205,6 +3216,19 @@ impl<'r> Lowerer<'r> {
         // `match o`: a local aggregate slot (or a self-pointer to one).
         if let Ok((slot, _)) = self.lower_agg_base(subj) {
             return Ok(slot);
+        }
+        // `match &o` or `match &mut o`: the slot of the local, as for `match o`. This needs no AST
+        // type of `o`, which a `let` of a `match` or an `if` value does not record.
+        if let Expr::Borrow(b) = subj {
+            if let Expr::Identifier(id) = &*b.expr {
+                if let Some(Binding::Slot {
+                    reg,
+                    ty: LoweredTy::Aggregate(_),
+                }) = self.scope.get(&id.name).cloned()
+                {
+                    return Ok(reg);
+                }
+            }
         }
         // `match <value>`: a by-value enum aggregate — spill it to a slot to address its fields.
         let v = self.lower_expr(subj)?;
@@ -5257,25 +5281,7 @@ impl<'r> Lowerer<'r> {
     fn closure_pair_layout(&mut self) -> TypeId {
         let gid = closure_pair_gid();
         if self.generated_layout(gid).is_none() {
-            let field = |name: &str, offset| crate::layout::GeneratedFieldLayout {
-                layout: crate::layout::FieldLayout {
-                    name: name.into(),
-                    offset,
-                    size: 8,
-                    ty: FieldTy::Opaque,
-                },
-                mlir_type: "!llvm.ptr".to_string(),
-                aggregate_id: None,
-                pointer_target_id: None,
-            };
-            let layout = crate::layout::GeneratedAggregateLayout {
-                type_id: gid,
-                name: "closure".to_string(),
-                size_bytes: 16,
-                align_bytes: 8,
-                fields: vec![field("env", 0), field("func", 8)],
-                variant_payloads: Vec::new(),
-            };
+            let layout = crate::layout::closure_pair_layout();
             self.instance_layouts.insert(gid, layout.type_definition());
             self.record_generated_layout(layout);
         }
@@ -5558,10 +5564,6 @@ impl<'r> Lowerer<'r> {
                 let gid = self.resolve_concrete_layout(ty)?;
                 self.aggregate_size_align(gid)
             }
-            // A closure value is a pair of pointers, `{ env, func }`, but a struct field of a
-            // closure type has room for one pointer only. Decline until the two agree. Look
-            // through the wrappers that `structural_field_info` looks through.
-            _ if matches!(peel_storage_wrappers(ty), Type::Closure(..)) => None,
             _ => self
                 .undeclared_storage(ty)
                 .map(|(size, align, ..)| (size, align)),
@@ -5579,10 +5581,17 @@ impl<'r> Lowerer<'r> {
     }
 
     /// The size, alignment, MLIR storage type and field type of a value whose type has no
-    /// declaration: a number, a pointer, a function, a tensor or a vector. A struct field and an
-    /// enum payload store such a value in the same way.
-    fn undeclared_storage(&self, ty: &Type) -> Option<(u64, u64, String, FieldTy)> {
+    /// declaration: a number, a pointer, a function, a closure, a tensor or a vector. A struct
+    /// field and an enum payload store such a value in the same way.
+    fn undeclared_storage(&mut self, ty: &Type) -> Option<(u64, u64, String, FieldTy)> {
         let (size, align, kind) = crate::layout::structural_field_info(ty)?;
+        // The registry has the closure pair only when a declared type holds a closure, not for
+        // an instance such as `Option<|i32| -> i32>`.
+        if kind == FieldTy::Nominal(closure_pair_gid()) {
+            let pair = self.closure_pair_layout();
+            let mlir = crate::codegen::flat::generated_storage_type(self.generated_layout(pair)?);
+            return Some((size as u64, align as u64, mlir, kind));
+        }
         let mlir = crate::codegen::flat::registry_field_storage_type(
             &kind,
             self.registry,
@@ -5819,7 +5828,9 @@ impl<'r> Lowerer<'r> {
         let written = fc.type_args.as_ref()?.first()?;
         // `Tensor<T, [d0, d1]>::uninit()` writes the element and shape in the type and takes no
         // arguments, so there is nothing to recover from the call. With a `?` in the type the
-        // one argument is the full shape, and the `?` positions take their extents from it.
+        // first argument is the full shape, and the `?` positions take their extents from it.
+        // `::fill` takes the value as its last argument: `::fill(v)` or `::fill([n, 2], v)`.
+        let fills = fc.name.as_ref() == "Tensor::fill";
         if let crate::syntax::Type::Tensor(el, dims, placement) = written {
             if matches!(el, ElementType::Generic(_)) {
                 return None;
@@ -5837,7 +5848,9 @@ impl<'r> Lowerer<'r> {
             let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
                 let written_shape = match fc.args.first() {
-                    Some(Expr::Array(arr)) if fc.args.len() == 1 => Some(&arr.elements),
+                    Some(Expr::Array(arr)) if fc.args.len() == 1 + usize::from(fills) => {
+                        Some(&arr.elements)
+                    }
                     _ => None,
                 };
                 for (i, d) in dims.iter().enumerate() {
@@ -5893,8 +5906,8 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
             }
             // `::fill(v)` writes `v` into every element, where `::new()` writes a zero.
-            if fc.name.as_ref() == "Tensor::fill" {
-                let v = self.lower_expr(fc.args.first()?).ok()?;
+            if fills {
+                let v = self.lower_expr(fc.args.last()?).ok()?;
                 self.emit_effect(Opcode::TensorFill, buf.reg, v.reg, 0);
             }
             return Some(buf);
@@ -7828,6 +7841,25 @@ impl<'r> Lowerer<'r> {
                     });
                     return self.lower_assign(&a.lhs, &value, false);
                 }
+                // `v[i].n += x` is `(*v.index_mut(i)).n += x`. The call runs once, and the field
+                // is read and written at the one address it gives.
+                if let Expr::MemberAccess(m) = &a.lhs {
+                    let (base_reg, gid) = self.lower_agg_base(&m.base)?;
+                    let (access, field) = self.field_of(&gid, m.member.as_ref())?;
+                    if !matches!(field, FieldTy::Scalar(_)) {
+                        return Err(Decline::Unsupported {
+                            what: "a compound assignment to a field that is not a number",
+                        });
+                    }
+                    let cur = self.load_field(base_reg, &gid, m.member.as_ref())?;
+                    let rhs = self.lower_expr(&a.rhs)?;
+                    let op = binop_opcode(&a.op).ok_or(Decline::Unsupported {
+                        what: "this compound-assignment operator",
+                    })?;
+                    let combined = self.emit_typed(op, cur.reg, rhs.reg, cur.ty.clone(), 0);
+                    self.emit_effect(Opcode::FieldStore, base_reg, combined.reg, access);
+                    return Ok(());
+                }
                 // Save the base and index registers so the read and write share one evaluation.
                 let indexed_place = if matches!(&a.lhs, Expr::IndexAccess(_)) {
                     Some(self.lower_place(&a.lhs)?)
@@ -7930,7 +7962,7 @@ impl<'r> Lowerer<'r> {
                 }),
                 // `print(x)` is a statement-level effect (no result): lower its one argument and emit
                 // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
-                // routes to the right `print_*`/`printMemref*` runtime helper.
+                // routes to the right `vx_print_*`/`printMemref*` runtime helper.
                 // `abort()` -- terminate unconditionally, expressed as a conditional abort
                 // whose condition is `false`. One form serves both, and it inherits the same
                 // target portability: on the host it becomes `abort()`, inside a kernel
@@ -7982,11 +8014,11 @@ impl<'r> Lowerer<'r> {
                     Ok(())
                 }
                 // The `print!` macro form (`Expr::Print`): prints each argument in sequence via the same
-                // `print_*` / `print_str` helpers, no separators — matching the AST codegen. A
+                // `vx_print_*` / `vx_print_str` helpers, no separators — matching the AST codegen. A
                 // `StringLiteral` arg emits a `PrintStr`; any other arg is lowered and `print`ed.
                 Expr::Print(p) => self.lower_print(&p.args, false, p.to_stderr),
                 // The `println!` macro form (`Expr::Println`): print each argument (as `print!`), then a
-                // trailing newline. The AST path calls a `println()` runtime helper for the newline;
+                // trailing newline. The AST path calls a `vx_println()` runtime helper for the newline;
                 // printing a `"\n"` string is byte-identical, so reuse `PrintStr` and add no new helper.
                 Expr::Println(p) => self.lower_print(&p.args, true, p.to_stderr),
                 other => {
@@ -9032,18 +9064,6 @@ fn parse_scalar_type_arg(s: &str) -> Type {
         other => return Type::Struct(other.to_string().into(), None),
     };
     Type::Scalar(e)
-}
-
-/// The type inside the wrappers that do not change how a value is stored: `Pinned`, `Verified`,
-/// `Distinct` and `DisjointRanges`. `structural_field_info` looks through the same wrappers.
-fn peel_storage_wrappers(ty: &Type) -> &Type {
-    match ty {
-        Type::Pinned(inner, _)
-        | Type::Verified(inner)
-        | Type::Distinct(inner)
-        | Type::DisjointRanges(inner) => peel_storage_wrappers(inner),
-        other => other,
-    }
 }
 
 /// The MLIR scalar type string for an element type (`i32`, `f32`, `i1` for bool, …) — the flat-lowerer

@@ -1,0 +1,339 @@
+//===- a_value_lives_until_the_drop_that_reads_it.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Peek`, `PeekVec` and `PeekPoint` each have a `drop` that prints the first number of the
+// value they hold a reference to. A tensor or a struct of numbers is freed after its last
+// use, and the `drop` of a value that borrows it is a use. So each `drop` prints the number
+// that the program put there, and not what freed memory holds. Every function prints its
+// name, then what its body prints, then what the `drop` reads:
+//
+// - `last`: `t` is not named after `p` borrows it, and `p` is dropped at the `return`;
+// - `later`: `t` is declared after `p`, and still lives until `p` is dropped;
+// - `param`: the same for a parameter taken by value;
+// - `returned`: the call in the `return` stores the reference to `t` in `p`;
+// - `early`: both the `return` in the `if` and the last `return` drop `p` before `t`;
+// - `field`: the `Peek` is a field of another struct;
+// - `variable`: `p` gets the reference from the variable `r`;
+// - `through`: `d` holds a reference to `inner`, and `inner` holds the reference to `t`;
+// - `value`: the block is the value of an `if`.
+//
+// a_value_in_a_vec_lives_until_the_drop_that_reads_it.vx has the case of a `Vec` that holds the
+// value.
+//
+// The rest printed the same before the drop of a value counted as a use. They show what must
+// not change. In `struct` and `late struct` the value borrowed is a struct of numbers, which
+// has no memory to free. In the others a `Vec` is declared after the value that may hold a
+// reference to it:
+//
+// - `by hand` and `given`: `p` is dropped by hand, or given to a function, before `b` is
+//   dropped;
+// - `plain`: `Plain` has no `drop`, so nothing reads `b` after it is dropped;
+// - `refs`: a `Vec` of references does not read them when it is dropped;
+// - `read`: `total` takes `&mut p` but stores nothing in it.
+//
+// EXPECT: last 1 7 | later 1 70 | param 1 70 | returned 70 | early 1 7 | early 5 7 | field 1 7 | variable 1 7 | through 1 7 | value 5 70 | struct 19 7 | late struct 19 70 | by hand 77 end | given 77 end | plain 77 | refs 1 | read 78 1 | done
+
+import core::mem;
+import core::ops;
+import std::vec;
+
+struct Peek {
+  r : &Tensor<i64, [4]>,
+}
+
+impl Drop for Peek {
+  fn drop(self : &mut Peek) -> void {
+    print!("{} ", self.r[0]);
+  }
+}
+
+struct Outer {
+  inner : Peek,
+}
+
+struct Inner {
+  r : &Tensor<i64, [4]>,
+}
+
+struct PeekThrough {
+  r : &Inner,
+}
+
+impl Drop for PeekThrough {
+  fn drop(self : &mut PeekThrough) -> void {
+    print!("{} ", self.r.r[0]);
+  }
+}
+
+struct PeekVec {
+  r : &Vec<i64>,
+}
+
+impl Drop for PeekVec {
+  fn drop(self : &mut PeekVec) -> void {
+    print!("{} ", *self.r.get_ref(0));
+  }
+}
+
+struct Point {
+  x : i64,
+  y : i64,
+}
+
+struct PeekPoint {
+  r : &Point,
+}
+
+impl Drop for PeekPoint {
+  fn drop(self : &mut PeekPoint) -> void {
+    print!("{} ", self.r.x);
+  }
+}
+
+struct Plain {
+  r : &Vec<i64>,
+}
+
+fn one(n : i64) -> Vec<i64> {
+  let mut v = Vec<i64>::new();
+  v.push(n);
+  return v;
+}
+
+fn give(p : PeekVec) -> void {
+}
+
+fn point_at(p : &mut Peek, t : &Tensor<i64, [4]>) -> i32 {
+  p.r = t;
+  return 0;
+}
+
+fn total(p : &mut PeekVec, b : &Vec<i64>) -> i64 {
+  return *p.r.get_ref(0) + *b.get_ref(0);
+}
+
+fn last() -> i32 {
+  print!("last ");
+  let t : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let p = Peek {
+    r : &t
+  };
+  let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+  print!("{} ", u[0]);
+  return 0;
+}
+
+fn later() -> i32 {
+  print!("| later ");
+  let a : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let mut p = Peek {
+    r : &a
+  };
+  let t : Tensor<i64, [4]> = [70i64, 80i64, 90i64, 100i64];
+  p.r = &t;
+  let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+  print!("{} ", u[0]);
+  return 0;
+}
+
+fn param(mut p : Peek) -> i32 {
+  print!("| param ");
+  let t : Tensor<i64, [4]> = [70i64, 80i64, 90i64, 100i64];
+  p.r = &t;
+  let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+  print!("{} ", u[0]);
+  return 0;
+}
+
+fn returned() -> i32 {
+  print!("| returned ");
+  let a : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let mut p = Peek {
+    r : &a
+  };
+  let t : Tensor<i64, [4]> = [70i64, 80i64, 90i64, 100i64];
+  return point_at(&mut p, &t);
+}
+
+fn early(c : bool) -> i32 {
+  print!("| early ");
+  let t : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let p = Peek {
+    r : &t
+  };
+  if c {
+    let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+    print!("{} ", u[0]);
+    return 1;
+  }
+  let w : Tensor<i64, [4]> = [5i64, 6i64, 7i64, 8i64];
+  print!("{} ", w[0]);
+  return 0;
+}
+
+fn in_a_field() -> i32 {
+  print!("| field ");
+  let t : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let o = Outer {
+    inner : Peek {
+      r : &t
+    }
+  };
+  let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+  print!("{} ", u[0]);
+  return 0;
+}
+
+fn from_a_variable() -> i32 {
+  print!("| variable ");
+  let t : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let r = &t;
+  let p = Peek {
+    r : r
+  };
+  let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+  print!("{} ", u[0]);
+  return 0;
+}
+
+fn through() -> i32 {
+  print!("| through ");
+  let t : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let inner = Inner {
+    r : &t
+  };
+  let d = PeekThrough {
+    r : &inner
+  };
+  let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+  print!("{} ", u[0]);
+  return 0;
+}
+
+fn value_of_a_block(c : bool) -> i64 {
+  print!("| value ");
+  let a : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let x = if c {
+    let mut p = Peek {
+      r : &a
+    };
+    let t : Tensor<i64, [4]> = [70i64, 80i64, 90i64, 100i64];
+    p.r = &t;
+    let u : Tensor<i64, [4]> = [1i64, 2i64, 3i64, 4i64];
+    print!("{} ", u[0] + 4i64);
+    u[1]
+  } else {
+    6i64
+  };
+  return x;
+}
+
+fn a_struct() -> i32 {
+  print!("| struct ");
+  let point = Point {
+    x : 7i64, y : 8i64
+  };
+  let p = PeekPoint {
+    r : &point
+  };
+  let other = Point {
+    x : 9i64, y : 10i64
+  };
+  print!("{} ", other.x + other.y);
+  return 0;
+}
+
+fn a_late_struct() -> i32 {
+  print!("| late struct ");
+  let first = Point {
+    x : 7i64, y : 8i64
+  };
+  let mut p = PeekPoint {
+    r : &first
+  };
+  let point = Point {
+    x : 70i64, y : 80i64
+  };
+  p.r = &point;
+  let other = Point {
+    x : 9i64, y : 10i64
+  };
+  print!("{} ", other.x + other.y);
+  return 0;
+}
+
+fn dropped_by_hand() -> i32 {
+  print!("| by hand ");
+  let a = one(1i64);
+  let mut p = PeekVec {
+    r : &a
+  };
+  let b = one(77i64);
+  p.r = &b;
+  drop(p);
+  print!("end ");
+  return 0;
+}
+
+fn given_away() -> i32 {
+  print!("| given ");
+  let a = one(1i64);
+  let mut p = PeekVec {
+    r : &a
+  };
+  let b = one(77i64);
+  p.r = &b;
+  give(p);
+  print!("end ");
+  return 0;
+}
+
+fn no_drop() -> i32 {
+  print!("| plain ");
+  let a = one(1i64);
+  let mut p = Plain {
+    r : &a
+  };
+  let b = one(77i64);
+  p.r = &b;
+  print!("{} ", *p.r.get_ref(0));
+  return 0;
+}
+
+fn a_vec_of_references() -> i32 {
+  print!("| refs ");
+  let mut v = Vec<&Vec<i64>>::new();
+  let b = one(77i64);
+  v.push(&b);
+  print!("{} ", v.len());
+  return 0;
+}
+
+fn only_read() -> i32 {
+  print!("| read ");
+  let a = one(1i64);
+  let mut p = PeekVec {
+    r : &a
+  };
+  let b = one(77i64);
+  print!("{} ", total(&mut p, &b));
+  return 0;
+}
+
+fn main() -> i32 {
+  let a : Tensor<i64, [4]> = [7i64, 8i64, 9i64, 10i64];
+  let ran = last() + later() + param(Peek {
+    r : &a
+  }) + returned() + early(true) + early(false) + in_a_field() + from_a_variable() + through();
+  let value = value_of_a_block(true);
+  let rest = a_struct() + a_late_struct() + dropped_by_hand() + given_away() + no_drop()
+  + a_vec_of_references() + only_read();
+  if ran == 1 && value == 2i64 && rest == 0 {
+    println!("| done");
+  }
+  return 0;
+}

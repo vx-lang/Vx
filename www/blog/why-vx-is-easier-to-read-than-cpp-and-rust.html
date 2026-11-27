@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why Vx is easier to read than C++ and Rust</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Vx takes the parts of C++ and Rust that read well, and leaves out the parts that do not: the turbofish, async functions, lifetime markers, inline assembly strings, #[cfg] attributes and the C preprocessor. Each section shows the same code in the three languages.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Why Vx is easier to read than C++ and Rust">
+<meta property="og:description" content="Vx takes the parts of C++ and Rust that read well, and leaves out the parts that do not: the turbofish, async functions, lifetime markers, inline assembly strings, #[cfg] attributes and the C preprocessor. Each section shows the same code in the three languages.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-27T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/why-vx-is-easier-to-read-than-cpp-and-rust.html">
+<meta property="og:image:alt" content="How main got its parameters: from fn main() -> i32 to fn main(root : Root, args : Vec<String>).">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+<h1>Why Vx is easier to read than C++ and Rust</h1>
+<p class="post-meta">Aditya Kumar &middot; 27 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — People read code more often than they write it.
+Vx keeps the parts of C++ and Rust that read well: types after names, trait bounds, and macros
+that match tokens. It leaves out the parts that make a reader stop: the turbofish, async
+functions, lifetime markers, constraint strings of inline assembly, <code>#[cfg]</code> and the C
+preprocessor. Parallel code is a loop with <code>across blocks</code> and
+<code>across lanes</code>, and a function says what it needs and what it gives in
+<code>requires</code> and <code>ensures</code>, which the compiler proves. Each section below
+shows one piece of code in C++, Rust and Vx. The last section says what each choice costs.</blockquote>
+
+<p class="lede">A reader of a function wants three answers fast: what it takes, what it gives,
+and what it does. Each piece of syntax that answers none of them is noise. This post goes
+through the places where C++ or Rust adds such noise, and shows what Vx writes there.</p>
+
+<h2 id="type-arguments"><a href="#type-arguments">Type arguments with no turbofish</a></h2>
+
+<p>Rust needs <code>::&lt;</code> before the type arguments of a call in an expression:</p>
+
+<!-- vx-doctest: skip (Rust, not Vx) -->
+<pre><code><span class="k">let</span> v = <span class="t">Vec</span>::&lt;i32&gt;::<span class="f">new</span>();
+<span class="k">let</span> n = <span class="n">&quot;42&quot;</span>.parse::&lt;i32&gt;().<span class="f">unwrap</span>();
+<span class="k">let</span> all = words.<span class="f">iter</span>().collect::&lt;<span class="t">Vec</span>&lt;_&gt;&gt;();</code></pre>
+
+<p>C++ has no turbofish, but in a template it needs <code>typename</code> and
+<code>.template</code> to say what a name is:</p>
+
+<!-- vx-doctest: skip (C++, not Vx) -->
+<pre><code><span class="k">template</span> &lt;<span class="k">typename</span> <span class="t">T</span>&gt;
+<span class="k">void</span> <span class="f">show</span>(<span class="k">const</span> <span class="t">T</span>&amp; t) {
+  <span class="k">typename</span> <span class="t">T</span>::value_type first = t.<span class="f">front</span>();
+  <span class="k">auto</span> second = t.<span class="k">template</span> get&lt;<span class="n">1</span>&gt;();
+}</code></pre>
+
+<p>Vx writes the type arguments after the name, as a type does:</p>
+
+<pre><code>import std::vec;
+
+<span class="k">fn</span> first_or&lt;<span class="t">T</span>&gt;(v : &amp;<span class="t">Vec</span>&lt;<span class="t">T</span>&gt;, fallback : <span class="t">T</span>) -&gt; <span class="t">T</span> {
+  <span class="k">if</span> v.<span class="f">len</span>() &gt; <span class="n">0</span> {
+    <span class="k">return</span> *v.<span class="f">get_ref</span>(<span class="n">0</span>);
+  }
+  <span class="k">return</span> fallback;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> v = <span class="t">Vec</span>&lt;<span class="t">i32</span>&gt;::<span class="f">new</span>();
+  v.<span class="f">push</span>(<span class="n">7</span>);
+  println!(<span class="n">&quot;{}&quot;</span>, first_or&lt;<span class="t">i32</span>&gt;(&amp;v, <span class="n">0</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The turbofish exists for a reason. A parser that does not know the names cannot tell
+<code>f&lt;T&gt;(x)</code>, a call, from <code>(f &lt; T) &gt; (x)</code>, two comparisons.
+Rust chose to make every reader type <code>::&lt;</code>. Vx asks the parser to know a little
+more: after the name of a variable or a parameter in scope, <code>&lt;</code> is a comparison,
+and after any other name it starts the type arguments. So <code>both(a &lt; b, c &gt; (d))</code>
+passes two <code>bool</code>s.</p>
+
+<h2 id="waiting"><a href="#waiting">A function that waits is a normal function</a></h2>
+
+<p>In Rust, a function that waits for a channel must be <code>async</code>. Each function that
+calls it must be <code>async</code> too, up to a runtime such as tokio:</p>
+
+<!-- vx-doctest: skip (Rust, not Vx) -->
+<pre><code><span class="k">use</span> tokio::sync::mpsc::<span class="t">Receiver</span>;
+
+<span class="k">async</span> <span class="k">fn</span> <span class="f">next_value</span>(rx: &amp;<span class="k">mut</span> <span class="t">Receiver</span>&lt;i64&gt;) -&gt; i64 {
+    rx.<span class="f">recv</span>().<span class="k">await</span>.<span class="f">unwrap_or</span>(-<span class="n">1</span>)
+}
+
+#[tokio::main]
+<span class="k">async</span> <span class="k">fn</span> <span class="f">main</span>() {
+    <span class="k">let</span> (tx, <span class="k">mut</span> rx) = tokio::sync::mpsc::<span class="f">channel</span>(<span class="n">1</span>);
+    tokio::<span class="f">spawn</span>(<span class="k">async</span> <span class="k">move</span> { tx.<span class="f">send</span>(<span class="n">42</span>).<span class="k">await</span>.<span class="f">unwrap</span>() });
+    println!(<span class="n">&quot;got {}&quot;</span>, <span class="f">next_value</span>(&amp;<span class="k">mut</span> rx).<span class="k">await</span>);
+}</code></pre>
+
+<p>A C++20 coroutine does the same with <code>co_await</code> and a task type as the return type.
+Such a function has a "colour", and a program must keep the two colours apart. In Vx, a function
+that waits is a normal function. A <code>tasks</code> block starts tasks, and the block waits for
+them before it ends:</p>
+
+<pre><code>import core::result;
+import std::sync::channel;
+
+<span class="c">// A normal function that waits. A task and the main code call it the same way.</span>
+<span class="k">fn</span> <span class="f">next_value</span>(rx : &amp;<span class="t">Receiver</span>&lt;<span class="t">i64</span>&gt;) -&gt; <span class="t">i64</span> {
+  <span class="k">return</span> <span class="k">match</span> rx.<span class="f">recv</span>() {
+    <span class="t">Result</span>&lt;<span class="t">i64</span>, <span class="t">RecvError</span>&gt;::<span class="t">Ok</span>(v) =&gt; {
+      v
+    }
+    <span class="t">Result</span>&lt;<span class="t">i64</span>, <span class="t">RecvError</span>&gt;::<span class="t">Err</span>(_e) =&gt; {
+      -<span class="n">1</span>
+    }
+  };
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> (tx, rx) = channel&lt;<span class="t">i64</span>&gt;(<span class="n">1</span>);
+  <span class="k">let</span> got = tasks {
+    <span class="k">spawn</span> {
+      <span class="k">let</span> t = tx;
+      <span class="k">let</span> _sent = t.<span class="f">send</span>(<span class="n">42</span>);
+    };
+    <span class="f">next_value</span>(&amp;rx)
+  };
+  println!(<span class="n">&quot;got {}&quot;</span>, got);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p><code>next_value</code> has the same signature that it would have in a program with no tasks.
+A borrow that lives across a wait is a borrow across a call, so the borrow checker needs no new
+rule.</p>
+
+<h2 id="lifetimes"><a href="#lifetimes">References with no lifetime markers</a></h2>
+
+<p>When a Rust function returns a reference, its signature says which argument the result
+borrows from:</p>
+
+<!-- vx-doctest: skip (Rust, not Vx) -->
+<pre><code><span class="k">fn</span> longer&lt;&#x27;a&gt;(a: &amp;&#x27;a <span class="t">Vec</span>&lt;i64&gt;, b: &amp;&#x27;a <span class="t">Vec</span>&lt;i64&gt;) -&gt; &amp;&#x27;a <span class="t">Vec</span>&lt;i64&gt; {
+    <span class="k">if</span> a.<span class="f">len</span>() &gt;= b.<span class="f">len</span>() { a } <span class="k">else</span> { b }
+}</code></pre>
+
+<p>C++ has no marker, and it has no check either. A caller can keep the result after the vector
+is gone:</p>
+
+<!-- vx-doctest: skip (C++, not Vx) -->
+<pre><code><span class="k">const</span> std::vector&lt;<span class="k">long</span>&gt;&amp; <span class="f">longer</span>(<span class="k">const</span> std::vector&lt;<span class="k">long</span>&gt;&amp; a,
+                                <span class="k">const</span> std::vector&lt;<span class="k">long</span>&gt;&amp; b) {
+  <span class="k">return</span> a.<span class="f">size</span>() &gt;= b.<span class="f">size</span>() ? a : b;
+}</code></pre>
+
+<p>Vx has no lifetime syntax, and it checks the borrow. The compiler reads the body, and finds
+that the result points into <code>a</code> or <code>b</code>:</p>
+
+<pre><code>import std::vec;
+
+<span class="c">// The result points into `a` or `b`. No marker says so: the compiler reads the body.</span>
+<span class="k">fn</span> <span class="f">longer</span>(a : &amp;<span class="t">Vec</span>&lt;<span class="t">i64</span>&gt;, b : &amp;<span class="t">Vec</span>&lt;<span class="t">i64</span>&gt;) -&gt; &amp;<span class="t">Vec</span>&lt;<span class="t">i64</span>&gt; {
+  <span class="k">if</span> a.<span class="f">len</span>() &gt;= b.<span class="f">len</span>() {
+    <span class="k">return</span> a;
+  }
+  <span class="k">return</span> b;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> x = <span class="t">Vec</span>&lt;<span class="t">i64</span>&gt;::<span class="f">new</span>();
+  x.<span class="f">push</span>(1i64);
+  <span class="k">let</span> <span class="k">mut</span> y = <span class="t">Vec</span>&lt;<span class="t">i64</span>&gt;::<span class="f">new</span>();
+  y.<span class="f">push</span>(2i64);
+  y.<span class="f">push</span>(3i64);
+  <span class="k">let</span> l = <span class="f">longer</span>(&amp;x, &amp;y);
+  println!(<span class="n">&quot;longer has {}&quot;</span>, l.<span class="f">len</span>());
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>A signature can still say what the result does not borrow. A <em>borrow clause</em>, such as
+<code>ensures !reaches(return, *key)</code>, states that the result never points at
+<code>key</code>. The caller then reads the fact in the signature.</p>
+
+<h2 id="blocks-and-lanes"><a href="#blocks-and-lanes">Parallel code as blocks and lanes</a></h2>
+
+<p>A GPU kernel in CUDA C++ is a function of its own. Its loop uses <code>blockIdx</code> and
+<code>threadIdx</code>, and the call says how many blocks and threads to start:</p>
+
+<!-- vx-doctest: skip (C++, not Vx) -->
+<pre><code>__global__ <span class="k">void</span> <span class="f">scale</span>(<span class="k">float</span>* grid, <span class="k">int</span> cols) {
+  <span class="k">int</span> y = blockIdx.x;
+  <span class="k">for</span> (<span class="k">int</span> x = threadIdx.x; x &lt; cols; x += blockDim.x)
+    grid[y * cols + x] = grid[y * cols + x] * <span class="n">2.0f</span> + y;
+}
+
+scale&lt;&lt;&lt;<span class="n">64</span>, <span class="n">256</span>&gt;&gt;&gt;(device_grid, <span class="n">300</span>);</code></pre>
+
+<p>Rust has no GPU code in the language. In Vx, the kernel is the loop that the program would
+write anyway, with <code>across blocks</code> and <code>across lanes(256)</code> after the
+ranges:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> grid = <span class="f">transfer</span>(<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">64</span>, <span class="n">300</span>]&gt;::<span class="f">fill</span>(<span class="n">1.0</span>), <span class="t">Memory</span>::<span class="t">HBM</span>);
+  <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::<span class="t">Device</span>) {
+    <span class="k">for</span> y <span class="k">in</span> <span class="n">0</span>..<span class="n">64</span> across blocks {
+      <span class="k">for</span> x <span class="k">in</span> <span class="n">0</span>..<span class="n">300</span> across <span class="f">lanes</span>(<span class="n">256</span>) {
+        grid[y][x] = grid[y][x] * <span class="n">2.0</span> + (y <span class="k">as</span> <span class="t">f32</span>);
+      }
+    }
+  }
+  <span class="k">let</span> back = <span class="f">transfer</span>(grid, <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>);
+  println!(<span class="n">&quot;corner {}, last row {}&quot;</span>, back[<span class="n">0</span>][<span class="n">0</span>], back[<span class="n">63</span>][<span class="n">299</span>]);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The compiler checks that two passes cannot write the same element (E6032), so the loop has no
+data race. The meaning does not depend on <code>across</code>: remove it, and the loops run one
+pass at a time with the same result. On a computer with no GPU, the same program runs on the
+threads of the CPU.</p>
+
+<h2 id="bounds"><a href="#bounds">A bound names a trait</a></h2>
+
+<p>A C++20 concept lists the expressions that must compile for a type:</p>
+
+<!-- vx-doctest: skip (C++, not Vx) -->
+<pre><code><span class="k">template</span> &lt;<span class="k">typename</span> <span class="t">T</span>&gt;
+<span class="k">concept</span> <span class="t">Ordered</span> = <span class="k">requires</span>(<span class="k">const</span> <span class="t">T</span>&amp; a, <span class="k">const</span> <span class="t">T</span>&amp; b) {
+  { a &gt; b } -&gt; std::convertible_to&lt;<span class="k">bool</span>&gt;;
+};
+
+<span class="k">template</span> &lt;<span class="t">Ordered</span> <span class="t">T</span>&gt;
+<span class="t">T</span> <span class="f">largest</span>(<span class="t">T</span> a, <span class="t">T</span> b) { <span class="k">return</span> a &gt; b ? a : b; }</code></pre>
+
+<p>Rust names a trait, which lists methods with their types. Vx takes this from Rust:</p>
+
+<pre><code>import core::cmp;
+
+<span class="k">fn</span> largest&lt;<span class="t">T</span> : <span class="t">PartialOrd</span>&gt;(a : <span class="t">T</span>, b : <span class="t">T</span>) -&gt; <span class="t">T</span> {
+  <span class="k">if</span> a &gt; b {
+    <span class="k">return</span> a;
+  }
+  <span class="k">return</span> b;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  println!(<span class="n">&quot;{} {}&quot;</span>, <span class="f">largest</span>(<span class="n">3</span>, <span class="n">7</span>), <span class="f">largest</span>(<span class="n">2.5</span>, <span class="n">1.5</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The bound says what <code>largest</code> needs in one word, and an error names the trait
+that a type does not implement.</p>
+
+<h2 id="contracts"><a href="#contracts">A signature says what the function needs and gives</a></h2>
+
+<p>In Vx, <code>requires</code> states what must be true when a caller calls the function, and
+<code>ensures</code> states what is true when it returns. An SMT solver, z3, proves both at
+compile time:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">clamp</span>(x : <span class="t">i32</span>, hi : <span class="t">i32</span>) -&gt; <span class="t">i32</span>
+    <span class="k">requires</span> hi &gt;= <span class="n">0</span>
+    <span class="k">ensures</span> <span class="k">return</span> &gt;= <span class="n">0</span>
+    <span class="k">ensures</span> <span class="k">return</span> &lt;= hi
+{
+  <span class="k">if</span> x &lt; <span class="n">0</span> {
+    <span class="k">return</span> <span class="n">0</span>;
+  }
+  <span class="k">if</span> x &gt; hi {
+    <span class="k">return</span> hi;
+  }
+  <span class="k">return</span> x;
+}
+
+<span class="k">fn</span> <span class="f">checked</span>(v : <span class="t">i32</span>, limit : <span class="t">i32</span>) -&gt; <span class="t">i32</span> {
+  <span class="k">if</span> limit &gt;= <span class="n">0</span> {
+    <span class="k">return</span> <span class="f">clamp</span>(v, limit);
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">return</span> <span class="f">checked</span>(<span class="n">12</span>, <span class="n">10</span>) - <span class="n">10</span>;
+}</code></pre>
+
+<p>A caller that cannot show <code>hi &gt;= 0</code> gets an error at the call, not a crash when
+the program runs:</p>
+
+<pre><code>Error[E8006] at contract.vx:23:10: this call to &#x27;clamp&#x27; may not meet its precondition `hi &gt;= 0`:
+the compiler cannot prove it from what is known here</code></pre>
+
+<p>So a reader of <code>clamp</code> needs only its signature to know that the result is between
+0 and <code>hi</code>, and the compiler keeps that true. C++26 adds <code>pre</code> and
+<code>post</code> to a declaration, and a build can check them when the program runs. Stable Rust has no
+contracts.</p>
+
+<h2 id="inline-mlir"><a href="#inline-mlir">Inline MLIR in place of inline assembly</a></h2>
+
+<p>Inline assembly in C++ puts the operands in constraint strings, and the instruction is for one
+CPU:</p>
+
+<!-- vx-doctest: skip (C++, not Vx) -->
+<pre><code><span class="k">int</span> <span class="f">count_ones</span>(<span class="k">int</span> x) {
+  <span class="k">int</span> r;
+  <span class="k">asm</span>(<span class="n">&quot;popcnt %1, %0&quot;</span> : <span class="n">&quot;=r&quot;</span>(r) : <span class="n">&quot;r&quot;</span>(x));
+  <span class="k">return</span> r;
+}</code></pre>
+
+<p>Rust's <code>asm!</code> names the operands, but the instruction and the register sizes are
+still x86's:</p>
+
+<!-- vx-doctest: skip (Rust, not Vx) -->
+<pre><code><span class="k">fn</span> <span class="f">count_ones</span>(x: u32) -&gt; u32 {
+    <span class="k">let</span> r: u32;
+    <span class="k">unsafe</span> { core::arch::asm!(<span class="n">&quot;popcnt {r:e}, {x:e}&quot;</span>, x = <span class="k">in</span>(reg) x, r = <span class="f">out</span>(reg) r) };
+    r
+}</code></pre>
+
+<p>Vx puts MLIR in the function. Each input has a name and a type, the block says the type that
+it gives, and it lists the dialects that it uses:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">count_ones</span>(x : <span class="t">i32</span>) -&gt; <span class="t">i32</span> {
+  <span class="k">return</span> mlir!(inputs : (%a = x : <span class="t">i32</span>), returns : <span class="t">i32</span>, dialects : [<span class="n">&quot;math&quot;</span>]) {
+    %r = math.ctpop %a : <span class="t">i32</span>
+    macro.yield %r : <span class="t">i32</span>
+  };
+}</code></pre>
+
+<p><code>math.ctpop</code> is one operation for every target, not an x86 instruction. The
+compiler checks the list of dialects against the body (E8010). A block outside
+<code>unsafe</code> must be on a short list of operations that the compiler verifies as safe, and
+<code>math.ctpop</code> is on it.</p>
+
+<h2 id="no-cfg"><a href="#no-cfg">No attributes and no preprocessor</a></h2>
+
+<p>Rust selects code for a machine with an attribute on each item, and C++ with the
+preprocessor:</p>
+
+<!-- vx-doctest: skip (Rust, not Vx) -->
+<pre><code>#[<span class="f">cfg</span>(target_feature = <span class="n">&quot;avx512f&quot;</span>)]
+<span class="k">fn</span> <span class="f">floats_per_step</span>() -&gt; i32 { <span class="n">16</span> }
+
+#[<span class="f">cfg</span>(<span class="f">not</span>(target_feature = <span class="n">&quot;avx512f&quot;</span>))]
+<span class="k">fn</span> <span class="f">floats_per_step</span>() -&gt; i32 { <span class="n">4</span> }</code></pre>
+
+<!-- vx-doctest: skip (C++, not Vx) -->
+<pre><code><span class="c">#ifdef __AVX512F__</span>
+<span class="k">constexpr</span> <span class="k">int</span> floats_per_step = <span class="n">16</span>;
+<span class="c">#else</span>
+<span class="k">constexpr</span> <span class="k">int</span> floats_per_step = <span class="n">4</span>;
+<span class="c">#endif</span></code></pre>
+
+<p>Vx has no attributes, and no preprocessor. The code for each machine is ordinary Vx, in the
+function that needs it. The condition is a value: the topology that the code compiles for.</p>
+
+<pre><code><span class="c">// The code for each machine is ordinary Vx, in the function that needs it.</span>
+<span class="k">fn</span> <span class="f">floats_per_step</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">if</span> <span class="k">comptime</span> <span class="t">Topology</span>::<span class="t">Current</span> == <span class="t">Topology</span>::<span class="t">CPU_AVX512</span> {
+    <span class="k">return</span> <span class="n">16</span>;
+  } <span class="k">else</span> {
+    <span class="k">return</span> <span class="n">4</span>;
+  }
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  println!(<span class="n">&quot;{} floats per step&quot;</span>, <span class="f">floats_per_step</span>());
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Vx has macros, as Rust does. A <code>macro_rules</code> macro matches patterns of tokens, and
+the compiler checks the code that it writes as if you typed it. There is no
+<code>#define</code> that pastes text, and no <code>#include</code>:</p>
+
+<pre><code>macro_rules clamp {
+  ($x : expr, $low : expr, $high : expr) =&gt; {
+    <span class="k">if</span> $x &lt; $low {
+      $low
+    } <span class="k">else</span> {
+      clamp!($x, $high)
+    }
+  };
+  ($x : expr, $high : expr) =&gt; {
+    <span class="k">if</span> $x &gt; $high {
+      $high
+    } <span class="k">else</span> {
+      $x
+    }
+  };
+}</code></pre>
+
+<h2 id="costs"><a href="#costs">What each choice costs</a></h2>
+
+<ul>
+<li><strong>The rule for <code>&lt;</code>.</strong> The parser knows the variables and
+parameters, but not a <code>const</code> of the module. After a <code>const</code>,
+<code>&lt;</code> still starts type arguments, so a comparison there needs parentheses.</li>
+<li><strong>No lifetime markers.</strong> The compiler reads a function's body to find what its
+result borrows. After a method call, it cannot follow the borrow, so it assumes that the result
+can point into each argument. A borrow clause then says the rest.</li>
+<li><strong>No attributes.</strong> Vx has no <code>#[derive]</code> yet. A macro writes the
+<code>impl</code>s instead.</li>
+<li><strong><code>if comptime</code>.</strong> As with <code>#ifdef</code>, the branch that is
+not taken is not compiled, so a mistake in it shows only on the machine that takes it.</li>
+<li><strong>Contracts.</strong> The prover cannot reason about every operator yet. It cannot use
+<code>/</code>, for example, and it reports a condition that it cannot prove, rather than assume
+it.</li>
+</ul>
+
+<h2 id="summary"><a href="#summary">In one table</a></h2>
+
+<table>
+<thead>
+<tr><th></th><th>C++</th><th>Rust</th><th>Vx</th></tr>
+</thead>
+<tbody>
+<tr><td>Type arguments in a call</td><td><code>f&lt;int&gt;(x)</code>, <code>t.template get&lt;1&gt;()</code></td><td><code>f::&lt;i32&gt;(x)</code></td><td><code>f&lt;i32&gt;(x)</code></td></tr>
+<tr><td>A function that waits</td><td>a coroutine, <code>co_await</code></td><td><code>async fn</code>, <code>.await</code></td><td>a normal function</td></tr>
+<tr><td>A returned reference</td><td>no marker, no check</td><td><code>&amp;'a T</code></td><td>no marker, checked</td></tr>
+<tr><td>A loop on a GPU</td><td>a kernel and <code>&lt;&lt;&lt;64, 256&gt;&gt;&gt;</code></td><td>not in the language</td><td><code>for y in 0..64 across blocks</code></td></tr>
+<tr><td>A bound on a type parameter</td><td>a concept of expressions</td><td>a trait</td><td>a trait</td></tr>
+<tr><td>What a function needs and gives</td><td><code>pre</code>, <code>post</code> in C++26, which a build can check at run time</td><td>none in stable Rust</td><td><code>requires</code>, <code>ensures</code>, proved at compile time</td></tr>
+<tr><td>One operation the language has no syntax for</td><td><code>asm</code> with constraint strings</td><td><code>asm!</code>, one CPU</td><td><code>mlir!</code>, named and typed</td></tr>
+<tr><td>Code for one machine</td><td><code>#ifdef</code></td><td><code>#[cfg(..)]</code></td><td><code>if comptime Topology::Current == ..</code></td></tr>
+<tr><td>Macros</td><td><code>#define</code>, text</td><td><code>macro_rules!</code>, tokens</td><td><code>macro_rules</code>, tokens</td></tr>
+</tbody>
+</table>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

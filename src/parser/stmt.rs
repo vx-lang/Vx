@@ -128,6 +128,8 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::Equals, "Expected '='")?;
                 let mut expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                // The new variable is in scope after the `;`, not in its own value.
+                self.note_local(&name, self.pos, 0);
                 // `let r = (v + w)[1]`: `r` is a row of the sum, so the sum must live as long as
                 // `r`, as Rust keeps a temporary that a `let` borrows. A `let` before this one
                 // holds the sum.
@@ -278,6 +280,7 @@ impl<'a> Parser<'a> {
                     expansion: self.expansion(),
                 };
                 self.advance();
+                self.reject_let_condition("while")?;
                 let cond = self.parse_expr_before_block()?;
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {
@@ -330,7 +333,10 @@ impl<'a> Parser<'a> {
                     expansion: self.expansion(),
                 };
                 self.advance();
+                let at = self.pos;
                 let iter = self.expect_identifier("Expected identifier after 'for'")?;
+                // The loop variable is in scope in the body, one level of braces down.
+                self.note_local(&iter, at, 1);
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
                 let iterable = self.parse_expr_before_block()?;
                 let across = self.parse_across_clause()?;
@@ -408,6 +414,7 @@ impl<'a> Parser<'a> {
                         block_tree,
                         has_semi,
                         span: token_span,
+                        locals: self.locals_in_scope(),
                     }));
                 }
                 // fallback to expression parsing
@@ -488,6 +495,9 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::Equals, "Expected '='")?;
         let expr = self.parse_expr()?;
         self.consume(&TokenType::Semicolon, "Expected ';'")?;
+        for name in pattern.names() {
+            self.note_local(name, self.pos, 0);
+        }
         let mut out = Vec::new();
         self.lower_tuple_pattern(pattern, type_annotation, expr, span, &start, &mut out)?;
         let first = out.remove(0);
@@ -667,6 +677,17 @@ enum TuplePattern {
     /// A name, and whether it was written `mut`.
     Bind(String, bool),
     Tuple(Vec<TuplePattern>),
+}
+
+impl TuplePattern {
+    /// The names that the pattern binds, at any depth.
+    fn names(&self) -> Vec<&str> {
+        match self {
+            TuplePattern::Ignore => Vec::new(),
+            TuplePattern::Bind(name, _) => vec![name.as_str()],
+            TuplePattern::Tuple(elems) => elems.iter().flat_map(TuplePattern::names).collect(),
+        }
+    }
 }
 
 /// The value that `e` indexes, when `e` indexes a value that no variable holds: the sum in

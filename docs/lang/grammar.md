@@ -192,6 +192,17 @@ pattern ::=
     | "true" | "false"
     | identifier ( "<" identifier ">" )? "::" identifier ( "(" ( pattern ","? )* ")" )?
     | identifier
+
+// How a number is spelled. The base prefix and the `_` separators change nothing about the
+// value: `0x2A`, `0b101010`, `0o52`, `4_2` and `42` are the same literal. A prefixed literal
+// is an integer, so it has no fraction, no exponent and no float suffix. A suffix is the literal's type.
+// Without one, the literal takes the type its context asks for.
+number_literal ::= ( decimal_literal | hex_literal | octal_literal | binary_literal ) element_type?
+decimal_literal ::= digit ( digit | "_" )* ( "." digit ( digit | "_" )* )? exponent?
+exponent        ::= ( "e" | "E" ) ( "+" | "-" )? digit ( digit | "_" )*
+hex_literal     ::= "0x" "_"* hex_digit ( hex_digit | "_" )*
+octal_literal   ::= "0o" "_"* octal_digit ( octal_digit | "_" )*
+binary_literal  ::= "0b" "_"* ( "0" | "1" ) ( "0" | "1" | "_" )*
 ```
 
 For unary operators and type casts (`as`), precedence follows Rust. Unary operators (`*`, `&`, `-`, `!`) bind tighter than type casts (`as`), which bind tighter than binary operators. Therefore, `-n as i64` and `*p as T` evaluate the unary operator first as `(-n) as i64` and `(*p) as T`. Unary negation on an unsigned integer or a `bool` reports error `E3030`.
@@ -274,6 +285,7 @@ Internally, the compiler uses a deterministic mangling scheme based on the `$` c
 - Tensors: `Tensor$<element_type>$<rank>` (e.g., `Tensor$f32$2`).
 - Vectors: `Simd$<element_type>$<width>` (e.g., `Simd$f32$4`).
 - Methods: `<struct_name>$<method_name>` (e.g., `Point$distance`).
+- Generic instances: `<name>$<arg1>$<arg2>…`, with the type arguments in the order that the parameters are declared. `fn pair<B, A>` called with an `f32` and an `i32` is `pair$f32$i32`.
 - Shadowed Variables: Appended with `_mangled<index>` starting from `_mangled1` when a local variable shadows an earlier variable in the same scope or parent scope (e.g., `x_mangled1`).
 
 *Note: The user-facing syntax uses `< >` for generics and `::` for paths. The `$` symbol is strictly reserved for backend lowering and internal compiler representation.*

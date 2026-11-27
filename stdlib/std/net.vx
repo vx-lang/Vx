@@ -30,6 +30,8 @@ import std::sync::select;
 import std::vec;
 
 extern {
+  /// The Rust core behind `lookup`.
+  pkg fn vx_net_lookup_host(host : *const i8, out : *mut u8, cap : u64, count : *mut u64) -> i32;
   /// The Rust core behind `TcpStream::connect_c_str`.
   pub fn vx_tcp_stream_connect(c_addr : *const i8, out : *mut *mut i8) -> i32;
   /// The Rust core behind `TcpStream::read_raw`.
@@ -62,6 +64,16 @@ extern {
   pub fn vx_udp_socket_fd(ptr : *mut i8) -> i32;
   /// 1 when a read of `fd` does not wait, else 0.
   pub fn vx_fd_can_read(fd : i32) -> i32;
+  /// The Rust core behind `UnixStream`.
+  pkg fn vx_unix_stream_connect(c_path : *const i8, out : *mut *mut i8) -> i32;
+  pkg fn vx_unix_stream_read(ptr : *mut i8, buffer : *mut u8, len : u64, out : *mut u64) -> i32;
+  pkg fn vx_unix_stream_write(ptr : *mut i8, buffer : *const u8, len : u64, out : *mut u64) -> i32;
+  pkg fn vx_unix_stream_fd(ptr : *mut i8) -> i32;
+  pkg fn vx_unix_stream_drop(ptr : *mut i8) -> void;
+  /// The Rust core behind `UnixListener`.
+  pkg fn vx_unix_listener_bind(c_path : *const i8, out : *mut *mut i8) -> i32;
+  pkg fn vx_unix_listener_accept(ptr : *mut i8, out : *mut *mut i8) -> i32;
+  pkg fn vx_unix_listener_drop(ptr : *mut i8) -> void;
 }
 
 /// The right to open network connections and to bind network addresses. Only this file can
@@ -154,6 +166,54 @@ impl Drop for CAddress {
   fn drop(self : &mut CAddress) -> void {
     let _freed = unsafe { vx_string_free_c_str(self.ptr) };
   }
+}
+
+/// An IP address: 4 bytes for IPv4, or 16 bytes for IPv6, in network order.
+struct IpAddress {
+  bytes : Vec<u8>,
+}
+
+impl IpAddress {
+  /// Whether it is an IPv4 address.
+  pub fn is_v4(self : &IpAddress) -> bool {
+    return self.bytes.len() == 4;
+  }
+}
+
+/// The most addresses that `lookup` gives.
+const LOOKUP_LIMIT : i32 = 64;
+
+/// The IP addresses of `host`, in the order that the resolver gives them, at most 64. `host` is a
+/// name such as `example.com`, or an address such as `127.0.0.1` or `::1`, with no port. The
+/// caller needs the network right, a `&Network`, because the lookup can send the name to the
+/// network. A task of the shared runtime parks while it waits. A host with no address gives
+/// `BadAddress`.
+pub fn lookup(_network : &Network, host : &String) -> Result<Vec<IpAddress>, NetError> {
+  let c_host = CAddress::of(host)?;
+  // Each address takes one byte for its length and at most 16 for its bytes.
+  let cap = LOOKUP_LIMIT * 17;
+  let buffer = unsafe { Vec<u8>::zeroed(cap) };
+  let mut count : u64 = 0;
+  let status = unsafe {
+    vx_net_lookup_host(c_host.ptr, buffer.as_mut_ptr(), cap as u64, (&mut count) as *mut u64)
+  };
+  let mut addresses = Vec<IpAddress>::new();
+  if status != 0 {
+    return Result<Vec<IpAddress>, NetError>::Err(net_error(status));
+  }
+  let mut at = 0;
+  for _k in 0..count as i32 {
+    let len = buffer.get(at) as i32;
+    let mut bytes = Vec<u8>::new();
+    for j in 0..len {
+      bytes.push(buffer.get(at + 1 + j));
+    }
+    addresses.push(IpAddress {
+      bytes : bytes
+    });
+    at = at + 1 + len;
+  }
+  return Result<Vec<IpAddress>, NetError>::Ok(addresses);
 }
 
 /// A connected TCP socket, held by the Rust core behind an opaque pointer.
@@ -286,6 +346,12 @@ impl TcpStream {
     return unsafe {
       self.write_all_raw(buffer.as_mut_ptr() as *const u8, len)
     };
+  }
+
+  /// The file descriptor of the socket, for code that runs a protocol on it, such as TLS. The
+  /// number gives no right by itself: only trusted code can use it.
+  pub fn fd(self : &TcpStream) -> i32 {
+    return unsafe { vx_tcp_stream_fd(self.ptr) };
   }
 }
 
@@ -654,5 +720,177 @@ impl Drop for TcpBufWriter {
   /// cancelled `tasks` block the send gives `Cancelled`, so the bytes are lost.
   fn drop(self : &mut TcpBufWriter) -> void {
     let _sent = self.flush();
+  }
+}
+
+/// A connected Unix-domain stream socket, held by the Rust core behind an opaque pointer. Its
+/// address is the path of a socket file. Closed when it is dropped.
+struct UnixStream {
+  ptr : *mut i8,
+
+  invariant true,
+}
+
+// The handle may move to another task, as a `TcpStream` may.
+unsafe impl Send for UnixStream {}
+
+impl UnixStream {
+  /// Connect to the socket at `path`. The caller needs the network right, a `&Network`, because
+  /// a connection to a local server is a connection too. A task of the shared runtime parks
+  /// while it waits. A path with no socket gives `Os` with the error number of the system, and
+  /// a socket that nothing listens on gives `Refused`.
+  pub fn connect(_network : &Network, path : &String) -> Result<UnixStream, NetError> {
+    let c_path = CAddress::of(path)?;
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let status = unsafe {
+      vx_unix_stream_connect(c_path.ptr, (&mut ptr) as *mut *mut i8)
+    };
+    if status != 0 {
+      return Result<UnixStream, NetError>::Err(net_error(status));
+    }
+    return Result<UnixStream, NetError>::Ok(UnixStream {
+      ptr : ptr
+    });
+  }
+
+  /// Read up to `buffer.len()` bytes into `buffer` and give how many arrived. 0 means that the
+  /// peer closed the connection. A short read is normal.
+  pub fn read(self : &mut UnixStream, buffer : &mut Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    let mut count : u64 = 0;
+    let status = unsafe {
+      vx_unix_stream_read(self.ptr, buffer.as_mut_ptr(), len, (&mut count) as *mut u64)
+    };
+    return count_or_error(status, count);
+  }
+
+  /// Write up to `buffer.len()` bytes and give how many were taken. A short write is normal.
+  /// `write_all` writes them all.
+  pub fn write(self : &mut UnixStream, buffer : &Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    let p = buffer.as_mut_ptr() as *const u8;
+    let mut count : u64 = 0;
+    let status = unsafe {
+      vx_unix_stream_write(self.ptr, p, len, (&mut count) as *mut u64)
+    };
+    return count_or_error(status, count);
+  }
+
+  /// Fill all of `buffer`, in as many reads as it takes, and give its length. When the peer
+  /// closes the connection first, it gives `Closed`.
+  pub fn read_exact(self : &mut UnixStream, buffer : &mut Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    let p = buffer.as_mut_ptr();
+    let mut done : u64 = 0;
+    while done < len {
+      let mut count : u64 = 0;
+      let out = (&mut count) as *mut u64;
+      let status = unsafe {
+        vx_unix_stream_read(self.ptr, add_mut(p, done as usize), len - done, out)
+      };
+      let n = count_or_error(status, count)?;
+      if n == 0 {
+        return Result<u64, NetError>::Err(NetError::Closed);
+      }
+      done = done + n;
+    }
+    return Result<u64, NetError>::Ok(done);
+  }
+
+  /// Write all of `buffer`, in as many writes as it takes, and give its length. A write that
+  /// takes 0 bytes gives `Reset`.
+  pub fn write_all(self : &mut UnixStream, buffer : &Vec<u8>) -> Result<u64, NetError> {
+    let len = buffer.len() as u64;
+    let p = buffer.as_mut_ptr() as *const u8;
+    let mut done : u64 = 0;
+    while done < len {
+      let mut count : u64 = 0;
+      let status = unsafe {
+        vx_unix_stream_write(self.ptr, add(p, done as usize), len - done, (&mut count) as *mut u64)
+      };
+      let n = count_or_error(status, count)?;
+      if n == 0 {
+        return Result<u64, NetError>::Err(NetError::Reset);
+      }
+      done = done + n;
+    }
+    return Result<u64, NetError>::Ok(done);
+  }
+
+  /// The file descriptor of the socket, for code that runs a protocol on it, such as TLS. The
+  /// number gives no right by itself: only trusted code can use it.
+  pub fn fd(self : &UnixStream) -> i32 {
+    return unsafe { vx_unix_stream_fd(self.ptr) };
+  }
+}
+
+impl WaitSource for UnixStream {
+  /// Ready when `read` does not wait: bytes arrived, or the peer closed the connection.
+  fn is_ready(self : &UnixStream) -> bool {
+    return unsafe { vx_fd_can_read(vx_unix_stream_fd(self.ptr)) } != 0;
+  }
+
+  fn watch(self : &UnixStream, w : &Waiter) -> void {
+    w.watch_fd(unsafe { vx_unix_stream_fd(self.ptr) });
+  }
+
+  fn unwatch(self : &UnixStream, w : &Waiter) -> void {
+    w.unwatch_fd(unsafe { vx_unix_stream_fd(self.ptr) });
+  }
+}
+
+impl Drop for UnixStream {
+  /// Close the connection and release it.
+  fn drop(self : &mut UnixStream) -> void {
+    unsafe { vx_unix_stream_drop(self.ptr) };
+  }
+}
+
+/// A Unix-domain socket that waits for connections, held by the Rust core behind an opaque
+/// pointer. Closed when it is dropped. The socket file stays after the drop.
+struct UnixListener {
+  ptr : *mut i8,
+
+  invariant true,
+}
+
+unsafe impl Send for UnixListener {}
+
+impl UnixListener {
+  /// Make a socket file at `path` and listen on it. The caller needs the network right. A path
+  /// that already exists gives `InUse`.
+  pub fn bind(_network : &Network, path : &String) -> Result<UnixListener, NetError> {
+    let c_path = CAddress::of(path)?;
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let status = unsafe {
+      vx_unix_listener_bind(c_path.ptr, (&mut ptr) as *mut *mut i8)
+    };
+    if status != 0 {
+      return Result<UnixListener, NetError>::Err(net_error(status));
+    }
+    return Result<UnixListener, NetError>::Ok(UnixListener {
+      ptr : ptr
+    });
+  }
+
+  /// The next connection. A task of the shared runtime parks while it waits.
+  pub fn accept(self : &mut UnixListener) -> Result<UnixStream, NetError> {
+    let mut ptr : *mut i8 = unsafe { 0 as *mut i8 };
+    let status = unsafe {
+      vx_unix_listener_accept(self.ptr, (&mut ptr) as *mut *mut i8)
+    };
+    if status != 0 {
+      return Result<UnixStream, NetError>::Err(net_error(status));
+    }
+    return Result<UnixStream, NetError>::Ok(UnixStream {
+      ptr : ptr
+    });
+  }
+}
+
+impl Drop for UnixListener {
+  /// Close the socket and release it.
+  fn drop(self : &mut UnixListener) -> void {
+    unsafe { vx_unix_listener_drop(self.ptr) };
   }
 }

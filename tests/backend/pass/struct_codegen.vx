@@ -46,4 +46,4 @@ fn main() -> i32 {
 // MLIR: llvm.store %[[EPS]], %[[SLOT]] : f32, !llvm.ptr
 // MLIR: %[[READ:[0-9]+]] = llvm.getelementptr %[[CONF]][0, 6] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32, i32, i32, i32, i32, f32)>
 // MLIR: %[[OUT:[0-9]+]] = llvm.load %[[READ]] : !llvm.ptr -> f32
-// MLIR: call @print_f32(%[[OUT]])
+// MLIR: call @vx_print_f32(%[[OUT]])

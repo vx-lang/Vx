@@ -335,7 +335,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(root) = carried_root {
             self.borrow.forget_carried(root);
         }
-        self.drops_exit_block(body, terminated_at, false);
+        self.drops_exit_block(body, None, terminated_at, false);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
     }
@@ -805,6 +805,7 @@ impl<'a> TypeChecker<'a> {
         // The parser's `let` for the sum in `let r = (v + w)[1]` holds what was the base of an
         // index. Reading an index does not move its base, so `v` and `w` stay usable.
         let consume = consume && !name.starts_with(crate::syntax::expr::INDEXED_TEMPORARY);
+        let borrows_before = self.borrow.snapshot();
         let ty = self.check_whole_value(expr, |c, e| c.check_expr_type_flag(e, consume));
         self.traffic.tile_holder = prev_holder;
         self.let_closure = None;
@@ -854,9 +855,29 @@ impl<'a> TypeChecker<'a> {
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 } else {
+                    // `Some(..)` has no type arguments of its own, so it needs the type spelled.
+                    let bare_some = matches!(
+                        expr,
+                        Expr::FunctionCall(c)
+                            if c.name.as_ref() == "Some" && c.owner_type_args.is_none()
+                    ) || matches!(
+                        expr,
+                        Expr::EnumVariant(v)
+                            if v.enum_name.as_ref() == "Option"
+                                && v.variant_name.as_ref() == "Some"
+                                && v.type_args.as_ref().is_none_or(|a| a.is_empty())
+                    );
+                    let bare_some = bare_some
+                        && matches!(&*ann, Type::GenericInstance(base, _)
+                        if matches!(&**base, Type::Enum(n, _) | Type::Struct(n, _) if n.as_ref() == "Option"));
+                    let hint = if bare_some {
+                        format!(". Write `{ann}::Some(value)`")
+                    } else {
+                        String::new()
+                    };
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3001,
-                        format!("'{name}' is declared {ann} but its initializer is {ty}"),
+                        format!("'{name}' is declared {ann} but its initializer is {ty}{hint}"),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
@@ -902,6 +923,10 @@ impl<'a> TypeChecker<'a> {
             }
             ty
         };
+        if matches!(binding_ty, Type::Scalar(_)) && !self.speculating {
+            self.borrow
+                .forget_new_borrows_of(name.as_ref(), &borrows_before);
+        }
         let depth = self.current_scope_depth();
         if let Some(len) = text_len {
             self.string_literal_lets
@@ -1007,7 +1032,8 @@ impl<'a> TypeChecker<'a> {
         let value = self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr));
         // In `let y = y + 1`, the `y` on the right is the old variable, and the fact
         // `y == y + 1` would be false. Each change of a `let mut` ends its facts. Its fact
-        // must be one that the prover can model, so that no new program warns.
+        // must be one that the prover can model, so that no new program warns. The `ensures`
+        // facts of a call are always ones that it can model.
         let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
         if matches!(value, Expr::StructInit(_)) {
             let place = Expr::Identifier(IdentifierExpr {
@@ -1017,7 +1043,7 @@ impl<'a> TypeChecker<'a> {
             let ty = self.lookup(name.as_ref()).map(|(t, _)| t.clone());
             let facts = ty.map(|ty| self.facts_of_a_struct_literal(&place, &ty, &value, name));
             self.consteval.constraints.extend(facts.unwrap_or_default());
-        } else if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
+        } else if !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
             // A call can change its arguments. Re-evaluating it in a later proof would use
             // their new values, not the values from when the result was returned.
             let changes_an_argument = matches!(&value, Expr::FunctionCall(c)
@@ -1025,7 +1051,7 @@ impl<'a> TypeChecker<'a> {
             // A fact reads each variable as it is after the `let`. A variable that the value
             // read before a call in the value changed it had another value at the read.
             let read_before_a_change = self.variables_read_before_a_change(&value);
-            if !changes_an_argument && read_before_a_change.is_empty() {
+            if recorded && !changes_an_argument && read_before_a_change.is_empty() {
                 let id_expr = Expr::Identifier(IdentifierExpr {
                     name: name.clone(),
                     span: Span::default(),
@@ -1702,6 +1728,7 @@ impl<'a> TypeChecker<'a> {
         // environment, and settling that up requires the state it started from.
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
+        self.forget_values_a_loop_writes(body);
 
         let marks_before = self.moved_snapshot();
         let passes = self.pass_count(iterable);
@@ -2042,6 +2069,7 @@ impl<'a> TypeChecker<'a> {
         // what the program does, so what it folded is settled up once the loop has been run.
         let before = self.consteval_snapshot();
         let scopes = self.consteval_scopes();
+        self.forget_values_a_loop_writes(body);
 
         let marks_before = self.moved_snapshot();
         self.borrow
@@ -2394,6 +2422,22 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `holder = h.r`, `holder.f = h.r` or `Holder { f : h.r }`: the value copies a reference
+    /// out of the variable `h`, so `holder` holds the borrows that `h` holds. `ty` is the type
+    /// of the value.
+    pub(crate) fn hold_borrows_of_a_field_read(&mut self, holder: &str, value: &Expr, ty: &Type) {
+        if self.speculating || !matches!(value, Expr::MemberAccess(_)) {
+            return;
+        }
+        let Some((root, _)) = Self::extract_base_and_path(value) else {
+            return;
+        };
+        if root != holder && self.type_can_hold_reference(ty) {
+            let depth = self.scope_depth_of(holder);
+            self.borrow.copy_borrows(&root, holder, depth);
+        }
+    }
+
     /// `name = &v` or `&mut v`: a use of `name` reaches what `v` borrows, so `name` holds
     /// those borrows too.
     fn reach_borrows_of(&mut self, name: &crate::symbol::Symbol, value: &Expr, depth: usize) {
@@ -2505,7 +2549,12 @@ impl<'a> TypeChecker<'a> {
         };
         self.checking_assign_lhs = false;
         self.check_field_change(lhs, "this assignment changes");
-        let temporary_place = matches!(lhs, Expr::Dereference(d)
+        // `(*v.index_mut(i)).n = x`, from `v[i].n = x`, writes through such a reference too.
+        let mut place = &*lhs;
+        while let Expr::MemberAccess(m) = place {
+            place = &m.base;
+        }
+        let temporary_place = matches!(place, Expr::Dereference(d)
             if matches!(*d.expr, Expr::FunctionCall(_) | Expr::MethodCall(_)));
         // The place runs before the value, so its mutable borrow is only reserved while the
         // right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.
@@ -2538,8 +2587,13 @@ impl<'a> TypeChecker<'a> {
         // Determine target name for NLL
         if let Expr::Identifier(id) = lhs {
             self.current_assignment_target = Some(id.name.to_string());
-        } else if let Expr::MemberAccess(ma) = lhs {
-            if let Expr::Identifier(id) = &*ma.base {
+        } else if let Expr::MemberAccess(_) = lhs {
+            // `o.inner.r = &b`: the variable `o` holds the borrow, at any depth of field.
+            let mut base: &Expr = lhs;
+            while let Expr::MemberAccess(ma) = base {
+                base = &ma.base;
+            }
+            if let Expr::Identifier(id) = base {
                 self.current_assignment_target = Some(id.name.to_string());
             }
         } else if let Some(var) = self.store_target_var_of(lhs) {
@@ -2592,6 +2646,13 @@ impl<'a> TypeChecker<'a> {
             c.check_expr_expecting(e, Some(lhs_ty.clone()), consume && !copies_into_tensor)
         });
         rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
+        // `x = q[0].a` with `x : i64`: a number holds no borrow.
+        if let (Expr::Identifier(id), Type::Scalar(_)) = (&*lhs, &lhs_ty) {
+            if !self.speculating {
+                self.borrow
+                    .forget_new_borrows_of(id.name.as_ref(), &before_rhs);
+            }
+        }
         // What the value left in the target is stored there, not borrowed only for a call.
         if let Some(target) = self.current_assignment_target.take() {
             let stored: Vec<_> = self
@@ -2639,11 +2700,20 @@ impl<'a> TypeChecker<'a> {
                             .copy_borrows(from.name.as_ref(), id.name.as_ref(), depth);
                     }
                 }
+                self.hold_borrows_of_a_field_read(id.name.as_ref(), rhs, &lhs_ty);
                 let depth = self.scope_depth_of(&id.name);
                 self.reach_borrows_of(&id.name, rhs, depth);
             } else {
                 if let Some((root, path)) = Self::extract_base_and_path(lhs) {
                     self.unconsume_field(&root, &path);
+                    // `p.r = rb` stores what `rb` holds in `p`, so `p` holds its borrows too.
+                    if let (Expr::Identifier(from), false) = (&*rhs, self.speculating) {
+                        if self.type_can_hold_reference(&lhs_ty) {
+                            let depth = self.scope_depth_of(&root);
+                            self.borrow.copy_borrows(from.name.as_ref(), &root, depth);
+                        }
+                    }
+                    self.hold_borrows_of_a_field_read(&root, rhs, &lhs_ty);
                 }
                 self.drops_note_place_assign(
                     lhs,
@@ -2873,6 +2943,19 @@ impl<'a> TypeChecker<'a> {
         scopes
     }
 
+    /// Drop the compile-time value of each variable that a loop body writes, before the body
+    /// is checked. The body is checked once, but it runs many times. On a later pass such a
+    /// variable does not hold the value that it had before the loop.
+    fn forget_values_a_loop_writes(&mut self, body: &[Statement]) {
+        for name in crate::hir::check::raw::names_a_body_writes(body) {
+            // Every scope: the value of an outer variable of the same name must not show in
+            // place of the dropped one.
+            for scope in &mut self.consteval.env {
+                scope.remove(name.as_str());
+            }
+        }
+    }
+
     /// Settle what the constant environment knows about the variables a loop body writes.
     ///
     /// Type checking walks the body once and folds whatever it can, so afterwards the
@@ -3065,6 +3148,7 @@ impl<'a> TypeChecker<'a> {
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
         self.prove_pointer_ensures(Some(expr), *span, "at this `return`");
+        self.check_frame_escape_of_a_return(expr);
         self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
 
         let mut expected_ty = return_type.clone();
@@ -3708,6 +3792,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<Value> {
         match expr {
             Expr::Number(NumberExpr {
+                written: _,
                 value: n_str,
                 ty,
                 span: _,

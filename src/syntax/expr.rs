@@ -98,15 +98,31 @@ pub struct NumberExpr {
     pub value: Symbol,
     pub ty: Option<ElementType>,
     pub span: Span,
+    /// How and where the program wrote the number, for an error message. `None` for a literal
+    /// the compiler made. Left out of `==`: a parsed `0xA` and a synthesised `10` are the same
+    /// dimension.
+    pub written: Option<WrittenNumber>,
 }
+
+/// A number literal as it is in the source file.
+#[derive(Debug, Clone)]
+pub struct WrittenNumber {
+    /// The number without its type suffix, such as `0x1FF` for `0x1FFu8`.
+    pub text: Symbol,
+    /// Where the literal is.
+    pub span: Span,
+}
+
 impl PartialEq for NumberExpr {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value && self.ty == other.ty
     }
 }
+
 impl NumberExpr {
     pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
         Self {
+            written: None,
             value: value.into(),
             ty,
             span,
@@ -1165,6 +1181,9 @@ pub struct MacroCallExpr {
     pub token_tree: TokenTree,
     pub block_tree: Option<TokenTree>,
     pub span: Span,
+    /// The variables and parameters in scope at the call. The expansion parses the tokens of
+    /// the call again, and `a < b` after one of these names is a comparison there too.
+    pub locals: Vec<Symbol>,
 }
 impl MacroCallExpr {
     pub fn new(
@@ -1178,6 +1197,7 @@ impl MacroCallExpr {
             token_tree,
             block_tree,
             span,
+            locals: Vec::new(),
         }
     }
 }
@@ -2034,6 +2054,7 @@ impl Expr {
                     if let Type::Generic(val_str, _) = mapped_ty {
                         if val_str.parse::<f64>().is_ok() {
                             return Expr::Number(syntax::NumberExpr {
+                                written: None,
                                 value: val_str.to_string().into(),
                                 ty: None,
                                 span: id.span,
@@ -2093,6 +2114,7 @@ impl Expr {
                 token_tree: e.token_tree.clone(),
                 block_tree: e.block_tree.clone(),
                 span: e.span,
+                locals: e.locals.clone(),
             }),
             Expr::Print(e) => Expr::Print(PrintExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),

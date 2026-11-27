@@ -390,7 +390,9 @@ pub enum DiagnosticCode {
     /// read one number at a time, as `TABLE[i]`.
     E3044,
     /// An integer literal that does not fit its type, such as `300` for a `u8`. A `usize`
-    /// holds 0 up to the largest `i64`.
+    /// holds 0 up to the largest `i64`. A literal with no suffix is at most an `i64`, unless the
+    /// code around it gives it a type: write `0x8000_0000_0000_0000u64` for a `u64`. A literal
+    /// that needs more than 64 bits is not supported yet, unless its type is `i128` or `u128`.
     E3045,
     /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so
@@ -502,9 +504,13 @@ pub enum DiagnosticCode {
     /// A variable of the body with the name of an extent, or an assignment to an extent name.
     /// `?n` in the type of a parameter makes `n` a variable of the body that nothing changes.
     E3069,
-    /// A shape in `Tensor<T, [..]>::new([..])` or `::uninit([..])` that does not match the type. The shape is a list in brackets with one extent for each dimension,
+    /// A shape in `Tensor<T, [..]>::new([..])`, `::uninit([..])` or `::fill([..], v)` that does not match the type. The shape is a list in brackets with one extent for each dimension,
     /// and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`.
     E3070,
+    /// Two `extern` declarations of one C function with different types. Both name one C
+    /// symbol, so only one of the types can be right. Declare the function once, or give each
+    /// declaration the same type. A raw pointer or a reference can point at any type.
+    E3072,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -523,7 +529,11 @@ pub enum DiagnosticCode {
     /// at a variable declared inside it. Nor can a variable keep a reference into a value with
     /// no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at
     /// the end of its statement. A closure cannot return a reference to its own parameter, or to
-    /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
+    /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame. A value
+    /// whose `drop` can read a reference cannot hold a reference to a variable that is declared
+    /// after it in the same block, when the type of that variable implements `Drop`. A block
+    /// drops its variables in reverse order of declaration, so that variable is dropped first.
+    /// Declare it before the value that holds the reference.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a
@@ -605,9 +615,10 @@ pub enum DiagnosticCode {
     /// know that the value is still at the address. So is `assume`.
     E5002,
     /// Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or
-    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`.
-    /// The program that uses the package gives the flag, so a new version of the package cannot
-    /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
+    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl`, an `unsafe impl`, or
+    /// a `requires` of an `extern fn`, which a call from C does not prove. The program that uses
+    /// the package gives the flag, so a new version of the package cannot add trusted code
+    /// without an error. `vxc --audit` lists the trusted code of a program.
     E5003,
     /// A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that
     /// takes a `Root` makes the capabilities of the program, so a second start would give them to
@@ -815,11 +826,11 @@ pub enum DiagnosticCode {
     /// address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or
     /// `thread`.
     E6037,
-    /// A `spawn on` body for a device that uses a channel end, a lock, or a value that holds one.
-    /// The standard library marks these types with the trait `HostOnly`. A wait on the device for
-    /// the host can wait forever, because a GPU does not promise that its threads make progress.
-    /// Send or receive before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on
-    /// the host, so it can use them.
+    /// A `spawn on` body for a device that uses a value of a `HostOnly` type, or a value that holds
+    /// one. A channel end, a lock and a semaphore are `HostOnly` because they can wait for the host.
+    /// A GPU does not promise that its threads make progress, so such a wait can wait forever. Use
+    /// the value before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on the
+    /// host, so it can use the value.
     E6038,
     /// A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile
     /// time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run

@@ -135,6 +135,60 @@ pub fn lookup(addr: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
     })
 }
 
+/// The IP addresses of `host`, a name or an address with no port, as for `lookup`.
+fn lookup_host(host: &str) -> std::io::Result<Vec<std::net::IpAddr>> {
+    off_the_worker(|| {
+        let addrs: Vec<_> = std::net::ToSocketAddrs::to_socket_addrs(&(host, 0u16))
+            .map_err(|_| std::io::Error::other(BadAddress))?
+            .map(|a| a.ip())
+            .collect();
+        if addrs.is_empty() {
+            return Err(std::io::Error::other(BadAddress));
+        }
+        Ok(addrs)
+    })
+}
+
+/// Look up the IP addresses of the C string `host`, for `std::net::lookup`. Each address goes
+/// into `out` as one byte with its length, 4 or 16, and then its bytes in network order. It
+/// writes the addresses that fit in `cap` bytes, and puts their number in `*count`. 0, or a
+/// status of `net_status`.
+///
+/// # Safety
+/// `host` must be a C string, `out` must have room for `cap` bytes, and `count` must point at a
+/// `u64`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_net_lookup_host(
+    host: *const std::ffi::c_char,
+    out: *mut u8,
+    cap: u64,
+    count: *mut u64,
+) -> i32 {
+    assert!(!host.is_null() && !out.is_null() && !count.is_null());
+    unsafe { *count = 0 };
+    let host = unsafe { std::ffi::CStr::from_ptr(host) }.to_string_lossy();
+    let addrs = match lookup_host(&host) {
+        Ok(addrs) => addrs,
+        Err(e) => return net_status(&e),
+    };
+    let out = unsafe { std::slice::from_raw_parts_mut(out, cap as usize) };
+    let mut at = 0;
+    for a in addrs {
+        let bytes = match a {
+            std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
+            std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
+        };
+        if at + 1 + bytes.len() > out.len() {
+            break;
+        }
+        out[at] = bytes.len() as u8;
+        out[at + 1..at + 1 + bytes.len()].copy_from_slice(&bytes);
+        at += 1 + bytes.len();
+        unsafe { *count += 1 };
+    }
+    0
+}
+
 /// Connects to `addr`, written as `host:port`, and tries each address of the host in turn. The
 /// wait for each connection is as for `when_ready`.
 pub fn connect(addr: &str) -> std::io::Result<std::net::TcpStream> {
@@ -326,6 +380,173 @@ pub unsafe extern "C" fn vx_stdio_write_all(to_stderr: i32, buffer: *const u8, l
     match written {
         Ok(()) => 0,
         Err(e) => stdio_status(&e),
+    }
+}
+
+/// Connect to the Unix-domain socket at the path `c_path`, for `UnixStream::connect`. A fiber
+/// connects on a helper thread, as for `off_the_worker`, and the stream is non-blocking after.
+/// 0 and a stream in `*out`, or a status of `net_status`.
+///
+/// # Safety
+/// `c_path` must be a C string, and `out` must point at a pointer.
+#[no_mangle]
+pub unsafe extern "C" fn vx_unix_stream_connect(
+    c_path: *const std::ffi::c_char,
+    out: *mut *mut std::ffi::c_void,
+) -> i32 {
+    assert!(!c_path.is_null() && !out.is_null());
+    let path = unsafe { std::ffi::CStr::from_ptr(c_path) }
+        .to_string_lossy()
+        .into_owned();
+    match off_the_worker(|| std::os::unix::net::UnixStream::connect(&path))
+        .and_then(|s| s.set_nonblocking(true).map(|()| s))
+    {
+        Ok(stream) => {
+            unsafe { *out = Box::into_raw(Box::new(stream)).cast() };
+            0
+        }
+        Err(e) => net_status(&e),
+    }
+}
+
+/// Read up to `len` bytes of the stream into `buffer`, and put their number in `*out`. A task
+/// parks until the stream can be read. 0, or a status of `net_status`.
+///
+/// # Safety
+/// `ptr` must be a stream of `vx_unix_stream_connect` or `vx_unix_listener_accept`, `buffer`
+/// must have room for `len` bytes, and `out` must point at a `u64`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_unix_stream_read(
+    ptr: *mut std::ffi::c_void,
+    buffer: *mut u8,
+    len: u64,
+    out: *mut u64,
+) -> i32 {
+    assert!(!ptr.is_null() && !buffer.is_null() && !out.is_null() && len <= isize::MAX as u64);
+    unsafe { *out = 0 };
+    if len == 0 {
+        return 0;
+    }
+    let stream = unsafe { &mut *(ptr as *mut std::os::unix::net::UnixStream) };
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
+    let fd = std::os::fd::AsRawFd::as_raw_fd(stream);
+    match when_ready(fd, false, || std::io::Read::read(stream, bytes)) {
+        Ok(n) => {
+            unsafe { *out = n as u64 };
+            0
+        }
+        Err(e) => net_status(&e),
+    }
+}
+
+/// Write up to `len` bytes of `buffer` to the stream, and put how many it took in `*out`. A
+/// task parks until the stream can take bytes. 0, or a status of `net_status`.
+///
+/// # Safety
+/// As for `vx_unix_stream_read`, with `len` bytes to read in `buffer`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_unix_stream_write(
+    ptr: *mut std::ffi::c_void,
+    buffer: *const u8,
+    len: u64,
+    out: *mut u64,
+) -> i32 {
+    assert!(!ptr.is_null() && !buffer.is_null() && !out.is_null() && len <= isize::MAX as u64);
+    unsafe { *out = 0 };
+    if len == 0 {
+        return 0;
+    }
+    let stream = unsafe { &mut *(ptr as *mut std::os::unix::net::UnixStream) };
+    let bytes = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
+    let fd = std::os::fd::AsRawFd::as_raw_fd(stream);
+    match when_ready(fd, true, || std::io::Write::write(stream, bytes)) {
+        Ok(n) => {
+            unsafe { *out = n as u64 };
+            0
+        }
+        Err(e) => net_status(&e),
+    }
+}
+
+/// The file descriptor of the stream.
+///
+/// # Safety
+/// `ptr` must be a stream that is not dropped.
+#[no_mangle]
+pub unsafe extern "C" fn vx_unix_stream_fd(ptr: *mut std::ffi::c_void) -> i32 {
+    assert!(!ptr.is_null());
+    std::os::fd::AsRawFd::as_raw_fd(unsafe { &*(ptr as *const std::os::unix::net::UnixStream) })
+}
+
+/// Close the stream and release it.
+///
+/// # Safety
+/// `ptr` must be a stream that is not dropped, and nothing may use it after.
+#[no_mangle]
+pub unsafe extern "C" fn vx_unix_stream_drop(ptr: *mut std::ffi::c_void) {
+    if !ptr.is_null() {
+        drop(unsafe { Box::from_raw(ptr as *mut std::os::unix::net::UnixStream) });
+    }
+}
+
+/// Make a Unix-domain socket at the path `c_path` and listen on it, for `UnixListener::bind`.
+/// 0 and a listener in `*out`, or a status of `net_status`.
+///
+/// # Safety
+/// `c_path` must be a C string, and `out` must point at a pointer.
+#[no_mangle]
+pub unsafe extern "C" fn vx_unix_listener_bind(
+    c_path: *const std::ffi::c_char,
+    out: *mut *mut std::ffi::c_void,
+) -> i32 {
+    assert!(!c_path.is_null() && !out.is_null());
+    let path = unsafe { std::ffi::CStr::from_ptr(c_path) }
+        .to_string_lossy()
+        .into_owned();
+    match std::os::unix::net::UnixListener::bind(&path)
+        .and_then(|l| l.set_nonblocking(true).map(|()| l))
+    {
+        Ok(listener) => {
+            unsafe { *out = Box::into_raw(Box::new(listener)).cast() };
+            0
+        }
+        Err(e) => net_status(&e),
+    }
+}
+
+/// Take the next connection of the listener. A task parks until one comes. 0 and a stream in
+/// `*out`, or a status of `net_status`.
+///
+/// # Safety
+/// `ptr` must be a listener of `vx_unix_listener_bind`, and `out` must point at a pointer.
+#[no_mangle]
+pub unsafe extern "C" fn vx_unix_listener_accept(
+    ptr: *mut std::ffi::c_void,
+    out: *mut *mut std::ffi::c_void,
+) -> i32 {
+    assert!(!ptr.is_null() && !out.is_null());
+    let listener = unsafe { &mut *(ptr as *mut std::os::unix::net::UnixListener) };
+    let fd = std::os::fd::AsRawFd::as_raw_fd(listener);
+    // A stream from `accept` does not keep the flag of the listener.
+    match when_ready(fd, false, || listener.accept())
+        .and_then(|(s, _)| s.set_nonblocking(true).map(|()| s))
+    {
+        Ok(stream) => {
+            unsafe { *out = Box::into_raw(Box::new(stream)).cast() };
+            0
+        }
+        Err(e) => net_status(&e),
+    }
+}
+
+/// Close the listener and release it. The socket file stays.
+///
+/// # Safety
+/// `ptr` must be a listener that is not dropped, and nothing may use it after.
+#[no_mangle]
+pub unsafe extern "C" fn vx_unix_listener_drop(ptr: *mut std::ffi::c_void) {
+    if !ptr.is_null() {
+        drop(unsafe { Box::from_raw(ptr as *mut std::os::unix::net::UnixListener) });
     }
 }
 

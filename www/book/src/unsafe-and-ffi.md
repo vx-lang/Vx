@@ -248,7 +248,7 @@ result can be read. A clause that does not hold is undefined behavior, as a wron
 - each `assume`
 - each pointer clause that a call in `unsafe` code trusts, because the compiler cannot prove it
 - each `ensures` of an `extern` function
-- each pointer `requires` of an `extern fn`, because a call from C proves nothing
+- each `requires` of an `extern fn`, because a call from C proves nothing
 
 It also lists each use of trusted code, which the compiler does not check: each `unsafe` block and
 `unsafe fn` that the program writes, each `mlir!` block that the compiler does not verify, each

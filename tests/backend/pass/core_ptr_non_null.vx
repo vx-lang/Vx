@@ -1,0 +1,57 @@
+//===- core_ptr_non_null.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `NonNull<T>` from `core::ptr`.
+//
+// `new` of a tensor's pointer gives `Some`, and `new` of a null pointer gives `None`. A `new` that
+// tests the wrong way round fails both. `as_ptr` must give back the same address, so the test
+// reads one element through `nn` and writes another through a copy of it, then reads that element
+// through `nn`. A `NonNull` is `Copy`, so `nn` is still usable after `let copy = nn;`.
+import core::ptr;
+
+fn main() -> i32 {
+  let t : Tensor<f32, [2, 3]> = Tensor<f32, [2, 3]>::new();
+  let p = t.as_mut_ptr();
+  unsafe { p[0] = 7.0; p[4] = 9.0; }
+
+  // A pointer that is not null.
+  match NonNull<f32>::new(p) {
+    Option::Some(nn) => {
+      print(unsafe { nn.as_ptr()[4] } as i32);
+      print!(" ");
+      let copy = nn;
+      unsafe { copy.as_ptr()[1] = 5.0; }
+      print(unsafe { nn.as_ptr()[1] } as i32);
+      print!(" ");
+      print(eq(nn.as_ptr() as *const f32, p as *const f32));
+    }
+    Option::None => {
+      print(-1);
+    }
+  }
+  print!(" | ");
+
+  // A null pointer.
+  match NonNull<f32>::new(null_mut<f32>()) {
+    Option::Some(_nn) => {
+      print(-1);
+    }
+    Option::None => {
+      print(0);
+    }
+  }
+  print!(" | ");
+
+  // `new_unchecked` of a pointer that is not null.
+  let u = unsafe { NonNull<f32>::new_unchecked(p) };
+  print(unsafe { u.as_ptr()[0] } as i32);
+  print!(" ");
+  print(t[1][1] as i32);
+  return 0;
+}
+
+// EXPECT: 9 5 true | 0 | 7 9

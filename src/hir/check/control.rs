@@ -317,11 +317,13 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn value_to_expr(value: &Value, span: &Span) -> Option<Expr> {
         match value {
             Value::Int(i) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: i.to_string().into(),
                 ty: None,
                 span: *span,
             })),
             Value::Number(n) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: n.to_string().into(),
                 ty: None,
                 span: *span,
@@ -490,6 +492,52 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// Whether no path reaches the end of `stmts`. This is `branch_ends_early`, but it also looks
+    /// for a `break` or a `continue` in each `if`, `match` and `unsafe` block, and it knows
+    /// `while true`.
+    fn no_path_reaches_the_end(&self, stmts: &[Statement]) -> bool {
+        stmts.iter().any(|s| match s {
+            Statement::ExprStmt(ExprStmtStmt {
+                expr:
+                    Expr::If(IfExpr {
+                        then_block,
+                        else_block: Some(else_block),
+                        ..
+                    }),
+                ..
+            }) => {
+                self.no_path_reaches_the_end(then_block) && self.no_path_reaches_the_end(else_block)
+            }
+            Statement::ExprStmt(ExprStmtStmt {
+                expr: Expr::Match(m),
+                ..
+            }) => {
+                !m.arms.is_empty() && m.arms.iter().all(|a| self.no_path_reaches_the_end(&a.body))
+            }
+            Statement::ExprStmt(ExprStmtStmt {
+                expr: Expr::UnsafeBlock(u),
+                ..
+            }) => self.no_path_reaches_the_end(&u.stmts),
+            // The parser writes `while true { .. }` as `loop { if true { .. } else { break } }`.
+            Statement::Loop(l) => match l.body.as_slice() {
+                [Statement::ExprStmt(ExprStmtStmt {
+                    expr:
+                        Expr::If(IfExpr {
+                            cond,
+                            then_block,
+                            else_block: Some(_),
+                            ..
+                        }),
+                    ..
+                })] if matches!(&**cond, Expr::Identifier(id) if id.name.as_ref() == "true") => {
+                    !crate::syntax::expr::breaks_out_of_loop(then_block)
+                }
+                _ => self.branch_ends_early(std::slice::from_ref(s)),
+            },
+            _ => self.branch_ends_early(std::slice::from_ref(s)),
+        })
+    }
+
     /// The values known after paths join: a value stays known only when every path leaves it
     /// the same. Each path is the checker's scopes of known values at the join.
     fn join_known_values(
@@ -604,15 +652,13 @@ impl<'a> TypeChecker<'a> {
         // Each branch starts from the values known before the `if`, and the paths join after it.
         let taken = taken.or_else(|| self.known_condition(&if_expr.cond));
         let values_before = self.consteval.env.clone();
-        // A branch that is only a number with no suffix, such as `else { 0.0 }`, takes the type
-        // of the other branch.
-        let then_literal =
-            unsuffixed_number_tail(&mut if_expr.then_block).is_some_and(|n| n.ty.is_none());
+        // A branch that is only numbers with no suffix, such as `else { 0.0 }`, `else { 2 * 3 }`
+        // or `else { if d { 1 } else { 2 } }`, takes the type of the other branch.
+        let then_literal = untyped_number_value(&mut if_expr.then_block);
         let else_literal = if_expr
             .else_block
             .as_mut()
-            .and_then(|b| unsuffixed_number_tail(b))
-            .is_some_and(|n| n.ty.is_none());
+            .is_some_and(|b| untyped_number_value(b));
         let (then_name, else_name) = Self::pointer_branch_names(if_expr).unzip();
         let named = then_name.is_some();
         self.pointer_branches.extend(then_name);
@@ -684,10 +730,20 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         (&mut *else_b, &then_ty)
                     };
-                    let n = unsuffixed_number_tail(literal_block)
-                        .expect("a literal branch ends in a number");
-                    if let Some(e) = crate::hir::expr::expected_numeric_elem(other_ty, &n.value) {
-                        n.ty = Some(e);
+                    // The checker gave the numbers the type `i32` or `f64`. They had no suffix
+                    // before it, so they take the type of the other branch instead.
+                    let mut parts = NumberParts::default();
+                    let fits = number_value(literal_block, &mut parts)
+                        && parts.numbers.iter().all(|n| {
+                            crate::hir::expr::expected_numeric_elem(other_ty, &n.value).is_some()
+                        });
+                    if let (true, Type::Scalar(e)) = (fits, other_ty) {
+                        for n in parts.numbers {
+                            n.ty = Some(e.clone());
+                        }
+                        for operand_ty in parts.operations {
+                            *operand_ty = Some(e.clone());
+                        }
                         if then_literal {
                             then_ty = else_ty.clone();
                         } else {
@@ -695,7 +751,11 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if !if_expr.is_comptime && then_ty != else_ty {
+                // Each branch type must fit where the other one is expected. One enum has two
+                // spellings: a call gives `Struct("Shape")`, and a variant gives `Enum("Shape")`.
+                let one_type = self.is_assignable(&then_ty, &else_ty)
+                    && self.is_assignable(&else_ty, &then_ty);
+                if !if_expr.is_comptime && !one_type {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3007,
                         format!(
@@ -1483,6 +1543,8 @@ impl<'a> TypeChecker<'a> {
                 let matched_number = (integer && crate::hir::prover::is_modelled(match_expr))
                     .then(|| (**match_expr).clone());
                 let mut literals_above: Vec<Expr> = Vec::new();
+                // The arms that can end with no value and no `return`.
+                let mut arms_that_can_end: Vec<Span> = Vec::new();
                 let uncertain = (arms.len() > 1) as u32;
                 for (i, arm) in arms.iter_mut().enumerate() {
                     let literal_arm = self.expected_type.is_none()
@@ -1566,15 +1628,27 @@ impl<'a> TypeChecker<'a> {
                         literals_above.push((**lit).clone());
                     }
 
-                    let arm_ty = if !self.speculating {
+                    // The check keeps one branch of an `if comptime` and empties the other one,
+                    // so this looks at the arm before the check too.
+                    let ends_before_check = self.no_path_reaches_the_end(&arm.body);
+                    let errors_before_arm = self.errors.error_count();
+                    let (arm_ty, never_statement) = if !self.speculating {
                         self.value_unused = unused;
                         self.consteval.uncertain_branch_depth += uncertain;
                         let ty = self.check_expr_block(&mut arm.body, None, consume);
                         self.consteval.uncertain_branch_depth -= uncertain;
-                        ty
+                        (ty, self.last_block_has_a_never_statement)
                     } else {
-                        Type::Struct("void".into(), None)
+                        (Type::Struct("void".into(), None), false)
                     };
+                    // An arm with an error of its own gets no second error for its end.
+                    if !ends_before_check
+                        && !never_statement
+                        && self.errors.error_count() == errors_before_arm
+                        && !self.no_path_reaches_the_end(&arm.body)
+                    {
+                        arms_that_can_end.push(arm.span);
+                    }
                     self.pop_scope();
                     self.pointer_branches.pop();
                     every_arm_ends &= self.branch_ends_early(&arm.body);
@@ -1700,6 +1774,29 @@ impl<'a> TypeChecker<'a> {
                 // whose value nothing uses is a statement, and has no value at all.
                 if unused && match_ty.is_none() {
                     return Type::Struct("void".into(), None);
+                }
+                // The parser writes a `match` at the end of a function as `return match ..`. A
+                // `void` function reads no value, but `is_void_ty` is true for `!` too.
+                let read = self.current_return_type.as_ref().is_some_and(|ty| {
+                    *ty != Type::Unknown
+                        && (!crate::syntax::is_void_ty(ty) || crate::syntax::is_never_ty(ty))
+                });
+                if match_ty.is_none() && read && !self.speculating {
+                    for arm in arms_that_can_end {
+                        // An arm that the compiler wrote has no place in the source.
+                        let at = if arm == Span::default() {
+                            *match_span
+                        } else {
+                            arm
+                        };
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3028,
+                            "this arm can end with no value, but the code uses the value of the \
+                             `match`. End the arm with a value or a `return`."
+                                .to_string(),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                        );
+                    }
                 }
                 match_ty.unwrap_or_else(|| {
                     self.current_return_type.clone().unwrap_or(Type::Tensor(
@@ -2327,6 +2424,66 @@ fn join_with(facts: Vec<Expr>, op: LogicalOp) -> Expr {
             })
         })
         .expect("a list with a fact")
+}
+
+/// The numbers of a value that is made only of numbers, and the operand types of the operations
+/// between them.
+#[derive(Default)]
+struct NumberParts<'a> {
+    numbers: Vec<&'a mut NumberExpr>,
+    operations: Vec<&'a mut Option<ElementType>>,
+}
+
+/// Whether a block's value is only numbers with no suffix, as in `{ 0 }`, `{ -1 }`, `{ 2 * 3 }`
+/// or `{ if d { 1 } else { 2 } }`.
+fn untyped_number_value(body: &mut [Statement]) -> bool {
+    let mut parts = NumberParts::default();
+    number_value(body, &mut parts) && parts.numbers.iter().all(|n| n.ty.is_none())
+}
+
+/// Whether a block's value is only numbers. Its parts go into `out`.
+fn number_value<'a>(body: &'a mut [Statement], out: &mut NumberParts<'a>) -> bool {
+    match body.last_mut() {
+        Some(Statement::ExprStmt(ExprStmtStmt {
+            expr,
+            has_semi: false,
+            ..
+        })) => numbers_only(expr, out),
+        _ => false,
+    }
+}
+
+/// Whether `e` is only numbers, with a `-` in front or joined by `+`, `-`, `*`, `/`, `%` or an
+/// `if`. Its parts go into `out`.
+fn numbers_only<'a>(e: &'a mut Expr, out: &mut NumberParts<'a>) -> bool {
+    match e {
+        Expr::Number(n) => {
+            out.numbers.push(n);
+            true
+        }
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        }) => numbers_only(expr, out),
+        Expr::BinaryOp(BinaryOpExpr {
+            lhs,
+            op: BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem,
+            rhs,
+            operand_ty,
+            ..
+        }) => {
+            out.operations.push(operand_ty);
+            numbers_only(lhs, out) && numbers_only(rhs, out)
+        }
+        Expr::If(IfExpr {
+            is_comptime: false,
+            then_block,
+            else_block: Some(else_block),
+            ..
+        }) => number_value(then_block, out) && number_value(else_block, out),
+        _ => false,
+    }
 }
 
 /// The number that a block's value is, as in `{ 0 }` or `{ -1 }`.

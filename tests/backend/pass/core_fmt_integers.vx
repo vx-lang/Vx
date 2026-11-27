@@ -14,7 +14,7 @@
 // try every option on 42, -42, 255u8 and the smallest i8. Vx's `usize` stops at the
 // largest i64, so that is its largest value here.
 //
-// The last two lines check the writer itself: a string literal through `write_c_str`, and
+// The last two lines check the writer itself: a string literal through `write_buffer`, and
 // a buffer with room for three bytes refusing the fourth of "1234" while keeping the first
 // three (51 is the byte `3`).
 //
@@ -183,7 +183,7 @@
 // EXPECT: case 162 :#<10x -128i8 [80########]
 // EXPECT: case 163 :+^9 -128i8 [++-128+++]
 // EXPECT: case 164 :#08o -128i8 [0o000200]
-// EXPECT: write_c_str [hello, 42]
+// EXPECT: write_buffer [hello, 42]
 // EXPECT: refused len 3 last 51 full buffer [123]
 import core::fmt;
 import std::alloc;
@@ -532,9 +532,9 @@ fn main() -> i32 {
   (-127i8 - 1i8).fmt_octal(&mut b, &FormatSpec::new().alternate().zero_pad().width(8i64));
   show(&mut b, "case 164 :#08o -128i8");
 
-  b.write_c_str("hello, ");
+  write_buffer(&mut b, "hello, " as *const u8, 7);
   (42i32).fmt_decimal(&mut b, &FormatSpec::new());
-  show(&mut b, "write_c_str");
+  show(&mut b, "write_buffer");
 
   // Four bytes of memory hold three bytes and the NUL.
   let small_mem = alloc(4, 16);

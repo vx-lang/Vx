@@ -389,7 +389,7 @@ impl BorrowCx {
     /// is used. A reference or a closure copied to another variable keeps what it points at
     /// borrowed.
     pub(crate) fn copy_borrows(&mut self, from: &str, to: &str, scope_depth: usize) {
-        for records in self.active_borrows.values_mut() {
+        for (base, records) in &mut self.active_borrows {
             let copies: Vec<BorrowRecord> = records
                 .iter()
                 .filter(|r| r.borrower_name.as_deref() == Some(from))
@@ -399,6 +399,9 @@ impl BorrowCx {
                     ..r.clone()
                 })
                 .collect();
+            if !copies.is_empty() {
+                self.drops.note_given(base, to);
+            }
             records.extend(copies);
         }
         for borrowers in self.borrowers_ever.values_mut() {
@@ -426,7 +429,7 @@ impl BorrowCx {
                 .as_deref()
                 .is_some_and(|b| reached.iter().any(|v| v == b))
         };
-        for records in self.active_borrows.values_mut() {
+        for (base, records) in &mut self.active_borrows {
             // Two variables `from` reaches can hold one borrow. `to` gets one copy of it.
             let mut copies: Vec<BorrowRecord> = Vec::new();
             for r in records.iter().filter(|r| held_by_reached(r)) {
@@ -442,6 +445,9 @@ impl BorrowCx {
                         ..r.clone()
                     });
                 }
+            }
+            if !copies.is_empty() {
+                self.drops.note_given(base, to);
             }
             records.extend(copies);
         }
@@ -483,8 +489,27 @@ impl BorrowCx {
         self.borrowers_ever = saved;
     }
 
+    /// Whether `borrower` holds a borrow of `base` now.
+    pub(crate) fn holds_borrow(&self, base: &str, borrower: &str) -> bool {
+        self.active_borrows.get(base).is_some_and(|records| {
+            records
+                .iter()
+                .any(|r| r.borrower_name.as_deref() == Some(borrower))
+        })
+    }
+
     /// Record a new borrow of `base`.
     pub(crate) fn record(&mut self, base: &str, record: BorrowRecord) {
+        if let Some(b) = &record.borrower_name {
+            self.drops.note_given(base, b);
+        }
+        self.record_again(base, record);
+    }
+
+    /// Put back a borrow of `base` that an earlier statement or a branch made. It is not a new
+    /// borrow: the code that made it is checked, and the names in it can mean other variables
+    /// by now.
+    pub(crate) fn record_again(&mut self, base: &str, record: BorrowRecord) {
         if let Some(b) = &record.borrower_name {
             self.borrowers_ever
                 .entry(base.to_string())
@@ -700,12 +725,37 @@ impl BorrowCx {
                 .get(&base)
                 .is_some_and(|list| list.contains(&record));
             if !present {
-                self.record(&base, record);
+                self.record_again(&base, record);
             }
         }
     }
 
     /// Drop each of `records`, as [`Self::added_since`] returned them.
+    /// Ends the borrows that `holder` took since `before`. A variable of a number type holds no
+    /// borrow, so in `let x = q[0].a` the borrow of `q` ends with the read.
+    pub(crate) fn forget_new_borrows_of(
+        &mut self,
+        holder: &str,
+        before: &HashMap<Symbol, Vec<BorrowRecord>>,
+    ) {
+        // One copy each: an equal record from before can belong to an outer variable of this
+        // name, as after `x = &q` in the same block.
+        for (base, record) in self.added_copies_since(before) {
+            if record.borrower_name.as_deref() != Some(holder) {
+                continue;
+            }
+            let list = self.active_borrows.get_mut(&base).expect("an added record");
+            let at = list
+                .iter()
+                .rposition(|r| *r == record)
+                .expect("an added record");
+            list.remove(at);
+            if list.is_empty() {
+                self.active_borrows.remove(&base);
+            }
+        }
+    }
+
     pub(crate) fn forget(&mut self, records: &[(Symbol, BorrowRecord)]) {
         for (base, record) in records {
             if let Some(list) = self.active_borrows.get_mut(base) {

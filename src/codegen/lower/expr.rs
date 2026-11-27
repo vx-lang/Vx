@@ -4185,13 +4185,14 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             name.as_ref(),
             "Tensor" | "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
         ) {
-            // `Tensor<T, [d0, d1]>::fill(v)` takes its shape from the type like `::new()` does, so
-            // the call argument is the fill value rather than an extent. Captured before `args` is
-            // rebound to the normalised shape below.
-            let fill_expr: Option<Expr> = if name.as_ref() == "Tensor::fill" {
-                args.first().cloned()
-            } else {
-                None
+            // The value of `::fill` is its last argument: `::fill(v)`, or `::fill([n, 2], v)` with
+            // a run-time shape. Captured before `args` is rebound to the normalised shape below,
+            // which leaves the value out.
+            let (fill_expr, args): (Option<Expr>, &[Expr]) = match args.split_last() {
+                Some((value, shape)) if name.as_ref() == "Tensor::fill" => {
+                    (Some(value.clone()), shape)
+                }
+                _ => (None, args),
             };
             // `Tensor<T, [d0, d1]>::uninit()` writes its element and shape in the type; the older
             // `Tensor<T>([d0, d1])` splits them between the generic argument and the call
@@ -5381,6 +5382,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let NumberExpr {
+            written: _,
             value: val_str,
             ty: ast_ty_opt,
             span: _,
@@ -5423,7 +5425,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
 
 /// The type of an arm whose value is a name its pattern binds, `Ok(v) => { v }`: the variant's
 /// payload type, with the type arguments that the pattern's enum names.
-fn payload_binding_type(
+pub(crate) fn payload_binding_type(
     gen: &MeliorGenerator<'_>,
     arm: &syntax::MatchArm,
     value: &Expr,
@@ -5501,7 +5503,12 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
     ) -> Self::Output {
         // Read before the scrutinee is generated, which may set it for its own operands.
         let outer_expected = gen.expected_type;
-        let (mut match_val, mut match_ty, block) = gen.generate_expr(&self.expr, block)?;
+        // The matched value is a value even when this `match` is a statement. A `match` that
+        // `?` became must not read `none` here and give no value.
+        gen.expected_type = None;
+        let scrutinee = gen.generate_expr(&self.expr, block);
+        gen.expected_type = outer_expected;
+        let (mut match_val, mut match_ty, block) = scrutinee?;
         let mut matched_reference = None;
         // `match self` with `self : &Op`: the scrutinee is a pointer, and the arms read the
         // tag out of the enum it points at.
@@ -6074,6 +6081,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             _ => {
                 if let Some(syntax::Type::Struct(s, _)) =
                     gen.infer_ast_type(self.elements.first().unwrap_or(&Expr::Number(NumberExpr {
+                        written: None,
                         value: "0".into(),
                         ty: None,
                         span: Span::default(),
@@ -6182,7 +6190,7 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
     }
 }
 
-/// Switches the `print_*` helpers to standard error, or back, around an `eprint!` or a `panic`.
+/// Switches the `vx_print_*` helpers to standard error, or back, around an `eprint!` or a `panic`.
 fn switch_print_stream<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -6233,8 +6241,29 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                 continue;
             }
 
-            let arg_ty_str = arg_ty.to_string();
-            if arg_ty_str == r#"!llvm.struct<"String", (ptr)>"# {
+            let mut arg_ty_str = arg_ty.to_string();
+            let mut arg_val = arg_val;
+            // A reference to a `String`, such as `&s` or `v.get_ref(0)`, is a pointer to it.
+            // The `String` is read through it, and printed as below.
+            let string_ty = r#"!llvm.struct<"String", (ptr)>"#;
+            let to_a_string = matches!(gen.infer_ast_type(arg),
+                Some(syntax::Type::Borrow { inner, .. })
+                    if matches!(&*inner, syntax::Type::Struct(n, _) if n.as_ref() == "String"));
+            if arg_ty_str == "!llvm.ptr" && to_a_string {
+                let ty = melior::ir::Type::parse(gen.context, string_ty)
+                    .ok_or_else(|| LowerError::from("the type of a String".to_string()))?;
+                arg_val = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.load", gen.loc())
+                            .add_operands(&[arg_val])
+                            .add_results(&[ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                arg_ty_str = string_ty.to_string();
+            }
+            if arg_ty_str == string_ty {
                 // A `String` prints through a NUL-terminated copy of its contents, freed after.
                 let handle = block
                     .append_operation(
@@ -6256,7 +6285,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                     &[(handle, "!llvm.ptr")],
                     "!llvm.ptr",
                 )?;
-                super::call_runtime_fn(gen, block, "print_str", &[(c_str, "!llvm.ptr")], "i32")?;
+                super::call_runtime_fn(gen, block, "vx_print_str", &[(c_str, "!llvm.ptr")], "i32")?;
                 super::call_runtime_fn(
                     gen,
                     block,
@@ -6271,7 +6300,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                     "print cannot print a value of type {arg_ty}"
                 )));
             }
-            super::call_runtime_fn(gen, block, "print_str", &[(arg_val, "!llvm.ptr")], "i32")?;
+            super::call_runtime_fn(gen, block, "vx_print_str", &[(arg_val, "!llvm.ptr")], "i32")?;
         }
         if self.to_stderr {
             switch_print_stream(gen, block, false)?;
@@ -6314,15 +6343,15 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
             block = print_expr.lower(gen, block)?.2;
         }
 
-        // Then emit a call to println()
-        if !gen.functions.contains_key("println") {
+        // Then emit a call to vx_println()
+        if !gen.functions.contains_key("vx_println") {
             let func_ty = Type::parse(gen.context, "() -> i32").unwrap();
 
             let func_decl = OperationBuilder::new("func.func", gen.loc())
                 .add_attributes(&[
                     (
                         Identifier::new(gen.context, "sym_name"),
-                        StringAttribute::new(gen.context, "println").into(),
+                        StringAttribute::new(gen.context, "vx_println").into(),
                     ),
                     (
                         Identifier::new(gen.context, "function_type"),
@@ -6338,10 +6367,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
 
             gen.module.body().append_operation(func_decl);
             gen.functions
-                .insert("println".to_string().into(), (gen.i32_ty, vec![]));
+                .insert("vx_println".to_string().into(), (gen.i32_ty, vec![]));
         }
 
-        let name_attr = FlatSymbolRefAttribute::new(gen.context, "println");
+        let name_attr = FlatSymbolRefAttribute::new(gen.context, "vx_println");
         let call_op = OperationBuilder::new("func.call", gen.loc())
             .add_results(&[gen.i32_ty])
             .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])

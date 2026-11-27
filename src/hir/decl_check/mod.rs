@@ -79,6 +79,8 @@ impl TypeChecker<'_> {
         self.check_placements_name_a_place();
         // An `extern` signature has to be spellable in C, and a tensor is not.
         self.check_extern_signatures();
+        // Two `extern` declarations of one C function with different types.
+        self.check_extern_declarations_agree();
         // A `safe` extern function that gives out or changes a type with an invariant.
         self.check_safe_externs_keep_invariants();
         // A `const` whose value does not fit its type, or has no value while compiling, is
@@ -163,6 +165,72 @@ impl TypeChecker<'_> {
                 );
             }
         }
+    }
+}
+
+impl TypeChecker<'_> {
+    /// E3072 for an `extern` declaration of a C function that another `extern` declaration
+    /// gives another type. Both name one C symbol, so only one of the types can be right. The
+    /// error is at the later declaration in source order, because the order of `env.externs`
+    /// changes from run to run.
+    fn check_extern_declarations_agree(&mut self) {
+        // A raw pointer or a reference is a C pointer of any type, as for E3059.
+        fn c_type(ty: &crate::syntax::Type) -> String {
+            match ty {
+                crate::syntax::Type::Pointer(..) | crate::syntax::Type::Borrow { .. } => {
+                    "a pointer".to_string()
+                }
+                ty => ty.to_string(),
+            }
+        }
+        fn signature(ext: &crate::syntax::ExternDecl) -> String {
+            let params: Vec<String> = ext.params.iter().map(|(_, t)| t.to_string()).collect();
+            format!(
+                "fn {}({}) -> {}",
+                ext.name,
+                params.join(", "),
+                ext.return_type
+            )
+        }
+        let mut externs = self.env.externs.clone();
+        externs.sort_by_key(|e| (e.file.clone(), e.span.line, e.span.column));
+        // The first declaration of each name.
+        let mut first = std::collections::HashMap::new();
+        let outside = self.errors.here();
+        for ext in externs {
+            let Some(earlier) = first.get(&ext.name).copied() else {
+                first.insert(ext.name.clone(), ext);
+                continue;
+            };
+            let shape = |e: &crate::syntax::ExternDecl| {
+                let params: Vec<String> = e.params.iter().map(|(_, t)| c_type(t)).collect();
+                (params, c_type(&e.return_type))
+            };
+            if shape(earlier) == shape(ext) {
+                continue;
+            }
+            let place = crate::syntax::DeclPlace {
+                file: ext.file.clone(),
+                span: ext.span,
+            };
+            self.errors.point_at(&place, &outside);
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3072,
+                format!(
+                    "the C function `{}` has another declaration at {}:{}:{}, with a different \
+                     type. Both declarations name one C function, so give them one type. Here it \
+                     is `{}`, and there it is `{}`.",
+                    ext.name,
+                    earlier.file.as_deref().unwrap_or("this file"),
+                    earlier.span.line,
+                    earlier.span.column,
+                    signature(ext),
+                    signature(earlier)
+                ),
+                None,
+            );
+        }
+        self.errors.point_back(outside);
     }
 }
 

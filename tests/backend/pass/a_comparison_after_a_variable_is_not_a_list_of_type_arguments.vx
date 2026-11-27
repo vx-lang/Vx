@@ -1,0 +1,77 @@
+//===- a_comparison_after_a_variable_is_not_a_list_of_type_arguments.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Vx writes type arguments as `id<i32>(5)`, with no `::`, so `a < b, c > (d)` could also be a
+// call of `a` with the type arguments `b, c`. After the name of a variable or a parameter in
+// scope, `<` is a comparison. After any other name, it starts type arguments.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+import core::tuple;
+
+fn both(p : bool, q : bool) -> i32 {
+  if p && q {
+    return 1;
+  }
+  return 0;
+}
+
+fn id<T>(x : T) -> T {
+  return x;
+}
+
+fn pick<T>(x : T) -> T {
+  return x;
+}
+
+fn with_parameters(n : i32, m : i32) -> i32 {
+  return both(n < m, m > (n));
+}
+
+fn in_a_loop() -> i32 {
+  let mut total = 0;
+  for i in 0..3 {
+    let j = 1;
+    total = total + both(i < j, j > (i));
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  let a = 1;
+  let b = 2;
+  let c = 3;
+  let d = 0;
+  // CHECK: {{^}}let: 1{{$}}
+  println!("let: {}", both(a < b, c > (d)));
+  let r = both(a < b, c > (d));
+  // CHECK-NEXT: {{^}}outside a macro: 1{{$}}
+  println!("outside a macro: {}", r);
+  // CHECK-NEXT: {{^}}parameters: 1{{$}}
+  println!("parameters: {}", with_parameters(1, 2));
+  // CHECK-NEXT: {{^}}loop: 1{{$}}
+  println!("loop: {}", in_a_loop());
+  let (e, f) = (5, 6);
+  // CHECK-NEXT: {{^}}tuple let: 1{{$}}
+  println!("tuple let: {}", both(e < f, f > (e)));
+  // `id` names no variable here, so `<` starts its type arguments.
+  // CHECK-NEXT: {{^}}generic: 5{{$}}
+  println!("generic: {}", id<i32>(5));
+  // The variable `pick` of the block is out of scope after the block.
+  if a < b {
+    let pick = 7;
+    // CHECK-NEXT: {{^}}inner pick: 7{{$}}
+    println!("inner pick: {}", pick);
+  }
+  // CHECK-NEXT: {{^}}generic after the block: 8{{$}}
+  println!("generic after the block: {}", pick<i32>(8));
+  // The new `id` is in scope after its `;`, not in its own value.
+  let id = id<i32>(9);
+  // CHECK-NEXT: {{^}}a let named like a generic: 9{{$}}
+  println!("a let named like a generic: {}", id);
+  return 0;
+}

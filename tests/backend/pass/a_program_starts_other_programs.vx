@@ -1,0 +1,76 @@
+//===- a_program_starts_other_programs.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `main` gets the right to start other programs in `root.processes`, and passes it on. `run`
+// waits for the program and gives its exit code. Each `String` in `args` is one argument, so
+// "two words" reaches the program as one. A signal that stops the program gives `Killed`, and a
+// name that no program has gives `NotStarted`. The program writes to the same standard output, so
+// its line comes between the lines of this program.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: before the programs
+// CHECK-NEXT: sh got 2 arguments: one, two words
+// CHECK-NEXT: exit code 0
+// CHECK-NEXT: exit code 3
+// CHECK-NEXT: killed by signal 9
+// CHECK-NEXT: did not start
+// CHECK-NEXT: after the programs
+import core::result;
+import std::process;
+import std::root;
+import std::string;
+import std::vec;
+
+// Makes a `String` from a literal. The `unsafe` block is only for that.
+fn text(literal : *const i8) -> String {
+  return unsafe { String::from_c_str(literal) };
+}
+
+// Prints how a program ended.
+fn report(result : Result<i32, ProcessError>) -> void {
+  match result {
+    Result<i32, ProcessError>::Ok(code) => {
+      println!("exit code {}", code);
+    }
+    Result<i32, ProcessError>::Err(e) => {
+      match e {
+        ProcessError::NotStarted() => {
+          println!("did not start");
+        }
+        ProcessError::Killed(signal) => {
+          println!("killed by signal {}", signal);
+        }
+      }
+    }
+  }
+}
+
+// Runs `sh -c script sh one "two words"`. Starting a program needs the right, so it takes a
+// `&Processes`.
+fn shell(processes : &Processes, script : *const i8) -> void {
+  let mut args : Vec<String> = Vec::new();
+  args.push(text("-c"));
+  args.push(text(script));
+  args.push(text("sh"));
+  args.push(text("one"));
+  args.push(text("two words"));
+  let program = text("sh");
+  report(processes.run(&program, &args));
+}
+
+fn main(root : Root) -> i32 {
+  println!("before the programs");
+  shell(&root.processes, "echo $0 got $# arguments: $1, $2");
+  shell(&root.processes, "exit 3");
+  shell(&root.processes, "kill -9 $$");
+  let missing = text("vx-no-such-program");
+  let no_args : Vec<String> = Vec::new();
+  report(root.processes.run(&missing, &no_args));
+  println!("after the programs");
+  return 0;
+}

@@ -1,0 +1,38 @@
+//===- a_package_that_writes_buffers.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with no trusted code. It gives the bytes of a literal and of a `Vec` to a `Write`.
+
+import core::fmt;
+import core::result;
+import std::vec;
+
+/// A `Write` that keeps each byte it gets.
+struct Sink {
+  bytes : Vec<u8>,
+}
+
+impl Write for Sink {
+  fn write_u8(self : &mut Sink, b : u8) -> Result<i32, Error> {
+    self.bytes.push(b);
+    return Result<i32, Error>::Ok(0);
+  }
+}
+
+/// The 5 bytes of "hello", then the 3 bytes of a `Vec`.
+pub fn literal_then_vec() -> Vec<u8> {
+  let mut sink = Sink {
+    bytes : Vec<u8>::new()
+  };
+  let _r = write_buffer(&mut sink, "hello" as *const u8, 5);
+  let mut v = Vec<u8>::new();
+  v.push(33u8);
+  v.push(33u8);
+  v.push(10u8);
+  let _s = write_buffer(&mut sink, v.as_mut_ptr() as *const u8, v.len());
+  return sink.bytes;
+}

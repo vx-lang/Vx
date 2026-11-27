@@ -126,12 +126,12 @@ pub enum Opcode {
     /// preceding the `Call`, in order.
     Arg = 29,
     /// Print a value (`print(x)`, no result): `operand1` is the argument's value register, `type_idx`
-    /// its type. A scalar routes to the `print_*` FFI helper; a tensor is cast to an unranked memref
+    /// its type. A scalar routes to the `vx_print_*` FFI helper; a tensor is cast to an unranked memref
     /// and routed to `printMemref*` — the same runtime helpers the AST path calls.
     Print = 30,
     /// Print a string literal (no result): `imm` is the index into this function's string side table
     /// (`LocalWorkerState::local_string_table`). The flat codegen emits an `llvm.mlir.global internal
-    /// constant` holding the (null-terminated) bytes and calls `@print_str(!llvm.ptr) -> i32` — the
+    /// constant` holding the (null-terminated) bytes and calls `@vx_print_str(!llvm.ptr) -> i32` — the
     /// same runtime helper the AST path uses for a string `print!` argument.
     PrintStr = 31,
     /// A string literal in *value* position (`let s = "…"`, a string function argument): `imm` is the
@@ -181,7 +181,7 @@ pub enum Opcode {
     /// libc `abort` is not: on the host `convert-cf-to-llvm` expands it to `puts` + `abort` +
     /// `unreachable`, and INSIDE A KERNEL `convert-gpu-to-nvvm` expands it to `__assertfail`
     /// with the message, file, line and a `noreturn` attribute. Both passes are already in the
-    /// pipelines. An earlier draft desugared this by hand into `print_str` + `abort` calls,
+    /// pipelines. An earlier draft desugared this by hand into `vx_print_str` + `abort` calls,
     /// which are `func` ops -- not device-lowerable, so a kernel containing one was dropped
     /// from GPU compilation entirely (Vx#362).
     Abort = 38,

@@ -1,0 +1,35 @@
+//===- integer_literal_that_does_not_fit_is_named_as_written.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The error for an integer literal that does not fit its type shows the literal as the
+// program wrote it, such as `0x1FF`, and not its decimal value 511. It leaves out the suffix,
+// and it gives the line and column of the literal.
+
+fn take(n : u8) -> u8 {
+  return n;
+}
+
+fn main() -> i32 {
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:19: 0xFFFF_FFFF does not fit `i32`
+  let hex : i32 = 0xFFFF_FFFF;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:18: 0x1FF does not fit `u8`
+  let suffixed = 0x1FFu8;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:21: 0b1_0000_0000 does not fit `u8`
+  let binary : u8 = 0b1_0000_0000;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:20: 0o400 does not fit `u8`
+  let octal : u8 = 0o400;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:22: 1_000 does not fit `u8`
+  let grouped : u8 = 1_000;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:23: -0x81 does not fit `i8`
+  let negative : i8 = -0x81;
+  // CHECK: Error[E3045] at {{.*}}.vx:[[@LINE+1]]:21: 0x100 does not fit `u8`
+  let passed = take(0x100);
+  return 0;
+}
+// CHECK: 7 error(s) emitted

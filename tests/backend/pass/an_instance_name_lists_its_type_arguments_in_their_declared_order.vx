@@ -1,0 +1,45 @@
+//===- an_instance_name_lists_its_type_arguments_in_their_declared_order.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The compiler names each instance of a generic function after its type arguments, joined with
+// `$`. The arguments come in the order that the program declares the parameters. `pair<B, A>`
+// called with an `f32` and an `i32` is `pair$f32$i32`, and the method `first` of
+// `Two<T, E>` lists `T`, then `E`. In alphabetical order, both names would be the other way
+// round.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
+// CHECK-DAG: func.func @pair$f32$i32(
+// CHECK-DAG: func.func @Two$i64$bool$first$i64$bool(
+// OUT: {{^}}1.5 3{{$}}
+
+struct Two<T, E> {
+  t : T,
+  e : E,
+}
+
+impl<T, E> Two<T, E> {
+  fn first(self : &Two<T, E>) -> T {
+    return self.t;
+  }
+}
+
+fn pair<B, A>(b : B, _a : A) -> B {
+  return b;
+}
+
+fn main() -> i32 {
+  let x = pair(1.5f32, 2i32);
+  let two = Two {
+    t : 3i64,
+    e : true
+  };
+  println!("{} {}", x, two.first());
+  return 0;
+}

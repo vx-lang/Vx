@@ -490,12 +490,18 @@ post went up, a program read an environment variable by calling <code>getenv</co
 <code>extern</code>, and an <code>extern</code> call is trusted code.
 <a href="https://github.com/vx-lang/Vx/pull/4102">#4102</a> made reading a variable need a
 capability. <code>Root</code> gained a third field, <code>env : Environment</code>, and a function
-needs an <code>&amp;Environment</code> to call <code>env.var(&amp;name)</code>. The old functions
-for the arguments, <code>vx_env_args_count</code> and <code>vx_env_arg</code>, still exist behind
-<code>extern</code>.</li>
-<li><strong>Processes and native code.</strong> <code>std</code> has no function to start a
-process, and native code runs only via <code>extern</code>. Each feature will require a capability
-when <code>std</code> adds it.</li>
+needs an <code>&amp;Environment</code> to call <code>env.var(&amp;name)</code>. Later,
+<a href="https://github.com/vx-lang/Vx/pull/4123">#4123</a> removed the old functions for reading
+command-line arguments, <code>vx_env_args_count</code> and <code>vx_env_arg</code>.</li>
+<li><strong>Processes.</strong> <em>Update: closed.</em> When this post went up, <code>std</code>
+had no function to start a process.
+<a href="https://github.com/vx-lang/Vx/pull/4111">#4111</a> added
+<code>processes.run(&amp;program, &amp;args)</code>, which needs a capability: <code>Root</code>
+gained a field, <code>processes : Processes</code>. The compiler does not check the program
+that <code>run</code> starts, so <code>Processes</code> gives all other capabilities in
+practice.</li>
+<li><strong>Native code.</strong> Native code is still reachable only via <code>extern</code>.
+When <code>std</code> adds a way to load native code, loading it will require a capability.</li>
 <li><strong>Non-UTF-8 arguments.</strong> Vx still needs a path type that holds bytes, and a
 <code>main</code> signature that passes arguments in that type.</li>
 </ul>

@@ -140,14 +140,22 @@ def main():
 
     rendered = render(entries)
 
-    # Matches the shape mdformat produces, so the generated file needs no follow-up pass.
-
+    # The committed page is in the shape mdformat produces, so the text must go through it too.
+    # Without it the text differs from the page by a blank line, so stop instead of comparing.
     try:
         rendered = subprocess.run(
             ["mdformat", "-"], input=rendered, capture_output=True, text=True, check=True
         ).stdout
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass  # mdformat is optional locally; CI has it.
+    except FileNotFoundError:
+        print(
+            "error: mdformat is not installed or not on PATH.\n"
+            "  The generator needs it to format the page. Install it with: pipx install mdformat",
+            file=sys.stderr,
+        )
+        return 1
+    except subprocess.CalledProcessError as error:
+        print(f"error: mdformat failed.\n{error.stderr}", file=sys.stderr)
+        return 1
 
     if "--check" in sys.argv:
         current = OUTPUT.read_text() if OUTPUT.exists() else ""

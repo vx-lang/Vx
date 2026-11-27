@@ -163,7 +163,8 @@ impl<'a> TypeChecker<'a> {
                         }
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty = &arg_types[i];
+                            let arg_ty =
+                                &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                     "Type mismatch in argument {} for closure. Expected {}, got {}",
@@ -217,7 +218,7 @@ impl<'a> TypeChecker<'a> {
                 }
             } else {
                 for (i, param_ty) in param_types.iter().enumerate() {
-                    let arg_ty = &arg_types[i];
+                    let arg_ty = &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
                     if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                         self.errors.push(format!(
                             "Type mismatch in argument {} for closure fat pointer. Expected {}, got {}",
@@ -1321,7 +1322,8 @@ impl<'a> TypeChecker<'a> {
                         ));
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty = &arg_types[i];
+                            let arg_ty =
+                                &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                         "Type mismatch in argument {} for function pointer '{}'. Expected {}, got {}",
@@ -1343,7 +1345,8 @@ impl<'a> TypeChecker<'a> {
                         ));
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty = &arg_types[i];
+                            let arg_ty =
+                                &self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
                             if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                         "Type mismatch in argument {} for closure '{}'. Expected {}, got {}",
@@ -1374,19 +1377,23 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         let call_name = format!("{}_call", struct_name);
-                        if let Some(func) = self
+                        if let Some((param_types, closure_ret)) = self
                             .mono
                             .functions
                             .iter()
                             .find(|f| f.0.name == call_name.as_str().into())
+                            .map(|func| {
+                                (
+                                    func.0
+                                        .params
+                                        .iter()
+                                        .skip(1)
+                                        .map(|(_, t)| t.clone())
+                                        .collect::<Vec<Type>>(),
+                                    func.0.return_type.clone(),
+                                )
+                            })
                         {
-                            let param_types: Vec<Type> = func
-                                .0
-                                .params
-                                .iter()
-                                .skip(1)
-                                .map(|(_, t)| t.clone())
-                                .collect();
                             if args.len() != param_types.len() {
                                 if !self.speculating {
                                     self.errors.push(format!(
@@ -1398,7 +1405,11 @@ impl<'a> TypeChecker<'a> {
                                 }
                             } else {
                                 for (i, param_ty) in param_types.iter().enumerate() {
-                                    let arg_ty = &arg_types[i];
+                                    let arg_ty = &self.refine_literal_arg(
+                                        &mut args[i],
+                                        param_ty,
+                                        &arg_types[i],
+                                    );
                                     if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                         self.errors.push(format!(
                                                 "Type mismatch in argument {} for closure '{}'. Expected {}, got {}",
@@ -1427,7 +1438,7 @@ impl<'a> TypeChecker<'a> {
                                 by_the_compiler: false,
                             });
 
-                            func.0.return_type.clone()
+                            closure_ret
                         } else {
                             if !self.speculating {
                                 self.errors.push(format!(
@@ -1564,7 +1575,7 @@ impl<'a> TypeChecker<'a> {
                         ty @ Type::Scalar(_) if !ty.has_generic_params() => ty.clone(),
                         _ => Type::Unknown,
                     };
-                    self.instantiate_generic_function_call(
+                    let ret = self.instantiate_generic_function_call(
                         generic_func,
                         origin_hash,
                         &resolved_name,
@@ -1573,8 +1584,12 @@ impl<'a> TypeChecker<'a> {
                         &arg_types,
                         &explicit_generic_args,
                         span,
-                    )
-                    .unwrap_or(declared_scalar)
+                    );
+                    // `name` is the instance now, which has the `requires` of the template.
+                    if ret.is_some() {
+                        self.check_call_requires(name.as_ref(), &resolved_name, args, span);
+                    }
+                    ret.unwrap_or(declared_scalar)
                 } else if resolved_name.contains("::") {
                     self.check_static_method_call(&resolved_name, name, args, &arg_types, span)
                 } else if let Some(sig) = self
@@ -1593,7 +1608,8 @@ impl<'a> TypeChecker<'a> {
                     // compile the registry is empty, so this arm is inert and the call falls to E2002.
                     // The signature carries the callee's unsafe-ness precisely so an importing
                     // module can refuse the call without seeing the body. Read it here, or the
-                    // flag crosses the boundary and means nothing.
+                    // flag crosses the boundary and means nothing. The level is the same.
+                    self.refuse_a_private_imported_function(&resolved_name, &sig, span);
                     if sig.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
@@ -1746,6 +1762,39 @@ impl<'a> TypeChecker<'a> {
             _ => format!(
                 "`{shown}` is private to `{file}`. Write `pub fn {short}` there, so that other \
                  files can call it"
+            ),
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E5005,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
+        );
+    }
+
+    /// E5005 for a call of `name`, a function of a library that this program links through its
+    /// `.vxlib` interface. The library is another compile, with its own files and package, so the
+    /// program can call only its `pub` functions.
+    fn refuse_a_private_imported_function(
+        &mut self,
+        name: &str,
+        sig: &crate::registry::FnSig,
+        at: &crate::syntax::Span,
+    ) {
+        if self.speculating || sig.visibility == Visibility::Public {
+            return;
+        }
+        let file = match &sig.file {
+            Some(file) => format!("`{file}`"),
+            None => "its file".to_string(),
+        };
+        let message = match sig.visibility {
+            Visibility::Package => format!(
+                "`{name}` is `pkg` in {file} of a library that this program links, so only that \
+                 library can call it. Write `pub fn {name}` there, so that other packages can call it"
+            ),
+            _ => format!(
+                "`{name}` is private to {file}. Write `pub fn {name}` there, so that other files \
+                 can call it"
             ),
         };
         self.errors.error_with_code(
@@ -2336,6 +2385,7 @@ impl<'a> TypeChecker<'a> {
         for d in dims {
             if let Some(v) = self.extent_value(d) {
                 *d = Expr::Number(NumberExpr {
+                    written: None,
                     value: v.to_string().into(),
                     ty: None,
                     span: d.span(),
@@ -2361,6 +2411,7 @@ impl<'a> TypeChecker<'a> {
                 if !self.env.structs.contains_key(name) && !self.env.enums.contains_key(name) {
                     if let Some(v) = self.const_int(name) {
                         *arg = Type::Const(Box::new(Expr::Number(NumberExpr {
+                            written: None,
                             value: v.to_string().into(),
                             ty: None,
                             span: Span::default(),
@@ -2386,6 +2437,7 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
             **expr = Expr::Number(NumberExpr {
+                written: None,
                 value: value.into(),
                 ty: None,
                 span: Span::default(),
@@ -2695,13 +2747,7 @@ impl<'a> TypeChecker<'a> {
 
             let mut modified_func = generic_func.clone();
             modified_func.name = format!("{}::{}{}", struct_name, chosen_seg, method_name).into();
-            modified_func.generics = found_mapping
-                .keys()
-                .map(|k| decl::GenericParam::Type {
-                    name: k.clone(),
-                    bounds: Vec::new(),
-                })
-                .collect();
+            modified_func.generics = instance_generics(&found_generics, &found_mapping);
 
             let inst_func = self.instantiate_function(
                 &modified_func,
@@ -3295,7 +3341,10 @@ impl<'a> TypeChecker<'a> {
             let dynamic = matches!(ty, Type::Tensor(_, dims, _) if dims.iter().any(|d| matches!(d, Dim::Dyn(_))));
             let wanted = usize::from(dynamic) + usize::from(fills);
             if args.len() != wanted {
-                let why = if fills {
+                let why = if fills && dynamic {
+                    "a run-time extent is not in the type, so `::fill` takes the shape and then \
+                     the value: `::fill([n, m], v)`"
+                } else if fills {
                     "`::fill` takes the value to write into every element"
                 } else if wanted == 0 {
                     "a Tensor's shape is part of its type, so the constructor takes no arguments"
@@ -3553,7 +3602,32 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push(format!("Function '{}' expects 1 argument", resolved_name));
             }
-            Some(Type::Struct("Option".into(), None))
+            // A `let` with an `Option<T>` annotation names the type to write in its own error.
+            let names_option = |t: &Type| match t {
+                Type::GenericInstance(base, _) => {
+                    matches!(&**base, Type::Struct(n, _) | Type::Enum(n, _) if n.as_ref() == "Option")
+                }
+                Type::Struct(n, _) | Type::Enum(n, _) => n.as_ref() == "Option",
+                _ => false,
+            };
+            if self.expected_type.as_ref().is_some_and(names_option) || self.speculating {
+                return Some(Type::Struct("Option".into(), None));
+            }
+            let at = Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span));
+            if self.env.enums.contains_key("Option") {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E2002,
+                    "`Some(value)` does not name its enum. Write `Option::Some(value)`".to_string(),
+                    at,
+                );
+            } else {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E2003,
+                    format!("Unknown enum Option.{}", self.missing_import_hint("Option")),
+                    at,
+                );
+            }
+            Some(Type::Unknown)
         } else if resolved_name == "matmul_into" {
             // `dst = &a @ &b` rebinds dst to a fresh allocation, so a view over
             // a caller's buffer is left untouched -- and a model's
@@ -3871,6 +3945,9 @@ impl<'a> TypeChecker<'a> {
             .entry(Self::generic_body_key(template))
             .or_default();
         self.errors.drop_warnings_already_given(start, given);
+        if let Some(kept) = &mut self.kept_from_probe {
+            kept.extend(self.errors.inner.drain(start..));
+        }
     }
 
     /// `generic_method` of `ib`, instantiated at `mapping` for the receiver type `base_ty`,
@@ -3883,15 +3960,16 @@ impl<'a> TypeChecker<'a> {
         base_ty: &Type,
         ib: &decl::ImplBlock,
     ) -> Option<(Function, String)> {
-        // Provide generic mapping to the method itself by copying impl block generics
+        // The method gets the parameters of its impl block, then its own, in the order that
+        // they are written. The name of the instance lists the type arguments in that order.
         let mut modified_func = generic_method.clone();
-        modified_func.generics = mapping
-            .keys()
-            .map(|k| decl::GenericParam::Type {
-                name: k.clone(),
-                bounds: Vec::new(),
-            })
+        let declared: Vec<decl::GenericParam> = ib
+            .generics
+            .iter()
+            .chain(&generic_method.generics)
+            .cloned()
             .collect();
+        modified_func.generics = instance_generics(&declared, mapping);
         let mut method_func =
             self.instantiate_function(&modified_func, mapping, &std::collections::HashMap::new())?;
 
@@ -4723,7 +4801,17 @@ impl<'a> TypeChecker<'a> {
                     // A method that is not found might have changed its receiver; assume so,
                     // so the error does not also bring a warning that its `mut` is not needed.
                     self.changed_vars.extend(receiver_root.clone());
-                    if !self.speculating {
+                    if _method.as_ref() == "is_standard_error" {
+                        // `print_s!` and `println_s!` call it on their first argument.
+                        if !self.speculating {
+                            self.errors.push(format!(
+                                "the first argument of `print_s!` or `println_s!` is the right to \
+                                 print: a `Stdout` or a `Stderr` from `root`, or a reference to \
+                                 one. Its type is `{base_ty}`"
+                            ));
+                        }
+                        base_ty = Type::Scalar(ElementType::Bool);
+                    } else if !self.speculating {
                         self.errors.push(format!(
                             "Method '{}' not found on type {}",
                             _method, base_ty
@@ -5220,6 +5308,7 @@ impl<'a> TypeChecker<'a> {
                     let empty_env = HashMap::new();
                     let mut new_dims = vec![
                         Dim::Static(Expr::Number(NumberExpr {
+                            written: None,
                             value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default()
@@ -5305,4 +5394,34 @@ fn standard_type_module(type_name: &str) -> Option<&'static str> {
         "String" => Some("std::string"),
         _ => None,
     }
+}
+
+/// The parameters of an instance: each name of `declared` that `mapping` binds, in the order that
+/// `declared` lists them and once, then any other name of `mapping`, sorted. The name of the
+/// instance lists its type arguments in this order, so it must not depend on a `HashMap`.
+fn instance_generics(
+    declared: &[decl::GenericParam],
+    mapping: &std::collections::HashMap<crate::symbol::Symbol, Type>,
+) -> Vec<decl::GenericParam> {
+    let mut names: Vec<crate::symbol::Symbol> = Vec::new();
+    for g in declared {
+        let name = crate::symbol::Symbol::from(g.name());
+        if mapping.contains_key(&name) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let mut rest: Vec<crate::symbol::Symbol> = mapping
+        .keys()
+        .filter(|k| !names.contains(k))
+        .cloned()
+        .collect();
+    rest.sort();
+    names.extend(rest);
+    names
+        .into_iter()
+        .map(|name| decl::GenericParam::Type {
+            name,
+            bounds: Vec::new(),
+        })
+        .collect()
 }

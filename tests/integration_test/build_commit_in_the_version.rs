@@ -9,7 +9,8 @@
 // A build with `VX_VERSION_WITH_COMMIT=1` makes `vxc --version` name the commit that vxc was built
 // from, so two builds of one version can be told apart. The commit must be the one checked out
 // now: Cargo builds vxc again before this test runs, so an older commit means the build did not
-// notice a new one. A build without it prints the version alone.
+// notice a new one. A build without it prints the version alone. `vx-format`, `vx-api` and
+// `vx-opt` print their own name and the same version. `vx-opt` also prints LLVM's lines after it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,18 +38,48 @@ fn checked_out_commit() -> Option<String> {
     git(&["rev-parse", "--short=8", "HEAD"])
 }
 
-#[test]
-fn vxc_version_names_the_commit_it_was_built_from() {
-    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+/// The first line `--version` prints for a tool named `name`.
+fn expected_version_line(name: &str) -> String {
+    // Cargo builds this test and the tools in one run, with the same environment.
+    let with_commit = option_env!("VX_VERSION_WITH_COMMIT") == Some("1");
+    match checked_out_commit().filter(|_| with_commit) {
+        Some(commit) => format!("{name} {} ({commit})", env!("CARGO_PKG_VERSION")),
+        None => format!("{name} {}", env!("CARGO_PKG_VERSION")),
+    }
+}
+
+fn version_output(program: &str) -> String {
+    let out = Command::new(program)
         .arg("--version")
         .output()
-        .expect("run vxc --version");
-    assert!(out.status.success(), "vxc --version failed: {out:?}");
-    // Cargo builds this test and vxc in one run, with the same environment.
-    let with_commit = option_env!("VX_VERSION_WITH_COMMIT") == Some("1");
-    let expected = match checked_out_commit().filter(|_| with_commit) {
-        Some(commit) => format!("vxc {} ({commit})\n", env!("CARGO_PKG_VERSION")),
-        None => format!("vxc {}\n", env!("CARGO_PKG_VERSION")),
-    };
-    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+        .expect("run --version");
+    assert!(out.status.success(), "{program} --version failed: {out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn vxc_version_names_the_commit_it_was_built_from() {
+    let expected = format!("{}\n", expected_version_line("vxc"));
+    assert_eq!(version_output(env!("CARGO_BIN_EXE_vxc")), expected);
+}
+
+#[test]
+fn vx_format_version_names_vx_format() {
+    let expected = format!("{}\n", expected_version_line("vx-format"));
+    assert_eq!(version_output(env!("CARGO_BIN_EXE_vx-format")), expected);
+}
+
+#[test]
+fn vx_api_version_names_vx_api() {
+    let expected = format!("{}\n", expected_version_line("vx-api"));
+    assert_eq!(version_output(env!("CARGO_BIN_EXE_vx-api")), expected);
+}
+
+#[test]
+fn vx_opt_version_starts_with_its_own_name() {
+    let text = version_output(env!("CARGO_BIN_EXE_vx-opt"));
+    let first_line = text.lines().next().unwrap_or_default();
+    assert_eq!(first_line, expected_version_line("vx-opt"));
+    // LLVM's own lines still follow.
+    assert!(text.contains("LLVM version"), "{text}");
 }

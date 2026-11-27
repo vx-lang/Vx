@@ -1,0 +1,393 @@
+//===- a_value_with_drop_holds_a_reference_to_a_value_dropped_before_it.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not='Error['
+//
+// A block drops its values in the reverse of the order they are declared in. `Peek` has a
+// `drop` that reads its reference. So a `Peek` must not hold a reference to a `Vec` that is
+// declared after it: the `Vec` is dropped first, and the `drop` of the `Peek` would read freed
+// memory. Each function gives `p` such a reference in a different way. The functions after
+// `only_one_path_drops_by_hand` are valid, and get no error.
+
+import core::mem;
+import core::ops;
+import std::vec;
+
+struct Peek {
+  r : &Vec<i64>,
+}
+
+impl Drop for Peek {
+  fn drop(self : &mut Peek) -> void {
+    println!("peek {}", *self.r.get_ref(0));
+  }
+}
+
+impl Peek {
+  fn point_at(self : &mut Peek, b : &Vec<i64>) -> void {
+    self.r = b;
+  }
+}
+
+struct Outer {
+  inner : Peek,
+}
+
+// `Plain` has no `drop`, so it can hold a reference to any value that lives long enough.
+struct Plain {
+  r : &Vec<i64>,
+}
+
+fn one(n : i64) -> Vec<i64> {
+  let mut v = Vec<i64>::new();
+  v.push(n);
+  return v;
+}
+
+fn make(r : &Vec<i64>) -> Peek {
+  return Peek {
+    r : r
+  };
+}
+
+fn make_from_the_second(first : &Vec<i64>, second : &Vec<i64>) -> Peek {
+  println!("{}", first.len());
+  return Peek {
+    r : second
+  };
+}
+
+fn point_at(p : &mut Peek, b : &Vec<i64>) -> void {
+  p.r = b;
+}
+
+fn point_at_and_count(p : &mut Peek, b : &Vec<i64>) -> i32 {
+  p.r = b;
+  return 0;
+}
+
+// Both `return`s drop `b` before `p`. The error is reported once.
+fn a_field_is_given_a_reference(c : bool) -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement. The declaration of `b` comes after `p`, so the block drops `b` first. The `drop` of `p` can then read `b`. Declare `b` before `p`
+  p.r = &b;
+  if c {
+    return 1;
+  }
+  return 0;
+}
+
+fn a_field_is_given_a_variable_that_holds_a_reference() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  let rb = &b;
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p.r = rb;
+  return 0;
+}
+
+fn a_field_of_a_field_is_given_a_reference() -> i32 {
+  let a = one(1i64);
+  let mut o = Outer {
+    inner : Peek {
+      r : &a
+    }
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `o` may hold a reference to `b` after this statement.
+  o.inner.r = &b;
+  return 0;
+}
+
+fn the_variable_is_given_a_new_value() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p = Peek {
+    r : &b
+  };
+  return 0;
+}
+
+fn a_call_returns_the_new_value() -> i32 {
+  let a = one(1i64);
+  let mut p = make(&a);
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p = make(&b);
+  return 0;
+}
+
+fn a_function_stores_the_reference() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  point_at(&mut p, &b);
+  return 0;
+}
+
+fn a_method_stores_the_reference() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p.point_at(&b);
+  return 0;
+}
+
+fn a_field_is_given_the_field_of_another_value() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  let other = Plain {
+    r : &b
+  };
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p.r = other.r;
+  return 0;
+}
+
+fn a_new_value_is_made_from_the_field_of_another_value() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  let other = Plain {
+    r : &b
+  };
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p = Peek {
+    r : other.r
+  };
+  return 0;
+}
+
+fn the_variable_is_given_the_field_of_another_value() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  let o = Outer {
+    inner : Peek {
+      r : &b
+    }
+  };
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p = o.inner;
+  return 0;
+}
+
+fn the_return_stores_the_reference() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  return point_at_and_count(&mut p, &b);
+}
+
+fn the_function_has_no_return() -> void {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p.r = &b;
+}
+
+// The call that stores the reference is the value of the `if` block.
+fn the_value_of_a_block_stores_the_reference(c : bool) -> i32 {
+  let n = if c {
+    let a = one(1i64);
+    let mut p = Peek {
+      r : &a
+    };
+    let b = one(2i64);
+    // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:5: `p` may hold a reference to `b` after this statement.
+    point_at_and_count(&mut p, &b)
+  } else {
+    0
+  };
+  return n;
+}
+
+// No `let` declares a parameter, so the advice is different.
+fn a_parameter_is_given_a_reference(mut p : Peek) -> i32 {
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement. {{.*}} Move `p` into a new variable, with a `let` after the `let` of `b`
+  p.r = &b;
+  return 0;
+}
+
+fn a_vec_is_given_a_value_that_holds_a_reference() -> i32 {
+  let mut v = Vec<Peek>::new();
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `v` may hold a reference to `b` after this statement.
+  v.push(Peek {
+    r : &b
+  });
+  return 0;
+}
+
+fn the_reference_is_given_inside_an_if(c : bool) -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  if c {
+    // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:5: `p` may hold a reference to `b` after this statement.
+    p.r = &b;
+  }
+  return 0;
+}
+
+// `drop(p)` ends `p` before `b` is dropped, but the first `return` does not get there.
+fn one_return_comes_before_the_drop_by_hand(c : bool) -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p.r = &b;
+  if c {
+    return 1;
+  }
+  drop(p);
+  return 0;
+}
+
+// Only one path drops `p` by hand. On the other path `p` is dropped after `b`.
+fn only_one_path_drops_by_hand(c : bool) -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:3: `p` may hold a reference to `b` after this statement.
+  p.r = &b;
+  if c {
+    drop(p);
+  }
+  return 0;
+}
+
+// `b` is declared before `p`, so `p` is dropped first.
+fn the_vec_is_declared_first() -> i32 {
+  let a = one(1i64);
+  let b = one(2i64);
+  let mut p = Peek {
+    r : &a
+  };
+  p.r = &b;
+  return 0;
+}
+
+// `drop(p)` ends `p` on every path, before `b` is dropped.
+fn every_path_drops_by_hand() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  p.r = &b;
+  drop(p);
+  return 0;
+}
+
+// `p` holds a reference to the first `b`, which is declared before it. The second `b` is
+// another variable.
+fn a_later_variable_has_the_name_of_the_vec() -> i32 {
+  let b = one(2i64);
+  let p = Peek {
+    r : &b
+  };
+  let b = one(3i64);
+  return b.len() as i32;
+}
+
+// The `p` in the `if` is another variable, and it has no `drop`.
+fn an_inner_variable_has_the_name_of_the_value() -> i32 {
+  let a = one(1i64);
+  let p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  if b.len() == 1 {
+    let p = Plain {
+      r : &b
+    };
+    return p.r.len() as i32;
+  }
+  return 0;
+}
+
+// The `p` in the `if` is another variable, and it is a reference.
+fn an_inner_reference_has_the_name_of_the_value() -> i32 {
+  let a = one(1i64);
+  let p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  if b.len() == 1 {
+    let p = &b;
+    return p.len() as i32;
+  }
+  return 0;
+}
+
+// `make_from_the_second` returns a value that holds only its second argument.
+fn a_call_reads_the_vec_and_keeps_another() -> i32 {
+  let a = one(1i64);
+  let mut p = Peek {
+    r : &a
+  };
+  let b = one(2i64);
+  p = make_from_the_second(&b, &a);
+  return 0;
+}
+
+fn main() -> i32 {
+  let a = one(1i64);
+  the_function_has_no_return();
+  return a_field_is_given_a_reference(true) + a_field_is_given_a_variable_that_holds_a_reference()
+  + a_field_of_a_field_is_given_a_reference() + the_variable_is_given_a_new_value()
+  + a_call_returns_the_new_value() + a_function_stores_the_reference()
+  + a_method_stores_the_reference() + a_field_is_given_the_field_of_another_value()
+  + a_new_value_is_made_from_the_field_of_another_value()
+  + the_variable_is_given_the_field_of_another_value() + the_return_stores_the_reference()
+  + the_value_of_a_block_stores_the_reference(true) + a_parameter_is_given_a_reference(make(&a))
+  + a_vec_is_given_a_value_that_holds_a_reference() + the_reference_is_given_inside_an_if(true)
+  + one_return_comes_before_the_drop_by_hand(true) + only_one_path_drops_by_hand(true)
+  + the_vec_is_declared_first() + every_path_drops_by_hand()
+  + a_later_variable_has_the_name_of_the_vec() + an_inner_variable_has_the_name_of_the_value()
+  + an_inner_reference_has_the_name_of_the_value() + a_call_reads_the_vec_and_keeps_another();
+}
+
+// CHECK: 18 error(s) emitted

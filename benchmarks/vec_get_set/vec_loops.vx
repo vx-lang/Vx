@@ -1,0 +1,67 @@
+// Times four loops over a `Vec<i64>` of 50 million values. `fill_set` and `sum_get` use the
+// methods of `Vec`. `fill_raw` and `sum_raw` use a raw pointer, and are the controls.
+// Each line of output is `<loop> <microseconds> <result>`.
+import core::convert;
+import core::time;
+import std::time;
+import std::vec;
+
+fn fill_set(a : &mut Vec<i64>, n : i32) -> i32 {
+  for i in 0..n {
+    a.set(i, i64::from(i));
+  }
+  return 0;
+}
+
+fn fill_raw(a : &mut Vec<i64>, n : i32) -> i32 {
+  let q : *mut i64 = a.as_mut_ptr();
+  for i in 0..n {
+    unsafe { q[i] = i64::from(i); }
+  }
+  return 0;
+}
+
+fn sum_get(a : &Vec<i64>, n : i32) -> i64 {
+  let mut s : i64 = 0;
+  for i in 0..n {
+    s = s + a.get(i);
+  }
+  return s;
+}
+
+fn sum_raw(a : &Vec<i64>, n : i32) -> i64 {
+  let q : *mut i64 = a.as_mut_ptr();
+  let mut s : i64 = 0;
+  for i in 0..n {
+    s = s + unsafe { q[i] };
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let n : i32 = 50000000;
+  let mut a = Vec<i64>::with_capacity(n);
+  for i in 0..n {
+    a.push(0);
+  }
+  // On macOS, the first loop that writes the vector after `push` took 3 to 5 times longer,
+  // whichever loop it was. This pass takes that cost, so that no timed loop does.
+  fill_raw(&mut a, n);
+
+  let t0 = Instant::now();
+  fill_set(&mut a, n);
+  println!("fill_set {} {}", t0.elapsed().as_micros(), a.get(n - 1));
+
+  let t1 = Instant::now();
+  fill_raw(&mut a, n);
+  println!("fill_raw {} {}", t1.elapsed().as_micros(), a.get(n - 1));
+
+  let t2 = Instant::now();
+  let s2 = sum_get(&a, n);
+  println!("sum_get {} {}", t2.elapsed().as_micros(), s2);
+
+  let t3 = Instant::now();
+  let s3 = sum_raw(&a, n);
+  println!("sum_raw {} {}", t3.elapsed().as_micros(), s3);
+  return 0;
+}

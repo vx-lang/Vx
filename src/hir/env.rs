@@ -672,6 +672,9 @@ pub struct TypeChecker<'a> {
     /// type that a `return` of the closure gave, after the statements, which reset
     /// `expected_type`.
     pub(crate) closure_body_next: bool,
+    /// Whether a statement of the block that the checker finished last has the type `!`, as a
+    /// call of a `-> !` method has. No path reaches the end of such a block.
+    pub(crate) last_block_has_a_never_statement: bool,
     /// Inside the body of an `unsafe fn`, whose caller keeps the promises the body cannot check.
     pub(crate) in_unsafe_fn: bool,
     /// Inside an `unsafe` block someone wrote, not only one the compiler made for `vec![..]`.
@@ -702,6 +705,10 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// While a probe runs whose diagnostics the checker drops: the diagnostics of each function
+    /// body that the probe checks for the first time. No later check repeats that body, so the
+    /// checker keeps them.
+    pub(crate) kept_from_probe: Option<Vec<crate::diagnostic::Diagnostic>>,
     /// The `for` loops around the expression being checked, innermost last.
     pub(crate) unroll_candidates: Vec<UnrollCandidate>,
     /// Identifiers already reported as unreadable from the active topology, so the indexing of
@@ -833,6 +840,32 @@ pub struct TypeChecker<'a> {
     pub(crate) across_register_indices: Vec<(String, String, crate::syntax::Span)>,
 }
 
+/// The keys of `mapping` in the order that `generics` declares them, as the program writes the
+/// arguments: `fn pair<B, A>` gives `B`, then `A`. A key that `generics` does not declare comes
+/// after them, in sorted order, so that the name is the same in each run. `T::Item` follows from
+/// `T`, so it adds nothing to the name.
+fn in_declared_order<'m, V>(
+    generics: &[crate::syntax::decl::GenericParam],
+    mapping: &'m std::collections::HashMap<crate::symbol::Symbol, V>,
+) -> Vec<&'m crate::symbol::Symbol> {
+    use crate::syntax::decl::GenericParam;
+    let mut keys: Vec<&crate::symbol::Symbol> = generics
+        .iter()
+        .filter_map(|g| match g {
+            GenericParam::Type { name, .. } | GenericParam::Const { name, .. } => {
+                mapping.get_key_value(name).map(|(k, _)| k)
+            }
+        })
+        .filter(|k| !k.as_ref().contains("::"))
+        .collect();
+    let mut rest: Vec<&crate::symbol::Symbol> = mapping
+        .keys()
+        .filter(|k| !k.as_ref().contains("::") && !keys.contains(k))
+        .collect();
+    rest.sort();
+    keys.extend(rest);
+    keys
+}
 impl<'a> TypeChecker<'a> {
     pub fn new(
         env: &'a GlobalAstEnv<'a>,
@@ -857,6 +890,7 @@ impl<'a> TypeChecker<'a> {
             in_unsafe_block: false,
             tokens: Vec::new(),
             closure_body_next: false,
+            last_block_has_a_never_statement: false,
             in_unsafe_fn: false,
             in_written_unsafe_block: false,
             unsafe_op_seen: false,
@@ -870,6 +904,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            kept_from_probe: None,
             unroll_candidates: Vec::new(),
             unreadable_reported: Default::default(),
             device_spawn: None,
@@ -1052,7 +1087,7 @@ impl<'a> TypeChecker<'a> {
                 .as_deref()
                 .is_some_and(|n| self.borrow.is_running_task(n))
             {
-                self.borrow.record(&base, record);
+                self.borrow.record_again(&base, record);
                 continue;
             }
             let Some(held_at) = record
@@ -1063,7 +1098,7 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
             record.scope_depth = record.scope_depth.min(held_at);
-            self.borrow.record(&base, record);
+            self.borrow.record_again(&base, record);
         }
     }
 
@@ -1959,13 +1994,7 @@ impl<'a> TypeChecker<'a> {
         topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
     ) -> Option<Function> {
         let mut mangled_name = generic_func.name.to_string();
-        // `T::Item` follows from `T`, so it adds nothing to the name.
-        let mut sorted_keys: Vec<&crate::symbol::Symbol> = mapping
-            .keys()
-            .filter(|k| !k.as_ref().contains("::"))
-            .collect();
-        sorted_keys.sort();
-        for g_name in sorted_keys {
+        for g_name in in_declared_order(&generic_func.generics, mapping) {
             if let Some(ty) = mapping.get(g_name) {
                 let Some(type_name) = crate::syntax::identity::specialization_type_name(ty) else {
                     if !self.speculating {
@@ -1980,9 +2009,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         // Device indices and slice bounds also distinguish topology instantiations.
-        let mut topo_keys: Vec<&crate::symbol::Symbol> = topo_mapping.keys().collect();
-        topo_keys.sort();
-        for g_name in topo_keys {
+        for g_name in in_declared_order(&generic_func.generics, topo_mapping) {
             if let Some(top) = topo_mapping.get(g_name) {
                 let Some(key) = crate::syntax::identity::topology_key(top) else {
                     if !self.speculating {

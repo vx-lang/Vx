@@ -14890,6 +14890,14 @@ struct BoundedInlinerPass
     if (isa<func::FuncOp>(body->getParentOp()) && body->hasOneBlock() &&
         (body->front().empty() || !isa<func::ReturnOp>(body->front().back())))
       return false;
+    // A function that LLVM must not inline, such as one declared `-> !`,
+    // stays a call here too.
+    if (auto passthrough =
+            body->getParentOp()->getAttrOfType<ArrayAttr>("passthrough"))
+      for (Attribute a : passthrough)
+        if (auto name = dyn_cast<StringAttr>(a);
+            name && name.getValue() == "noinline")
+          return false;
     unsigned ops = 0;
     body->walk([&](Operation *) { ++ops; });
     return ops <= kMaxInlinedOps;

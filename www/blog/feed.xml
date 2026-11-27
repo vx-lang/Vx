@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-11-25T18:00:00Z</updated>
+  <updated>2026-11-27T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Why Vx is easier to read than C++ and Rust</title>
+    <link href="https://vxlang.org/blog/why-vx-is-easier-to-read-than-cpp-and-rust.html"/>
+    <id>https://vxlang.org/blog/why-vx-is-easier-to-read-than-cpp-and-rust.html</id>
+    <updated>2026-11-27T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Vx keeps the parts of C++ and Rust that read well: types after names, trait bounds, and macros that match tokens. It leaves out the turbofish, async functions, lifetime markers, the constraint strings of inline assembly, #[cfg] attributes and the C preprocessor. Parallel code is a loop with across blocks and across lanes, and requires and ensures say what a function needs and gives, which z3 proves at compile time. Each section shows the same code in C++, Rust and Vx, and the last section says what each choice costs.</summary>
+  </entry>
 
   <entry>
     <title>How main got its parameters</title>

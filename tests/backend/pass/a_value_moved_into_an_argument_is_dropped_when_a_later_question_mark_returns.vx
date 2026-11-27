@@ -1,0 +1,199 @@
+//===- a_value_moved_into_an_argument_is_dropped_when_a_later_question_mark_returns.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call takes the values of its arguments when it runs, after every argument. When a `?` in a
+// later argument returns first, the function still owns the value and drops it. Each `Noisy`
+// prints `gone N` at its drop, once.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=gone
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=gone
+import core::result;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("gone {}", self.id);
+  }
+}
+
+impl Noisy {
+  fn take(self : Noisy, k : i32) -> i32 {
+    return self.id + k;
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : i32,
+}
+
+enum Holder {
+  Two(Noisy, i32),
+}
+
+fn fails() -> Result<i32, i32> {
+  return Result<i32, i32>::Err(4);
+}
+
+fn works() -> Result<i32, i32> {
+  return Result<i32, i32>::Ok(1);
+}
+
+fn take_first(_n : Noisy, k : i32) -> i32 {
+  return k;
+}
+
+// Takes `n`, and drops it at its end.
+fn eat(n : Noisy) -> i32 {
+  return n.id;
+}
+
+fn eat_with(n : Noisy, k : i32) -> i32 {
+  return n.id + k;
+}
+
+fn add(a : i32, b : i32) -> i32 {
+  return a + b;
+}
+
+fn noisy(id : i32) -> Noisy {
+  return Noisy {
+    id : id
+  };
+}
+
+fn before_a_question_mark() -> Result<i32, i32> {
+  let n = noisy(11);
+  let _k = take_first(n, fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+// The `?` does not return, so the call runs and drops the value.
+fn the_call_runs() -> Result<i32, i32> {
+  let n = noisy(12);
+  let k = take_first(n, works()?);
+  return Result<i32, i32>::Ok(k);
+}
+
+// `eat` runs before the `?` and takes `n`. So the `?` must not drop `n` again.
+fn in_an_inner_call() -> Result<i32, i32> {
+  let n = noisy(13);
+  let _k = add(eat(n), fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+// The same with an inner call of two arguments, which waits for its last argument too.
+fn in_an_inner_call_of_two_arguments() -> Result<i32, i32> {
+  let n = noisy(22);
+  let _k = add(eat_with(n, 0), fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+fn in_a_struct_literal() -> Result<i32, i32> {
+  let n = noisy(14);
+  let _p = Pair {
+    a : n,
+    b : fails()?
+  };
+  return Result<i32, i32>::Ok(0);
+}
+
+fn in_an_enum_variant() -> Result<i32, i32> {
+  let n = noisy(15);
+  let _h = Holder::Two(n, fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+fn as_a_method_receiver() -> Result<i32, i32> {
+  let n = noisy(16);
+  let _k = n.take(fails()?);
+  return Result<i32, i32>::Ok(0);
+}
+
+fn in_an_if(c : bool) -> Result<i32, i32> {
+  let n = noisy(17);
+  let _k = take_first(n, if c {
+    fails()?
+  } else {
+    0
+  });
+  return Result<i32, i32>::Ok(0);
+}
+
+// With `c` false, the argument does not take `n`, so `n` is dropped at the end of the function.
+fn in_a_branch_of_an_argument(c : bool) -> Result<i32, i32> {
+  let n = noisy(18);
+  let k = take_first(if c {
+    n
+  } else {
+    noisy(19)
+  }, works()?);
+  return Result<i32, i32>::Ok(k);
+}
+
+// The later argument gives `n` a new value after the first argument took the old one. The call
+// drops the old value, and the function drops the new one at its end.
+fn a_new_value_in_a_later_argument(c : bool) -> Result<i32, i32> {
+  let mut n = noisy(20);
+  let k = take_first(n, if c {
+    n = noisy(21);
+    works()?
+  } else {
+    0
+  });
+  return Result<i32, i32>::Ok(k);
+}
+
+fn show(what : *const i8, r : Result<i32, i32>) -> void {
+  match r {
+    Result<i32, i32>::Ok(v) => {
+      println!("{} gave {}", what, v);
+    }
+    Result<i32, i32>::Err(e) => {
+      println!("{} failed with {}", what, e);
+    }
+  }
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}gone 11{{$}}
+  // CHECK-NEXT: {{^}}before a question mark failed with 4{{$}}
+  show("before a question mark", before_a_question_mark());
+  // CHECK-NEXT: {{^}}gone 12{{$}}
+  // CHECK-NEXT: {{^}}the call runs gave 1{{$}}
+  show("the call runs", the_call_runs());
+  // CHECK-NEXT: {{^}}gone 13{{$}}
+  // CHECK-NEXT: {{^}}in an inner call failed with 4{{$}}
+  show("in an inner call", in_an_inner_call());
+  // CHECK-NEXT: {{^}}gone 22{{$}}
+  // CHECK-NEXT: {{^}}in an inner call of two arguments failed with 4{{$}}
+  show("in an inner call of two arguments", in_an_inner_call_of_two_arguments());
+  // CHECK-NEXT: {{^}}gone 14{{$}}
+  // CHECK-NEXT: {{^}}in a struct literal failed with 4{{$}}
+  show("in a struct literal", in_a_struct_literal());
+  // CHECK-NEXT: {{^}}gone 15{{$}}
+  // CHECK-NEXT: {{^}}in an enum variant failed with 4{{$}}
+  show("in an enum variant", in_an_enum_variant());
+  // CHECK-NEXT: {{^}}gone 16{{$}}
+  // CHECK-NEXT: {{^}}as a method receiver failed with 4{{$}}
+  show("as a method receiver", as_a_method_receiver());
+  // CHECK-NEXT: {{^}}gone 17{{$}}
+  // CHECK-NEXT: {{^}}in an if failed with 4{{$}}
+  show("in an if", in_an_if(true));
+  // CHECK-NEXT: {{^}}gone 19{{$}}
+  // CHECK-NEXT: {{^}}gone 18{{$}}
+  // CHECK-NEXT: {{^}}in a branch of an argument gave 1{{$}}
+  show("in a branch of an argument", in_a_branch_of_an_argument(false));
+  // CHECK-NEXT: {{^}}gone 20{{$}}
+  // CHECK-NEXT: {{^}}gone 21{{$}}
+  // CHECK-NEXT: {{^}}a new value in a later argument gave 1{{$}}
+  show("a new value in a later argument", a_new_value_in_a_later_argument(true));
+  return 0;
+}

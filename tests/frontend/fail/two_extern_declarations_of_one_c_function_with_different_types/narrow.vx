@@ -1,0 +1,18 @@
+//===- narrow.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares `labs` with a 32-bit integer. main.vx says which declarations disagree. Compiled alone, this module has no
+// error.
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: module
+extern {
+  pub fn labs(n : i32) -> i32;
+  pub fn atoi(s : *const u8) -> i64;
+  pub fn strlen(s : *const u8) -> u64;
+  pub fn abs(n : i32) -> i32;
+}

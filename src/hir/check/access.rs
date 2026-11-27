@@ -148,6 +148,7 @@ impl<'a> TypeChecker<'a> {
                 n.value.clone()
             };
             return Some(Expr::Number(NumberExpr {
+                written: None,
                 value,
                 ty: Some(elem),
                 span: *span,
@@ -177,12 +178,14 @@ impl<'a> TypeChecker<'a> {
                 span: *span,
             })),
             (Value::Int(i), false) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: i.to_string().into(),
                 ty: Some(elem),
                 span: *span,
             })),
             (Value::Number(f), false) if is_float && f.is_finite() => {
                 Some(Expr::Number(NumberExpr {
+                    written: None,
                     value: f.to_string().into(),
                     ty: Some(elem),
                     span: *span,
@@ -1183,7 +1186,8 @@ impl<'a> TypeChecker<'a> {
     /// `v[i] = x` on a user container such as `Vec<T>` is `v.set(i, x)`, as a read `v[i]` is
     /// `v.get(i)`. `set` drops the element it replaces. `v[i] += x` is
     /// `v.set(i, v.get(i) + x)`, when `v` and `i` call nothing, so naming them twice is safe.
-    /// `None` when the type has no `set`, or when it has `IndexMut`, which the write goes through.
+    /// `None` when the type has no `set`. A write to a field, `v[i].n = x`, goes through
+    /// `IndexMut`, as in Rust.
     pub(crate) fn container_store(
         &mut self,
         lhs: &Expr,
@@ -1206,7 +1210,7 @@ impl<'a> TypeChecker<'a> {
         let has = |s: &mut Self, m: &str, mapping: &mut HashMap<_, _>| {
             s.resolve_method_in_impls(&ty, &m.into(), mapping).is_some()
         };
-        if has(self, "index_mut", &mut mapping) || !has(self, "set", &mut mapping) {
+        if !has(self, "set", &mut mapping) {
             return None;
         }
         let call = |name: &str, args: Vec<Expr>| {
@@ -2956,6 +2960,7 @@ impl<'a> TypeChecker<'a> {
 pub(crate) fn extent_literal(value: i64, span: Span) -> Expr {
     let value = value.to_string();
     Expr::Number(NumberExpr {
+        written: None,
         ty: Some(crate::parser::expr::default_number_elem(&value)),
         value: value.into(),
         span,
