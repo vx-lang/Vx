@@ -6241,8 +6241,29 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                 continue;
             }
 
-            let arg_ty_str = arg_ty.to_string();
-            if arg_ty_str == r#"!llvm.struct<"String", (ptr)>"# {
+            let mut arg_ty_str = arg_ty.to_string();
+            let mut arg_val = arg_val;
+            // A reference to a `String`, such as `&s` or `v.get_ref(0)`, is a pointer to it.
+            // The `String` is read through it, and printed as below.
+            let string_ty = r#"!llvm.struct<"String", (ptr)>"#;
+            let to_a_string = matches!(gen.infer_ast_type(arg),
+                Some(syntax::Type::Borrow { inner, .. })
+                    if matches!(&*inner, syntax::Type::Struct(n, _) if n.as_ref() == "String"));
+            if arg_ty_str == "!llvm.ptr" && to_a_string {
+                let ty = melior::ir::Type::parse(gen.context, string_ty)
+                    .ok_or_else(|| LowerError::from("the type of a String".to_string()))?;
+                arg_val = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.load", gen.loc())
+                            .add_operands(&[arg_val])
+                            .add_results(&[ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                arg_ty_str = string_ty.to_string();
+            }
+            if arg_ty_str == string_ty {
                 // A `String` prints through a NUL-terminated copy of its contents, freed after.
                 let handle = block
                     .append_operation(
