@@ -1,0 +1,21 @@
+//===- match_arm_body_without_braces.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A Rust programmer writes `0 => 7,`. The body of a match arm in Vx is a block in braces.
+// The error says so and points at the body. It does not say that a ';' is missing.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let x = 3;
+  // CHECK: Error at {{.*}}match_arm_body_without_braces.vx:[[@LINE+3]]:10: The body of a match arm is a block in braces, as in `0 => { 7 }`
+  // CHECK-NOT: Expected ';'
+  let y = match x {
+    0 => 7, _ => 9
+  };
+  return y;
+}

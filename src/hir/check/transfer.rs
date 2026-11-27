@@ -811,6 +811,11 @@ impl<'a> TypeChecker<'a> {
                 return;
             };
             let Some(raw) = crate::hir::memory::static_tensor_bytes(elem, dims) else {
+                // A parameter, a return type, a struct field or a raw pointer makes no tensor.
+                // The code that makes the tensor gets the check, or this warning.
+                if !record {
+                    return;
+                }
                 // A dynamic (non-literal) shape placed in a capacity-bounded space cannot be
                 // capacity-checked (E6009/E6010) — warn rather than skip silently, so the user knows
                 // the placement is unverified. We are past the `capacity` guard above, so there
@@ -825,7 +830,7 @@ impl<'a> TypeChecker<'a> {
                         Dim::Static(Expr::Identifier(id)) => {
                             format!("dimension {i} is the runtime value '{}'", id.name)
                         }
-                        Dim::Dyn => format!("dimension {i} is a run-time extent"),
+                        Dim::Dyn(_) => format!("dimension {i} is a run-time extent"),
                         _ => format!("dimension {i} is not a compile-time constant"),
                     })
                     .unwrap_or_else(|| "the shape is not statically known".to_string());
@@ -2528,17 +2533,20 @@ impl<'a> TypeChecker<'a> {
     fn pinned_topology_for(space: &MemorySpace) -> Topology {
         match space {
             MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                written: None,
                 value: "0".into(),
                 ty: Some(ElementType::I32),
                 span: Span::default(),
             }))),
             MemorySpace::LocalSRAM => Topology::AccCore(Box::new(Expr::Number(NumberExpr {
+                written: None,
                 value: "0".into(),
                 ty: Some(ElementType::I32),
                 span: Span::default(),
             }))),
             MemorySpace::NicRam | MemorySpace::RemoteHbm => {
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                    written: None,
                     value: "0".into(),
                     ty: Some(ElementType::I32),
                     span: Span::default(),

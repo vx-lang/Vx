@@ -43,6 +43,41 @@ fn return_the_trailing_expression(body: &mut [Statement]) {
 }
 
 impl<'a> Parser<'a> {
+    /// The message for a `#` where an item should start. Vx has no attributes. For
+    /// `#[derive(Clone)]` and `#[derive(Copy)]`, it shows the `impl` to write instead.
+    fn attribute_message(&self) -> String {
+        let mut message = String::from("Vx has no attributes yet, so `#[...]` does not work.");
+        let is_derive = self.peek_n(1).kind == TokenType::LeftBracket
+            && self.peek_n(2).kind == TokenType::Identifier("derive")
+            && self.peek_n(3).kind == TokenType::LeftParen;
+        if !is_derive {
+            return message;
+        }
+        let mut impls = Vec::new();
+        let mut offset = 4;
+        while let TokenType::Identifier(name) = self.peek_n(offset).kind {
+            match name {
+                "Clone" => {
+                    impls.push("`impl Clone for Type { fn clone(self : &Self) -> Self { ... } }`")
+                }
+                "Copy" => impls.push("`impl Copy for Type {}`"),
+                _ => {}
+            }
+            offset += 1;
+            if self.peek_n(offset).kind != TokenType::Comma {
+                break;
+            }
+            offset += 1;
+        }
+        if !impls.is_empty() {
+            message.push_str(&format!(
+                " Write the impl yourself: {}.",
+                impls.join(" and ")
+            ));
+        }
+        message
+    }
+
     pub(crate) fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
         let token = self.advance();
         match &token.kind {
@@ -58,10 +93,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The parameters of a function. With `extent_names`, a tensor type of a parameter can name
+    /// its run-time extents, as `?n` does in `t : &Tensor<f32, [?n]>`.
     fn parse_comma_separated_params(
         &mut self,
+        extent_names: bool,
     ) -> ParseResult<'a, Vec<(crate::symbol::Symbol, Type)>> {
         let mut params: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
+        let mut name_tokens = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
                 let is_mut = self.match_token(&TokenType::Mut);
@@ -80,12 +119,41 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 self.consume(&TokenType::Colon, "Expected ':'")?;
-                let ty = self.parse_type()?;
+                let outer = std::mem::replace(&mut self.extent_names_allowed, extent_names);
+                let ty = self.parse_type();
+                self.extent_names_allowed = outer;
+                let ty = ty?;
+                let mut anywhere = Vec::new();
+                ty.all_extent_names(&mut anywhere);
+                let at_top =
+                    crate::syntax::types::extent_names(&[(name.clone().into(), ty.clone())]);
+                if anywhere.len() != at_top.len() {
+                    return Err(self.error_at(
+                        &name_token,
+                        &format!(
+                            "parameter `{name}`: a name such as `?{}` can stand only in the \
+                             tensor type of the parameter itself, as in `t : &Tensor<f32, [?n]>`",
+                            anywhere[0]
+                        ),
+                    ));
+                }
                 params.push((name.into(), ty));
+                name_tokens.push(name_token);
 
                 if !self.match_token(&TokenType::Comma) {
                     break;
                 }
+            }
+        }
+        // An extent name is a variable of the body, as a parameter is.
+        for (extent, _, _) in crate::syntax::types::extent_names(&params) {
+            if let Some(i) = params.iter().position(|(p, _)| *p == extent) {
+                return Err(self.error_at(
+                    &name_tokens[i],
+                    &format!(
+                        "`?{extent}` names an extent, so no parameter can have the name `{extent}`"
+                    ),
+                ));
             }
         }
         Ok(params)
@@ -256,9 +324,16 @@ impl<'a> Parser<'a> {
 
         self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
         self.mut_params.clear();
-        let params = self.parse_comma_separated_params()?;
+        let params = self.parse_comma_separated_params(true)?;
         let mut_params = std::mem::take(&mut self.mut_params);
         self.consume(&TokenType::RightParen, "Expected ')'")?;
+        if name == "main" && takes_a_root_and_more(&params) {
+            return Err(self.error_at(
+                name_token,
+                "A `main` that takes a `Root` can take one more parameter only: the words of \
+                 the command line, as a `Vec<String>`",
+            ));
+        }
 
         let mut topology = Topology::CPU;
         if self.match_token(&TokenType::On) {
@@ -1092,11 +1167,20 @@ impl<'a> Parser<'a> {
     /// Text rather than `f64` so [`crate::units::to_bytes`] can do exact integer arithmetic: `3.35`
     /// is not representable in binary floating point, and a parse-multiply-round pipeline is
     /// correct only for the particular values it happens to be given.
+    ///
+    /// The spellings are those of a literal in an expression, so `1_048_576` and `0x100000`
+    /// are read here too, and come back as plain decimal text.
     fn parse_number_text(&mut self, what: &str) -> ParseResult<'a, String> {
-        match &self.advance().kind {
-            TokenType::Number(s) => Ok(s.to_string()),
-            other => Err(self.error(&format!("Expected {}, got {:?}", what, other))),
+        let literal = match &self.advance().kind {
+            TokenType::Number(s) => s.to_string(),
+            other => return Err(self.error(&format!("Expected {}, got {:?}", what, other))),
+        };
+        let (text, suffix) =
+            crate::parser::expr::infer_number_literal(&literal).map_err(|e| self.error(&e))?;
+        if suffix.is_some() {
+            return Err(self.error(&format!("{what} takes no type suffix, got '{literal}'")));
         }
+        Ok(text)
     }
 
     /// Exact mantissa-times-unit, with the failure reported where the reader can see the figure.
@@ -1395,7 +1479,7 @@ impl<'a> Parser<'a> {
             }
 
             self.consume(&TokenType::LeftParen, "Expected '('")?;
-            let params = self.parse_comma_separated_params()?;
+            let params = self.parse_comma_separated_params(false)?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
 
             self.consume(&TokenType::Arrow, "Expected '->'")?;
@@ -1486,7 +1570,7 @@ impl<'a> Parser<'a> {
             let method_generics = self.parse_generic_params()?;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
             self.mut_params.clear();
-            let params = self.parse_comma_separated_params()?;
+            let params = self.parse_comma_separated_params(false)?;
             let mut_params = std::mem::take(&mut self.mut_params);
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
@@ -2028,8 +2112,16 @@ impl<'a> Parser<'a> {
                 // `stamp_impl!(i32);` where an item goes. What it expands to is not known until
                 // macro expansion runs, so it is recorded and replaced there.
                 item_macros.push(self.parse_item_macro_call()?);
+            } else if self.peek().kind == TokenType::Unknown('#') {
+                return Err(self.error(&self.attribute_message()));
             } else if self.peek().kind == TokenType::Unknown('"') {
                 return Err(self.error(super::UNCLOSED_STRING));
+            } else if self.peek().kind == TokenType::Identifier("use") {
+                // A Rust programmer writes `use core::option::Option;` first. Vx has `import`,
+                // and it takes a module path, so the message does not repeat the user's path.
+                return Err(self.error(
+                    "Vx has no `use`: write `import` with a module path, as in `import core::option;`",
+                ));
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
@@ -2088,6 +2180,7 @@ impl<'a> Parser<'a> {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             file: None,
             package: None,
+            standard_library: false,
             item_macros,
             imports,
             macros,
@@ -2209,23 +2302,27 @@ impl<'a> Parser<'a> {
         })
     }
 }
-/// `fn main(root : Root) -> i32` gets the capabilities of the program. Its body becomes the
-/// function `main_with_root`, and a generated `main` passes it the `Root` of `std::root`. The
-/// generated `unsafe` block is not trusted code that a program wrote, so `vxc --audit` leaves it
-/// out. Returns whether `main` takes a `Root`.
+/// `fn main(root : Root) -> i32` gets the capabilities of the program, and
+/// `fn main(root : Root, args : Vec<String>) -> i32` also gets the words of the command line.
+/// Its body becomes the function `main_with_root`. A generated `main` passes it the `Root` and
+/// the words from `std::root`. The generated `unsafe` blocks are not trusted code that a program
+/// wrote, so `vxc --audit` leaves them out. Returns whether `main` takes a `Root`.
 fn give_main_its_root(functions: &mut Vec<Function>) -> bool {
     let takes_a_root = |f: &Function| {
-        f.name.as_ref() == "main"
-            && matches!(&f.params[..], [(_, Type::Struct(t, _))] if t.as_ref() == "Root")
+        f.name.as_ref() == "main" && matches!(&f.params[..], [(_, t)] | [(_, t), _] if is_a_root(t))
     };
     let Some(user) = functions.iter_mut().find(|f| takes_a_root(f)) else {
         return false;
     };
     user.name = "main_with_root".into();
     let span = user.span;
-    let mut main = Parser::parse_fn_from_str(
-        "fn main() -> i32 { return main_with_root(unsafe { root_of_the_program() }); }",
-    );
+    let mut main = Parser::parse_fn_from_str(if user.params.len() == 1 {
+        "fn main() -> i32 { return main_with_root(unsafe { root_of_the_program() }); }"
+    } else {
+        "fn main(argc : i32, argv : *mut *mut i8) -> i32 { \
+         return main_with_root(unsafe { root_of_the_program() }, \
+         unsafe { arguments_of_the_program(argc, argv) }); }"
+    });
     main.span = span;
     let Some(Statement::Return(ReturnStmt {
         expr: Some(Expr::FunctionCall(call)),
@@ -2234,12 +2331,35 @@ fn give_main_its_root(functions: &mut Vec<Function>) -> bool {
     else {
         unreachable!("the generated `main` is one `return` of a call");
     };
-    let Some(Expr::UnsafeBlock(block)) = call.args.first_mut() else {
-        unreachable!("the argument of the generated call is an `unsafe` block");
-    };
-    block.generated = true;
+    for arg in &mut call.args {
+        let Expr::UnsafeBlock(block) = arg else {
+            unreachable!("each argument of the generated call is an `unsafe` block");
+        };
+        block.generated = true;
+    }
     functions.push(main);
     true
+}
+
+fn is_a_root(t: &Type) -> bool {
+    matches!(t, Type::Struct(name, _) if name.as_ref() == "Root")
+}
+
+/// Whether `params` start with a `Root` and have more after it than one `Vec<String>`.
+fn takes_a_root_and_more(params: &[(crate::symbol::Symbol, Type)]) -> bool {
+    let is_the_command_line = |t: &Type| {
+        matches!(t, Type::GenericInstance(base, args)
+            if matches!(&**base, Type::Struct(v, _) if v.as_ref() == "Vec")
+                && matches!(args.as_slice(), [Type::Struct(s, _)] if s.as_ref() == "String"))
+    };
+    match params {
+        [(_, root), rest @ ..] if is_a_root(root) => match rest {
+            [] => false,
+            [(_, words)] => !is_the_command_line(words),
+            _ => true,
+        },
+        _ => false,
+    }
 }
 
 /// Whether `f` is the `main` that `give_main_its_root` writes, which makes the `Root` of the
@@ -2254,7 +2374,8 @@ pub(crate) fn makes_the_root(f: &Function) -> bool {
     };
     f.name.as_ref() == "main"
         && call.name.as_ref() == "main_with_root"
-        && matches!(call.args.as_slice(), [Expr::UnsafeBlock(block)] if block.generated)
+        && !call.args.is_empty()
+        && (call.args.iter()).all(|a| matches!(a, Expr::UnsafeBlock(block) if block.generated))
 }
 
 #[cfg(test)]
@@ -2272,6 +2393,25 @@ mod tests {
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
         assert_eq!(program.functions[0].name.as_ref(), "main");
+    }
+
+    /// A `main` that takes a `Root` can take one more parameter: the words of the command line.
+    #[rstest]
+    #[case("fn main(root : Root) -> i32 { return 0; }", true)]
+    #[case("fn main(root : Root, args : Vec<String>) -> i32 { return 0; }", true)]
+    #[case("fn main(root : Root, count : i32) -> i32 { return 0; }", false)]
+    #[case("fn main(root : Root, args : Vec<i32>) -> i32 { return 0; }", false)]
+    #[case(
+        "fn main(root : Root, args : Vec<String>, n : i32) -> i32 { return 0; }",
+        false
+    )]
+    fn main_takes_a_root_and_only_the_command_line(#[case] input: &str, #[case] parses: bool) {
+        let tokens = Lexer::new(input).tokenize();
+        assert_eq!(
+            Parser::new(&tokens, input).parse().is_ok(),
+            parses,
+            "{input}"
+        );
     }
 
     #[test]
@@ -2458,7 +2598,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
             func.return_type,
             Type::Verified(Box::new(Type::Tensor(
                 ElementType::F32,
-                vec![Dim::Dyn, Dim::Dyn],
+                vec![Dim::Dyn(None), Dim::Dyn(None)],
                 None
             )))
         );
@@ -2482,6 +2622,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 // A topology index is a compile-time dimension, stamped to its default type at
                 // parse time (#240) rather than left untyped like a value-position literal.
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                    written: None,
                     value: "0".to_string().into(),
                     ty: Some(ElementType::I32),
                     span: Span::default()
@@ -2515,7 +2656,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 ty,
                 &Some(Type::Tensor(
                     ElementType::F32,
-                    vec![Dim::Dyn, Dim::Dyn],
+                    vec![Dim::Dyn(None), Dim::Dyn(None)],
                     None
                 ))
             );
@@ -2523,8 +2664,6 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 owner_type_args: _,
                 name: func_name,
                 args,
-                span: _,
-                type_args: _,
                 ..
             }) = expr
             {
@@ -2683,6 +2822,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 assert_eq!(
                     **start,
                     Expr::Number(NumberExpr {
+                        written: None,
                         value: "0".to_string().into(),
                         ty: None,
                         span: Span::default()
@@ -2691,6 +2831,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 assert_eq!(
                     **end,
                     Expr::Number(NumberExpr {
+                        written: None,
                         value: "10".to_string().into(),
                         ty: None,
                         span: Span::default()
@@ -2946,7 +3087,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
             assert_eq!(
                 **inner,
-                Type::Tensor(ElementType::F32, vec![Dim::Dyn, Dim::Dyn], None)
+                Type::Tensor(ElementType::F32, vec![Dim::Dyn(None), Dim::Dyn(None)], None)
             );
         } else {
             panic!("Expected pointer return type");
@@ -2977,8 +3118,6 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 owner_type_args: _,
                 name,
                 args,
-                span: _,
-                type_args: _,
                 ..
             })) = expr
             {
@@ -3004,8 +3143,6 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 owner_type_args: _,
                 name,
                 args,
-                span: _,
-                type_args: _,
                 ..
             }) = expr
             {

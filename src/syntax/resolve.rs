@@ -158,7 +158,7 @@ impl Type {
             Type::Tensor(_, dims, top) => {
                 for dim in dims.iter_mut().filter_map(|d| match d {
                     Dim::Static(e) => Some(e),
-                    Dim::Dyn => None,
+                    Dim::Dyn(_) => None,
                 }) {
                     dim.resolve_names(scope);
                 }

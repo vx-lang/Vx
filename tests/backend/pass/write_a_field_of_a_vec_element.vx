@@ -1,0 +1,105 @@
+//===- write_a_field_of_a_vec_element.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `v[i].n = x` writes the field of the element in place, as in Rust: it is
+// `(*v.index_mut(i)).n = x`. A nested field, `+=`, a field that needs a drop, a `&mut Vec`
+// parameter and a generic element work too. A `+=` computes its index once, so `at` prints once.
+// The field write drops the old `Noisy` with id 1 at once.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning --implicit-check-not=drop
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning --implicit-check-not=drop
+// CHECK: {{^}}at, once{{$}}
+// CHECK-NEXT: {{^}}drop 1, replaced{{$}}
+// CHECK-NEXT: {{^}}116 14 4{{$}}
+// CHECK-NEXT: {{^}}len 2{{$}}
+// CHECK-NEXT: {{^}}9 -3{{$}}
+// CHECK-NEXT: {{^}}drop 4, drop 5,
+
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("drop ");
+    print!(self.id);
+    print!(", ");
+  }
+}
+
+struct Inner {
+  a : i32,
+}
+
+struct Slot {
+  name : Noisy,
+  inner : Inner,
+  n : i32,
+}
+
+struct Pair<T> {
+  a : T,
+  b : T,
+}
+
+fn at(i : i32) -> i32 {
+  print!("at, ");
+  return i;
+}
+
+fn bump(v : &mut Vec<Slot>, i : i32) -> void {
+  v[i].n += 100;
+}
+
+fn set_first<T>(v : &mut Vec<Pair<T>>, x : T) -> void {
+  v[0].a = x;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<Slot>::new();
+  v.push(Slot {
+    name : Noisy {
+      id : 1
+    },
+    inner : Inner {
+      a : 2
+    },
+    n : 3
+  });
+  v[0].n = 5;
+  v[0].inner.a = 7;
+  v[0].n += 10;
+  v[0].inner.a *= 2;
+  v[at(0)].n += 1;
+  println!("once");
+  bump(&mut v, 0);
+  v[0].name = Noisy {
+    id : 4
+  };
+  println!("replaced");
+  println!("{} {} {}", v[0].n, v[0].inner.a, v[0].name.id);
+  v.push(Slot {
+    name : Noisy {
+      id : 5
+    },
+    inner : Inner {
+      a : 0
+    },
+    n : 0
+  });
+  println!("len {}", v.len());
+  let mut p = Vec<Pair<i64>>::new();
+  p.push(Pair<i64> {
+    a : 1i64, b : 2i64
+  });
+  set_first(&mut p, 9i64);
+  p[0].b -= 5i64;
+  println!("{} {}", p[0].a, p[0].b);
+  return 0;
+}

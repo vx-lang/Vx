@@ -8,13 +8,16 @@
 // RUN: not vxc --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc -j 4 --package tests=tests --no-trusted-code tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc --package tests=tests %s 2>&1 | FileCheck %s --check-prefix=ALLOWED
+// RUN: vxc --package tests=tests --audit %s 2>&1 | FileCheck %s --check-prefix=AUDIT
 // RUN: not vxc --package tests=tests --no-trusted-code test %s 2>&1 | FileCheck %s --check-prefix=NAME
 //
 // `vxc --no-trusted-code tests` makes each use of trusted code in the package `tests` an error:
 // an `unsafe impl`, an `extern impl`, an `extern` function, an `unsafe fn`, an `unsafe` block,
 // one that a macro writes too, and an `mlir!` block that the compiler cannot verify. An `mlir!`
-// block that the compiler verifies is not trusted code. This file is not in the package, so its
-// own `unsafe` block is not an error. Without the flag, the program runs.
+// block that the compiler verifies is not trusted code. The `{ .. }` of a closure is not trusted
+// code, but an `unsafe` block inside it is. This file is not in the package, so its
+// own `unsafe` block is not an error. Without the flag, the program runs. The audit lists the
+// `unsafe` block in the closure too.
 import tests::modules::a_package_with_trusted_code;
 
 fn main() -> i32 {
@@ -33,8 +36,11 @@ fn main() -> i32 {
 // CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:37:5: {{.*}}and this is an `unsafe` block
 // CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:51:10: {{.*}}and this is an `unsafe` block
 // CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:52:11: {{.*}}and this is an `mlir!` block
-// CHECK: Semantic check failed on '{{.*}}no_trusted_code_in_a_package.vx': 8 error(s) emitted
+// CHECK: Error[E5003] at {{.*}}a_package_with_trusted_code.vx:71:12: {{.*}}and this is an `unsafe` block
+// CHECK: Semantic check failed on '{{.*}}no_trusted_code_in_a_package.vx': 9 error(s) emitted
 
 // ALLOWED: {{^}}19{{$}}
+
+// AUDIT: a_package_with_trusted_code.vx:71:12: trusted code: an `unsafe` block
 
 // NAME: `--no-trusted-code test` names no package. Give the package with `--package test=DIR`

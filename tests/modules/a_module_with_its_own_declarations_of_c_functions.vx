@@ -1,0 +1,17 @@
+//===- a_module_with_its_own_declarations_of_c_functions.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Declares `strlen` and `llabs` for this file only, and `labs` for every file.
+extern {
+  fn strlen(s : *const i8) -> i64;
+  pub fn labs(n : i64) -> i64;
+  fn llabs(n : i64) -> i64;
+}
+
+pub fn length(s : *const i8) -> i64 {
+  return unsafe { strlen(s) };
+}

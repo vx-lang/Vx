@@ -3,6 +3,11 @@
 #include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <mutex>
+#include <string>
 
 namespace mlir {
 namespace vx {
@@ -13,8 +18,20 @@ void registerVxPasses();
 extern "C" {
 
 /// Entry point to run the MLIR optimizer with the Vx dialect registered.
-/// Returns 0 on success, non-zero on failure.
-int run_vx_opt(int argc, char **argv) {
+/// `version` is the Vx version, which `--version` prints on a line before
+/// LLVM's own lines. Returns 0 on success, non-zero on failure.
+int run_vx_opt(int argc, char **argv, const char *version) {
+  // The compiler calls this function many times in one process. Add the line
+  // once.
+  static std::once_flag versionPrinterAdded;
+  std::call_once(versionPrinterAdded, [version]() {
+    static const std::string vxVersion = version;
+    llvm::cl::SetVersionPrinter([](llvm::raw_ostream &os) {
+      os << "vx-opt " << vxVersion << "\n";
+      llvm::cl::PrintVersionMessage();
+    });
+  });
+
   // Register all upstream MLIR passes
   mlir::registerAllPasses();
 

@@ -16,6 +16,7 @@ use super::*;
 /// initializer list's nesting).
 pub(crate) fn int_dim_expr(n: usize) -> Expr {
     Expr::Number(NumberExpr {
+        written: None,
         value: n.to_string().into(),
         ty: Some(ElementType::I32),
         span: Span::default(),
@@ -450,16 +451,32 @@ impl<'a> TypeChecker<'a> {
                 ty
             }
             Expr::AsCast(e) => self.check_ascast_expr(e, consume),
+            // A printed place (a variable, a field, `*r` or `v[i]`) is only read, so it can be
+            // printed again. Any other argument is checked as before, so `b.take()` still moves `b`.
             Expr::Print(p) => {
                 for arg in &mut p.args {
-                    let ty = self.check_expr_type_flag(arg, consume);
+                    let read = matches!(
+                        arg,
+                        Expr::Identifier(_)
+                            | Expr::MemberAccess(_)
+                            | Expr::Dereference(_)
+                            | Expr::IndexAccess(_)
+                    );
+                    let ty = self.check_expr_type_flag(arg, consume && !read);
                     Self::prepare_print_operand(arg, &ty);
                 }
                 Type::Scalar(ElementType::I32) // Assuming print returns 0 as i32 for C compatibility
             }
             Expr::Println(p) => {
                 for arg in &mut p.args {
-                    let ty = self.check_expr_type_flag(arg, consume);
+                    let read = matches!(
+                        arg,
+                        Expr::Identifier(_)
+                            | Expr::MemberAccess(_)
+                            | Expr::Dereference(_)
+                            | Expr::IndexAccess(_)
+                    );
+                    let ty = self.check_expr_type_flag(arg, consume && !read);
                     Self::prepare_print_operand(arg, &ty);
                 }
                 Type::Scalar(ElementType::I32)

@@ -95,7 +95,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v19";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v21";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -595,7 +595,11 @@ fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
             w.u64(dims.len() as u64);
             for d in dims {
                 match d {
-                    Dim::Dyn => w.u8(0),
+                    Dim::Dyn(None) => w.u8(0),
+                    Dim::Dyn(Some(name)) => {
+                        w.u8(2);
+                        w.sym(name);
+                    }
                     Dim::Static(_) => {
                         let Some(v) = d.literal() else {
                             return Err("vxlib: tensor type with dimension expressions not \
@@ -686,7 +690,8 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
             let mut dims = Vec::with_capacity(n);
             for _ in 0..n {
                 dims.push(match r.u8()? {
-                    0 => Dim::Dyn,
+                    0 => Dim::Dyn(None),
+                    2 => Dim::Dyn(Some(r.sym()?)),
                     1 => Dim::Static(crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
                         r.sym()?.as_ref().to_string(),
                         Some(ElementType::I32),
@@ -792,7 +797,8 @@ fn read_fn_body(r: &mut Reader) -> Result<(TypeId, FnBody), String> {
 }
 
 /// Encode a `FnSig`'s payload (everything after its name/gid/receiver): the param count, each param
-/// type, the return type, then the 1-byte return-provenance code (#265 step 7). `Err` (with the codec's
+/// type, the return type, the 1-byte return-provenance code (#265 step 7), `unsafe`, the length of
+/// a `valid` result, the level, and the name of the file. `Err` (with the codec's
 /// reason) if any param or the return type is not encodable yet, so the caller skips the whole
 /// signature — fail-closed, matching the body codec — and can report *why* it was dropped (#292).
 fn encode_sig_record(sig: &FnSig) -> Result<Vec<u8>, String> {
@@ -817,12 +823,24 @@ fn encode_sig_record(sig: &FnSig) -> Result<Vec<u8>, String> {
             rec.u64(*c as u64);
         }
     }
+    rec.u8(match sig.visibility {
+        crate::gid::Visibility::Private => 0,
+        crate::gid::Visibility::Package => 1,
+        crate::gid::Visibility::Public => 2,
+    });
+    match &sig.file {
+        None => rec.u8(0),
+        Some(file) => {
+            rec.u8(1);
+            rec.sym(file);
+        }
+    }
     Ok(rec.buf)
 }
 
-/// Decode the payload written by [`encode_sig_record`] — params, return type, provenance code. The
-/// caller reads the name/gid/receiver that precede it.
-fn read_sig_record(r: &mut Reader) -> Result<SigRecord, String> {
+/// Decode the payload written by [`encode_sig_record`] into the signature of the function `gid`.
+/// The caller reads the name/gid/receiver that precede it.
+fn read_sig_record(r: &mut Reader, gid: TypeId) -> Result<FnSig, String> {
     let n_params = r.u64()? as usize;
     let mut params = Vec::new();
     for _ in 0..n_params {
@@ -838,18 +856,28 @@ fn read_sig_record(r: &mut Reader) -> Result<SigRecord, String> {
         2 => Some(Length::Constant(r.u64()? as i64)),
         tag => return Err(format!("the length of a `valid` result has the tag {tag}")),
     };
-    Ok((params, ret_ty, ret_prov, is_unsafe, ret_valid))
+    let visibility = match r.u8()? {
+        0 => crate::gid::Visibility::Private,
+        1 => crate::gid::Visibility::Package,
+        2 => crate::gid::Visibility::Public,
+        tag => return Err(format!("the level of a function has the tag {tag}")),
+    };
+    let file = match r.u8()? {
+        0 => None,
+        1 => Some(r.sym()?),
+        tag => return Err(format!("the file of a function has the tag {tag}")),
+    };
+    Ok(FnSig {
+        gid,
+        params,
+        ret_ty,
+        ret_prov,
+        is_unsafe,
+        ret_valid,
+        visibility,
+        file,
+    })
 }
-
-/// The payload of a signature: params, return type, provenance code, `unsafe`, and the length of
-/// an `ensures valid(return, n)`.
-type SigRecord = (
-    Vec<crate::syntax::Type>,
-    crate::syntax::Type,
-    u8,
-    bool,
-    Option<crate::hir::check::pointer_clauses::Length>,
-);
 
 /// One table's encode/skip accounting for a `serialize_registry_interface` run (#292).
 #[derive(Debug)]
@@ -1160,18 +1188,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
     for _ in 0..n_fns {
         let name = r.sym()?;
         let gid = r.typeid()?;
-        let (params, ret_ty, ret_prov, is_unsafe, ret_valid) = read_sig_record(&mut r)?;
-        fn_sigs.insert(
-            name,
-            FnSig {
-                gid,
-                params,
-                ret_ty,
-                ret_prov,
-                is_unsafe,
-                ret_valid,
-            },
-        );
+        fn_sigs.insert(name, read_sig_record(&mut r, gid)?);
     }
 
     let mut methods: FxHashMap<(TypeId, Symbol), FnSig> = FxHashMap::default();
@@ -1180,18 +1197,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         let recv = r.typeid()?;
         let name = r.sym()?;
         let gid = r.typeid()?;
-        let (params, ret_ty, ret_prov, is_unsafe, ret_valid) = read_sig_record(&mut r)?;
-        methods.insert(
-            (recv, name),
-            FnSig {
-                gid,
-                params,
-                ret_ty,
-                ret_prov,
-                is_unsafe,
-                ret_valid,
-            },
-        );
+        methods.insert((recv, name), read_sig_record(&mut r, gid)?);
     }
 
     let mut bodies: FxHashMap<TypeId, FnBody> = FxHashMap::default();
@@ -1523,6 +1529,26 @@ mod tests {
     /// The signature tables round-trip too: `resolve_fn` / `resolve_method` return the same GID and
     /// return type after a serialize -> deserialize cycle, across the return-type shapes the stdlib
     /// actually uses -- scalar, nominal struct, and a (dimensionless) tensor (#220 stage 2).
+    /// `?n` in a parameter type keeps its name across the boundary: the type compares equal to
+    /// `?`, so the round trip below would not see a lost name.
+    #[test]
+    fn registry_interface_keeps_the_names_of_extents() {
+        let m = parse_and_resolve(
+            "crate::m",
+            "fn rows(t: &Tensor<f32, [?n, 4]>) -> usize requires n > 0 { return n; }\n",
+        );
+        let reg =
+            crate::pipeline::build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        let round = deserialize_registry_interface(&serialize_registry_interface(&reg))
+            .expect("deserialize");
+        let param = round.resolve_fn(&Symbol::from("rows")).unwrap().params[0].clone();
+        let Type::Tensor(_, dims, _) = param.behind_refs() else {
+            panic!("the parameter of rows is not a tensor: {param:?}");
+        };
+        assert_eq!(dims[0].extent_name().map(|n| n.as_ref()), Some("n"));
+        assert_eq!(dims[1].literal(), Some("4"));
+    }
+
     #[test]
     fn registry_interface_round_trips_functions_and_methods() {
         let m = parse_and_resolve(
@@ -1781,6 +1807,8 @@ mod tests {
                 ret_prov: 0,
                 is_unsafe: false,
                 ret_valid: None,
+                visibility: crate::gid::Visibility::Public,
+                file: None,
             },
         );
         // A tensor return whose dimension is a name belongs to a template, and `write_type`
@@ -1802,6 +1830,8 @@ mod tests {
                 ret_prov: 0,
                 is_unsafe: false,
                 ret_valid: None,
+                visibility: crate::gid::Visibility::Public,
+                file: None,
             },
         );
 

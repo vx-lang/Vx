@@ -731,6 +731,31 @@ impl BorrowCx {
     }
 
     /// Drop each of `records`, as [`Self::added_since`] returned them.
+    /// Ends the borrows that `holder` took since `before`. A variable of a number type holds no
+    /// borrow, so in `let x = q[0].a` the borrow of `q` ends with the read.
+    pub(crate) fn forget_new_borrows_of(
+        &mut self,
+        holder: &str,
+        before: &HashMap<Symbol, Vec<BorrowRecord>>,
+    ) {
+        // One copy each: an equal record from before can belong to an outer variable of this
+        // name, as after `x = &q` in the same block.
+        for (base, record) in self.added_copies_since(before) {
+            if record.borrower_name.as_deref() != Some(holder) {
+                continue;
+            }
+            let list = self.active_borrows.get_mut(&base).expect("an added record");
+            let at = list
+                .iter()
+                .rposition(|r| *r == record)
+                .expect("an added record");
+            list.remove(at);
+            if list.is_empty() {
+                self.active_borrows.remove(&base);
+            }
+        }
+    }
+
     pub(crate) fn forget(&mut self, records: &[(Symbol, BorrowRecord)]) {
         for (base, record) in records {
             if let Some(list) = self.active_borrows.get_mut(base) {

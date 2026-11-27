@@ -166,6 +166,9 @@ pub enum DiagnosticCode {
     /// A `tasks` block that can fail, whose value nothing uses. When the block fails, the code
     /// after it goes on, and nothing sees the error.
     W1038,
+    /// `?n` gives an extent the name of a constant or a const parameter. In the function, `n`
+    /// is the extent, so the function cannot use the constant.
+    W1039,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -387,7 +390,9 @@ pub enum DiagnosticCode {
     /// read one number at a time, as `TABLE[i]`.
     E3044,
     /// An integer literal that does not fit its type, such as `300` for a `u8`. A `usize`
-    /// holds 0 up to the largest `i64`.
+    /// holds 0 up to the largest `i64`. A literal with no suffix is at most an `i64`, unless the
+    /// code around it gives it a type: write `0x8000_0000_0000_0000u64` for a `u64`. A literal
+    /// that needs more than 64 bits is not supported yet, unless its type is `i128` or `u128`.
     E3045,
     /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so
@@ -492,6 +497,16 @@ pub enum DiagnosticCode {
     /// address, for example one that `p as *const void` made to give to a C function. It has no
     /// element type, so the compiler does not know what to read.
     E3067,
+    /// A call that gives one extent name two different extents. In `fn add(a : Tensor<f32,
+    /// [?n]>, b : Tensor<f32, [?n]>)`, both `?n` are one extent, so `add(x, y)` with the extents
+    /// 5 and 7 is an error. When the compiler does not know an extent, it does not check it.
+    E3068,
+    /// A variable of the body with the name of an extent, or an assignment to an extent name.
+    /// `?n` in the type of a parameter makes `n` a variable of the body that nothing changes.
+    E3069,
+    /// A shape in `Tensor<T, [..]>::new([..])`, `::uninit([..])` or `::fill([..], v)` that does not match the type. The shape is a list in brackets with one extent for each dimension,
+    /// and a fixed dimension gets the extent of the type: `Tensor<f32, [?, 4]>::new([n, 4])`.
+    E3070,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -519,7 +534,8 @@ pub enum DiagnosticCode {
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. The same for a
     /// `*const T` pointer and for a view of memory made from one: a write, a `&mut` borrow or a
-    /// `&mut self` call through it. Writing needs a `*mut T`.
+    /// `&mut self` call through it. Writing needs a `*mut T`. A call through `f : &F` of a
+    /// closure that changes a value it captures is one too. Pass the closure by value or as `&mut`.
     E4006,
     /// A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;`
     /// followed by a use of `r`. The borrow would point at a value that has moved away.
@@ -527,8 +543,9 @@ pub enum DiagnosticCode {
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
     /// away. Copy or clone it instead. A method that takes `self` by value, called as `r.f()`,
-    /// takes `*r` the same way. A `match` on a reference names parts of the value behind
-    /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
+    /// takes `*r` the same way, and so does a call through `f : &F` of a closure that moves a value
+    /// it captures. A `match` on a reference binds references to parts of the value behind it,
+    /// so `match r { Two::Both(p) => p.left }` cannot move `p.left` either. Through a raw pointer,
     /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
     /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take
     /// it out.
@@ -594,9 +611,10 @@ pub enum DiagnosticCode {
     /// know that the value is still at the address. So is `assume`.
     E5002,
     /// Trusted code in a package that `vxc --no-trusted-code NAME` names: an `unsafe` block or
-    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl` or an `unsafe impl`.
-    /// The program that uses the package gives the flag, so a new version of the package cannot
-    /// add trusted code without an error. `vxc --audit` lists the trusted code of a program.
+    /// `unsafe fn`, an `mlir!` block, an `extern` function, an `extern impl`, an `unsafe impl`, or
+    /// a `requires` of an `extern fn`, which a call from C does not prove. The program that uses
+    /// the package gives the flag, so a new version of the package cannot add trusted code
+    /// without an error. `vxc --audit` lists the trusted code of a program.
     E5003,
     /// A call of `main`, or `main` used as a value. Only the runtime starts `main`. A `main` that
     /// takes a `Root` makes the capabilities of the program, so a second start would give them to
@@ -804,11 +822,11 @@ pub enum DiagnosticCode {
     /// address space on the target. Declare the memory with `scope: device`, `sm`, `cta` or
     /// `thread`.
     E6037,
-    /// A `spawn on` body for a device that uses a channel end, a lock, or a value that holds one.
-    /// The standard library marks these types with the trait `HostOnly`. A wait on the device for
-    /// the host can wait forever, because a GPU does not promise that its threads make progress.
-    /// Send or receive before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on
-    /// the host, so it can use them.
+    /// A `spawn on` body for a device that uses a value of a `HostOnly` type, or a value that holds
+    /// one. A channel end, a lock and a semaphore are `HostOnly` because they can wait for the host.
+    /// A GPU does not promise that its threads make progress, so such a wait can wait forever. Use
+    /// the value before the `spawn on`, or after it. A `spawn on(Topology::CPU)` body runs on the
+    /// host, so it can use the value.
     E6038,
     /// A `spawn` in a loop of its `tasks` block, with a count of passes that is not known at compile
     /// time, and tasks that use a memory with a capacity. Each pass starts a task, and the tasks run

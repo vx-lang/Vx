@@ -1,0 +1,89 @@
+//===- enum_payloads_with_no_declaration.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: VX_FLAT_DBG=1 vxc %s 2>&1 | FileCheck %s --check-prefixes=CHECK,FLAT # flat-codegen
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR # flat-codegen
+// REQUIRES: flat-codegen
+//
+// An enum payload whose type has no declaration is stored as a struct field of that type is.
+// A function is a pointer, and a borrowed tensor is the tensor's descriptor. The first run
+// checks that the default code generator compiled the program itself.
+// No program can make a `<4 x f32>` value yet, so `double_lanes` is checked in the MLIR only.
+// The AST code generator cannot index the `&Tensor` that `corners` reads from `View::Of`.
+
+fn add_one(x : i32) -> i32 {
+  return x + 1;
+}
+
+enum Callback {
+  Number(i32),
+  Call(fn(i32) -> i32),
+}
+
+fn call(c : Callback) -> i32 {
+  match c {
+    Callback::Number(n) => {
+      return n;
+    }
+    Callback::Call(f) => {
+      return f(41);
+    }
+  }
+}
+
+enum View {
+  Empty(i32),
+  Of(&Tensor<f32, [2, 2]>),
+}
+
+fn corners(v : View) -> f32 {
+  match v {
+    View::Empty(n) => {
+      return 0.0;
+    }
+    View::Of(t) => {
+      return t[0][0] + t[1][1];
+    }
+  }
+}
+
+enum Lanes {
+  Number(i32),
+  Four(<4 x f32>),
+}
+
+fn lane_count(_v : <4 x f32>) -> i32 {
+  return 4;
+}
+
+// MLIR-LABEL: func.func @double_lanes
+// MLIR: llvm.store %{{.*}}, %{{.*}} : vector<4xf32>, !llvm.ptr
+// MLIR: llvm.load %{{.*}} : !llvm.ptr -> vector<4xf32>
+// MLIR: arith.addf %{{.*}}, %{{.*}} : vector<4xf32>
+fn double_lanes(v : <4 x f32>) -> i32 {
+  let l = Lanes::Four(v);
+  match l {
+    Lanes::Number(n) => {
+      return n;
+    }
+    Lanes::Four(w) => {
+      return lane_count(w + w);
+    }
+  }
+}
+
+fn main() -> i32 {
+  print(call(Callback::Call(add_one)));
+  print!(" ");
+  let mut a = Tensor<f32, [2, 2]>::fill(1.0);
+  a[1][1] = 41.0;
+  print(corners(View::Of(&a)));
+  return 0;
+}
+
+// FLAT: emitted module via the flat path
+// CHECK: 42 42

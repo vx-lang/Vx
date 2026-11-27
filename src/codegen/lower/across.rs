@@ -265,7 +265,12 @@ pub(crate) fn launch_shape<'c>(
             ));
         };
         let starts_at_zero = matches!(&*range.start, Expr::Number(n) if n.value.as_ref() == "0");
-        let size = match f.across.as_ref().and_then(|a| a.share.as_deref()) {
+        let share = f.across.as_ref().and_then(|a| a.share.as_deref());
+        let unsigned = matches!(
+            gen.infer_ast_type(share.unwrap_or(&range.end)),
+            Some(syntax::Type::Scalar(e)) if e.is_unsigned_int()
+        );
+        let size = match share {
             Some(n) => {
                 let (v, _, b) = gen.generate_expr(n, block)?;
                 block = b;
@@ -283,11 +288,7 @@ pub(crate) fn launch_shape<'c>(
                 binary(gen, block, "arith.subi", end, start)?
             }
         };
-        if size.r#type() != gen.i32_ty {
-            return Err(LowerError::from(
-                "a loop of blocks whose size is not `i32`".to_string(),
-            ));
-        }
+        let size = launch_count(gen, block, size, unsigned, f.span.line)?;
         shape.push((axis, size));
         axis += 1;
         level = Some(f.body.as_slice());
@@ -315,6 +316,92 @@ pub(crate) fn emit_launch_shape<'c>(
         );
     }
     Ok(())
+}
+
+/// The `i32` that a launch takes for the passes of a loop of blocks, from a `size` of the
+/// loop's type. A launch has at most `i32::MAX` blocks on an axis, so a 64-bit size that is more
+/// stops the program, with the line of the loop in the message.
+fn launch_count<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: Block<'c>,
+    size: Value<'c, 'c>,
+    unsigned: bool,
+    line: usize,
+) -> Result<Value<'c, 'c>, LowerError> {
+    use melior::dialect::arith::CmpiPredicate;
+    if size.r#type() == gen.i32_ty {
+        return Ok(size);
+    }
+    if size.r#type() != gen.i64_ty {
+        return Err(LowerError::from(
+            "a loop of blocks whose size is not `i32` or a 64-bit integer".to_string(),
+        ));
+    }
+    let max = constant_i64(gen, block, i32::MAX as i64)?;
+    let below = if unsigned {
+        CmpiPredicate::Ule
+    } else {
+        CmpiPredicate::Sle
+    };
+    let mut fits = compare(gen, block, below, size, max)?;
+    if !unsigned {
+        let min = constant_i64(gen, block, i32::MIN as i64)?;
+        let above = compare(gen, block, CmpiPredicate::Sge, size, min)?;
+        fits = binary(gen, block, "arith.andi", fits, above)?;
+    }
+    let message = format!(
+        "the loop of blocks at line {line} has more passes than a launch can have, which is {}",
+        i32::MAX
+    );
+    block.append_operation(
+        OperationBuilder::new("cf.assert", gen.loc())
+            .add_operands(&[fits])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "msg"),
+                melior::ir::attribute::StringAttribute::new(gen.context, &message).into(),
+            )])
+            .build()?,
+    );
+    narrow_to_i32(gen, block, size)
+}
+
+/// `v`, an `i64` whose value fits in an `i32`, as an `i32`.
+fn narrow_to_i32<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: Block<'c>,
+    v: Value<'c, 'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    if v.r#type() == gen.i32_ty {
+        return Ok(v);
+    }
+    Ok(block
+        .append_operation(
+            OperationBuilder::new("arith.trunci", gen.loc())
+                .add_operands(&[v])
+                .add_results(&[gen.i32_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into())
+}
+
+fn constant_i64<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: Block<'c>,
+    v: i64,
+) -> Result<Value<'c, 'c>, LowerError> {
+    Ok(block
+        .append_operation(
+            OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[gen.i64_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(gen.i64_ty, v).into(),
+                )])
+                .build()?,
+        )
+        .result(0)?
+        .into())
 }
 
 fn constant<'c>(
@@ -633,11 +720,28 @@ fn lower_strided<'c>(
     };
     let (start, start_ty, block) = gen.generate_expr(&range.start, block)?;
     let (end, end_ty, block) = gen.generate_expr(&range.end, block)?;
-    if start_ty != gen.i32_ty || end_ty != gen.i32_ty {
+    if start_ty != end_ty || (start_ty != gen.i32_ty && start_ty != gen.i64_ty) {
         return Err(LowerError::from(
-            "an `across` loop over a range that is not `i32`".to_string(),
+            "an `across` loop over a range that is not `i32` or a 64-bit integer".to_string(),
         ));
     }
+    // The index of a block or a lane is an `i32` that is never below 0.
+    let (first, step) = if start_ty == gen.i64_ty {
+        let widen = |v: Value<'c, 'c>| -> Result<Value<'c, 'c>, LowerError> {
+            Ok(block
+                .append_operation(
+                    OperationBuilder::new("arith.extui", gen.loc())
+                        .add_operands(&[v])
+                        .add_results(&[gen.i64_ty])
+                        .build()?,
+                )
+                .result(0)?
+                .into())
+        };
+        (widen(first)?, widen(step)?)
+    } else {
+        (first, step)
+    };
     super::control_flow::lower_marked_range_loop(
         for_loop,
         None,
@@ -1184,15 +1288,18 @@ fn arrive<'c>(
             let (outer, _, b) = gen.generate_expr(&id, block)?;
             let (start, _, b) = gen.generate_expr(&r.start, b)?;
             block = b;
-            binary(gen, block, "arith.subi", outer, start)?
+            let group = binary(gen, block, "arith.subi", outer, start)?;
+            narrow_to_i32(gen, block, group)?
         }
         None => constant(gen, block, 0)?,
     };
-    // The last count of a group: one less than the passes of the counted loop.
+    // The last count of a group: one less than the passes of the counted loop. Each difference
+    // is at most the passes of a loop of blocks, which `launch_count` checks.
     let (end, _, b) = gen.generate_expr(&range.end, block)?;
     let (start, _, b) = gen.generate_expr(&range.start, b)?;
     block = b;
     let passes = binary(gen, block, "arith.subi", end, start)?;
+    let passes = narrow_to_i32(gen, block, passes)?;
     let one = constant(gen, block, 1)?;
     let last = binary(gen, block, "arith.subi", passes, one)?;
     let lane = lane_id(gen, block)?;

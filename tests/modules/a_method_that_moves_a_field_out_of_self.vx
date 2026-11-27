@@ -1,0 +1,29 @@
+//===- a_method_that_moves_a_field_out_of_self.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `finish` moves a field out of `&mut self`, which is an error (E4008).
+
+import core::result;
+import std::vec;
+
+struct Output {
+  parts : Vec<Vec<u8>>,
+}
+
+impl Output {
+  pub fn finish(self : &mut Output) -> Result<i32, i32> {
+    let parts = self.parts;
+    self.parts = Vec<Vec<u8>>::new();
+    return Result<i32, i32>::Ok(parts.len());
+  }
+}
+
+pub fn new_output() -> Output {
+  return Output {
+    parts : Vec<Vec<u8>>::new()
+  };
+}

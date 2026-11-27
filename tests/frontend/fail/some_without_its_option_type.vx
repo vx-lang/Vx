@@ -1,0 +1,29 @@
+//===- some_without_its_option_type.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A bare `Some(..)` does not know its type. The error tells the programmer to write the type
+// before `::Some`. An `Option` of the wrong type gets no advice. A `Some(..)` with no type to
+// match gets the advice to write `Option::Some(..)`.
+
+import core::option;
+
+fn main() -> i32 {
+  // CHECK: Error[E3001] at {{.*}}.vx:[[@LINE+1]]:3: '_a' is declared Option<i64> but its initializer is Option. Write `Option<i64>::Some(value)`
+  let _a : Option<i64> = Some(3);
+  // CHECK: Error[E3001] at {{.*}}.vx:[[@LINE+1]]:3: '_b' is declared Option<bool> but its initializer is Option. Write `Option<bool>::Some(value)`
+  let _b : Option<bool> = Some(true);
+  // CHECK: Error[E3001] at {{.*}}.vx:[[@LINE+1]]:3: '_c' is declared Option<i64> but its initializer is Option. Write `Option<i64>::Some(value)`
+  let _c : Option<i64> = Option::Some(3);
+  // CHECK: Error[E3001] at {{.*}}.vx:[[@LINE+1]]:3: '_d' is declared Option<i64> but its initializer is Option<bool>{{$}}
+  let _d : Option<i64> = Option<bool>::None();
+  // CHECK: Error[E2002] at {{.*}}.vx:[[@LINE+1]]:12: `Some(value)` does not name its enum. Write `Option::Some(value)`
+  let _e = Some(3i64);
+  return 0;
+}
+// CHECK: 5 error(s) emitted

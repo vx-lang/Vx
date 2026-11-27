@@ -28,17 +28,31 @@ enum Color {
 }
 
 impl Point {
-  fn sum(self : &Point) -> i32 {
+  pub fn sum(self : &Point) -> i32 {
     return self.x + self.y;
   }
 }
 
-fn area(w : i32, h : i32) -> i32 {
+trait Measure {
+  fn size(self : &Self) -> i32;
+}
+
+impl Measure for Point {
+  fn size(self : &Point) -> i32 {
+    return self.x;
+  }
+}
+
+pub fn area(w : i32, h : i32) -> i32 {
   return w * h;
 }
 
-fn pick(a : &i32, b : &i32) -> &i32 {
+pub fn pick(a : &i32, b : &i32) -> &i32 {
   return a;
+}
+
+fn half(n : i32) -> i32 {
+  return n / 2;
 }
 ";
 
@@ -116,7 +130,7 @@ fn a_change_inside_a_function_body_needs_a_patch() {
 
 #[test]
 fn an_added_function_needs_a_minor_release() {
-    let new = format!("{LIBRARY}\nfn double(n : i32) -> i32 {{\n  return n + n;\n}}\n");
+    let new = format!("{LIBRARY}\npub fn double(n : i32) -> i32 {{\n  return n + n;\n}}\n");
     let output = api_diff("fn_added", LIBRARY, &new);
     assert_reports(&output, "minor", "minor  function `double` was added");
 }
@@ -124,11 +138,67 @@ fn an_added_function_needs_a_minor_release() {
 #[test]
 fn a_removed_function_needs_a_major_release() {
     let new = changed(
-        "fn area(w : i32, h : i32) -> i32 {\n  return w * h;\n}\n",
+        "pub fn area(w : i32, h : i32) -> i32 {\n  return w * h;\n}\n",
         "",
     );
     let output = api_diff("fn_removed", LIBRARY, &new);
     assert_reports(&output, "major", "major  function `area` was removed");
+}
+
+#[test]
+fn a_function_that_loses_pub_needs_a_major_release() {
+    let new = changed("pub fn area(", "fn area(");
+    let output = api_diff("loses_pub", LIBRARY, &new);
+    assert_reports(
+        &output,
+        "major",
+        "major  function `area` is no longer `pub`",
+    );
+}
+
+#[test]
+fn a_method_that_loses_pub_needs_a_major_release() {
+    let new = changed("pub fn sum(", "fn sum(");
+    let output = api_diff("method_loses_pub", LIBRARY, &new);
+    assert_reports(
+        &output,
+        "major",
+        "major  method `Point::sum` is no longer `pub`",
+    );
+}
+
+#[test]
+fn a_function_that_becomes_pub_needs_a_minor_release() {
+    let new = changed("fn half(", "pub fn half(");
+    let output = api_diff("becomes_pub", LIBRARY, &new);
+    assert_reports(&output, "minor", "minor  function `half` became `pub`");
+}
+
+// A program cannot call a function that is not `pub` through a `.vxlib`. So a change to a
+// private function, a new one, and a removed one are no change to the interface.
+
+#[test]
+fn a_private_function_with_new_types_needs_a_patch() {
+    let new = changed(
+        "fn half(n : i32) -> i32 {\n  return n / 2;",
+        "fn half(n : i64) -> i64 {\n  return n / 2;",
+    );
+    let output = api_diff("private_changed", LIBRARY, &new);
+    assert_reports(&output, "patch", "no change to the interface");
+}
+
+#[test]
+fn an_added_private_function_needs_a_patch() {
+    let new = format!("{LIBRARY}\nfn third(n : i32) -> i32 {{\n  return n / 3;\n}}\n");
+    let output = api_diff("private_added", LIBRARY, &new);
+    assert_reports(&output, "patch", "no change to the interface");
+}
+
+#[test]
+fn a_removed_private_function_needs_a_patch() {
+    let new = changed("fn half(n : i32) -> i32 {\n  return n / 2;\n}\n", "");
+    let output = api_diff("private_removed", LIBRARY, &new);
+    assert_reports(&output, "patch", "no change to the interface");
 }
 
 #[test]
@@ -274,6 +344,27 @@ fn a_method_with_a_new_return_type_needs_a_major_release() {
         &output,
         "major",
         "major  method `Point::sum` changed from `fn(&Point) -> i32` to `fn(&Point) -> i64`",
+    );
+}
+
+/// A method of a trait impl has the level of the trait, and each trait is public, so the method
+/// is API with no `pub`.
+#[test]
+fn a_trait_method_with_a_new_return_type_needs_a_major_release() {
+    let new = changed(
+        "  fn size(self : &Self) -> i32;",
+        "  fn size(self : &Self) -> i64;",
+    )
+    .replacen(
+        "fn size(self : &Point) -> i32 {\n    return self.x;",
+        "fn size(self : &Point) -> i64 {\n    return self.x as i64;",
+        1,
+    );
+    let output = api_diff("trait_method", LIBRARY, &new);
+    assert_reports(
+        &output,
+        "major",
+        "major  method `Point::size` changed from `fn(&Point) -> i32` to `fn(&Point) -> i64`",
     );
 }
 

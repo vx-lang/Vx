@@ -1,0 +1,106 @@
+//===- a_number_read_from_a_vec_element_does_not_keep_the_vec_borrowed.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `q[0]` borrows `q` for the read of the element. A variable that gets a number from it holds
+// no borrow, so `q` can change after the `let` or the assignment, as in Rust.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=Warning
+// CHECK: {{^}}let 5 2{{$}}
+// CHECK-NEXT: {{^}}sum 6 2{{$}}
+// CHECK-NEXT: {{^}}call 5 2{{$}}
+// CHECK-NEXT: {{^}}method 2 2{{$}}
+// CHECK-NEXT: {{^}}if 5 2{{$}}
+// CHECK-NEXT: {{^}}assign 5 2{{$}}
+import std::vec;
+import std::string;
+
+struct P {
+  a : i64,
+  s : String,
+}
+
+fn one() -> Vec<P> {
+  let mut q = Vec<P>::new();
+  q.push(P {
+    a : 5i64, s : (12).to_string()
+  });
+  return q;
+}
+
+fn id(v : i64) -> i64 {
+  return v;
+}
+
+fn read_in_a_let() -> void {
+  let mut q = one();
+  let x = q[0].a;
+  q.push(P {
+    a : x, s : (3).to_string()
+  });
+  println!("let {} {}", x, q.len());
+}
+
+fn read_in_a_sum() -> void {
+  let mut q = one();
+  let x = q[0].a + 1i64;
+  q.push(P {
+    a : x, s : (3).to_string()
+  });
+  println!("sum {} {}", x, q.len());
+}
+
+fn read_in_a_call() -> void {
+  let mut q = one();
+  let x = id(q[0].a);
+  q.push(P {
+    a : x, s : (3).to_string()
+  });
+  println!("call {} {}", x, q.len());
+}
+
+fn read_by_a_method() -> void {
+  let mut q = one();
+  let x = q[0].s.len();
+  q.push(P {
+    a : 1i64, s : (3).to_string()
+  });
+  println!("method {} {}", x, q.len());
+}
+
+fn read_in_an_if() -> void {
+  let mut q = one();
+  let x = if q.len() > 0 {
+    q[0].a
+  } else {
+    0i64
+  };
+  q.push(P {
+    a : x, s : (3).to_string()
+  });
+  println!("if {} {}", x, q.len());
+}
+
+fn read_in_an_assignment() -> void {
+  let mut q = one();
+  let mut x = 0i64;
+  x = q[0].a;
+  q.push(P {
+    a : x, s : (3).to_string()
+  });
+  println!("assign {} {}", x, q.len());
+}
+
+fn main() -> i32 {
+  read_in_a_let();
+  read_in_a_sum();
+  read_in_a_call();
+  read_by_a_method();
+  read_in_an_if();
+  read_in_an_assignment();
+  return 0;
+}

@@ -1,0 +1,60 @@
+//===- assigned_call_result_does_not_get_wrong_bounds.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `index = f(..)` keeps the `ensures` bounds of `f`. It must not keep a bound that names a
+// variable with a new value: the assigned variable, or a variable that the call changes.
+//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn bounded_from_buffer(_data : *const i32, k : i32) -> i32
+requires k > 0
+ensures return >= 0 && return < k {
+  return k - 1;
+}
+
+fn change_limit(limit : i32, target : &mut i32) -> i32
+requires limit > 0
+ensures return >= 0 && return < limit {
+  *target = 0;
+  return limit - 1;
+}
+
+fn consume_index(limit : i32, index : i32) -> i32
+requires limit > 0 && index >= 0 && index < limit {
+  return index;
+}
+
+fn at_least_ten(n : i32) -> i32
+requires n >= 10 {
+  return n;
+}
+
+// The result is below the old `index`. The false bound `index < index` would prove any claim.
+fn the_argument_is_the_assigned_variable(p : *mut i32, k : i32) -> i32
+requires valid(p, 1)
+requires k > 0 {
+  let mut index = k;
+  index = bounded_from_buffer(p as *const i32, index);
+  // CHECK: Error[E8006]{{.*}}this call to 'at_least_ten' may not meet its precondition
+  return at_least_ten(index);
+}
+
+// The result is below the old `limit`, and the call gives `limit` a new value.
+fn the_call_changes_its_argument(k : i32) -> i32
+requires k > 1 {
+  let mut limit = k;
+  let mut index = 0;
+  index = change_limit(limit, &mut limit);
+  // CHECK: Error[E8006]{{.*}}this call to 'consume_index' may not meet its precondition
+  return consume_index(limit, index);
+}
+
+fn main() -> i32 {
+  let mut cell = 0;
+  let p : *mut i32 = &mut cell;
+  return the_argument_is_the_assigned_variable(p, 4) + the_call_changes_its_argument(4);
+}

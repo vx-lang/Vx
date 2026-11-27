@@ -1,0 +1,20 @@
+//===- print_s_needs_a_right_as_its_first_argument.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The first argument of `println_s!` is the right to print. A number is not one.
+// CHECK: Error at {{.*}}.vx:[[@LINE+3]]:3: the first argument of `print_s!` or `println_s!` is the right to print: a `Stdout` or a `Stderr` from `root`, or a reference to one. Its type is `i32`
+// CHECK: 1 error(s) emitted
+fn show(n : i32) -> void {
+  println_s!(n, "the value {}", n);
+}
+
+fn main() -> i32 {
+  show(3);
+  return 0;
+}
