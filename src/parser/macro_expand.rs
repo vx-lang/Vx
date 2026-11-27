@@ -22,6 +22,14 @@ use std::collections::HashMap;
 /// The macros that `expand_macro_call` expands itself, with no `macro_rules!`.
 pub const BUILT_IN_MACROS: [&str; 6] = ["mlir", "vec", "print", "eprint", "println", "eprintln"];
 
+/// What a call of a macro expands to.
+enum MacroBody {
+    /// A body that is one expression.
+    Expr(Box<expr::Expr>),
+    /// Any other body. Only a call that is a statement of its own can expand to statements.
+    Stmts(Vec<stmt::Statement>),
+}
+
 /// The `macro_rules` of a program. A module can call the macros that it defines and the macros
 /// of the modules that it imports. So the expansion of a module depends only on its imports.
 #[derive(Debug, Default)]
@@ -274,13 +282,48 @@ impl<'a> MacroExpander<'a> {
         }
     }
 
-    fn parse_expanded_expr(
+    /// Parse the tokens of an expanded macro body. A body that is one expression, with or
+    /// without a `;` after it, is that expression. Any other body is read as statements, so
+    /// no token of the body is dropped.
+    fn parse_expanded_body(
         &self,
         tokens: &[crate::lexer::OwnedToken],
-    ) -> Result<expr::Expr, String> {
+    ) -> Result<MacroBody, String> {
+        use crate::lexer::TokenType;
         let lexed_tokens: Vec<_> = tokens.iter().map(|t| t.as_token()).collect();
         let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
-        parser.parse_expr().map_err(|e| format!("{:?}", e))
+        if let Ok(expr) = parser.parse_expr() {
+            parser.match_token(&TokenType::Semicolon);
+            if parser.check(&TokenType::Eof) {
+                return Ok(MacroBody::Expr(Box::new(expr)));
+            }
+        }
+        // A `}` after the body, as in a block, so the last statement can be a value with no `;`.
+        // The tokens of a body are balanced, so the parser reaches this `}` only at the end.
+        let mut block_tokens = tokens.to_vec();
+        let end = block_tokens
+            .iter()
+            .position(|t| t.kind == OwnedTokenType::Eof)
+            .unwrap_or(block_tokens.len());
+        block_tokens.insert(
+            end,
+            crate::lexer::OwnedToken {
+                kind: OwnedTokenType::RightBrace,
+                line: 0,
+                column: 0,
+                length: 0,
+                expansion: 0,
+            },
+        );
+        let lexed_tokens: Vec<_> = block_tokens.iter().map(|t| t.as_token()).collect();
+        let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
+        let mut stmts = Vec::new();
+        while !parser.check(&TokenType::RightBrace) {
+            parser
+                .parse_statement_into(&mut stmts)
+                .map_err(|e| format!("{:?}", e))?;
+        }
+        Ok(MacroBody::Stmts(stmts))
     }
 
     fn parse_expanded_exprs(
@@ -457,8 +500,18 @@ impl<'a> MacroExpander<'a> {
 
     fn expand_stmt(&self, mut stmt: stmt::Statement) -> Result<Vec<stmt::Statement>, String> {
         if let stmt::Statement::MacroCall(call) = stmt {
-            let expanded_expr =
+            let body =
                 self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree, call.span)?;
+            let expanded_expr = match body {
+                MacroBody::Expr(e) => *e,
+                MacroBody::Stmts(stmts) => {
+                    let mut out = Vec::with_capacity(stmts.len());
+                    for s in stmts {
+                        out.extend(self.expand_stmt(s)?);
+                    }
+                    return Ok(out);
+                }
+            };
             let recursively_expanded = self.expand_expr(expanded_expr)?;
             return Ok(vec![stmt::Statement::ExprStmt(stmt::ExprStmtStmt {
                 expr: recursively_expanded,
@@ -519,9 +572,17 @@ impl<'a> MacroExpander<'a> {
 
     fn expand_expr(&self, mut expr: expr::Expr) -> Result<expr::Expr, String> {
         if let expr::Expr::MacroCall(call) = expr {
-            let expanded =
+            let body =
                 self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree, call.span)?;
-            return self.expand_expr(expanded);
+            let MacroBody::Expr(expanded) = body else {
+                return Err(format!(
+                    "the body of macro `{name}` is not one expression, so the call at line {line} \
+                     cannot give a value. Write the call as a statement of its own: `{name}!(..);`",
+                    name = call.name,
+                    line = call.span.line
+                ));
+            };
+            return self.expand_expr(*expanded);
         }
         // Traverse and expand
         match &mut expr {
@@ -733,19 +794,27 @@ impl<'a> MacroExpander<'a> {
         tt: &TokenTree,
         block_tree: &Option<TokenTree>,
         span: Span,
-    ) -> Result<expr::Expr, String> {
+    ) -> Result<MacroBody, String> {
         if name == "mlir" {
-            return self.expand_mlir_macro(tt, block_tree);
+            return self
+                .expand_mlir_macro(tt, block_tree)
+                .map(|e| MacroBody::Expr(Box::new(e)));
         }
 
         if name == "vec" {
-            return self.expand_vec_macro(tt);
+            return self
+                .expand_vec_macro(tt)
+                .map(|e| MacroBody::Expr(Box::new(e)));
         }
         if name == "print" || name == "eprint" {
-            return self.expand_print_macro(tt, name == "eprint");
+            return self
+                .expand_print_macro(tt, name == "eprint")
+                .map(|e| MacroBody::Expr(Box::new(e)));
         }
         if name == "println" || name == "eprintln" {
-            return self.expand_println_macro(tt, name == "eprintln");
+            return self
+                .expand_println_macro(tt, name == "eprintln")
+                .map(|e| MacroBody::Expr(Box::new(e)));
         }
 
         let (home, rules) = self.macros.rules(&self.module, name)?;
@@ -776,7 +845,7 @@ impl<'a> MacroExpander<'a> {
                     length: 0,
                     expansion: 0,
                 });
-                return self.parse_expanded_expr(&transcribed);
+                return self.parse_expanded_body(&transcribed);
             }
         }
 
