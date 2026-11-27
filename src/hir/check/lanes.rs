@@ -483,11 +483,13 @@ pub const LANE_ROUTINES: &[LaneRoutine] = {
         .with_lanes(),
         LaneRoutine::call("matmul", Matmul, "vx.lane_matmul", matmul, None)
             .with_syntax(LaneSyntax::Operator)
+            .with_lanes()
             .with_row_of(0)
             .writing_first(),
         LaneRoutine::call("matmul_accumulate", Matmul, "vx.lane_matmul", matmul, None)
             .with_syntax(LaneSyntax::Operator)
             .with_attrs(&[("accumulate", LaneAttr::Unit)])
+            .with_lanes()
             .with_row_of(0)
             .writing_first(),
     ]

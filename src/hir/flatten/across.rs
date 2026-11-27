@@ -684,21 +684,28 @@ impl Lowerer<'_> {
         })
     }
 
-    /// `acc = acc + (a as f32) @ (b as f32)` in the code of a subgroup: an effect on `acc`, which
-    /// every lane of the subgroup computes. A subgroup barrier after it lets each lane read the
-    /// elements that the other lanes wrote.
+    /// `acc = acc + (a as f32) @ (b as f32)` in the code of a subgroup or a block: an effect on
+    /// `acc`, which every lane of the subgroup or the block computes. A barrier after it lets each
+    /// lane read the elements that the other lanes wrote.
     pub(super) fn lower_lane_matmul(
         &mut self,
         m: &crate::hir::check::lanes::LaneMatmul,
     ) -> Lowered<()> {
-        assert_eq!(
-            self.across.kinds.last(),
-            Some(&LevelKind::Subgroups),
-            "a lane matmul is in the code of a subgroup"
+        assert!(
+            matches!(
+                self.across.kinds.last(),
+                Some(LevelKind::Subgroups | LevelKind::Blocks)
+            ),
+            "a lane matmul is in the code of a block or a subgroup"
         );
+        let level = if self.across.kinds.last() == Some(&LevelKind::Blocks) {
+            AcrossLevel::Block
+        } else {
+            AcrossLevel::Subgroup
+        };
         let routine = crate::hir::check::lanes::matmul_routine(m.accumulate);
         self.lower_lane_call(routine, &[m.acc, m.lhs, m.rhs])?;
-        self.barrier(AcrossLevel::Subgroup);
+        self.barrier(level);
         Ok(())
     }
 

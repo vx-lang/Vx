@@ -404,7 +404,7 @@ impl crate::hir::TypeChecker<'_> {
             block_lanes,
         };
         let mut uses = Uses::default();
-        walk.stmts(&sp.stmts, None, &mut uses);
+        walk.stmts(&sp.stmts, None, None, &mut uses);
         Some(uses)
     }
 }
@@ -454,22 +454,29 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     /// `row` is the index of the subgroup loop around `stmts`, when that loop gives each subgroup
-    /// one pass at most, so that `t[row]` is the row of the subgroup.
-    fn stmts(&self, stmts: &[Statement], row: Option<&str>, uses: &mut Uses) {
+    /// one pass at most, so that `t[row]` is the row of the subgroup. `kind` is the level of the
+    /// `across` loop around `stmts`, or `None` outside one.
+    fn stmts(
+        &self,
+        stmts: &[Statement],
+        row: Option<&str>,
+        kind: Option<LevelKind>,
+        uses: &mut Uses,
+    ) {
         for s in stmts {
             match s {
                 Statement::ForLoop(f) => {
                     self.other(&f.iterable, uses);
-                    let kind = f.across.as_ref().and_then(|a| a.kind);
-                    let inner_row = match kind {
+                    let loop_kind = f.across.as_ref().and_then(|a| a.kind);
+                    let inner_row = match loop_kind {
                         Some(LevelKind::Subgroups) => self.subgroup_row(f),
                         // A lane routine is not in a lane loop.
                         Some(LevelKind::Lanes) => None,
                         _ => row,
                     };
-                    self.stmts(&f.body, inner_row, uses);
+                    self.stmts(&f.body, inner_row, loop_kind.or(kind), uses);
                 }
-                Statement::Loop(l) => self.stmts(&l.body, row, uses),
+                Statement::Loop(l) => self.stmts(&l.body, row, kind, uses),
                 Statement::ExprStmt(e) => {
                     match crate::hir::check::lanes::bare_lane_statement(&e.expr) {
                         Some(fc) => self.lane_call(fc, row, uses),
@@ -477,7 +484,7 @@ impl Walk<'_> {
                     }
                 }
                 Statement::Assign(a) => match crate::hir::check::lanes::lane_matmul(a) {
-                    Some(m) => self.matmul(&m, row, uses),
+                    Some(m) => self.matmul(&m, row, kind, uses),
                     None => {
                         self.other(&a.lhs, uses);
                         self.other(&a.rhs, uses);
@@ -578,9 +585,22 @@ impl Walk<'_> {
     }
 
     /// `t[w] = t[w] + x @ y`, with tiles `x` and `y` that the matmul of the GPU takes.
-    fn matmul(&self, m: &crate::hir::check::lanes::LaneMatmul, row: Option<&str>, uses: &mut Uses) {
+    fn matmul(
+        &self,
+        m: &crate::hir::check::lanes::LaneMatmul,
+        row: Option<&str>,
+        kind: Option<LevelKind>,
+        uses: &mut Uses,
+    ) {
         self.other(m.lhs, uses);
         self.other(m.rhs, uses);
+        // A block matmul keeps its accumulator in the registers of the warpgroup
+        // when the `wgmma.mma_async` of `VX_WGMMA=1` takes it, which this
+        // analysis does not model. Leave its tiles in the working set.
+        if kind != Some(LevelKind::Subgroups) {
+            self.other(m.acc, uses);
+            return;
+        }
         let mut root = m.acc;
         while let Expr::IndexAccess(ix) = root {
             root = &ix.base;

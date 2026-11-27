@@ -90,6 +90,7 @@
 #include "llvm/Transforms/Utils/LoopUtils.h"
 
 #include <atomic>
+#include <optional>
 #include <set>
 
 using namespace mlir;
@@ -4370,18 +4371,20 @@ static void expandLaneMatmulOnHost(OpBuilder &b, vx::LaneMatmulOp op) {
 /// `l`, `l + 32` and so on, in row order. The subgroup barrier after the op
 /// makes the elements visible to the other lanes.
 static void expandLaneMatmulOnDevice(OpBuilder &b, vx::LaneMatmulOp op) {
-  assert(op.getSubgroup() &&
-         "the checker allows a lane matmul only in the code "
-         "of a subgroup");
   Location loc = op.getLoc();
   Value lanes = b.create<arith::ConstantIndexOp>(loc, 32);
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
-  Value lane = b.create<arith::RemUIOp>(loc, tid, lanes);
+  Value lb = b.create<arith::RemUIOp>(loc, tid, lanes);
+  Value step = lanes;
+  if (!op.getSubgroup()) {
+    lb = tid;
+    step = b.create<gpu::BlockDimOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  }
   Value cols = b.create<memref::DimOp>(loc, op.getAcc(), 1);
   Value all = b.create<arith::MulIOp>(
       loc, b.create<memref::DimOp>(loc, op.getAcc(), 0), cols);
-  b.create<scf::ForOp>(loc, lane, all, lanes, ValueRange{},
+  b.create<scf::ForOp>(loc, lb, all, step, ValueRange{},
                        [&](OpBuilder &nb, Location l, Value e, ValueRange) {
                          Value i = nb.create<arith::DivUIOp>(l, e, cols);
                          Value j = nb.create<arith::RemUIOp>(l, e, cols);
@@ -4661,6 +4664,11 @@ static void expandLaneMatmulScaledWithMma(OpBuilder &b,
   bar->setAttr("subgroup", b.getUnitAttr());
 }
 
+struct Wgmma {
+  std::string kind;
+  int64_t kStep;
+};
+
 /// The block-scaled `tcgen05.mma` of a scaled lane matmul: its kind, the number
 /// of scales of a row or column in one step of 64 values of k, the values of k
 /// that share one scale, and the instruction descriptor.
@@ -4726,6 +4734,327 @@ static std::optional<Tcgen05Mma> tcgen05MmaFor(vx::LaneMatmulScaledOp op,
   if (isa<Float8E8M0FNUType>(scale) && block == 32)
     return Tcgen05Mma{"mxf4.block_scale.scale_vec::2X", 2, 32, idesc(1)};
   return std::nullopt;
+}
+
+/// The `wgmma.mma_async` that `chip` has for `op`, if any: `sm_90a`. It is off
+/// unless `VX_WGMMA=1`, because no such kernel of Vx has run on a GPU yet.
+/// `acc` has 128 rows and N columns, N a multiple of 8 up to 256. `lhs` and
+/// `rhs` are `f16`, `bf16`, `f8e4m3` or `f8e5m2` matrices, and k is a multiple
+/// of 16 for the first two and of 32 for the last two.
+static std::optional<Wgmma> wgmmaFor(vx::LaneMatmulOp op, StringRef chip) {
+  const char *on = ::getenv("VX_WGMMA");
+  if (!on || StringRef(on) != "1")
+    return std::nullopt;
+  if (chipNumber(chip) != 90 || !chip.ends_with("a"))
+    return std::nullopt;
+  if (op.getSubgroup() || op.getSerial() || op.getLanes() != 128)
+    return std::nullopt;
+  for (Value v : op->getOperands())
+    if (!cast<MemRefType>(v.getType()).hasStaticShape())
+      return std::nullopt;
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  auto lhs = cast<MemRefType>(op.getLhs().getType());
+  auto rhs = cast<MemRefType>(op.getRhs().getType());
+  int64_t m = acc.getDimSize(0), n = acc.getDimSize(1);
+  int64_t k = lhs.getDimSize(1);
+  if (m != 128 || n % 8 || n > 256 || rhs.getDimSize(0) != k ||
+      rhs.getDimSize(1) != n)
+    return std::nullopt;
+  Type elem = lhs.getElementType();
+  if (elem != rhs.getElementType())
+    return std::nullopt;
+  std::string suffix;
+  int64_t kStep;
+  if (isa<Float16Type>(elem)) {
+    suffix = "f16.f16";
+    kStep = 16;
+  } else if (isa<BFloat16Type>(elem)) {
+    suffix = "bf16.bf16";
+    kStep = 16;
+  } else if (isa<Float8E4M3FNType>(elem)) {
+    suffix = "e4m3.e4m3";
+    kStep = 32;
+  } else if (isa<Float8E5M2Type>(elem)) {
+    suffix = "e5m2.e5m2";
+    kStep = 32;
+  } else {
+    return std::nullopt;
+  }
+  if (k % kStep)
+    return std::nullopt;
+  return Wgmma{"m64n" + std::to_string(n) + "k" + std::to_string(kStep) +
+                   ".row.col.f32." + suffix,
+               kStep};
+}
+
+static void expandLaneMatmulWithWgmma(OpBuilder &b, vx::LaneMatmulOp op,
+                                      const Wgmma &mma) {
+  Location loc = op.getLoc();
+  MLIRContext *ctx = b.getContext();
+  Type i8 = b.getI8Type(), i64 = b.getI64Type(), f32 = b.getF32Type();
+  auto acc = cast<MemRefType>(op.getAcc().getType());
+  int64_t m = acc.getDimSize(0), n = acc.getDimSize(1);
+  int64_t k = cast<MemRefType>(op.getLhs().getType()).getDimSize(1);
+  int64_t steps = k / mma.kStep;
+  // A 128-byte row of the tile holds `kRow` values of k, 8 rows to a 1024-byte
+  // block, and the 128-byte swizzle: chunk c of row r goes to chunk c ^ (r %
+  // 8). `groups` is the number of rows of k, and `perRow` the number of k
+  // steps of one instruction in one row. A step of k is `kStep` values, 32
+  // bytes for both f16 and fp8, so a row holds four steps either way.
+  Type elem = cast<MemRefType>(op.getLhs().getType()).getElementType();
+  int64_t elemBytes = elem.getIntOrFloatBitWidth() / 8;
+  int64_t kRow = 128 / elemBytes;
+  int64_t groups = (k + kRow - 1) / kRow;
+  int64_t perRow = kRow / mma.kStep;
+  auto index = [&](int64_t v) -> Value {
+    return b.create<arith::ConstantIndexOp>(loc, v);
+  };
+  auto ptx = [&](OpBuilder &nb, Location l, StringRef text,
+                 StringRef constraints, ValueRange operands) {
+    lanePtx(nb, l, text, constraints, operands);
+  };
+
+  auto func = op->getParentOfType<gpu::GPUFuncOp>();
+  OpBuilder entry(&func.getBody().front(), func.getBody().front().begin());
+  auto shared = [&](int64_t count, Type elem, int64_t align) -> Value {
+    return entry.create<memref::AllocaOp>(
+        loc,
+        MemRefType::get({count}, elem, MemRefLayoutAttrInterface{},
+                        entry.getI64IntegerAttr(3)),
+        entry.getI64IntegerAttr(align));
+  };
+
+  int64_t lhsBytes = groups * m * 128, rhsBytes = groups * n * 128;
+  Value lhsCopy = shared(lhsBytes, i8, 1024);
+  Value rhsCopy = shared(rhsBytes, i8, 1024);
+
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value warp = b.create<arith::DivUIOp>(loc, tid, index(32));
+  Value lane = b.create<arith::RemUIOp>(loc, tid, index(32));
+
+  // A byte past the end of k holds zero.
+  Type elemInt = b.getIntegerType(elemBytes * 8);
+  Value elemZero =
+      b.create<arith::ConstantOp>(loc, elem, b.getFloatAttr(elem, 0.0));
+
+  // Copy one byte of the tile into the swizzled row of shared memory: byte b
+  // of row r is byte `b % elemBytes` of the value of k `b / elemBytes`.
+  auto copyTile =
+      [&](Value copy, int64_t rows,
+          function_ref<Value(OpBuilder &, Location, Value, Value)> at) {
+        int64_t bytes = groups * rows * 128;
+        b.create<scf::ForOp>(
+            loc, tid, index(bytes), index(128), ValueRange{},
+            [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+              Value group = nb.create<arith::DivUIOp>(l, e, index(rows * 128));
+              Value rest = nb.create<arith::RemUIOp>(l, e, index(rows * 128));
+              Value r = nb.create<arith::DivUIOp>(l, rest, index(128));
+              Value byte = nb.create<arith::RemUIOp>(l, rest, index(128));
+              Value kk = nb.create<arith::AddIOp>(
+                  l, nb.create<arith::MulIOp>(l, group, index(128 / elemBytes)),
+                  nb.create<arith::DivUIOp>(l, byte, index(elemBytes)));
+              Value inside = nb.create<arith::CmpIOp>(
+                  l, arith::CmpIPredicate::ult, kk, index(k));
+              Value safe = nb.create<arith::SelectOp>(l, inside, kk, index(0));
+              Value v = nb.create<arith::SelectOp>(
+                  l, inside, at(nb, l, r, safe), elemZero);
+              Value bits = nb.create<arith::BitcastOp>(l, elemInt, v);
+              Value out;
+              if (elemBytes == 1) {
+                out = bits;
+              } else {
+                Value low = nb.create<arith::TruncIOp>(
+                    l, i8,
+                    nb.create<arith::AndIOp>(
+                        l, bits,
+                        nb.create<arith::ConstantIntOp>(l, elemInt, 0xFF)));
+                Value high = nb.create<arith::TruncIOp>(
+                    l, i8,
+                    nb.create<arith::ShRUIOp>(
+                        l, bits,
+                        nb.create<arith::ConstantIntOp>(l, elemInt, 8)));
+                Value isLow = nb.create<arith::CmpIOp>(
+                    l, arith::CmpIPredicate::eq,
+                    nb.create<arith::RemUIOp>(l, byte, index(elemBytes)),
+                    index(0));
+                out = nb.create<arith::SelectOp>(l, isLow, low, high);
+              }
+              // The 128-byte swizzle: chunk c of row r goes to chunk c ^ (r %
+              // 8).
+              Value chunk = nb.create<arith::XOrIOp>(
+                  l, nb.create<arith::DivUIOp>(l, byte, index(16)),
+                  nb.create<arith::RemUIOp>(l, r, index(8)));
+              Value place = nb.create<arith::AddIOp>(
+                  l,
+                  nb.create<arith::AddIOp>(
+                      l, nb.create<arith::MulIOp>(l, group, index(rows * 128)),
+                      nb.create<arith::MulIOp>(l, r, index(128))),
+                  nb.create<arith::AddIOp>(
+                      l, nb.create<arith::MulIOp>(l, chunk, index(16)),
+                      nb.create<arith::RemUIOp>(l, byte, index(16))));
+              nb.create<memref::StoreOp>(l, out, copy, ValueRange{place});
+              nb.create<scf::YieldOp>(l);
+            });
+      };
+
+  copyTile(lhsCopy, m, [&](OpBuilder &nb, Location l, Value r, Value kk) {
+    return nb.create<memref::LoadOp>(l, op.getLhs(), ValueRange{r, kk})
+        .getResult();
+  });
+  copyTile(rhsCopy, n, [&](OpBuilder &nb, Location l, Value c, Value kk) {
+    return nb.create<memref::LoadOp>(l, op.getRhs(), ValueRange{kk, c})
+        .getResult();
+  });
+  ptx(b, loc, "fence.proxy.async.shared::cta;", "", {});
+  b.create<gpu::BarrierOp>(loc);
+  ptx(b, loc, "wgmma.fence.sync.aligned;", "", {});
+
+  // A 64-bit `wgmma` shared-memory descriptor: the address >> 4 in bits 0-13,
+  // 16 bytes between core matrices along the leading dimension (bits 16-29),
+  // 1024 bytes between core matrices along the stride dimension (bits 32-45),
+  // and the 128-byte swizzle (bits 62-63).
+  auto descriptor = [&](Value at, int64_t offset) -> Value {
+    Value address = b.create<arith::AddIOp>(
+        loc, at, b.create<arith::ConstantIntOp>(loc, i64, offset));
+    Value field = b.create<arith::AndIOp>(
+        loc,
+        b.create<arith::ShRUIOp>(loc, address,
+                                 b.create<arith::ConstantIntOp>(loc, i64, 4)),
+        b.create<arith::ConstantIntOp>(loc, i64, 0x3FFF));
+    return b.create<arith::OrIOp>(
+        loc, field,
+        b.create<arith::ConstantIntOp>(
+            loc, i64, (1ULL << 16) | (64ULL << 32) | (1ULL << 62)));
+  };
+
+  Value lhsAt = laneAddress(b, loc, lhsCopy);
+  Value rhsAt = laneAddress(b, loc, rhsCopy);
+  int64_t regsPerTile = n / 2, tiles = m / 64;
+  SmallVector<Value> accRegs(
+      tiles * regsPerTile,
+      b.create<arith::ConstantOp>(loc, f32, b.getF32FloatAttr(0.0f)));
+
+  // Keep the accumulator ordered across `wgmma.fence` and the wait. LLVM can
+  // otherwise move the initialization below the fence, or the reads above the
+  // wait, because the asm above mentions none of these registers.
+  auto tie = [&](ArrayRef<Value> regs) {
+    auto type = LLVM::LLVMStructType::getLiteral(
+        ctx, SmallVector<Type>(regs.size(), f32));
+    // Each register is an output tied to its own input, as the `mma.sync`
+    // constraints do: the empty asm writes no register of its own, so a
+    // `=f` with no tie would be a new definition that LLVM may reorder.
+    std::string constraints;
+    for (size_t r = 0; r < regs.size(); ++r)
+      constraints += (r ? ",=f" : "=f");
+    for (size_t r = 0; r < regs.size(); ++r)
+      constraints += "," + std::to_string(r);
+    Value packed =
+        b.create<LLVM::InlineAsmOp>(
+             loc, type, regs, "", constraints, /*has_side_effects=*/true,
+             /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
+             LLVM::AsmDialectAttr(), ArrayAttr())
+            .getResult(0);
+    SmallVector<Value> out;
+    for (size_t r = 0; r < regs.size(); ++r)
+      out.push_back(b.create<LLVM::ExtractValueOp>(loc, packed, r));
+    return out;
+  };
+  accRegs = tie(accRegs);
+
+  for (int64_t i = 0; i < steps; ++i) {
+    int64_t within = (i % perRow) * mma.kStep * elemBytes;
+    for (int64_t tm = 0; tm < tiles; ++tm) {
+      Value descA =
+          descriptor(lhsAt, (i / perRow) * m * 128 + tm * 64 * 128 + within);
+      Value descB = descriptor(rhsAt, (i / perRow) * n * 128 + within);
+      // Each accumulator register is an output tied to its own input: a step
+      // after the first reads the sums of the steps before it.
+      std::string regList, constraints;
+      for (int64_t r = 0; r < regsPerTile; ++r) {
+        regList += (r ? ", $" : "$") + std::to_string(r);
+        constraints += (r ? ",=f" : "=f");
+      }
+      for (int64_t r = 0; r < regsPerTile; ++r)
+        constraints += "," + std::to_string(r);
+      constraints += ",l,l";
+      SmallVector<Value> operands(accRegs.begin() + tm * regsPerTile,
+                                  accRegs.begin() + (tm + 1) * regsPerTile);
+      operands.push_back(descA);
+      operands.push_back(descB);
+      // `scaleD` is 0 for the first step, so it computes D = A * B, and 1
+      // after, so it accumulates. A and B are neither negated (1, 1) nor
+      // transposed: the copy already laid them out row-major and column-major.
+      // A transpose operand exists only for f16 and bf16, where it says (0, 0)
+      // -- no transpose; the fp8 wgmma takes no transpose operands.
+      std::string scaleD = (i == 0) ? "0" : "1";
+      bool fp8 = mma.kStep == 32;
+      size_t descAIdx = 2 * regsPerTile;
+      size_t descBIdx = 2 * regsPerTile + 1;
+      std::string text = "wgmma.mma_async.sync.aligned." + mma.kind + " {" +
+                         regList + "}, $" + std::to_string(descAIdx) + ", $" +
+                         std::to_string(descBIdx) + ", " + scaleD + ", 1, 1" +
+                         (fp8 ? ";" : ", 0, 0;");
+      auto type = LLVM::LLVMStructType::getLiteral(
+          ctx, SmallVector<Type>(regsPerTile, f32));
+      Value packed = b.create<LLVM::InlineAsmOp>(
+                          loc, type, operands, text, constraints,
+                          /*has_side_effects=*/true, /*is_align_stack=*/false,
+                          LLVM::tailcallkind::TailCallKind::None,
+                          LLVM::AsmDialectAttr(), ArrayAttr())
+                         .getResult(0);
+      for (int64_t r = 0; r < regsPerTile; ++r)
+        accRegs[tm * regsPerTile + r] =
+            b.create<LLVM::ExtractValueOp>(loc, packed, r);
+    }
+  }
+  ptx(b, loc, "wgmma.commit_group.sync.aligned;", "", {});
+  ptx(b, loc, "wgmma.wait_group.sync.aligned 0;", "", {});
+  accRegs = tie(accRegs);
+
+  Value groupID = b.create<arith::DivUIOp>(loc, lane, index(4));
+  Value threadInGroup = b.create<arith::RemUIOp>(loc, lane, index(4));
+  Value warpRowBase = b.create<arith::MulIOp>(loc, warp, index(16));
+  Value row0 = b.create<arith::AddIOp>(loc, warpRowBase, groupID);
+  Value row1 = b.create<arith::AddIOp>(loc, row0, index(8));
+  Value colBase0 = b.create<arith::MulIOp>(loc, threadInGroup, index(2));
+  Value colBase1 = b.create<arith::AddIOp>(loc, colBase0, index(1));
+
+  for (int64_t tm = 0; tm < tiles; ++tm) {
+    Value tileRowOffset = index(tm * 64);
+    Value r0 = b.create<arith::AddIOp>(loc, tileRowOffset, row0);
+    Value r1 = b.create<arith::AddIOp>(loc, tileRowOffset, row1);
+
+    for (int64_t c0 = 0; c0 < n; c0 += 8) {
+      int64_t regBase = tm * regsPerTile + (c0 / 8) * 4;
+      Value cOffset = index(c0);
+      Value col0 = b.create<arith::AddIOp>(loc, cOffset, colBase0);
+      Value col1 = b.create<arith::AddIOp>(loc, cOffset, colBase1);
+      std::array<std::tuple<Value, Value, Value>, 4> coords = {{
+          {r0, col0, accRegs[regBase + 0]},
+          {r0, col1, accRegs[regBase + 1]},
+          {r1, col0, accRegs[regBase + 2]},
+          {r1, col1, accRegs[regBase + 3]},
+      }};
+
+      for (auto [row, col, sum] : coords) {
+        Value insideN = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult,
+                                                col, index(n));
+        auto ifInBounds =
+            b.create<scf::IfOp>(loc, insideN, /*withElseRegion=*/false);
+        OpBuilder ib =
+            OpBuilder::atBlockTerminator(&ifInBounds.getThenRegion().front());
+        Value old =
+            ib.create<memref::LoadOp>(loc, op.getAcc(), ValueRange{row, col});
+        Value toStore = sum;
+        if (op.getAccumulate()) {
+          toStore = ib.create<arith::AddFOp>(loc, old, sum);
+        }
+        ib.create<memref::StoreOp>(loc, toStore, op.getAcc(),
+                                   ValueRange{row, col});
+      }
+    }
+  }
 }
 
 /// A scaled lane matmul on the tensor cores of the B200, with `tcgen05`. Every
@@ -5476,13 +5805,26 @@ static void expandLaneMatmulWithMma(OpBuilder &b, vx::LaneMatmulOp op,
                                    ValueRange{ij.first, ij.second});
     }
   };
+
   if (fragments) {
     for (int64_t top = 0; top < m; top += 16)
       for (int64_t left = 0; left < n; left += 8)
         piece(b, loc, index(top), index(left), (top / 16) * (n / 8) + left / 8);
     return;
   }
-  b.create<scf::ForOp>(loc, zero, index(m), index(16), ValueRange{},
+
+  Value outerLb = zero;
+  Value outerStep = index(16);
+  if (!op.getSubgroup()) {
+    Value blockDimX =
+        b.create<gpu::BlockDimOp>(loc, b.getIndexType(), gpu::Dimension::x);
+    Value numWarps = b.create<arith::DivUIOp>(loc, blockDimX, index(32));
+    Value warp = b.create<arith::DivUIOp>(loc, tid, index(32));
+    outerLb = b.create<arith::MulIOp>(loc, warp, index(16));
+    outerStep = b.create<arith::MulIOp>(loc, numWarps, index(16));
+  }
+
+  b.create<scf::ForOp>(loc, outerLb, index(m), outerStep, ValueRange{},
                        [&](OpBuilder &nb, Location l, Value top, ValueRange) {
                          nb.create<scf::ForOp>(l, zero, index(n), index(8),
                                                ValueRange{},
@@ -5966,7 +6308,12 @@ static void expandLaneMatmul(OpBuilder &b, vx::LaneMatmulOp op, bool device,
       fitsSimdgroupMatrices(op))
     return;
   if (device && !op.getSerial()) {
-    if (Type elem = mmaElementFor(op, mmaChip))
+    // A matmul in the code of a subgroup loop runs on the lanes of one warp. A
+    // block matmul splits over whole warps, so the tensor cores take it only
+    // when the lanes make whole warps; any other lane count keeps the generic
+    // expansion, which every thread runs.
+    if (Type elem = mmaElementFor(op, mmaChip);
+        elem && (op.getSubgroup() || op.getLanes() % 32 == 0))
       expandLaneMatmulWithMma(b, op, elem);
     else
       expandLaneMatmulOnDevice(b, op);
@@ -8723,6 +9070,12 @@ struct ConvertVxToStandardPass
           if (simdgroupMatrices && !op.getSerial() &&
               keepSimdgroupSumsInRegisters(op, registerTiles, expanded)) {
             ++registerTiles;
+            continue;
+          }
+          if (std::optional<Wgmma> wg = wgmmaFor(op, mmaChip)) {
+            OpBuilder b(op);
+            expandLaneMatmulWithWgmma(b, op, *wg);
+            op.erase();
             continue;
           }
           Type elem = op.getSerial() ? Type() : mmaElementFor(op, mmaChip);

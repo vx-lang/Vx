@@ -454,10 +454,10 @@ impl Walk<'_> {
         for at in found {
             self.error(
                 "a region with `across` loops may have a matmul of whole tensors only as a \
-                 statement `c = c + a @ b` or `c = a @ b` in the code of a subgroup loop, outside \
-                 its lane loops. The code generator sends any other matmul to cuBLAS, which a GPU \
-                 kernel cannot call. Write its loops in the region, or do the matmul before the \
-                 region"
+                    statement `c = c + a @ b` or `c = a @ b` in the code of a loop of blocks or \
+                    subgroups, outside its lane loops. The code generator sends any other matmul to \
+                    cuBLAS, which a GPU kernel cannot call. Write its loops in the region, or do the \
+                    matmul before the region"
                     .to_string(),
                 at,
             );
@@ -690,7 +690,7 @@ impl Walk<'_> {
             ctx.region.clone(),
             ctx.axes.last(),
         ) {
-            if axis.kind != LevelKind::Subgroups {
+            if !matches!(axis.kind, LevelKind::Subgroups | LevelKind::Blocks) {
                 return;
             }
             self.reads_lane0(lanes::MATMUL, &[m.acc, m.lhs, m.rhs], ctx);

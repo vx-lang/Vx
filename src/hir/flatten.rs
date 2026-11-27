@@ -7819,7 +7819,9 @@ impl<'r> Lowerer<'r> {
                 Ok(())
             }
             Statement::Assign(a) => {
-                if self.across.level == Some(across::AcrossLevel::Subgroup) {
+                if self.across.level == Some(across::AcrossLevel::Subgroup)
+                    || self.across.level == Some(across::AcrossLevel::Block)
+                {
                     if let Some(m) = crate::hir::check::lanes::lane_matmul(a) {
                         return self.lower_lane_matmul(&m);
                     }
