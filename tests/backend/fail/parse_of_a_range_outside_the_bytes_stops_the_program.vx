@@ -1,0 +1,32 @@
+//===- parse_of_a_range_outside_the_bytes_stops_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `i64::parse(&v, 1, 4)` on a `Vec<u8>` of 3 bytes reads past its end, so it stops the
+// program, as `v[3]` does. It does not give an error value.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not="parsed"
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not="parsed"
+// CHECK: {{^}}panic: parse: the range from..to is not inside the bytes{{$}}
+
+import std::string;
+import std::vec;
+
+fn main() -> i32 {
+  let mut v = Vec<u8>::new();
+  v.push(49u8);
+  v.push(50u8);
+  v.push(51u8);
+  match i64::parse(&v, 1, 4) {
+    Result::Ok(n) => {
+      println!("parsed {}", n);
+    }
+    Result::Err(_e) => {
+      println!("parsed nothing");
+    }
+  }
+  return 0;
+}

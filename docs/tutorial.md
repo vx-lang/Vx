@@ -22,6 +22,9 @@ fn main() -> i32 {
 Variables are declared with `let`. Use `mut` to make them mutable.
 Supported types include standard primitives (`i32`, `f32`, `f64`, `bool`), custom structs, and n-dimensional tensors.
 
+An integer literal can be written in decimal, hex, octal or binary, with `_` between groups of
+digits if that reads better: `255`, `0xFF`, `0o377`, `0b1111_1111` and `2_55` are the same value.
+
 ## 2. Advanced Semantics
 
 ### Tensors and Math

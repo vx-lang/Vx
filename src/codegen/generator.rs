@@ -179,6 +179,10 @@ pub struct MeliorGenerator<'c> {
     /// Host-proven facts (the conditions of `assert`s lowered so far in the current
     /// function) available for transport into a device kernel body. Reset per function.
     pub(crate) assert_facts: Vec<syntax::Expr>,
+    /// The multiple-of facts of the current function's parameters, in parameter order: the
+    /// `?n` of a parameter's type with the `n % N == 0` a `requires` of the function states
+    /// about it. The function's entry and each device region assume them. Reset per function.
+    pub(crate) extent_mults: Vec<(crate::symbol::Symbol, Vec<(usize, u64)>)>,
 }
 
 /// `memref<2x3xf32>` -> `memref<?x?xf32>`, keeping the rank and element type.
@@ -1158,6 +1162,7 @@ impl<'c> MeliorGenerator<'c> {
             describe_params: false,
             spawns: 0,
             assert_facts: Vec::new(),
+            extent_mults: Vec::new(),
         }
     }
 
@@ -1593,6 +1598,17 @@ impl<'c> MeliorGenerator<'c> {
         self.function_file = func.file.as_ref().map(|f| f.to_string());
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
         self.address_taken = syntax::locals_with_address_taken(&func.body);
+        // The multiple-of facts of the parameters, from the `?n` of their types and the
+        // `n % N == 0` of the function's `requires`. A kernel from a `.vxlib` has no
+        // `requires`, so it gets no facts and no assume.
+        self.extent_mults.clear();
+        for (p, axis, n) in crate::codegen::lower::extent_mult_facts(func) {
+            let name = &func.params[p].0;
+            match self.extent_mults.last_mut() {
+                Some((last, mults)) if last == name => mults.push((axis, n)),
+                _ => self.extent_mults.push((name.clone(), vec![(axis, n)])),
+            }
+        }
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type)?;
         let ret_ty = if is_main { self.i32_ty } else { true_ret_ty };
@@ -1661,6 +1677,18 @@ impl<'c> MeliorGenerator<'c> {
                 self.env.insert(name.to_string().into(), (arg_val, arg_ty));
             }
             self.ast_env.insert(name.to_string().into(), ast_ty.clone());
+            // A `requires n % N == 0` of the function, for the `?n` of a parameter's type,
+            // reaches LLVM as an assume at the function's entry, so every access the body
+            // makes can fold on it.
+            if let Some((_, mults)) = self.extent_mults.iter().find(|(n, _)| n == name) {
+                crate::codegen::lower::assume_extents_are_multiples(
+                    self,
+                    arg_val,
+                    arg_ty,
+                    mults,
+                    current_block,
+                )?;
+            }
         }
         // The caller's buffer is block argument 0; `return` writes into it. Cleared with
         // `current_return_type` at the end of the function.
@@ -1791,10 +1819,15 @@ impl<'c> MeliorGenerator<'c> {
         // ordinary symbol.
         let _ = is_main;
 
-        // A function declared `-> !` is `noreturn` to LLVM.
+        // A function declared `-> !` is `noreturn` to LLVM. A call to it runs at most once, so it
+        // is also `cold` and `noinline`: a small function that calls it stays small enough to
+        // inline.
         if syntax::is_never_ty(&func.return_type) {
-            let attr = melior::ir::Attribute::parse(self.context, "[\"noreturn\"]")
-                .ok_or_else(|| LowerError::from("bad noreturn attribute".to_string()))?;
+            let attr = melior::ir::Attribute::parse(
+                self.context,
+                "[\"noreturn\", \"cold\", \"noinline\"]",
+            )
+            .ok_or_else(|| LowerError::from("bad noreturn attribute".to_string()))?;
             func_attributes.push((
                 melior::ir::Identifier::new(self.context, "passthrough"),
                 attr,
@@ -2635,13 +2668,25 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     /// The type arguments of a generic instance, joined into a name that is safe inside a
-    /// struct name: `[i32, f32]` becomes `i32_f32`.
+    /// struct name: `[i32, f32]` becomes `i32_f32`. A struct or an enum gives its own name. Its
+    /// layout can hold this instance, as `enum Value { Array(Vec<Value>) }` does, so lowering
+    /// it here would not end.
     fn type_args_name(&self, args: &[syntax::Type]) -> Result<String, LowerError> {
         let names = args
             .iter()
             .map(|a| {
-                let lowered = self.lower_type_str(a)?;
+                let lowered = match a {
+                    syntax::Type::Struct(name, _) | syntax::Type::Enum(name, _) => name.to_string(),
+                    syntax::Type::GenericInstance(base, inner) => match &**base {
+                        syntax::Type::Struct(name, _) | syntax::Type::Enum(name, _) => {
+                            format!("{name}_{}", self.type_args_name(inner)?)
+                        }
+                        _ => self.lower_type_str(a)?,
+                    },
+                    _ => self.lower_type_str(a)?,
+                };
                 Ok(lowered
+                    .replace("::", "_")
                     .replace("!", "")
                     .replace("<", "_")
                     .replace(">", "_")
@@ -2697,10 +2742,23 @@ impl<'c> MeliorGenerator<'c> {
                     syntax::Type::Pointer(..) => None,
                     _ => unreachable!(),
                 };
-                let inner_str = self.lower_type_str(inner)?;
                 // A raw pointer is a pointer, whatever it points at. Only a borrow of a tensor is
                 // the cell that holds the tensor's descriptor.
                 let is_pointer = matches!(ty, syntax::Type::Pointer(..));
+                // The pointee is lowered only to find a tensor. A struct or an enum is not one,
+                // and lowering it can come back here: `Vec<Value>` in `Value` holds a
+                // `*mut Value`.
+                let nominal = matches!(
+                    &**inner,
+                    syntax::Type::Struct(..)
+                        | syntax::Type::Enum(..)
+                        | syntax::Type::GenericInstance(..)
+                );
+                let inner_str = if is_pointer || nominal {
+                    String::new()
+                } else {
+                    self.lower_type_str(inner)?
+                };
                 if inner_str.starts_with("memref<") && !is_pointer {
                     // A borrowed tensor is the slot holding its descriptor, and every tensor
                     // this backend allocates is dynamically shaped. Naming the static shape
@@ -2920,6 +2978,7 @@ impl<'c> MeliorGenerator<'c> {
         if !dims.is_empty() {
             for (i, dim) in dims.iter().enumerate() {
                 if let syntax::Dim::Static(syntax::Expr::Number(NumberExpr {
+                    written: _,
                     value: n_str,
                     ty: _,
                     span: _,
@@ -3030,6 +3089,24 @@ impl<'c> MeliorGenerator<'c> {
                 syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
                 _ => None,
             },
+            // A `match` that gives a value has the type of an arm's last expression. That is often
+            // a name that the arm's pattern binds, as `x` in `Ok(x) => { x }`.
+            Expr::Match(m) => {
+                let scrutinee = self.infer_ast_type(&m.expr);
+                m.arms.iter().find_map(|arm| match arm.body.last()? {
+                    syntax::Statement::ExprStmt(e) if !e.has_semi => {
+                        crate::codegen::lower::expr::payload_binding_type(
+                            self,
+                            arm,
+                            &e.expr,
+                            scrutinee.as_ref(),
+                            m.binds_references,
+                        )
+                        .or_else(|| self.infer_ast_type(&e.expr))
+                    }
+                    _ => None,
+                })
+            }
             // A number has the type the checker gave it.
             Expr::Number(n) => n.ty.clone().map(syntax::Type::Scalar),
             // `let p = &mut x` binds a reference. Recording that is what tells a later read of
@@ -3147,6 +3224,7 @@ impl<'c> MeliorGenerator<'c> {
                                 .into_iter()
                                 .map(|n| {
                                     Expr::Number(syntax::NumberExpr {
+                                        written: None,
                                         value: n.to_string().into(),
                                         ty: Some(syntax::ElementType::I32),
                                         span: syntax::Span::default(),

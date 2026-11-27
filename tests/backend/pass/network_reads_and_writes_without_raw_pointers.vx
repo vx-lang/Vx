@@ -114,7 +114,7 @@ fn report(who : *const i8, result : Result<u64, NetError>) -> void {
 }
 
 fn lines_client(network : &Network) -> Result<u64, NetError> {
-  let stream = TcpStream::connect(network, &address("127.0.0.1:41761"))?;
+  let stream = TcpStream::connect(network, &address("127.0.0.1:21761"))?;
   let mut writer = TcpBufWriter::new(stream);
   let _first = writer.write(&bytes("ping\n"))?;
   let _second = writer.write(&bytes("two words\n"))?;
@@ -150,7 +150,7 @@ fn lines_server(listener : TcpListener) -> Result<u64, NetError> {
 }
 
 fn short_client(network : &Network) -> Result<u64, NetError> {
-  let mut stream = TcpStream::connect(network, &address("127.0.0.1:41762"))?;
+  let mut stream = TcpStream::connect(network, &address("127.0.0.1:21762"))?;
   let mut two = Vec<u8>::new();
   two.push(7u8);
   two.push(8u8);
@@ -176,8 +176,8 @@ fn short_server(listener : TcpListener) -> Result<u64, NetError> {
 }
 
 fn udp_send(network : &Network) -> Result<u64, NetError> {
-  let mut socket = UdpSocket::bind(network, &address("127.0.0.1:41764"))?;
-  return socket.send_to(&bytes("hello"), &address("127.0.0.1:41763"));
+  let mut socket = UdpSocket::bind(network, &address("127.0.0.1:21764"))?;
+  return socket.send_to(&bytes("hello"), &address("127.0.0.1:21763"));
 }
 
 fn udp_recv(socket : UdpSocket) -> Result<u64, NetError> {
@@ -194,7 +194,7 @@ fn udp_recv(socket : UdpSocket) -> Result<u64, NetError> {
 
 fn main(root : Root) -> i32 {
   let network = &root.network;
-  let lines = TcpListener::bind(network, &address("127.0.0.1:41761"));
+  let lines = TcpListener::bind(network, &address("127.0.0.1:21761"));
   match lines {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
@@ -208,7 +208,7 @@ fn main(root : Root) -> i32 {
       println!("bind: Error {}", name(e));
     }
   }
-  match TcpListener::bind(network, &address("127.0.0.1:41762")) {
+  match TcpListener::bind(network, &address("127.0.0.1:21762")) {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
@@ -221,7 +221,7 @@ fn main(root : Root) -> i32 {
       println!("bind: Error {}", name(e));
     }
   }
-  match UdpSocket::bind(network, &address("127.0.0.1:41763")) {
+  match UdpSocket::bind(network, &address("127.0.0.1:21763")) {
     Result<UdpSocket, NetError>::Ok(socket) => {
       tasks {
         spawn {

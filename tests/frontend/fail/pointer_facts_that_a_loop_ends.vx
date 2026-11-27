@@ -100,7 +100,7 @@ requires valid(p, n)
 
 // The parser gives this call no place, so the note gives the line of its statement.
 // CHECK: E8006] at {{.*}}pointer_facts_that_a_loop_ends.vx:[[@LINE+9]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
-// CHECK-NEXT: note: a fact that proves it ended at the call of the closure `h.f`, which can free memory through what it captures, in a pass of the loop (at [[@LINE+6]]:5)
+// CHECK-NEXT: note: a fact that proves it ended at the call of the closure `h.f`, which can free memory through what it captures, in a pass of the loop (at [[@LINE+6]]:16)
 fn after_a_loop_that_calls_a_closure_in_a_field(p : *const i64, n : i64, h : Holder) -> i64
 requires valid(p, n)
 {

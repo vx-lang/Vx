@@ -9,7 +9,26 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Error[E3007] at {{.*}}if_branches_of_different_types.vx:{{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: i32 and f32{{$}}
 // CHECK: Error[E3007] at {{.*}}if_branches_of_different_types.vx:{{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: Tensor<f32, [4]> and Tensor<f32, [8]>{{$}}
-// CHECK: 2 error(s) emitted
+// CHECK: Error[E3007] at {{.*}}if_branches_of_different_types.vx:{{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: Shape and Color{{$}}
+// A `[4]` tensor fits where a `[?]` tensor is expected, but not the reverse. Each branch type
+// must fit where the other one is expected.
+// CHECK: Error[E3007] at {{.*}}if_branches_of_different_types.vx:{{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: Tensor<f32, [4]> and Tensor<f32, [?]>{{$}}
+// CHECK: Error[E3007] at {{.*}}if_branches_of_different_types.vx:{{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: Tensor<f32, [?]> and Tensor<f32, [4]>{{$}}
+// CHECK: 5 error(s) emitted
+
+enum Color {
+  Red,
+  Blue,
+}
+
+enum Shape {
+  Empty,
+  Square(i32),
+}
+
+fn make(n : i32) -> Shape {
+  return Shape::Square(n);
+}
 
 fn main() -> i32 {
   let a = Tensor<f32, [4]>::new();
@@ -27,5 +46,26 @@ fn main() -> i32 {
   } else {
     b
   };
+  let _s = if c {
+    make(3)
+  } else {
+    Color::Red
+  };
+  let e = Tensor<f32, [4]>::new();
+  let d = Tensor<f32, [?]>::new([4]);
+  let _u = if c {
+    e
+  } else {
+    d
+  };
+  let f = Tensor<f32, [4]>::new();
+  let g = Tensor<f32, [?]>::new([4]);
+  let _v = if c {
+    g
+  } else {
+    f
+  };
+  let _blue = Color::Blue;
+  let _empty = Shape::Empty;
   return 0;
 }

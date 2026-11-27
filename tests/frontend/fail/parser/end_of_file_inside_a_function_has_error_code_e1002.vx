@@ -1,0 +1,15 @@
+//===- end_of_file_inside_a_function_has_error_code_e1002.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The file ends before the `}` of `main`. The error starts with the code E1002.
+//
+// CHECK: Error[E1002] in {{.*}}end_of_file_inside_a_function_has_error_code_e1002.vx: Unexpected end of file. Expected '}'
+
+fn main() -> i32 {
+  return 0;

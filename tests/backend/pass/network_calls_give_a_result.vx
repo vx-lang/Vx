@@ -11,7 +11,7 @@
 //   gives `BadAddress`.
 // - A second listener on the address of the first gives `InUse`.
 // - A task connects to the listener and writes one byte. The code of the block accepts the
-//   connection and reads the byte.
+//   connection, gets its file descriptor, and reads the byte.
 // - In `cancel_an_accept`, a task waits in `accept` for a connection that never comes. The
 //   code of the block returns early, which cancels the task, so `accept` gives `Cancelled`.
 //
@@ -26,6 +26,7 @@
 // CHECK-NEXT: {{^}}connect to an address with no port: BadAddress{{$}}
 // CHECK-NEXT: {{^}}the first listener works{{$}}
 // CHECK-NEXT: {{^}}the second listener: InUse{{$}}
+// CHECK-NEXT: {{^}}the file descriptor is a number above 2: true{{$}}
 // CHECK-NEXT: {{^}}the server read 1 byte, 86{{$}}
 // CHECK-NEXT: {{^}}the accept gave Cancelled{{$}}
 
@@ -70,7 +71,7 @@ fn connect_to(what : *const i8, addr : *const i8) -> void {
 }
 
 fn send_one_byte() -> void {
-  match unsafe { TcpStream::connect_c_str("127.0.0.1:41753") } {
+  match unsafe { TcpStream::connect_c_str("127.0.0.1:21753") } {
     Result<TcpStream, NetError>::Ok(s) => {
       let mut stream = s;
       let byte : u8 = 86;
@@ -85,6 +86,7 @@ fn send_one_byte() -> void {
 
 fn read_one_byte(s : TcpStream) -> void {
   let mut stream = s;
+  println!("the file descriptor is a number above 2: {}", stream.fd() > 2);
   let mut byte : u8 = 0;
   let one : u64 = 1;
   match unsafe { stream.read_raw((&mut byte) as *mut u8, one) } {
@@ -131,7 +133,7 @@ fn wait_for_a_connection(listener : TcpListener) -> void {
 }
 
 fn cancel_an_accept() -> i32 {
-  match unsafe { TcpListener::bind_c_str("127.0.0.1:41754") } {
+  match unsafe { TcpListener::bind_c_str("127.0.0.1:21754") } {
     Result<TcpListener, NetError>::Ok(listener) => {
       tasks {
         spawn {
@@ -150,10 +152,10 @@ fn cancel_an_accept() -> i32 {
 fn main() -> i32 {
   connect_to("connect to a closed port", "127.0.0.1:1");
   connect_to("connect to an address with no port", "127.0.0.1");
-  match unsafe { TcpListener::bind_c_str("127.0.0.1:41753") } {
+  match unsafe { TcpListener::bind_c_str("127.0.0.1:21753") } {
     Result<TcpListener, NetError>::Ok(listener) => {
       println!("the first listener works");
-      match unsafe { TcpListener::bind_c_str("127.0.0.1:41753") } {
+      match unsafe { TcpListener::bind_c_str("127.0.0.1:21753") } {
         Result<TcpListener, NetError>::Ok(_second) => {
           println!("the second listener works too");
         }

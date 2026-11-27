@@ -1,0 +1,17 @@
+//===- unexpected_token_has_error_code_e1001.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The `let` has no `;`, so the parser finds `return` where it expected `;`.
+// The error starts with the code E1001, as a type error starts with its code.
+//
+// CHECK: Error[E1001] at {{.*}}unexpected_token_has_error_code_e1001.vx:[[# @LINE + 3]]:14: Unexpected token Return. Expected ';'
+
+fn main() -> i32 {
+  let x = 10 return x;
+}

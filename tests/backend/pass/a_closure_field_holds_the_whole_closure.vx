@@ -1,0 +1,65 @@
+//===- a_closure_field_holds_the_whole_closure.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure value is two pointers: its captured values and its function. A struct field and an
+// enum payload of a closure type must hold both. `replace` writes a new closure into `h.f`. The
+// field `n` after it keeps its value, and a call of `h.f` uses the new closure's captured value.
+// The flat code generator compiles each function, so no "declined" line is printed.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}n is 7{{$}}
+// CHECK-NEXT: {{^}}the new closure gives 20{{$}}
+// CHECK-NEXT: {{^}}the closure in the enum gives 5{{$}}
+
+struct Holder {
+  f : |i32| -> i32,
+  n : i64,
+}
+
+enum Action {
+  Run(|i32| -> i32),
+  Skip,
+}
+
+fn make(g : |i32| -> i32) -> Holder {
+  return Holder {
+    f: g, n: 7
+  };
+}
+
+fn replace(h : &mut Holder, g : |i32| -> i32) -> void {
+  h.f = g;
+}
+
+fn wrap(g : |i32| -> i32) -> Action {
+  return Action::Run(g);
+}
+
+fn run(a : Action, x : i32) -> i32 {
+  match a {
+    Action::Run(g) => {
+      return g(x);
+    }
+    Action::Skip => {
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let k : i32 = 1;
+  let m : i32 = 10;
+  let mut h = make(|x : i32| x + k);
+  replace(&mut h, |x : i32| x * m);
+  println!("n is {}", h.n);
+  let g = h.f;
+  println!("the new closure gives {}", g(2));
+  let a = wrap(|x : i32| x + k * 3);
+  println!("the closure in the enum gives {}", run(a, 2));
+  return 0;
+}

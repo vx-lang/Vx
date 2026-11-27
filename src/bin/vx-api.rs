@@ -17,8 +17,9 @@ use vxc::api_diff::{diff, read_interface, NOT_COMPARED};
 
 #[derive(Parser)]
 #[command(
+    name = "vx-api",
     author,
-    version,
+    version = vxc::driver::VERSION,
     about = "Compare the interfaces of two versions of a Vx library"
 )]
 struct Cli {

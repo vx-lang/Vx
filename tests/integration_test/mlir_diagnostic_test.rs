@@ -88,7 +88,7 @@ fn test_mlir_diagnostic_emitted() -> Result<(), String> {
 fn test_mlir_diagnostic_parse_error() -> Result<(), String> {
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
-    melior::utility::register_all_passes();
+    vxc::codegen::init_codegen_globals();
     let context = Context::new();
     context.append_dialect_registry(&registry);
     context.load_all_available_dialects();
@@ -122,8 +122,7 @@ fn test_mlir_diagnostic_parse_error() -> Result<(), String> {
 fn test_vx_valid_program_emits_remark() -> Result<(), String> {
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
-    melior::utility::register_all_passes();
-    vxc::codegen::register_vx_passes();
+    vxc::codegen::init_codegen_globals();
 
     let context = Context::new();
     context.append_dialect_registry(&registry);

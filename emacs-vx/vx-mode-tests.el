@@ -30,7 +30,8 @@
     (get-text-property (match-beginning 0) 'face)))
 
 (ert-deftest vx-keywords-are-highlighted ()
-  (dolist (word '("fn" "let" "where" "type" "spawn" "comptime" "macro_rules"))
+  (dolist (word '("fn" "let" "where" "type" "spawn" "comptime" "macro_rules"
+                "pub" "transfer_async"))
     (should (eq (vx-test--face-at (concat word " x") word)
                 'font-lock-keyword-face))))
 

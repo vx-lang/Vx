@@ -1,0 +1,18 @@
+// `vxc FILE -x mlir` runs the program with the standard input of vxc. The program reads up to
+// 8 bytes with one `vx_stdin_read` call, and its exit code is the count of bytes that it read.
+// The RUN line pipes 3 bytes into vxc, so the program exits with code 3.
+// RUN: printf 'abc' | not vxc %s -x mlir 2>&1 | FileCheck %s
+// CHECK: [JIT] Program exited with code: 3
+
+module {
+  llvm.func @vx_stdin_read(!llvm.ptr, i64) -> i64
+
+  llvm.func @main() -> i32 {
+    %one = llvm.mlir.constant(1 : i64) : i64
+    %size = llvm.mlir.constant(8 : i64) : i64
+    %buffer = llvm.alloca %one x !llvm.array<8 x i8> : (i64) -> !llvm.ptr
+    %count = llvm.call @vx_stdin_read(%buffer, %size) : (!llvm.ptr, i64) -> i64
+    %code = llvm.trunc %count : i64 to i32
+    llvm.return %code : i32
+  }
+}

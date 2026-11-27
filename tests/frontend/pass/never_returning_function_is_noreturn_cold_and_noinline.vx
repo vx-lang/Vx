@@ -1,15 +1,16 @@
-//===- never_returning_function_is_noreturn.vx - Vx Compiler *- Vx -*-===//
+//===- never_returning_function_is_noreturn_cold_and_noinline.vx - Vx -*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A function declared `-> !` is marked `noreturn` for LLVM, on both code generators.
+// A function declared `-> !` is marked `noreturn`, `cold` and `noinline` for LLVM, on both code
+// generators. A call to it runs at most once, so LLVM keeps the function out of its callers.
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
 // RUN: vxc %s --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: llvm.func hidden @fail(%arg0: !llvm.ptr) attributes {dso_local, passthrough = ["noreturn", ["probe-stack", "inline-asm"]]}
+// CHECK: llvm.func hidden @fail(%arg0: !llvm.ptr) attributes {dso_local, passthrough = ["noreturn", "cold", "noinline", ["probe-stack", "inline-asm"]]}
 fn fail(msg : *const i8) -> ! {
   panic(msg);
 }

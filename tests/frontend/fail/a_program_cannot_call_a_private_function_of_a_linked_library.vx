@@ -1,0 +1,26 @@
+//===- a_program_cannot_call_a_private_function_of_a_linked_library.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that links a library through its interface (`--link-interface`) can call only the
+// `pub` functions of the library, as when it imports the library from its source. The library is
+// another compile, so a `pkg` function of it is out of reach too. A `pub` function of the library
+// can still call the private functions of its own file: `open` gives 7 + 5.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'fn secret() -> i32 {\n  return 7;\n}\n\npkg fn inside() -> i32 {\n  return 5;\n}\n\npub fn open() -> i32 {\n  return secret() + inside();\n}\n' > %t.d/lib.vx
+// RUN: vxc %t.d/lib.vx --action emit-interface -o %t.d/lib.vxlib
+// RUN: not vxc --link-interface %t.d/lib.vxlib %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: printf 'fn main() -> i32 {\n  return open();\n}\n' > %t.d/app.vx
+// RUN: not vxc --link-interface %t.d/lib.vxlib %t.d/app.vx --run 2>&1 | FileCheck %s --check-prefix=OPEN --implicit-check-not=Error
+
+fn main() -> i32 {
+  return secret() + inside() + open();
+}
+
+// CHECK: Error[E5005] at {{.*}}.vx:21:10: `secret` is private to `lib.vx`. Write `pub fn secret` there, so that other files can call it
+// CHECK: Error[E5005] at {{.*}}.vx:21:21: `inside` is `pkg` in `lib.vx` of a library that this program links, so only that library can call it. Write `pub fn inside` there, so that other packages can call it
+// OPEN: Program exited with non-zero code: 12

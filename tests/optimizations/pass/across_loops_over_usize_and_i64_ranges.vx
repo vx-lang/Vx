@@ -1,0 +1,102 @@
+//===- across_loops_over_usize_and_i64_ranges.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `across` loop of blocks or of lanes can count over a `usize` or an `i64` range, as over an
+// `i32` one. The index of the block or the lane is a value of the range's type. A size of -5 runs
+// no pass. The code after a nest of blocks over a `usize` range runs once, after every pass.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= VX_NO_AST_FALLBACK=1 vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: VX_NO_AST_FALLBACK=1 vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// RUN: VX_NO_AST_FALLBACK=1 vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=MLIR --implicit-check-not="cast to usize is out of range"
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-mlir -o - 2>/dev/null | FileCheck %s --check-prefix=MLIR --implicit-check-not="cast to usize is out of range"
+//
+// CHECK: blocks 0 23 12
+// CHECK: lanes 0 23 12
+// CHECK: i64 0 23 12 empty 0
+// CHECK: after 32640 runs 1
+// The kernel of `by_blocks` widens the index of its block and the number of blocks to 64 bits.
+// PTX: .entry vx_npu_kernel_0(
+// PTX-SAME: %ctaid.x
+// PTX-SAME: cvt.u64.u32
+// PTX-SAME: %nctaid.x
+// PTX-SAME: cvt.u64.u32
+// An index is never below 0, so the widening checks nothing.
+// MLIR: arith.extui
+
+fn by_blocks(out : &mut Tensor<i32, [?, 4], Memory::HBM>, n : usize) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for c in 0..4 across lanes(32) {
+        out[b][c] = (b as i32) * 10 + c;
+      }
+    }
+  }
+}
+
+fn by_lanes(out : &mut Tensor<i32, [?, 4], Memory::HBM>, m : usize) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..3 across blocks {
+      for c in 0..m across lanes(32) {
+        out[b][c] = b * 10 + (c as i32);
+      }
+    }
+  }
+}
+
+fn by_i64(out : &mut Tensor<i32, [?, 4], Memory::HBM>, k : i64) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..k across blocks {
+      for c in 0..4 across lanes(32) {
+        out[b][c] = (b as i32) * 10 + c;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<i32, [3, 4], Memory::HBM>::fill(0);
+  by_blocks(&mut a, 3usize);
+  let ha = transfer(a, Memory::CPU_DRAM);
+  println!("blocks {} {} {}", ha[0][0], ha[2][3], ha[1][2]);
+
+  let mut b = Tensor<i32, [3, 4], Memory::HBM>::fill(0);
+  by_lanes(&mut b, 4usize);
+  let hb = transfer(b, Memory::CPU_DRAM);
+  println!("lanes {} {} {}", hb[0][0], hb[2][3], hb[1][2]);
+
+  let mut c = Tensor<i32, [3, 4], Memory::HBM>::fill(0);
+  by_i64(&mut c, 3i64);
+  let mut d = Tensor<i32, [3, 4], Memory::HBM>::fill(0);
+  by_i64(&mut d, 0i64 - 5i64);
+  let hc = transfer(c, Memory::CPU_DRAM);
+  let hd = transfer(d, Memory::CPU_DRAM);
+  println!("i64 {} {} {} empty {}", hc[0][0], hc[2][3], hc[1][2], hd[0][0]);
+
+  let blocks = 8usize;
+  let mut partial = transfer(Tensor<i32, [8, 32]>::fill(0), Memory::HBM);
+  let mut out = transfer(Tensor<i32, [2]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for g in 0..blocks across blocks {
+      for l in 0..32 across lanes {
+        partial[g][l] = (g as i32) * 32 + l;
+      }
+    }
+    let mut sum = 0;
+    for i in 0..8 {
+      for j in 0..32 {
+        sum = sum + partial[i][j];
+      }
+    }
+    out[0] = sum;
+    out[1] = out[1] + 1;
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  println!("after {} runs {}", o[0], o[1]);
+  return 0;
+}

@@ -1,7 +1,8 @@
 # Files, input and time
 
 A program often needs text, files, the clock or the network. This chapter shows the parts of the
-standard library for these jobs: `std::string`, `std::fs`, `std::io`, `std::time` and `std::net`.
+standard library for these jobs: `std::string`, `std::env`, `std::fs`, `std::io`, `std::time`,
+`std::net` and `std::process`.
 
 Many of these functions take a raw pointer, such as a string literal or a buffer. The compiler
 cannot check a raw pointer, so you call these functions inside an `unsafe { .. }` block. Files and
@@ -35,8 +36,100 @@ parsed 124
 `println!` moves a `String` argument ([Vx#3235](https://github.com/vx-lang/Vx/issues/3235)). So the
 program gets the length before it prints `greeting`.
 
+A string literal is its bytes and a NUL at the end, and the compiler knows how many bytes it has.
+`"hello" as *const u8` gives those bytes as a `*const u8`, the type that `String::from_bytes`
+below takes. So `String::from_bytes("hello" as *const u8, 5)` makes a `String` with no `unsafe`. A length of
+6 would also copy the NUL, and the compiler refuses it (E8006).
+
+`String::from_utf8(&v)` copies the bytes of a `Vec<u8>`, and `String::from_bytes(p, n)` copies
+the `n` bytes at the raw pointer `p`. Neither one needs `unsafe`. But a call of `from_bytes` in
+safe code must prove that `p` points at `n` bytes, as `v.as_mut_ptr()` and `v.len()` do. Both
+give a `Result`. Its `Err` holds a `Utf8Error` when the bytes are not UTF-8, and `e.valid_up_to`
+is the number of bytes before the first bad one. `s.to_bytes()` goes the other way: it copies the
+bytes of a `String` into a new `Vec<u8>`.
+
+`s.byte(i)` gives byte `i` of a `String` as a `u8`. `s.push_str(&t)` adds the bytes of `t` to the
+end of `s`. `s.byte_range(from, to)` copies bytes `from` to `to` into a new `String`. It gives a
+`Utf8Error` when the range cuts a character in two. An index or a range outside the string stops
+the program, as `v[i]` does. None of the three needs `unsafe`.
+
 `parse_int` stops at the first byte that is not a digit. So `"12abc"` gives 12, and `"abc"`
 gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
+
+`i64::parse(&v, from, to)` reads the decimal integer in bytes `from` to `to` of a `Vec<u8>`, with
+no `unsafe`. It allows one `+` or `-` before the digits, and nothing else. `u64::parse` allows only
+a `+`. `f64::parse` and `f32::parse` read a float, such as `1.5`, `-2e10`, `inf` or `NaN`. Each
+gives a `Result`. Its `Err` holds a `ParseNumberError`: `Empty`, `Invalid` or `OutOfRange`. A
+range that is not inside `v` stops the program. `to_string()` on an `f32` or an `f64` gives the
+fewest digits that read back as the same value, as in `0.1`.
+
+## The command line
+
+A `main` written `fn main(root : Root, args : Vec<String>) -> i32` gets the words of its command
+line in `args`. The program owns them, so it can move them and change them. Each argument comes
+after the first word. Whoever starts the program chooses every word, the first one too.
+Usually the first word is the name or the path of the program, but it can be empty. A `String`
+holds only UTF-8 text, so an argument that is not UTF-8 stops the program before `main` runs.
+
+```vx
+import std::root;
+import std::string;
+import std::vec;
+
+fn main(_root : Root, args : Vec<String>) -> i32 {
+  let mut i = 1;
+  while i < args.len() {
+    println!("{}", args.get_ref(i));
+    i = i + 1;
+  }
+  return 0;
+}
+```
+
+`vxc args.vx -- one two` prints `one` and `two`. The words are data and not a right, so they are
+not part of `Root`. The test is `main_gets_the_words_of_the_command_line.vx`.
+
+## Environment variables
+
+The program that starts a process also chooses its environment variables. They often hold
+secrets, such as the token of a service. So reading them is a right, as opening a file is. `main`
+gets it in `root.env`, an `Environment`, and passes `&root.env` to the code that reads a variable.
+A function that gets no `&Environment` cannot read one.
+
+`env.var(&name)` gives a `Result`:
+
+- `Ok` holds the value, as a `String`.
+- `Err(EnvError::NotPresent)` means that the environment has no variable with the name. An empty
+  name, and a name that holds `=`, name no variable.
+- `Err(EnvError::NotUnicode)` means that the value is not UTF-8 text, so a `String` cannot hold it.
+
+```vx
+import core::result;
+import std::env;
+import std::root;
+import std::string;
+
+// Reads `HOME`. A function needs a `&Environment` to read a variable.
+fn home(env : &Environment) -> String {
+  let name = unsafe { String::from_c_str("HOME") };
+  match env.var(&name) {
+    Result<String, EnvError>::Ok(value) => {
+      return value;
+    }
+    Result<String, EnvError>::Err(_e) => {
+      return String::new();
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  println!("{}", home(&root.env));
+  return 0;
+}
+```
+
+The `unsafe` block only makes a `String` from the literal, as [Networks](#networks) explains. The
+test is `a_program_reads_its_environment_variables.vx`.
 
 ## Files
 
@@ -105,25 +198,73 @@ folder, and no others. For example, a model server can give the code that loads 
 `Folder`, and give the code that reads requests no right at all
 (`a_folder_right_reads_only_the_files_inside_its_folder.vx`).
 
+A `PendingFile` is narrower still: the right to open one path in one mode, later.
+`PendingFile::new(files, path, mode)` opens nothing, and `pending.open()` opens the path once. So
+a program can make or empty an output file only when the first byte arrives, and the code that
+writes it needs no `&Files`. `remove_file(files, path)` removes a file. `file_kind(files, path)` gives
+`FileKind::Regular`, `Folder` or `Other`, and follows a symbolic link, so a program can leave a
+device such as `/dev/null` alone (`a_file_can_be_opened_later_removed_and_asked_its_kind.vx`).
+
+`file.map()` gives the whole file in memory, read-only, as a `Mapping`. It copies nothing: the
+system reads each part of the file when the program first reads it. So a program can map a file
+of many gigabytes and read only the parts that it needs.
+
+- `mapping.len()` is the size of the file in bytes.
+- `mapping.byte(i)` is byte `i`. It stops the program when `i` is outside the file.
+- `mapping.as_ptr()` is the address of the first byte, for code that reads through raw
+  pointers. An example is a tensor over the weights of a model.
+
+A dropped `Mapping` unmaps the file. A `Mapping` stays valid after its `File` closes. A file open
+only for writing gives `FileError::PermissionDenied` (`a_file_mapped_into_memory.vx`). When
+another program shortens the file while it is mapped, a read past the new end stops the program
+with the signal SIGBUS.
+
 ## Standard input and output
 
-`std::io` has three functions. `stdin_read(buffer, len)` reads up to `len` bytes of standard input
-and gives the count. 0 means the end of the input. `stdout_write` and `stderr_write` write bytes to
-standard output and standard error. This loop counts the lines of the input:
+Reading standard input and writing to standard output and error are rights, as files are. `main`
+gets them in `root.stdin`, a `Stdin`, `root.stdout`, a `Stdout`, and `root.stderr`, a `Stderr`.
+Only `std::io` can make them, so a library reads or writes them only when its caller passes them.
+
+- `input.read(&mut buffer)` reads up to `buffer.len()` bytes and gives the count in a `Result`.
+  0 means the end of the input.
+- `input.read_exact(&mut buffer)` fills all of `buffer`. It gives `StdioError::EndOfInput` when
+  the input ends first.
+- `out.write_all(&bytes)` writes all of the bytes. They keep their order with `print!`.
+- A `select` can wait on a `Stdin`, as it waits on a socket.
+
+`print_s!` and `println_s!` print as `print!` and `println!` do, but their first argument is the
+right to print: a `Stdout` or a `Stderr`, or a reference to one. With a `Stderr`, the text goes
+to standard error. So `println_s!(out, "{} lines", n)` in a library prints only when its caller
+gave it `out`. `print!` and `println!` still need no right.
+
+The older `unsafe` functions `stdin_read`,
+`stdout_write` and `stderr_write` take a raw pointer and a length. This loop counts the lines of
+the input:
 
 ```vx
+import core::result;
 import std::io;
+import std::root;
+import std::vec;
 
-fn main() -> i32 {
-  let mut byte : u8 = 0;
+fn main(root : Root) -> i32 {
+  let mut input = root.stdin;
+  let mut byte = Vec<u8>::new();
+  byte.push(0u8);
   let mut lines = 0;
   loop {
-    let n = unsafe { stdin_read((&mut byte) as *mut u8, 1) };
-    if n == 0 {
-      break;
-    }
-    if byte == 10 {
-      lines = lines + 1;
+    match input.read(&mut byte) {
+      Result::Ok(n) => {
+        if n == 0 {
+          break;
+        }
+        if byte.get(0) == 10u8 {
+          lines = lines + 1;
+        }
+      }
+      Result::Err(_e) => {
+        break;
+      }
     }
   }
   println!("{} lines", lines);
@@ -131,10 +272,10 @@ fn main() -> i32 {
 }
 ```
 
-When `vxc program.vx` runs a program, the program gets no standard input
-([Vx#3236](https://github.com/vx-lang/Vx/issues/3236)). So this loop stops at once and prints
-`0 lines`. Compile the program with `-c` and run the executable to give it input
-([Your first program](first-program.md#compiling-ahead-of-time)).
+When `vxc program.vx` runs a program, the program reads the standard input of vxc. So
+`printf 'a\nb\n' | vxc program.vx` prints `2 lines`. In a terminal, type the lines, then press
+Ctrl-D to end the input. vxc shows what the program prints only when the program ends
+([Vx#3458](https://github.com/vx-lang/Vx/issues/3458)).
 
 ## Time
 
@@ -200,6 +341,15 @@ To open a connection or to bind an address, a call needs the right to use the ne
 `TcpStream::connect`, `TcpListener::bind` and `UdpSocket::bind`, or to a function that calls them. Only `std::net` can make a `Network`, so a
 function that gets no `&Network` cannot open a connection. A connection that `accept` gives needs
 no other right.
+
+`lookup(&root.network, &host)` gives the IP addresses of a host name, with no port. Each
+`IpAddress` holds 4 bytes for IPv4 or 16 bytes for IPv6, in network order. It takes the network
+right too, because the lookup can send the name to the network.
+
+`UnixStream::connect(&root.network, &path)` connects to a Unix-domain socket, whose address is
+the path of a socket file. `UnixListener::bind` makes one and `accept` takes its connections. A
+`UnixStream` has the same `read`, `write`, `read_exact` and `write_all` as a `TcpStream`. They
+take the network right, because a connection to a local server is a connection too.
 
 The methods of these types take a `String` address and a `Vec<u8>` buffer, and need no `unsafe`.
 The length of the vector is the size of the buffer. Each type also has methods that take raw
@@ -291,3 +441,54 @@ only the task that waits, so the other task runs on the same OS thread
 
 A `UdpSocket` has `recv(&mut buffer)`, which waits for one datagram and gives its length, and
 `send_to(&buffer, &addr)`, which sends one datagram.
+
+## Other programs
+
+To start another program, a call needs the right to start programs: a `&Processes`. `main` gets
+it in `root.processes`. Only `std::process` can make a `Processes`, so a function that gets no
+`&Processes` cannot start a program.
+
+`processes.run(&program, &args)` starts the program, waits until it ends, and gives a `Result`:
+
+- `Ok` holds the exit code of the program.
+- `Err(ProcessError::NotStarted)` means that the program did not start, for example because no
+  program has the name.
+- `Err(ProcessError::Killed(signal))` means that a signal stopped the program, so it gave no exit
+  code.
+
+A name with no `/` names a program in a folder of `PATH`. Each `String` in `args` is one argument,
+and no shell splits it. The program uses the standard input, output and error of this program, and
+gets its environment variables.
+
+The compiler does not check the program that `run` starts. That program can open files, use the
+network and read the environment variables. So a `&Processes` gives every other right in practice.
+Give it only to code that you trust with all of them.
+
+```vx
+import core::result;
+import std::process;
+import std::root;
+import std::string;
+import std::vec;
+
+// Runs `ls -l`. A function needs a `&Processes` to start a program.
+fn list(processes : &Processes) -> i32 {
+  let program = unsafe { String::from_c_str("ls") };
+  let mut args : Vec<String> = Vec::new();
+  args.push(unsafe { String::from_c_str("-l") });
+  match processes.run(&program, &args) {
+    Result<i32, ProcessError>::Ok(code) => {
+      return code;
+    }
+    Result<i32, ProcessError>::Err(_e) => {
+      return 1;
+    }
+  }
+}
+
+fn main(root : Root) -> i32 {
+  return list(&root.processes);
+}
+```
+
+The test is `a_program_starts_other_programs.vx`.

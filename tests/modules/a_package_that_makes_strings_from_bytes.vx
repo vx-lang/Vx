@@ -1,0 +1,65 @@
+//===- a_package_that_makes_strings_from_bytes.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with no trusted code. It makes strings from the bytes of a `Vec<u8>`, and gets the
+// bytes of a string back.
+
+import core::result;
+import std::string;
+import std::vec;
+
+/// The length of the string that `from_utf8` makes from `v`, or -1 when `v` is not UTF-8.
+pub fn length_of(v : &Vec<u8>) -> i32 {
+  match String::from_utf8(v) {
+    Result::Ok(s) => {
+      return s.len();
+    }
+    Result::Err(_e) => {
+      return -1;
+    }
+  }
+}
+
+/// The position of the first byte of `v` that is not UTF-8, or -1 when there is none.
+pub fn first_bad_byte(v : &Vec<u8>) -> i32 {
+  match String::from_utf8(v) {
+    Result::Ok(_s) => {
+      return -1;
+    }
+    Result::Err(e) => {
+      return e.valid_up_to;
+    }
+  }
+}
+
+/// The string that `from_bytes` makes from the first `n` bytes of `v`. It is empty when `v`
+/// has fewer than `n` bytes or when they are not UTF-8.
+pub fn first_bytes(v : &Vec<u8>, n : i32) -> String {
+  if n < 0 || n > v.len() {
+    return String::new();
+  }
+  match String::from_bytes(v.as_mut_ptr() as *const u8, n) {
+    Result::Ok(s) => {
+      return s;
+    }
+    Result::Err(_e) => {
+      return String::new();
+    }
+  }
+}
+
+/// The bytes of the string that `from_utf8` makes from `v`. It is empty when `v` is not UTF-8.
+pub fn bytes_back(v : &Vec<u8>) -> Vec<u8> {
+  match String::from_utf8(v) {
+    Result::Ok(s) => {
+      return s.to_bytes();
+    }
+    Result::Err(_e) => {
+      return Vec<u8>::new();
+    }
+  }
+}

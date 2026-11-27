@@ -43,6 +43,15 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/how-main-got-its-parameters.html">How main got its parameters</a>
+      <time datetime="2026-11-25">25 November 2026</time>
+      <p>In Vx, <code>main</code> is where a program gets its rights to use the operating system.
+      It went from returning any type, to an <code>i32</code> exit code, to
+      <code>main(root : Root)</code>, and today to
+      <code>main(root : Root, args : Vec&lt;String&gt;)</code>. What each form meant for
+      programmers and for security, in Vx and eight other languages.</p>
+    </li>
+    <li>
       <a href="/blog/let-vx-handle-lean-proofs-for-you.html">Let Vx handle Lean proofs for you</a>
       <time datetime="2026-11-20">20 November 2026</time>
       <p>A Lean proof has a theorem, which says what you want, and proof steps, which tell Lean why

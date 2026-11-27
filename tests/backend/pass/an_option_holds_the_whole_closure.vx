@@ -1,0 +1,33 @@
+//===- an_option_holds_the_whole_closure.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure value is two pointers: its captured values and its function. An `Option` of a
+// closure type must hold both, and no declared type in this program has a closure field.
+// Only the default code generator runs this: the legacy one panics on the call of `g`.
+// REQUIRES: flat-codegen
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the closure in the option gives 6{{$}}
+
+import core::option;
+
+fn wrap(g : |i32| -> i32) -> Option<|i32| -> i32> {
+  return Option<|i32| -> i32>::Some(g);
+}
+
+fn main() -> i32 {
+  let k : i32 = 1;
+  match wrap(|x : i32| x + k * 4) {
+    Option::Some(g) => {
+      println!("the closure in the option gives {}", g(2));
+    }
+    Option::None => {
+      println!("the option is empty");
+    }
+  }
+  return 0;
+}

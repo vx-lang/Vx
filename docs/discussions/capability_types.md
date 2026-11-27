@@ -116,8 +116,9 @@ and a review reads each of them.
 
 Two tools keep the trusted code small and easy to find:
 
-- `vxc --no-trusted-code NAME` refuses `unsafe`, `extern impl`, `unsafe impl`, `mlir!` and `extern`
-  in the package `NAME`, as `#![forbid(unsafe_code)]` does in Rust. The program that uses the
+- `vxc --no-trusted-code NAME` refuses `unsafe`, `extern impl`, `unsafe impl`, `mlir!`, `extern`
+  and a `requires` of an `extern fn` in the package `NAME`, as `#![forbid(unsafe_code)]`
+  does in Rust. The program that uses the
   package gives the flag, so a new version of the package cannot add trusted code without an
   error.
 - `vxc --audit` lists each use of `unsafe`, `extern impl`, `mlir!` and `extern` in the program,
@@ -132,8 +133,13 @@ the `Network` capability, any module could `import std::net` and open any socket
 `File::open` takes a `&Files`. A capability protects something only when each way to the
 operating system needs one:
 
-- `std::fs`, `std::net`, `std::mmap`, the start of a process and the loading of native code each
-  take a capability parameter.
+- `std::fs`, `std::net`, `std::mmap`, `std::env`, the start of a process and the loading of
+  native code each take a capability parameter. Environment variables are data, as the command
+  line is. But they often hold secrets, such as the token of a service, so reading them is a right
+  (`Environment`), as in Deno's `--allow-env`. The command line is a parameter of `main`.
+- Standard input, output and error are rights too (`Stdin`, `Stdout`, `Stderr`). `print_s!` and
+  `println_s!` take the right as their first argument. `print!` and `println!` take none, so code
+  with no right can still print with them.
 - Only `main` gets the root capabilities. A library gets only the capabilities that its caller
   passes to it.
 - A module narrows a capability, for example from the right to open any file to the right to read
@@ -160,8 +166,9 @@ fn main(root : Root) -> i32 {
 A type cannot take back a capability: a value that a function holds stays valid while it holds it.
 To revoke a right, the program needs a run-time handle that its owner can clear.
 
-`std` has no function that starts a process. Native code runs only through `extern`, which is
-trusted code (section 4). `std::collective::join_job` takes `&Files` and `&Network`, because rank 0
+`Processes::run` in `std::process` starts another program, and takes a `&Processes`. The compiler
+does not check that program, so `Processes` gives every other right in practice, as Deno's
+`--allow-run` does. Native code runs only through `extern`, which is trusted code (section 4). `std::collective::join_job` takes `&Files` and `&Network`, because rank 0
 writes the NCCL id to a file and NCCL connects the ranks over the network.
 
 ## 6. Effect on a model server
@@ -217,6 +224,8 @@ no global fact depend on a function body. Each new check reads one declaration:
    `TcpListener::bind` and `UdpSocket::bind` take a `&Network`, which a program gets as
    `root.network`. Then `File::open` became safe, and takes a `&Files`, which a program gets as
    `root.files`. The raw open, `File::open_c_str`, stays `unsafe`. Then `Folder`, which narrows
-   `Files` to one folder. Next come processes and native code.
+   `Files` to one folder. Then `Environment`, the right to read the environment variables, which
+   a program gets as `root.env`. Then `Processes`, the right to start another program, which a
+   program gets as `root.processes`. Next comes native code.
 1. Private functions (`private_functions.md`, #3890). A helper of `std` that reads through a raw
    pointer is sound only when other files cannot call it (#3884).

@@ -80,6 +80,12 @@ fn lower_spawn_region<'c>(
             super::seam_cert::emit_seam_certificates(gen, &this.stmts, &this.ret, body_block)?;
     }
 
+    // The multiple-of facts of the tensor parameters this region reads, assumed at the
+    // entry of the kernel body.
+    if is_device {
+        assume_mult_of_params(gen, this, body_block)?;
+    }
+
     // The same two proofs as the flat code generator, in the same order: one loop whose passes
     // run on threads or host workers, else a loop of blocks with loops of threads in it. A
     // region with `across` loops maps its work to lanes itself.
@@ -916,4 +922,42 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
         let call_ref = current_b.append_operation(call_op);
         Ok((call_ref.result(0)?.into(), ret_ty, current_b))
     }
+}
+
+/// The `?n` facts of the tensor parameters this region reads, assumed at the entry of the
+/// kernel body, in parameter order. Only names the region reads: an assume for a tensor the
+/// body never touches would make the kernel take an operand it did not need.
+fn assume_mult_of_params<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    this: &syntax::SpawnOnExpr,
+    body_block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(), LowerError> {
+    let mut used = std::collections::HashSet::new();
+    for s in &this.stmts {
+        super::seam_cert::collect_stmt_idents(s, &mut used);
+    }
+    if let Some(r) = &this.ret {
+        super::seam_cert::collect_expr_idents(r, &mut used);
+    }
+    // Cloned out of `gen` so the loop below can reach `gen.env` while the names are held.
+    let candidates: Vec<(crate::symbol::Symbol, Vec<(usize, u64)>)> = gen
+        .extent_mults
+        .iter()
+        .filter(|(name, _)| {
+            used.contains(name.as_ref())
+                && gen
+                    .ast_env
+                    .get(name)
+                    .and_then(tensor_dims_of)
+                    .is_some_and(|dims| dims.iter().any(|d| matches!(d, syntax::Dim::Dyn(_))))
+        })
+        .cloned()
+        .collect();
+    for (name, mults) in candidates {
+        let Some(&(val, mlir_ty)) = gen.env.get(&name) else {
+            continue;
+        };
+        super::assume_extents_are_multiples(gen, val, mlir_ty, &mults, body_block)?;
+    }
+    Ok(())
 }

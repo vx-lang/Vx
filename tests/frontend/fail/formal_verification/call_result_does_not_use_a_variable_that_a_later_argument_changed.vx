@@ -1,0 +1,98 @@
+//===- call_result_does_not_use_a_variable_that_a_later_argument_changed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call reads its arguments from left to right. Here the first argument reads `c`, and
+// then `halve(&mut c)` in the second argument changes `c`. So the result is at most the
+// old `c.n`, and the compiler must not prove that it is at most the new `c.n`.
+//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+struct Counter {
+  n : i32,
+}
+
+fn halve(c : &mut Counter) -> i32
+ensures return == c.n {
+  c.n = c.n / 2;
+  return c.n;
+}
+
+fn read(c : &Counter) -> i32
+ensures return == c.n {
+  return c.n;
+}
+
+fn first(n : i32, m : i32, other : &mut i32) -> i32
+ensures return <= n {
+  *other = m;
+  return n;
+}
+
+fn first_of_two(n : i32, m : i32) -> i32
+ensures return <= n {
+  return n;
+}
+
+fn consume_index(limit : i32, index : i32) -> i32
+requires index <= limit {
+  return index;
+}
+
+fn first_argument_calls_read() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  let mut other = 0;
+  let index = first(read(&c), halve(&mut c), &mut other);
+  // CHECK: Error[E8006]{{.*}}:[[@LINE+1]]:{{.*}}this call to 'consume_index' may not meet its precondition
+  return consume_index(read(&c), index);
+}
+
+fn first_argument_reads_the_field() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  let mut other = 0;
+  let index = first(c.n, halve(&mut c), &mut other);
+  // CHECK: Error[E8006]{{.*}}:[[@LINE+1]]:{{.*}}this call to 'consume_index' may not meet its precondition
+  return consume_index(read(&c), index);
+}
+
+fn outer_call_has_no_mut_argument() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  let index = first_of_two(read(&c), halve(&mut c));
+  // CHECK: Error[E8006]{{.*}}:[[@LINE+1]]:{{.*}}this call to 'consume_index' may not meet its precondition
+  return consume_index(read(&c), index);
+}
+
+fn two_arguments_change_the_variable() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  let mut other = 0;
+  let index = first(halve(&mut c), halve(&mut c), &mut other);
+  // CHECK: Error[E8006]{{.*}}:[[@LINE+1]]:{{.*}}this call to 'consume_index' may not meet its precondition
+  return consume_index(read(&c), index);
+}
+
+// `c` is a `&mut` reference here. `read(c)` only reads through it, and `halve(c)` changes it.
+fn later_argument_changes_through_a_mut_reference(c : &mut Counter) -> i32 {
+  let index = first_of_two(read(c), halve(c));
+  // CHECK: Error[E8006]{{.*}}:[[@LINE+1]]:{{.*}}this call to 'consume_index' may not meet its precondition
+  return consume_index(read(c), index);
+}
+
+fn main() -> i32 {
+  let mut c = Counter {
+    n: 8
+  };
+  return first_argument_calls_read() + first_argument_reads_the_field()
+  + outer_call_has_no_mut_argument() + two_arguments_change_the_variable()
+  + later_argument_changes_through_a_mut_reference(&mut c);
+}

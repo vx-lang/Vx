@@ -665,9 +665,9 @@ pub(crate) fn struct_instance_ty<'c>(
 }
 
 /// `place.member = val` where `place` is a struct behind a pointer: `(*p).a = v` with a raw
-/// pointer `p`, `p[i].a = v` with a raw pointer `p`, or `m.r.x = v` where the field `m.r` is a
-/// reference. The value is stored through the pointer. `None` when `place` is not a struct behind
-/// a pointer.
+/// pointer `p`, `p[i].a = v` with a raw pointer `p`, `m.r.x = v` where the field `m.r` is a
+/// reference, or a field of one of these, `(*p).inner.a = v`. The value is stored through the
+/// pointer. `None` when `place` is not a struct behind a pointer.
 fn store_field_through_pointer<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -676,6 +676,41 @@ fn store_field_through_pointer<'c>(
     val: melior::ir::Value<'c, 'c>,
     val_ty: Type<'c>,
 ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+    let Some((struct_ptr, pointee, block)) = struct_address_through_pointer(gen, block, place)?
+    else {
+        return Ok(None);
+    };
+    let Some((field_ptr, field)) = field_address(gen, &block, struct_ptr, &pointee, member)? else {
+        return Ok(None);
+    };
+    let field_ty = gen.lower_type(&field)?;
+    let field_val = if val_ty == field_ty {
+        val
+    } else {
+        gen.coerce_type(&block, val, val_ty, field_ty)?
+    };
+    block.append_operation(
+        OperationBuilder::new("llvm.store", gen.loc())
+            .add_operands(&[field_val, field_ptr])
+            .build()?,
+    );
+    Ok(Some(block))
+}
+
+/// The address of the struct that `place` names when a pointer leads to it, and the type of the
+/// struct. The places are those of `store_field_through_pointer`.
+fn struct_address_through_pointer<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    place: &Expr,
+) -> Result<
+    Option<(
+        melior::ir::Value<'c, 'c>,
+        syntax::Type,
+        melior::ir::BlockRef<'c, 'c>,
+    )>,
+    LowerError,
+> {
     use syntax::Type as T;
     // The expression that gives the pointer, and the type of the struct it points at.
     let (ptr_expr, pointee) = match place {
@@ -685,11 +720,21 @@ fn store_field_through_pointer<'c>(
             }
             _ => return Ok(None),
         },
-        Expr::MemberAccess(_) => match gen.infer_ast_type(place) {
+        Expr::MemberAccess(m) => match gen.infer_ast_type(place) {
             Some(T::Pointer(inner, _, _) | T::Ref(inner, _) | T::Borrow { inner, .. }) => {
                 (place, *inner)
             }
-            _ => return Ok(None),
+            // `(*p).inner`: a struct field of a struct behind a pointer.
+            Some(_) => {
+                let Some((ptr, parent, block)) =
+                    struct_address_through_pointer(gen, block, &m.base)?
+                else {
+                    return Ok(None);
+                };
+                return Ok(field_address(gen, &block, ptr, &parent, &m.member)?
+                    .map(|(field_ptr, field)| (field_ptr, field, block)));
+            }
+            None => return Ok(None),
         },
         // `p[i]` is lowered as a place below, which gives the address of the element.
         Expr::IndexAccess(ix) => match gen.infer_ast_type(&ix.base) {
@@ -698,7 +743,31 @@ fn store_field_through_pointer<'c>(
         },
         _ => return Ok(None),
     };
-    let Some(base_struct) = nominal_struct_name(&pointee) else {
+    if nominal_struct_name(&pointee).is_none() {
+        return Ok(None);
+    }
+    let prev_lvalue = gen.is_lvalue_context;
+    gen.is_lvalue_context = prev_lvalue || matches!(place, Expr::IndexAccess(_));
+    let lowered = gen.generate_expr(ptr_expr, block);
+    gen.is_lvalue_context = prev_lvalue;
+    let (ptr_val, ptr_ty, block) = lowered?;
+    assert!(
+        ptr_ty.to_string().starts_with("!llvm.ptr"),
+        "a struct behind a pointer lowers to a pointer, not {ptr_ty}"
+    );
+    Ok(Some((ptr_val, pointee, block)))
+}
+
+/// The address of field `member` of the struct of type `ty` at `ptr`, and the type of the field.
+/// `None` when `ty` is not a struct with that field.
+fn field_address<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    ptr: melior::ir::Value<'c, 'c>,
+    ty: &syntax::Type,
+    member: &crate::symbol::Symbol,
+) -> Result<Option<(melior::ir::Value<'c, 'c>, syntax::Type)>, LowerError> {
+    let Some(base_struct) = nominal_struct_name(ty) else {
         return Ok(None);
     };
     let base_struct: crate::symbol::Symbol =
@@ -709,22 +778,7 @@ fn store_field_through_pointer<'c>(
     let Some(field_idx) = decl.fields.iter().position(|(n, _)| n == member) else {
         return Ok(None);
     };
-    let prev_lvalue = gen.is_lvalue_context;
-    gen.is_lvalue_context = prev_lvalue || matches!(place, Expr::IndexAccess(_));
-    let lowered = gen.generate_expr(ptr_expr, block);
-    gen.is_lvalue_context = prev_lvalue;
-    let (ptr_val, ptr_ty, block) = lowered?;
-    assert!(
-        ptr_ty.to_string().starts_with("!llvm.ptr"),
-        "a struct behind a pointer lowers to a pointer, not {ptr_ty}"
-    );
-    let mapping = generic_arg_mapping(&pointee.to_string(), &decl.generics);
-    let field_ty = gen.lower_type(&decl.fields[field_idx].1.substitute(&mapping))?;
-    let field_val = if val_ty == field_ty {
-        val
-    } else {
-        gen.coerce_type(&block, val, val_ty, field_ty)?
-    };
+    let mapping = generic_arg_mapping(&ty.to_string(), &decl.generics);
     let struct_ty = struct_instance_ty(gen, &base_struct, &decl, &mapping)?;
     let field_ptr: melior::ir::Value = block
         .append_operation(
@@ -739,18 +793,25 @@ fn store_field_through_pointer<'c>(
                         TypeAttribute::new(struct_ty).into(),
                     ),
                 ])
-                .add_operands(&[ptr_val])
+                .add_operands(&[ptr])
                 .add_results(&[gen.ptr_ty])
                 .build()?,
         )
         .result(0)?
         .into();
-    block.append_operation(
-        OperationBuilder::new("llvm.store", gen.loc())
-            .add_operands(&[field_val, field_ptr])
-            .build()?,
-    );
-    Ok(Some(block))
+    Ok(Some((
+        field_ptr,
+        decl.fields[field_idx].1.substitute(&mapping),
+    )))
+}
+
+/// Whether `e` has a call in it, so that it must be computed only once.
+fn runs_a_call(e: &Expr) -> bool {
+    let mut found = false;
+    crate::syntax::visit_expr(e, &mut |e| {
+        found |= matches!(e, Expr::FunctionCall(_) | Expr::MethodCall(_));
+    });
+    found
 }
 
 /// Whether `e` is an operator with a tensor among its operands, as `o[0] + o[1]` is.
@@ -1552,6 +1613,19 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             span,
             operand_ty,
         } = self;
+        // `(*v.index_mut(i)).n op= x`, from `v[i].n op= x`: the call runs once, and the field
+        // is read and written at the address that it gives.
+        let mut block = block;
+        let mut field_place = None;
+        if let Expr::MemberAccess(m) = lhs {
+            if runs_a_call(lhs) {
+                if let Some((ptr, parent, b)) = struct_address_through_pointer(gen, block, &m.base)?
+                {
+                    block = b;
+                    field_place = field_address(gen, &block, ptr, &parent, &m.member)?;
+                }
+            }
+        }
         // `*p op= v`, `s.f op= v` and `p[i] op= v` through a raw pointer are lowered as
         // `lhs = lhs op v`, which stores through the place the way a plain assignment does.
         // Reading such a place twice has no effect.
@@ -1561,7 +1635,9 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             }
             _ => false,
         };
-        if matches!(lhs, Expr::Dereference(_) | Expr::MemberAccess(_)) || through_raw_pointer {
+        if field_place.is_none()
+            && (matches!(lhs, Expr::Dereference(_) | Expr::MemberAccess(_)) || through_raw_pointer)
+        {
             let assign = AssignStmt {
                 lhs: lhs.clone(),
                 rhs: Expr::BinaryOp(syntax::BinaryOpExpr {
@@ -1586,7 +1662,14 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
         } else {
             None
         };
-        let (lhs_val, ty, block) = if let Some((base, mem_ty, indices, block)) = &indexed_place {
+        let (lhs_val, ty, block) = if let Some((field_ptr, field)) = &field_place {
+            let ty = gen.lower_type(field)?;
+            let load = OperationBuilder::new("llvm.load", gen.loc())
+                .add_operands(&[*field_ptr])
+                .add_results(&[ty])
+                .build()?;
+            (block.append_operation(load).result(0)?.into(), ty, block)
+        } else if let Some((base, mem_ty, indices, block)) = &indexed_place {
             use melior::ir::r#type::ShapedTypeLike;
             let memref = melior::ir::r#type::MemRefType::try_from(*mem_ty).map_err(|_| {
                 LowerError::from("an indexed compound assignment needs a tensor".to_string())
@@ -1651,6 +1734,13 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                 }
                 return Ok(Some(block));
             }
+        } else if let Some((field_ptr, _)) = field_place {
+            block.append_operation(
+                OperationBuilder::new("llvm.store", gen.loc())
+                    .add_operands(&[result_val, field_ptr])
+                    .build()?,
+            );
+            return Ok(Some(block));
         } else if let Some((base, _, indices, _)) = indexed_place {
             let mut operands = vec![result_val, base];
             operands.extend(indices);
