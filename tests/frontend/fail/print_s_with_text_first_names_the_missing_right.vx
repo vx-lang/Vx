@@ -1,0 +1,15 @@
+//===- print_s_with_text_first_names_the_missing_right.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `println_s!` that starts with its text has no right to print. The error says what to write.
+// CHECK: println_s! needs the right to print before the text: a `Stdout` or a `Stderr`, or a reference to one, as in `println_s!(root.stdout, "..")`
+fn main() -> i32 {
+  println_s!("hello");
+  return 0;
+}

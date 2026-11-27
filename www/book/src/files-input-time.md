@@ -232,7 +232,12 @@ Only `std::io` can make them, so a library reads or writes them only when its ca
 - `out.write_all(&bytes)` writes all of the bytes. They keep their order with `print!`.
 - A `select` can wait on a `Stdin`, as it waits on a socket.
 
-`println!` and `print!` do not need the right yet. The older `unsafe` functions `stdin_read`,
+`print_s!` and `println_s!` print as `print!` and `println!` do, but their first argument is the
+right to print: a `Stdout` or a `Stderr`, or a reference to one. With a `Stderr`, the text goes
+to standard error. So `println_s!(out, "{} lines", n)` in a library prints only when its caller
+gave it `out`. `print!` and `println!` still need no right.
+
+The older `unsafe` functions `stdin_read`,
 `stdout_write` and `stderr_write` take a raw pointer and a length. This loop counts the lines of
 the input:
 
