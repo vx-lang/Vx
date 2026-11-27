@@ -104,41 +104,41 @@ pub(crate) mod lines {
 }
 
 #[no_mangle]
-pub extern "C" fn print_i32(val: i32) -> i32 {
+pub extern "C" fn vx_print_i32(val: i32) -> i32 {
     lines::print(&format!("{}", val));
     0
 }
 
 #[no_mangle]
-pub extern "C" fn print_i64(val: i64) -> i32 {
+pub extern "C" fn vx_print_i64(val: i64) -> i32 {
     lines::print(&format!("{}", val));
     0
 }
 
-/// The unsigned counterparts of `print_i32`/`print_i64`. MLIR's integer types are signless,
+/// The unsigned counterparts of `vx_print_i32`/`vx_print_i64`. MLIR's integer types are signless,
 /// so a Vx `u64` and `i64` reach codegen as the same `i64` and only the element type says
 /// which is which; without these every value above the signed range printed as a negative
 /// number. One per width, so the element type alone decides the call.
 #[no_mangle]
-pub extern "C" fn print_u8(val: u8) -> i32 {
+pub extern "C" fn vx_print_u8(val: u8) -> i32 {
     lines::print(&format!("{}", val));
     0
 }
 
 #[no_mangle]
-pub extern "C" fn print_u16(val: u16) -> i32 {
+pub extern "C" fn vx_print_u16(val: u16) -> i32 {
     lines::print(&format!("{}", val));
     0
 }
 
 #[no_mangle]
-pub extern "C" fn print_u32(val: u32) -> i32 {
+pub extern "C" fn vx_print_u32(val: u32) -> i32 {
     lines::print(&format!("{}", val));
     0
 }
 
 #[no_mangle]
-pub extern "C" fn print_u64(val: u64) -> i32 {
+pub extern "C" fn vx_print_u64(val: u64) -> i32 {
     lines::print(&format!("{}", val));
     0
 }
@@ -146,7 +146,7 @@ pub extern "C" fn print_u64(val: u64) -> i32 {
 /// An `i128` or a `u128`, as its low and its high 64 bits. The caller splits the value, because
 /// a 128-bit integer has no calling convention that every target agrees on.
 #[no_mangle]
-pub extern "C" fn print_i128(low: u64, high: u64) -> i32 {
+pub extern "C" fn vx_print_i128(low: u64, high: u64) -> i32 {
     lines::print(&format!(
         "{}",
         (((high as u128) << 64) | low as u128) as i128
@@ -155,32 +155,32 @@ pub extern "C" fn print_i128(low: u64, high: u64) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn print_u128(low: u64, high: u64) -> i32 {
+pub extern "C" fn vx_print_u128(low: u64, high: u64) -> i32 {
     lines::print(&format!("{}", ((high as u128) << 64) | low as u128));
     0
 }
 
 /// A `bool`, widened to an `i32` by the caller: prints `true` or `false`, as Rust does.
 #[no_mangle]
-pub extern "C" fn print_bool(val: i32) -> i32 {
+pub extern "C" fn vx_print_bool(val: i32) -> i32 {
     lines::print(&format!("{}", val != 0));
     0
 }
 
 #[no_mangle]
-pub extern "C" fn print_f32(val: f32) -> i32 {
+pub extern "C" fn vx_print_f32(val: f32) -> i32 {
     lines::print(&format!("{}", val));
     0
 }
 
 #[no_mangle]
-pub extern "C" fn print_f64(val: f64) -> i32 {
+pub extern "C" fn vx_print_f64(val: f64) -> i32 {
     lines::print(&format!("{}", val));
     0
 }
 
 #[no_mangle]
-pub extern "C" fn print_str(piece: *const libc::c_char) -> i32 {
+pub extern "C" fn vx_print_str(piece: *const libc::c_char) -> i32 {
     if piece.is_null() {
         return 0;
     }
@@ -191,12 +191,12 @@ pub extern "C" fn print_str(piece: *const libc::c_char) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn println() -> i32 {
+pub extern "C" fn vx_println() -> i32 {
     lines::print("\n");
     0
 }
 
-/// With `on` non-zero, the `print_*` functions write to standard error on this thread until the
+/// With `on` non-zero, the `vx_print_*` functions write to standard error on this thread until the
 /// next call with zero. The code generators put an `eprint!` and a `panic` between two calls.
 #[no_mangle]
 pub extern "C" fn vx_print_to_stderr(on: i32) -> i32 {

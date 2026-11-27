@@ -37,7 +37,7 @@ fn main() -> i32 {
 // MLIR: %[[SUB:.*]] = arith.subf %[[A]], %[[B]] : f32
 // MLIR: %[[MUL:.*]] = arith.mulf %[[A]], %[[B]] : f32
 // MLIR: %[[DIV:.*]] = arith.divf %[[A]], %[[B]] : f32
-// MLIR: call @print_f32(%[[ADD]])
-// MLIR: call @print_f32(%[[SUB]])
-// MLIR: call @print_f32(%[[MUL]])
-// MLIR: call @print_f32(%[[DIV]])
+// MLIR: call @vx_print_f32(%[[ADD]])
+// MLIR: call @vx_print_f32(%[[SUB]])
+// MLIR: call @vx_print_f32(%[[MUL]])
+// MLIR: call @vx_print_f32(%[[DIV]])

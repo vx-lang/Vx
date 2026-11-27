@@ -36,5 +36,5 @@ fn main() -> i32 {
 // MLIR: %[[Z:.*]] = arith.constant 0.000000e+00 : f32
 // MLIR: %[[R:.*]] = call @f32$sqrt(%[[X]]) : (f32) -> f32
 // MLIR: %[[E:.*]] = call @f32$exp(%[[Z]]) : (f32) -> f32
-// MLIR: call @print_f32(%[[R]])
-// MLIR: call @print_f32(%[[E]])
+// MLIR: call @vx_print_f32(%[[R]])
+// MLIR: call @vx_print_f32(%[[E]])

@@ -6190,7 +6190,7 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
     }
 }
 
-/// Switches the `print_*` helpers to standard error, or back, around an `eprint!` or a `panic`.
+/// Switches the `vx_print_*` helpers to standard error, or back, around an `eprint!` or a `panic`.
 fn switch_print_stream<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -6264,7 +6264,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                     &[(handle, "!llvm.ptr")],
                     "!llvm.ptr",
                 )?;
-                super::call_runtime_fn(gen, block, "print_str", &[(c_str, "!llvm.ptr")], "i32")?;
+                super::call_runtime_fn(gen, block, "vx_print_str", &[(c_str, "!llvm.ptr")], "i32")?;
                 super::call_runtime_fn(
                     gen,
                     block,
@@ -6279,7 +6279,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                     "print cannot print a value of type {arg_ty}"
                 )));
             }
-            super::call_runtime_fn(gen, block, "print_str", &[(arg_val, "!llvm.ptr")], "i32")?;
+            super::call_runtime_fn(gen, block, "vx_print_str", &[(arg_val, "!llvm.ptr")], "i32")?;
         }
         if self.to_stderr {
             switch_print_stream(gen, block, false)?;
@@ -6322,15 +6322,15 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
             block = print_expr.lower(gen, block)?.2;
         }
 
-        // Then emit a call to println()
-        if !gen.functions.contains_key("println") {
+        // Then emit a call to vx_println()
+        if !gen.functions.contains_key("vx_println") {
             let func_ty = Type::parse(gen.context, "() -> i32").unwrap();
 
             let func_decl = OperationBuilder::new("func.func", gen.loc())
                 .add_attributes(&[
                     (
                         Identifier::new(gen.context, "sym_name"),
-                        StringAttribute::new(gen.context, "println").into(),
+                        StringAttribute::new(gen.context, "vx_println").into(),
                     ),
                     (
                         Identifier::new(gen.context, "function_type"),
@@ -6346,10 +6346,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
 
             gen.module.body().append_operation(func_decl);
             gen.functions
-                .insert("println".to_string().into(), (gen.i32_ty, vec![]));
+                .insert("vx_println".to_string().into(), (gen.i32_ty, vec![]));
         }
 
-        let name_attr = FlatSymbolRefAttribute::new(gen.context, "println");
+        let name_attr = FlatSymbolRefAttribute::new(gen.context, "vx_println");
         let call_op = OperationBuilder::new("func.call", gen.loc())
             .add_results(&[gen.i32_ty])
             .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])

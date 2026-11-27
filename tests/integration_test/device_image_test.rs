@@ -993,7 +993,7 @@ fn a_kernel_that_calls_the_runtime_says_it_runs_on_the_host() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("the call to 'print_f32'") && stderr.contains("runs on the CPU"),
+        stderr.contains("the call to 'vx_print_f32'") && stderr.contains("runs on the CPU"),
         "the compiler dropped this kernel's device copy without naming the \
          callee that kept it at home; stderr was:\n{stderr}"
     );

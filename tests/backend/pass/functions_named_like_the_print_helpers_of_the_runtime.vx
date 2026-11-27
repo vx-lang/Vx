@@ -1,0 +1,53 @@
+//===- functions_named_like_the_print_helpers_of_the_runtime.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `print` and `println!` call functions of the runtime. Their names start with `vx_`, so a
+// program can have its own `print_u64`, `print_f64`, `print_str`, `print_i32`, `print_bool`
+// and `println`.
+//
+// RUN: env VX_NO_AST_FALLBACK=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// The `print` here prints `x`. It does not call this function again.
+fn print_u64(x : u64) -> i32 {
+  print(x);
+  return 1;
+}
+
+fn print_f64(_x : f64) -> i32 {
+  return 2;
+}
+
+fn print_str(s : i32) -> i32 {
+  return s;
+}
+
+fn print_i32(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn print_bool(b : bool) -> i32 {
+  if b {
+    return 8;
+  }
+  return 0;
+}
+
+fn println() -> i32 {
+  return 3;
+}
+
+fn main() -> i32 {
+  let a = print_u64(5u64);
+  let y : f64 = 2.5;
+  print(y);
+  // CHECK: {{^}}52.5 true text 9{{$}}
+  println!(" {} {} {}", true, "text", 9);
+  // CHECK-NEXT: {{^}}1 2 4 7 8 3{{$}}
+  println!("{} {} {} {} {} {}", a, print_f64(y), print_str(4), print_i32(6), print_bool(true), println());
+  return 0;
+}
