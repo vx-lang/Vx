@@ -76,7 +76,8 @@ vxc --package textkit=../textkit main.vx
 
 `--no-trusted-code textkit` makes each use of `unsafe`, `mlir!`, `extern`, `extern impl` and
 `unsafe impl` in `textkit` an error (E5003), so the package cannot add code that the compiler does
-not check.
+not check. A `requires` of an `extern fn` is an error too, because a call from C does not
+prove it.
 
 ## Separate compilation
 

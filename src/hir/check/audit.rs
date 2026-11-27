@@ -8,7 +8,7 @@
 //
 // `vxc --audit`: the facts that the compiler trusts without a proof. Each `assume`, each pointer
 // clause that a call in `unsafe` code trusts, each `ensures` of a function in an `extern` block,
-// and each pointer `requires` of an `extern fn`, which C code can call with no proof. A1 in
+// and each `requires` of an `extern fn`, which C code can call with no proof. A1 in
 // docs/discussions/contracts_for_extern_and_unsafe_code.md has the design.
 //
 //===----------------------------------------------------------------------===//
@@ -51,9 +51,16 @@ pub(crate) fn clause_text(e: &Expr) -> String {
     crate::hir::prover::to_source(e).unwrap_or_else(|| "..".to_string())
 }
 
+/// Each `requires` of an `extern fn`, which C code can call with no proof, and the name of its
+/// function. The compiler does not check the clause at the call, and the body relies on it.
+fn exported_requires(program: &Program) -> impl Iterator<Item = (&Expr, &str)> {
+    let exported = program.functions.iter().filter(|f| f.exported);
+    exported.flat_map(|f| f.requires.iter().map(move |e| (e, f.name.as_ref())))
+}
+
 /// The facts that the declarations of `program` state and the compiler trusts: each `ensures`
-/// of a function in an `extern` block, whose body the compiler cannot read, and each pointer
-/// `requires` of an `extern fn`, because a call from C proves nothing.
+/// of a function in an `extern` block, whose body the compiler cannot read, and each `requires`
+/// of an `extern fn`, because a call from C proves nothing.
 pub fn trusted_declarations(program: &Program) -> Vec<Trusted> {
     let file = program
         .file
@@ -76,16 +83,12 @@ pub fn trusted_declarations(program: &Program) -> Vec<Trusted> {
             found.push(at(clause.span(), what));
         }
     }
-    let pointer_clause = |e: &&Expr| crate::hir::check::pointer_facts::read_clause(e).is_some();
-    for f in program.functions.iter().filter(|f| f.exported) {
-        for clause in f.requires.iter().filter(pointer_clause) {
-            let what = format!(
-                "the exported function `{}` requires `{}`, and a call from C proves nothing",
-                f.name,
-                clause_text(clause)
-            );
-            found.push(at(clause.span(), what));
-        }
+    for (clause, name) in exported_requires(program) {
+        let what = format!(
+            "the exported function `{name}` requires `{}`, and a call from C proves nothing",
+            clause_text(clause)
+        );
+        found.push(at(clause.span(), what));
     }
     found
 }
@@ -219,17 +222,35 @@ pub fn library_count_line(
     ))
 }
 
-/// E5003 for each use of trusted code in `program`, when `vxc --no-trusted-code` names its
-/// package. Runs after macro expansion, so the code that a macro writes counts too.
+/// E5003 for each use of trusted code in `program`, and for each `requires` of an `extern fn`,
+/// when `vxc --no-trusted-code` names its package. Runs after macro expansion, so
+/// the code that a macro writes counts too.
 pub fn refused_trusted_code(program: &Program) -> Vec<crate::diagnostic::Diagnostic> {
     let Some(package) = &program.no_trusted_code else {
         return Vec::new();
     };
-    let mut found = trusted_code(program);
-    found.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut found: Vec<Trusted> = trusted_code(program).into_iter().map(|(_, t)| t).collect();
+    let file = program
+        .file
+        .as_ref()
+        .map_or_else(|| "?".to_string(), |f| f.to_string());
+    for (clause, name) in exported_requires(program) {
+        let span = clause.span();
+        found.push(Trusted {
+            file: file.clone(),
+            line: span.line,
+            column: span.column,
+            what: format!(
+                "trusted code: the `requires {}` of the exported function `{name}`, which a \
+                 call from C does not prove",
+                clause_text(clause)
+            ),
+        });
+    }
+    found.sort();
     found
         .into_iter()
-        .map(|(_, t)| {
+        .map(|t| {
             let what = t.what.strip_prefix("trusted code: ").unwrap_or(&t.what);
             let mut d = crate::diagnostic::Diagnostic::error(format!(
                 "`--no-trusted-code {package}` refuses trusted code in the package `{package}`, \
