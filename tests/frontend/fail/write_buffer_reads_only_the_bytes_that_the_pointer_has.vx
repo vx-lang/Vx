@@ -8,7 +8,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 //
 // `write_buffer(w, p, n)` reads `n` bytes at `p`. Safe code must prove that `p` has them. The
-// pointer of a `Vec` has `len()` bytes, and "hi" has 2 bytes and a NUL.
+// pointer of a `Vec` has `len()` bytes, and "hi" has 2 bytes. Safe code cannot read its NUL.
 
 import core::fmt;
 import core::result;
@@ -34,18 +34,18 @@ fn past_the_end_of_a_vec(c : &mut Counter) -> i32 {
   return c.bytes;
 }
 
-// The fourth byte may not exist.
+// Safe code cannot read the NUL of a string literal.
 // CHECK-DAG: Error[E8006] at {{.*}}.vx:[[@LINE+3]]:12: this call to 'write_buffer' may not meet its precondition `valid(p, n)`
 // CHECK-DAG: Error[E8006] at {{.*}}.vx:[[@LINE+2]]:12: this call to 'write_buffer' may not meet its precondition `initialized(p, n)`
-fn one_byte_past_the_nul(c : &mut Counter) -> i32 {
-  let _r = write_buffer(c, "hi" as *const u8, 4);
+fn the_nul_of_a_literal(c : &mut Counter) -> i32 {
+  let _r = write_buffer(c, "hi" as *const u8, 3);
   return c.bytes;
 }
 
-// The 2 bytes of "hi", its NUL and all of a `Vec` are there to read, so these calls get no error.
+// The 2 bytes of "hi" and all of a `Vec` are there to read, so these calls get no error.
 // CHECK: 4 error(s) emitted
 fn all_of_the_bytes(c : &mut Counter) -> i32 {
-  let _r = write_buffer(c, "hi" as *const u8, 3);
+  let _r = write_buffer(c, "hi" as *const u8, 2);
   let mut v = Vec<u8>::new();
   v.push(1u8);
   let _s = write_buffer(c, v.as_mut_ptr() as *const u8, v.len());
@@ -56,5 +56,5 @@ fn main() -> i32 {
   let mut c = Counter {
     bytes : 0
   };
-  return past_the_end_of_a_vec(&mut c) + one_byte_past_the_nul(&mut c) + all_of_the_bytes(&mut c);
+  return past_the_end_of_a_vec(&mut c) + the_nul_of_a_literal(&mut c) + all_of_the_bytes(&mut c);
 }

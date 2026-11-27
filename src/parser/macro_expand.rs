@@ -826,7 +826,9 @@ impl<'a> MacroExpander<'a> {
                 .map(|e| MacroBody::Expr(Box::new(e)));
         }
         if name == "print_s" || name == "println_s" {
-            return self.expand_print_s_macro(tt, name == "println_s");
+            return self
+                .expand_print_s_macro(tt, name == "println_s")
+                .map(|e| MacroBody::Expr(Box::new(e)));
         }
 
         let (home, rules) = self.macros.rules(&self.module, name)?;
