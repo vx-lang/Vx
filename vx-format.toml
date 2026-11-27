@@ -6,7 +6,9 @@ space_before_colon = true
 [format.rules]
 # Preserve existing mixed header styles until the repository migrates them together.
 function_headers = false
-# Switch these on in a separate change that formats the repository again.
+# Switch these on in a separate change that formats the repository again. On now, they change
+# 557 files in tests/ and stdlib/. That change must also update the test checks that name a
+# line or a column of a file it formats.
 struct_literals = false
 match_arms = false
 if_values = false
