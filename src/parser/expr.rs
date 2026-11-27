@@ -1456,7 +1456,7 @@ impl<'a> Parser<'a> {
                                     line: token.line,
                                     column: token.column,
                                     length: token.length,
-                                    expansion: self.expansion(),
+                                    expansion: token.expansion,
                                 },
                                 locals: self.locals_in_scope(),
                             })
@@ -1465,7 +1465,7 @@ impl<'a> Parser<'a> {
                                 line: token.line,
                                 column: token.column,
                                 length: token.length,
-                                expansion: self.expansion(),
+                                expansion: token.expansion,
                             };
                             self.parse_identifier_expr(s.to_string(), span)?
                         }
@@ -1683,7 +1683,7 @@ impl<'a> Parser<'a> {
                     line: self.peek().line,
                     column: self.peek().column,
                     length: self.peek().length,
-                    expansion: self.expansion(),
+                    expansion: self.peek().expansion,
                 };
                 let ident = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s.to_string(),

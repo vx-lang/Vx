@@ -1,0 +1,23 @@
+//===- a_macro_argument_cannot_name_a_private_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A name that the caller gives a macro has the privileges of the caller. This file cannot call
+// `ten` or `twenty` of `a_module_with_macros_that_call_its_functions.vx`. So it cannot call them
+// through `call_it` of another file, or through `call_mine` of their own file.
+// RUN: not vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s
+import tests::modules::a_module_with_macros_that_call_its_functions;
+import tests::modules::a_module_with_a_macro_that_calls_its_argument;
+
+fn main() -> i32 {
+  println!("{} {}", call_it!(ten), call_it!(twenty));
+  println!("{}", call_mine!(ten));
+  return 0;
+}
+
+// CHECK: a_macro_argument_cannot_name_a_private_function.vx:16:{{[0-9]+}}: `ten` is private to `a_module_with_macros_that_call_its_functions.vx`
+// CHECK: a_macro_argument_cannot_name_a_private_function.vx:16:{{[0-9]+}}: `twenty` is `pkg` in `a_module_with_macros_that_call_its_functions.vx`, so only the package `tests` can call it
+// CHECK: a_macro_argument_cannot_name_a_private_function.vx:17:{{[0-9]+}}: `ten` is private to `a_module_with_macros_that_call_its_functions.vx`

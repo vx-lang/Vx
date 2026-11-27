@@ -1,0 +1,16 @@
+//===- a_module_with_only_a_macro.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module for `a_macro_calls_the_functions_of_its_file.vx`. It has no functions. Its macro calls
+// `pkg_twice`, a `pkg` function of another file of the package `tests`.
+import tests::modules::a_module_with_pkg_functions;
+
+macro_rules twice_in_the_package {
+  ($x : expr) => {
+    pkg_twice($x)
+  };
+}

@@ -1736,7 +1736,7 @@ impl<'a> TypeChecker<'a> {
         place: &FunctionPlace,
         at: &crate::syntax::Span,
     ) {
-        if self.speculating || self.may_call(place) {
+        if self.speculating || self.may_call(place, at) {
             return;
         }
         let Some(theirs) = &place.file else {
@@ -1828,7 +1828,7 @@ impl<'a> TypeChecker<'a> {
             }
             None => {
                 let base = name.split('<').next().unwrap_or_default();
-                self.place_of_function(base)
+                self.place_of_function(base, at)
                     .map(|p| (base.to_string(), base.to_string(), p))
             }
         };
@@ -1837,15 +1837,19 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Whether the current function may call a function at `place`: a `pub` function, one of
-    /// its own file, or a `pkg` function of its own package.
-    fn may_call(&self, place: &FunctionPlace) -> bool {
+    /// Whether the name at `at` may call a function at `place`: a `pub` function, one of its
+    /// own file, or a `pkg` function of its own package. A name that a macro of another file
+    /// wrote has the privileges of that file.
+    fn may_call(&self, place: &FunctionPlace, at: &crate::syntax::Span) -> bool {
         if place.visibility == Visibility::Public {
             return true;
         }
         let (Some(theirs), Some(ours)) = (&place.file, &self.errors.file) else {
             return true;
         };
+        let home = (at.expansion.checked_sub(1))
+            .and_then(|i| self.env.macro_homes.get(ours)?.get(i as usize)?.as_ref());
+        let ours = home.unwrap_or(ours);
         if theirs == ours {
             return true;
         }
@@ -1857,9 +1861,13 @@ impl<'a> TypeChecker<'a> {
 
     /// The file, package and visibility of the function, generic function or C function `name`.
     /// Every `extern` declaration of a C function names the same C symbol, so a C function has
-    /// the place of a declaration that the current function may call, when one exists. The order
+    /// the place of a declaration that the name at `at` may call, when one exists. The order
     /// of the declarations is not fixed.
-    pub(crate) fn place_of_function(&self, name: &str) -> Option<FunctionPlace> {
+    pub(crate) fn place_of_function(
+        &self,
+        name: &str,
+        at: &crate::syntax::Span,
+    ) -> Option<FunctionPlace> {
         if let Some(f) = self.env.syntax_functions.get(name) {
             return Some(FunctionPlace::of(f));
         }
@@ -1873,7 +1881,7 @@ impl<'a> TypeChecker<'a> {
                 package: e.package.clone(),
                 visibility: e.visibility,
             };
-            if self.may_call(&place) {
+            if self.may_call(&place, at) {
                 return Some(place);
             }
             first.get_or_insert(place);

@@ -1,0 +1,26 @@
+//===- a_macro_calls_the_functions_of_its_file.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The macros of other files call functions that this file cannot call: `ten`, a private function,
+// `twenty`, a `pkg` function, `bumped`, a private method, and `pkg_twice`, a `pkg` function of a
+// file that has only a macro. A name that a macro writes can call what the file of the macro can
+// call, so the program compiles.
+//
+// `ten_through_another_file` gives `ten` to `call_it`, a macro of a third file. The name `ten`
+// still comes from the file of `ten`, so that call compiles too. This file does not import the
+// third file: the file of the macro does.
+import tests::modules::a_module_with_macros_that_call_its_functions;
+import tests::modules::a_module_with_only_a_macro;
+
+fn main() -> i32 {
+  println!("{} {}", add_thirty!(5), bump_of!(new_counter()));
+  println!("{} {}", ten_through_another_file!(), twice_in_the_package!(4));
+  return 0;
+}
+
+// EXPECT: 35 41
+// EXPECT: 10 8

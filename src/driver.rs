@@ -952,6 +952,7 @@ impl CompilerDriver {
             // same way for it as for a host file (#342).
             transfer_impls: Vec::new(),
             macro_call_sites: Vec::new(),
+            macro_homes: Vec::new(),
             no_trusted_code: None,
             topologies: vec![crate::arch::TopologyDecl {
                 name: crate::symbol::Symbol::from("Host"),
@@ -1161,6 +1162,7 @@ impl CompilerDriver {
             memories: Vec::new(),
             transfer_impls: Vec::new(),
             macro_call_sites: Vec::new(),
+            macro_homes: Vec::new(),
             no_trusted_code: None,
         })
     }

@@ -163,6 +163,9 @@ pub struct GlobalAstEnv<'a> {
     pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
     /// Where to report the code that a macro of another file wrote, by the file of the call.
     pub macro_call_sites: crate::diagnostic::MacroCallSites,
+    /// For each file, by expansion id less 1: the file whose privileges the names of that
+    /// expansion have, or `None` for the file itself. See `Program::macro_homes`.
+    pub macro_homes: HashMap<crate::symbol::Symbol, Vec<Option<crate::symbol::Symbol>>>,
     /// The files of the modules of `core` and `std`, which declare the built-in types.
     pub library_files: std::collections::HashSet<crate::symbol::Symbol>,
 }
@@ -198,6 +201,7 @@ impl<'a> GlobalAstEnv<'a> {
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
             macro_call_sites: Default::default(),
+            macro_homes: HashMap::new(),
             library_files: Default::default(),
         };
         let mut macro_call_sites = HashMap::new();
@@ -213,6 +217,24 @@ impl<'a> GlobalAstEnv<'a> {
                 if module.macro_call_sites.iter().any(Option::is_some) {
                     macro_call_sites.insert(file.clone(), module.macro_call_sites.clone());
                 }
+            }
+        }
+        let files: HashMap<&crate::symbol::Symbol, &crate::symbol::Symbol> = (modules.iter())
+            .filter_map(|m| Some((&m.module_path, m.file.as_ref()?)))
+            .collect();
+        for module in modules {
+            let Some(file) = &module.file else {
+                continue;
+            };
+            if module.macro_homes.iter().any(Option::is_some) {
+                let homes = module.macro_homes.iter();
+                let homes =
+                    homes.map(|h| h.as_ref().and_then(|m| files.get(m)).map(|f| (*f).clone()));
+                env.macro_homes.insert(file.clone(), homes.collect());
+            }
+            // A module with no functions can still define a macro that calls a `pkg` function.
+            if let Some(package) = &module.package {
+                env.file_packages.insert(file.clone(), package.clone());
             }
         }
         for module in modules {
