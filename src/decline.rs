@@ -36,10 +36,9 @@ pub enum GapFunction {
 /// but only where the name settles the question.
 ///
 /// A type's own parts are joined with `$` too (`Vec<i32>` is `Vec$i32`, `*mut T` is
-/// `ptr$mut$T`, `&T` is `ref$const$T`), so splitting at every `$` cannot find where a
-/// receiver's type arguments end and a method's name starts. And `instantiate_function` writes
-/// an instance's type arguments in the order of the parameter *names*, not the order of the
-/// declaration. So only three shapes are read:
+/// `ptr$mut$T`, `&T` is `ref$const$T`), so a name with more than one part after its base cannot
+/// be split into the receiver's type arguments and the method's name: where one ends is not in
+/// the name. So only three shapes are read:
 ///
 /// - a method of a type that takes no type arguments, `P$get`;
 /// - a function or type with one scalar argument, `sum$i64`;
