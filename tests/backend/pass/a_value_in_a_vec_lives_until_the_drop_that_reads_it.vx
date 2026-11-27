@@ -9,10 +9,6 @@
 // reference to. The `Vec` drops the `Peek`, so the tensor lives until that `drop`, and the
 // `drop` prints 7. a_value_lives_until_the_drop_that_reads_it.vx has the other cases.
 //
-// Default code generator only: with the legacy one, a `Vec` of a struct that holds a `&Tensor`
-// frees the tensor twice (#4199).
-//
-// REQUIRES: flat-codegen
 // EXPECT: vec 1 7 | done
 
 import core::ops;
