@@ -1,0 +1,98 @@
+//===- a_byte_index_or_range_outside_a_string_stops_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each program reads outside the 3 bytes of "abc", so it stops, as `v[3]` does on a `Vec` of 3.
+//
+// - `byte_minus_one` and `byte_three`: `s.byte(-1)` and `s.byte(3)`.
+// - `range_from_minus_one`, `range_backwards` and `range_to_four`: `s.byte_range(-1, 2)`,
+//   `s.byte_range(2, 1)` and `s.byte_range(1, 4)`.
+//
+// RUN: split-file %s %t
+// RUN: not vxc %t/byte_minus_one.vx 2>&1 | FileCheck %s --check-prefix=BYTE
+// RUN: not vxc %t/byte_three.vx 2>&1 | FileCheck %s --check-prefix=BYTE
+// RUN: not vxc %t/range_from_minus_one.vx 2>&1 | FileCheck %s --check-prefix=RANGE
+// RUN: not vxc %t/range_backwards.vx 2>&1 | FileCheck %s --check-prefix=RANGE
+// RUN: not vxc %t/range_to_four.vx 2>&1 | FileCheck %s --check-prefix=RANGE
+//
+// BYTE: {{^}}panic: String: byte index out of bounds{{$}}
+// BYTE-NOT: not printed
+// RANGE: {{^}}panic: String: byte range out of bounds{{$}}
+// RANGE-NOT: not printed
+
+//--- byte_minus_one.vx
+import std::string;
+
+fn main() -> i32 {
+  let s = unsafe { String::from_c_str("abc") };
+  println!("{}", s.byte(-1));
+  println!("not printed");
+  return 0;
+}
+
+//--- byte_three.vx
+import std::string;
+
+fn main() -> i32 {
+  let s = unsafe { String::from_c_str("abc") };
+  println!("{}", s.byte(3));
+  println!("not printed");
+  return 0;
+}
+
+//--- range_from_minus_one.vx
+import core::result;
+import std::string;
+
+fn main() -> i32 {
+  let s = unsafe { String::from_c_str("abc") };
+  match s.byte_range(-1, 2) {
+    Result::Ok(part) => {
+      println!("{}", part);
+    }
+    Result::Err(_e) => {
+      println!("cut");
+    }
+  }
+  println!("not printed");
+  return 0;
+}
+
+//--- range_backwards.vx
+import core::result;
+import std::string;
+
+fn main() -> i32 {
+  let s = unsafe { String::from_c_str("abc") };
+  match s.byte_range(2, 1) {
+    Result::Ok(part) => {
+      println!("{}", part);
+    }
+    Result::Err(_e) => {
+      println!("cut");
+    }
+  }
+  println!("not printed");
+  return 0;
+}
+
+//--- range_to_four.vx
+import core::result;
+import std::string;
+
+fn main() -> i32 {
+  let s = unsafe { String::from_c_str("abc") };
+  match s.byte_range(1, 4) {
+    Result::Ok(part) => {
+      println!("{}", part);
+    }
+    Result::Err(_e) => {
+      println!("cut");
+    }
+  }
+  println!("not printed");
+  return 0;
+}

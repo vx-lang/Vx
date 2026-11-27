@@ -1,0 +1,16 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `Shape::Circle` holds an `i32`. Giving it a `bool` is an error that names the
+// variant, the position of the argument, and both types.
+
+enum Shape {
+  Circle(i32),
+  Empty,
+}
+
+fn main() -> i32 {
+  let s = Shape::Circle(true);
+  return 0;
+}
+
+// CHECK: Error[E3008] at {{.*}}enum_payload_of_the_wrong_type.vx:12:11: Type mismatch in payload argument 1 for Shape::Circle: expected i32, got bool

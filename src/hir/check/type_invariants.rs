@@ -173,9 +173,13 @@ impl<'a> TypeChecker<'a> {
         if self.speculating || decl.invariants.is_empty() || decl.place.file == self.errors.file {
             return;
         }
+        let article = match name.chars().next() {
+            Some('A' | 'E' | 'I' | 'O' | 'U' | 'a' | 'e' | 'i' | 'o' | 'u') => "an",
+            _ => "a",
+        };
         let message = format!(
-            "this struct literal builds a `{name}`. `{name}` has an invariant, so only code in \
-             `{}` can build it from its fields",
+            "this struct literal builds {article} `{name}`. `{name}` has an invariant, so only code \
+             in `{}` can build it from its fields",
             Self::module_file_name(decl)
         );
         self.errors.error_with_code(

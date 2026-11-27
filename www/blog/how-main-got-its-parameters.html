@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How main got its parameters</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="In six months, main in Vx went from returning any type, to returning an i32 exit code, to main(root : Root), and today to main(root : Root, args : Vec<String>). What main gets decides what every library can do. This post compares C, C++, Rust, Go, Java, Zig, Pony and Austral, and says what a Vec<String> of UTF-8 words costs.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="How main got its parameters">
+<meta property="og:description" content="main in Vx went from returning anything, to an i32 exit code, to main(root : Root), to main(root : Root, args : Vec<String>). What main gets decides what every library can do.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-25T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/how-main-got-its-parameters.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-how-main-got-its-parameters.png">
+<meta property="og:image:alt" content="How main got its parameters: from fn main() -> i32 to fn main(root : Root, args : Vec<String>).">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-how-main-got-its-parameters.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>How main got its parameters</h1>
+<p class="post-meta">Aditya Kumar &middot; 25 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — In Vx, a <em>capability</em> is a value that
+grants permission to use the operating system. A library can open a file only when its caller
+passes that capability. At startup, only <code>main</code> holds the capabilities. Over six
+months, <code>main</code> changed from returning any type to returning an <code>i32</code> exit
+code. Two days ago it became <code>main(root : Root)</code>, and today
+<code>main(root : Root, args : Vec&lt;String&gt;)</code>. This post traces each signature and
+compares <code>main</code> in C, C++, Rust, Go, Java, Zig, Pony, and Austral. It ends with the
+cost: a non-UTF-8 command-line argument stops the program before <code>main</code>
+runs.</blockquote>
+
+<p class="lede">The signature of <code>main</code> is the contract between a program and its
+caller. It declares what inputs the program receives and what it returns. It also decides what
+every library in the program can do without asking.</p>
+
+<h2 id="what-runs-before-main"><a href="#what-runs-before-main">What runs before main</a></h2>
+
+<p>A C program does not start at <code>main</code>. The operating system kernel jumps to
+<code>_start</code> in the C runtime. <code>_start</code> reads <code>argc</code>,
+<code>argv</code>, and the environment variables from the stack, then calls
+<code>__libc_start_main</code>. That helper initializes the C library, calls <code>main</code>, and
+passes <code>main</code>'s return value to <code>exit</code>.
+<a href="https://hiraditya.github.io/posts/the-hidden-complexity-of-hello-world/">The hidden
+complexity of the simplest C program</a> traces each step.</p>
+
+<p>On a machine with a hardware accelerator (a <em>device</em>), startup divides into two parts.
+<a href="https://hiraditya.github.io/posts/hello-world-in-a-heterogeneous-system/">"Hello,
+World!" in a heterogeneous system</a> shows both sides. A <em>host</em> <code>main</code> loads
+device code, starts it, and copies its result to the host. The device starts at its own
+<code>_start</code> with no operating system. In Vx, <code>main</code> runs on the host. A
+<code>spawn on</code> block runs on a device using data from the host. Only the host talks to the
+operating system.</p>
+
+<p>So <code>main</code> is the first function of the program's own code, and the place where
+command-line arguments arrive. The program could also receive its operating system capabilities
+there, if the language passes them.</p>
+
+<h2 id="the-forms-of-main-in-vx"><a href="#the-forms-of-main-in-vx">How main evolved in Vx</a></h2>
+
+<p>Vx reached that design in stages. Over six months, the signature of <code>main</code> changed
+step by step:</p>
+
+<div class="table-scroll">
+<table>
+<thead>
+<tr><th>Date (2026)</th><th>main</th><th>What changed</th></tr>
+</thead>
+<tbody>
+<tr><td>13 May</td><td>none</td><td>The first just-in-time (JIT) compiler wrote its own
+<code>main</code>, which called one kernel and returned 0.</td></tr>
+<tr><td>13 May to 17 July</td><td><code>fn main() -&gt; T</code>, for any <code>T</code></td><td>The
+code generator made every <code>main</code> return <code>i32</code>, skipped every
+<code>return</code>, and added <code>return 0</code>. Test <code>main</code>s returned
+<code>void</code>, <code>i64</code>, <code>f32</code>, and tensors (multi-dimensional arrays).</td></tr>
+<tr><td>31 May</td><td>the same</td><td>Two Rust functions, <code>vx_env_args_count</code> and
+<code>vx_env_arg</code>, supplied the arguments. Any code could call them through
+<code>extern</code> and <code>unsafe</code>.</td></tr>
+<tr><td>17 July</td><td><code>fn main() -&gt; i32</code></td><td><code>main</code>'s return value
+became the exit code. Any other return type became an error
+(<a href="https://github.com/vx-lang/Vx/issues/210">#210</a>).</td></tr>
+<tr><td>September to November</td><td><code>fn main(argc : i32, argv : *mut *mut i8) -&gt; i32</code></td><td>The
+checker inspected only <code>main</code>'s return type, so C's parameters worked. qwen-vx read each
+argument with <code>unsafe { argv[i] }</code>.</td></tr>
+<tr><td>23 November</td><td><code>fn main(root : Root) -&gt; i32</code></td><td><code>main</code>
+received the program's capabilities
+(<a href="https://github.com/vx-lang/Vx/pull/3838">#3838</a>).</td></tr>
+<tr><td>25 November, morning</td><td>the same, with <code>root.args</code></td><td>The first
+version of <a href="https://github.com/vx-lang/Vx/pull/3975">#3975</a> put arguments in
+<code>root.args</code>.</td></tr>
+<tr><td>25 November</td><td><code>fn main(root : Root, args : Vec&lt;String&gt;) -&gt; i32</code></td><td>Command-line
+arguments became a second parameter.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="a-main-whose-value-nobody-read"><a href="#a-main-whose-value-nobody-read">A main whose return value nobody read</a></h3>
+
+<p>The first bug in <code>main</code> involved its return value. For two months, the code generator
+ignored <code>return</code> in <code>main</code> and never evaluated its expression.
+<code>fn main() -&gt; i32 { return 42; }</code> exited with code 0, and <code>return f()</code>
+never called <code>f</code>. One <code>for</code>-loop test wrote
+<code>return test_for_loop()</code> in <code>main</code>, so the loop never ran. The test still
+passed because the program exited with code 0. Issue
+<a href="https://github.com/vx-lang/Vx/issues/210">#210</a> caught this bug and named the cost of
+each fix. About 50 tests expected exit code 0, since the test runner treats any other exit code as
+a failure.</p>
+
+<p>The fix chose C's rule: <code>main</code> returns an <code>i32</code> exit code. The same commit updated
+every test <code>main</code> to return <code>i32</code>. Today <code>fn main() -&gt; void</code>
+produces this error:</p>
+
+<pre><code>`main` must return i32 (the process exit code), found void</code></pre>
+
+<p>Still, Linux and macOS keep only the low 8 bits of that <code>i32</code>. Thus
+<code>return 256</code> exits with code 0, and the shell sees success. Writing this post uncovered
+that bug (<a href="https://github.com/vx-lang/Vx/issues/4031">#4031</a>). C has the same problem.
+Rust's <code>ExitCode</code> wraps a <code>u8</code> for this reason.</p>
+
+<h2 id="main-in-other-languages"><a href="#main-in-other-languages">main in other languages</a></h2>
+
+<p>Once <code>main</code> returned an exit code, the next question was what parameters it should
+take. Other languages answer that question in different ways:</p>
+
+<div class="table-scroll">
+<table>
+<thead>
+<tr><th>Language</th><th>main</th><th>Arguments</th><th>Who can open a file</th></tr>
+</thead>
+<tbody>
+<tr><td>C</td><td><code>int main(int argc, char *argv[])</code></td><td>Parameters: C strings of
+bytes</td><td>Any function</td></tr>
+<tr><td>C++</td><td>the same</td><td>the same</td><td>Any function</td></tr>
+<tr><td>Rust</td><td><code>fn main()</code>, or returning <code>Result</code> or
+<code>ExitCode</code></td><td>A global: <code>std::env::args()</code></td><td>Any function</td></tr>
+<tr><td>Go</td><td><code>func main()</code></td><td>A global: <code>os.Args</code></td><td>Any
+function</td></tr>
+<tr><td>Java</td><td><code>public static void main(String[] args)</code>, and <code>void main()</code>
+since Java 25</td><td>A parameter, or none</td><td>Any function</td></tr>
+<tr><td>Zig 0.16</td><td><code>pub fn main(init: std.process.Init) !void</code></td><td>A field of
+the parameter</td><td>Any function</td></tr>
+<tr><td>Pony</td><td><code>actor Main new create(env: Env)</code></td><td>A field:
+<code>env.args</code></td><td>Code with <code>AmbientAuth</code> or a narrower capability from
+it</td></tr>
+<tr><td>Austral</td><td><code>function main(root: RootCapability): ExitCode</code></td><td>Absent
+from <code>main</code>'s signature</td><td>Code with a capability from the root</td></tr>
+<tr><td>Vx</td><td><code>fn main(root : Root, args : Vec&lt;String&gt;) -&gt; i32</code></td><td>A
+parameter</td><td>Code with <code>&amp;Files</code> or a narrower capability, plus trusted
+code</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="what-the-forms-mean-for-the-programmer"><a href="#what-the-forms-mean-for-the-programmer">What these signatures mean for programmers</a></h3>
+
+<p><strong>Globals hide inputs.</strong> In Rust and Go, any function can read arguments and
+environment variables, hiding those inputs from its signature. To pass custom arguments, a Go test
+overwrites the global <code>os.Args</code>. A Rust test cannot change its process arguments at all.
+Zig 0.16 deleted its <code>os.argv</code> and <code>os.environ</code> globals and moved them into a
+<code>main</code> parameter (<a href="https://codeberg.org/ziglang/zig/issues/30644">ziglang/zig#30644</a>).
+That pull request calls the globals "footguns". A later Zig pull request proposed parsing arguments
+into a second parameter (<a href="https://codeberg.org/ziglang/zig/issues/35304">ziglang/zig#35304</a>).
+Vx took a similar path this week.</p>
+
+<p><strong>Return values report failure.</strong> In C, ending <code>main</code> without
+<code>return</code> returns 0, but <code>void main()</code> is not standard C. When a
+compiler accepts <code>void main()</code>, the C standard leaves the exit code unspecified. Java's
+<code>main</code> returns <code>void</code>, so failing programs call <code>System.exit</code>. Rust
+lets <code>main</code> return <code>Result</code>, enabling <code>?</code> in <code>main</code> and
+exiting with code 1 on error. Austral's <code>main</code> returns an <code>ExitCode</code> with two
+values: success and failure. Vx uses C's rule and shares the gap in
+<a href="https://github.com/vx-lang/Vx/issues/4031">#4031</a>.</p>
+
+<p><strong>Nobody calls <code>main</code>.</strong> C lets a program call <code>main</code>. C++
+forbids it: "The function main shall not be used within a program." Vx needed C++'s rule for a new
+reason, as <a href="#main-root-root"><code>main(root : Root)</code></a> shows.</p>
+
+<h3 id="what-the-forms-mean-for-security"><a href="#what-the-forms-mean-for-security">What these signatures mean for security</a></h3>
+
+<p><strong>Ambient authority.</strong> Mark Miller's thesis,
+<a href="http://www.erights.org/talks/thesis/">Robust Composition</a>, calls automatic process-wide
+permissions <em>ambient authority</em>. In C, C++, Rust, Go, and Java, every function inherits the
+process's permissions. Any function can open any user-accessible file or connect to any address. A
+JSON library can read <code>~/.ssh/id_rsa</code> and send it to a server while its signature hides
+both actions. In 2018, the npm package <code>event-stream</code> gained such code via a new
+dependency, <code>flatmap-stream</code>. That code tried to steal from the Copay bitcoin wallet.
+Miller argues for an idea from Dennis and Van Horn (1966): make each permission a capability value.
+Only code holding that value can act. Rust offers the
+<a href="https://github.com/bytecodealliance/cap-std">cap-std</a> crate beside its standard
+library. WASI, the WebAssembly system interface, grants no files unless the host passes a
+folder.</p>
+
+<p><strong>An attacker can choose the arguments.</strong> Whatever program starts a process chooses
+every argument in <code>argv</code>, including <code>argv[0]</code>. In
+<a href="https://www.qualys.com/2022/01/25/cve-2021-4034/pwnkit.txt">PwnKit (CVE-2021-4034)</a>, a
+user ran the setuid program <code>pkexec</code> (which runs as root) with zero arguments. That made
+<code>argc</code> equal 0. <code>pkexec</code> read and wrote <code>argv[1]</code>, which held the
+first environment variable, and gave any local user root. The bug was 12 years old. Linux now puts
+an empty string in <code>argv[0]</code> when a program starts another with zero arguments
+(<a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=dcd46d897adb70d63e025f175a00a89797d31a43">the
+patch</a>). Code that reads <code>argv[0]</code> as "the path of the program" trusts a value an
+attacker picks.</p>
+
+<h2 id="capability-types-in-vx"><a href="#capability-types-in-vx">Capability types in Vx</a></h2>
+
+<p>To replace ambient authority, Vx needed capabilities. On 21 November, issue
+<a href="https://github.com/vx-lang/Vx/issues/3750">#3750</a> asked whether a Vx type can be a
+capability. It noted: "Authority is ambient. Any module can <code>import std::fs</code> or
+<code>std::net</code> and open any file or socket." The design in
+<a href="https://github.com/vx-lang/Vx/blob/main/docs/discussions/capability_types.md">docs/discussions/capability_types.md</a>
+gives capabilities three rules. Vx already enforced all three for any <em>type with an
+invariant</em>. Such a struct states a rule on its fields, like <code>len &lt;= capacity</code> on
+<code>Vec</code>. A capability states <code>invariant true</code>, which always holds, and gets the
+same rules:</p>
+
+<ul>
+<li><strong>No forging.</strong> Only the file that defines a type with an invariant can build a
+value of it.</li>
+<li><strong>No copying.</strong> Using a struct moves it rather than copying it.</li>
+<li><strong>No storing a borrowed capability.</strong> A function that borrows
+<code>&amp;Files</code> uses it during the call and cannot store it.</li>
+</ul>
+
+<p><code>std</code> now defines two capabilities: <code>Files</code> for opening files and
+<code>Network</code> for opening connections. <code>Folder</code> narrows <code>Files</code> to one
+folder. <code>File::open</code> takes <code>&amp;Files</code>, and
+<code>TcpStream::connect</code> takes <code>&amp;Network</code>. A library without
+<code>Files</code> cannot build one:</p>
+
+<!-- vx-doctest: skip: shows an error -->
+<pre><code><span class="k">fn</span> <span class="f">read_the_keys</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> files = <span class="t">Files</span> {};
+  ...
+}</code></pre>
+
+<p>The compiler rejects that struct literal:</p>
+
+<pre><code>Error[E8014] at forge_files.vx:6:15: this struct literal builds a `Files`.
+`Files` has an invariant, so only code in `fs.vx` can build it from its fields</code></pre>
+
+<p><code>unsafe</code> code can always forge a value by reading from any address. Rust has the same
+rule. Thus the guarantee covers code without <code>unsafe</code>, <code>extern</code>, or
+<code>mlir!</code> (inline MLIR code). Such code receives only the capabilities its caller passes.
+Code with any of those three features is <em>trusted code</em>. Two flags on the Vx compiler,
+<code>vxc</code>, check for it. <code>vxc --audit</code> lists each site:</p>
+
+<pre><code>lib/keys.vx:6:15: trusted code: an `unsafe` block</code></pre>
+
+<p>And <code>vxc --no-trusted-code lib</code> rejects trusted code in package <code>lib</code>. New
+versions of <code>lib</code> cannot add trusted code without an error:</p>
+
+<pre><code>Error[E5003] at lib/keys.vx:6:15: `--no-trusted-code lib` refuses trusted code
+in the package `lib`, and this is an `unsafe` block</code></pre>
+
+<h2 id="main-root-root"><a href="#main-root-root">main(root : Root)</a></h2>
+
+<p>Capabilities have to start somewhere. The design weighed two ways to give them to
+<code>main</code>. <code>main</code> could take a parameter, as in Austral, or call a function like
+<code>std::root()</code> that only <code>main</code>'s file can call. A function can run twice and
+create duplicate capabilities. A parameter arrives once and shows in the signature. On 23 November,
+<code>main</code> gained a parameter:</p>
+
+<pre><code><span class="k">import</span> core::result;
+<span class="k">import</span> std::fs;
+<span class="k">import</span> std::root;
+<span class="k">import</span> std::string;
+
+<span class="k">extern</span> {
+  <span class="k">fn</span> <span class="f">getenv</span>(name : *<span class="k">const</span> <span class="t">i8</span>) -&gt; *<span class="k">const</span> <span class="t">i8</span>;
+}
+
+<span class="c">// A function that opens a file says so in its signature: it takes a `&amp;Files`.</span>
+<span class="k">fn</span> <span class="f">exists</span>(files : &amp;<span class="t">Files</span>, path : &amp;<span class="t">String</span>) -&gt; <span class="t">bool</span> {
+  <span class="k">match</span> <span class="t">File</span>::<span class="f">open</span>(files, path, <span class="t">OpenMode</span>::<span class="f">Read</span>()) {
+    <span class="t">Result</span>&lt;<span class="t">File</span>, <span class="t">FileError</span>&gt;::<span class="f">Ok</span>(_file) =&gt; {
+      <span class="k">return</span> <span class="k">true</span>;
+    }
+    <span class="t">Result</span>&lt;<span class="t">File</span>, <span class="t">FileError</span>&gt;::<span class="f">Err</span>(_e) =&gt; {
+      <span class="k">return</span> <span class="k">false</span>;
+    }
+  }
+}
+
+<span class="k">fn</span> <span class="f">main</span>(root : <span class="t">Root</span>) -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> path = <span class="k">unsafe</span> { <span class="t">String</span>::<span class="f">from_c_str</span>(<span class="f">getenv</span>(<span class="n">"FILE"</span>)) };
+  <span class="k">if</span> <span class="f">exists</span>(&amp;root.files, &amp;path) {
+    <span class="k">return</span> <span class="n">0</span>;
+  }
+  <span class="k">return</span> <span class="n">1</span>;
+}</code></pre>
+
+<p>A program that needs no capabilities keeps <code>fn main() -&gt; i32</code>. For the program
+above, the compiler renames <code>main</code> to <code>main_with_root</code>. It then generates a
+<code>main</code> that builds <code>Root</code> in an <code>unsafe</code> block.
+<code>--audit</code> omits that block because the program did not write it.</p>
+
+<p>The next day, a design check uncovered two holes. First, a function could call
+<code>main()</code>, creating a new <code>Root</code> each time. One test printed its line 130,727
+times with a new <code>Root</code> each time until the stack overflowed
+(<a href="https://github.com/vx-lang/Vx/issues/3865">#3865</a>). Vx now enforces C++'s rule:</p>
+
+<pre><code>Error[E5004]: A program cannot call `main` or use it as a value.
+Only the runtime starts `main`. A `main` that takes a `Root` would make a new
+`Root` at each call</code></pre>
+
+<p>Second, a library could declare its own <code>main(root : Root)</code>. Now only a file on the
+<code>vxc</code> command line can declare one. Imported files that declare one trigger an error
+(<a href="https://github.com/vx-lang/Vx/issues/3867">#3867</a>).</p>
+
+<h3 id="the-command-line-in-the-root"><a href="#the-command-line-in-the-root">Putting arguments in Root</a></h3>
+
+<p>In the example above, <code>main</code> reads its path with <code>getenv</code> inside
+<code>unsafe</code>. A <code>main</code> taking <code>Root</code> could not take <code>argc</code>
+and <code>argv</code> too. Thus a program with <code>Root</code> had no safe way to read its
+arguments (<a href="https://github.com/vx-lang/Vx/issues/3973">#3973</a>). Three designs competed: a
+<code>root.args</code> field, <code>main(root, argc, argv)</code>, or
+<code>std::env::args()</code>. Raw <code>argc</code> and <code>argv</code> still required
+<code>unsafe</code> to read an argument. Any library could call <code>std::env::args()</code>,
+hiding an input like a global. So the first version of
+<a href="https://github.com/vx-lang/Vx/pull/3975">#3975</a> added <code>root.args</code>, a
+<code>Vec&lt;String&gt;</code> in <code>Root</code>.</p>
+
+<p>Reviewing that version exposed four problems:</p>
+
+<ol>
+<li><strong>Arguments are data, whereas <code>Root</code> holds capabilities.</strong> Adding
+arguments gave <code>Root</code> data too. Pony places <code>env.args</code> beside
+<code>env.root</code>, so that can work, yet <code>Root</code> then means two things.</li>
+<li><strong>A program could only borrow the arguments.</strong> <code>Root</code> has an invariant,
+so code outside <code>root.vx</code> cannot move a field from it. And <code>String</code> has no
+<code>clone</code>. A program could read <code>root.args</code>, yet could not keep an argument in
+its options.</li>
+<li><strong>Non-UTF-8 bytes changed silently.</strong> <code>String::from_c_str</code> replaces bad
+bytes with the Unicode replacement character U+FFFD. An argument naming a file could silently name
+a different file.</li>
+<li><strong>The caller chooses the first argument.</strong> Treating argument 0 as "the path of the
+program" trusts the caller, as PwnKit showed.</li>
+</ol>
+
+<h2 id="main-root-root-args-vec-string"><a href="#main-root-root-args-vec-string">main(root : Root, args : Vec&lt;String&gt;)</a></h2>
+
+<p>Now the arguments are a second parameter, and <code>main</code> owns them. With the same
+<code>exists</code> function, the program needs no <code>unsafe</code>:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>(root : <span class="t">Root</span>, args : <span class="t">Vec</span>&lt;<span class="t">String</span>&gt;) -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> i = <span class="n">1</span>;
+  <span class="k">while</span> i &lt; args.<span class="f">len</span>() {
+    <span class="k">let</span> name = args.<span class="f">get_ref</span>(i);
+    <span class="k">if</span> <span class="f">exists</span>(&amp;root.files, name) {
+      <span class="f">println!</span>(<span class="n">"{} exists"</span>, name);
+    } <span class="k">else</span> {
+      <span class="f">println!</span>(<span class="n">"{} is not there"</span>, name);
+    }
+    i = i + <span class="n">1</span>;
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Running <code>vxc exists.vx -- /etc/hosts /no/such/file</code> prints:</p>
+
+<pre><code>/etc/hosts exists
+/no/such/file is not there</code></pre>
+
+<p>The compiler generates this <code>main</code> for it:</p>
+
+<!-- vx-doctest: skip: the compiler writes this main -->
+<pre><code><span class="k">fn</span> <span class="f">main</span>(argc : <span class="t">i32</span>, argv : *<span class="k">mut</span> *<span class="k">mut</span> <span class="t">i8</span>) -&gt; <span class="t">i32</span> {
+  <span class="k">return</span> <span class="f">main_with_root</span>(<span class="k">unsafe</span> { <span class="f">root_of_the_program</span>() },
+                        <span class="k">unsafe</span> { <span class="f">arguments_of_the_program</span>(argc, argv) });
+}</code></pre>
+
+<p>This signature answers every review problem:</p>
+
+<ol>
+<li><code>Root</code> holds only capabilities again.</li>
+<li><code>args</code> is an ordinary <code>Vec&lt;String&gt;</code>. The program can move an
+argument into its options or pass the vector to a parser.</li>
+<li>A non-UTF-8 argument stops the program before <code>main</code> runs. The next section explains
+why.</li>
+<li>Only the documentation answers this one. Like <code>argv</code>, <code>args</code> keeps the first
+argument at index 0. <a href="/docs/files-input-time.html#the-command-line">The Vx book</a> now
+says that the caller chooses every argument. Argument 0 is usually the program's name or path, and
+it can be empty.</li>
+</ol>
+
+<p><code>fn main(root : Root)</code> still works. Any other second parameter triggers an error at
+<code>main</code>:</p>
+
+<pre><code>Error at main_takes_a_root_and_a_number.vx:14:4: A `main` that takes a `Root`
+can take one more parameter only: the words of the command line, as a
+`Vec&lt;String&gt;`</code></pre>
+
+<h2 id="vec-string-utf-8-and-other-platforms"><a href="#vec-string-utf-8-and-other-platforms">Vec&lt;String&gt;, UTF-8, and other platforms</a></h2>
+
+<p>A Vx <code>String</code> holds UTF-8 text. Command-line arguments do not have to be text:</p>
+
+<div class="table-scroll">
+<table>
+<thead>
+<tr><th>Platform</th><th>What a program receives</th><th>Can an argument hold non-Unicode
+data?</th></tr>
+</thead>
+<tbody>
+<tr><td>Linux, macOS</td><td>An array of C strings. Each string holds bytes ending at a zero byte
+(NUL).</td><td>Yes. Any byte except NUL.</td></tr>
+<tr><td>Windows</td><td>One UTF-16 string. The C runtime or the program parses it into
+arguments.</td><td>Yes. An unpaired surrogate (half of a UTF-16 pair).</td></tr>
+<tr><td>WASI</td><td><code>get-arguments: func() -&gt; list&lt;string&gt;</code></td><td>No. Every
+string is Unicode.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>A language has five choices for a non-text argument:</p>
+
+<div class="table-scroll">
+<table>
+<thead>
+<tr><th>Choice</th><th>Who uses it</th><th>What it costs</th></tr>
+</thead>
+<tbody>
+<tr><td>Pass raw bytes</td><td>C, Go, Zig</td><td>Each program decodes the bytes, or forgets
+to.</td></tr>
+<tr><td>Pass a platform string type</td><td>Rust's <code>args_os</code> and
+<code>OsString</code></td><td>A second string type appears in every API that takes a path or an
+argument.</td></tr>
+<tr><td>Replace bad bytes with U+FFFD</td><td>Vx before today</td><td>An argument can change
+silently and name a different file.</td></tr>
+<tr><td>Escape bad bytes, so that encoding gives them back unchanged</td><td>Python 3
+(<a href="https://peps.python.org/pep-0383/">PEP 383</a>)</td><td>Strings with invalid Unicode flow
+through the program.</td></tr>
+<tr><td>Refuse</td><td>Rust's <code>std::env::args</code>, and Vx now</td><td>The program cannot
+receive a non-UTF-8 argument.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Vx refuses non-UTF-8 arguments because a <code>String</code> that silently differs from input is
+worse than an error. The message names which argument failed:</p>
+
+<pre><code>argument 2 of the command line is not UTF-8 text
+panic: an argument of the command line is not UTF-8 text</code></pre>
+
+<p>The cost is real. On Linux, a file name can hold any bytes. A user can create a file that a Vx
+program cannot receive as an argument. Yet <code>File::open</code> takes <code>&amp;String</code>
+too, so today a Vx program cannot open that file anyway. Both limits match. When Vx needs such
+files, it needs a path type that holds bytes, like Rust's <code>PathBuf</code>. Another signature
+of <code>main</code> can then pass arguments in that type.</p>
+
+<p>Refusing non-UTF-8 arguments also works the same way on each platform. On WASI, every argument is
+Unicode, matching <code>Vec&lt;String&gt;</code> directly. If Vx runs on Windows one day, an
+argument with an unpaired surrogate will stop the program the same way. A program with
+ordinary arguments receives the same <code>Vec&lt;String&gt;</code> on every platform.</p>
+
+<p>Testing this refusal required a change in <code>vxc</code> first. Previously, <code>vxc</code>
+kept arguments after <code>--</code> as Rust <code>String</code> values, so <code>vxc</code>
+rejected non-UTF-8 arguments before the program ran. Now <code>vxc</code> keeps them as
+<code>OsString</code>, Rust's platform string type.</p>
+
+<h2 id="what-is-still-open"><a href="#what-is-still-open">What remains open</a></h2>
+
+<ul>
+<li><strong>Exit codes.</strong> <code>main</code> returns an <code>i32</code>, while the process
+keeps 8 bits (<a href="https://github.com/vx-lang/Vx/issues/4031">#4031</a>).</li>
+<li><strong>Environment variables.</strong> <em>Update: closed later the same day.</em> When this
+post went up, a program read an environment variable by calling <code>getenv</code> through
+<code>extern</code>, and an <code>extern</code> call is trusted code.
+<a href="https://github.com/vx-lang/Vx/pull/4102">#4102</a> made reading a variable need a
+capability. <code>Root</code> gained a third field, <code>env : Environment</code>, and a function
+needs an <code>&amp;Environment</code> to call <code>env.var(&amp;name)</code>. Later,
+<a href="https://github.com/vx-lang/Vx/pull/4123">#4123</a> removed the old functions for reading
+command-line arguments, <code>vx_env_args_count</code> and <code>vx_env_arg</code>.</li>
+<li><strong>Processes.</strong> <em>Update: closed.</em> When this post went up, <code>std</code>
+had no function to start a process.
+<a href="https://github.com/vx-lang/Vx/pull/4111">#4111</a> added
+<code>processes.run(&amp;program, &amp;args)</code>, which needs a capability: <code>Root</code>
+gained a field, <code>processes : Processes</code>. The compiler does not check the program
+that <code>run</code> starts, so <code>Processes</code> gives all other capabilities in
+practice.</li>
+<li><strong>Native code.</strong> Native code is still reachable only via <code>extern</code>.
+When <code>std</code> adds a way to load native code, loading it will require a capability.</li>
+<li><strong>Non-UTF-8 arguments.</strong> Vx still needs a path type that holds bytes, and a
+<code>main</code> signature that passes arguments in that type.</li>
+</ul>
+
+<h2 id="references"><a href="#references">References</a></h2>
+
+<ul>
+<li>Aditya Kumar, <a href="https://hiraditya.github.io/posts/the-hidden-complexity-of-hello-world/">The
+hidden complexity of the simplest C program</a>, 2026.</li>
+<li>Aditya Kumar, <a href="https://hiraditya.github.io/posts/hello-world-in-a-heterogeneous-system/">"Hello,
+World!" in a heterogeneous system</a>, 2026.</li>
+<li><a href="https://github.com/vx-lang/Vx/blob/main/docs/discussions/capability_types.md">Capability
+types</a>, the design note of Vx.</li>
+<li>Austral, <a href="https://austral.github.io/tutorial/capability-based-security">Capability-based
+security</a>.</li>
+<li>Pony, <a href="https://stdlib.ponylang.io/builtin-Env/">Env</a> and
+<a href="https://tutorial.ponylang.io/object-capabilities/derived-authority">derived
+authority</a>.</li>
+<li>Zig, <a href="https://codeberg.org/ziglang/zig/issues/30644">std: delete os.environ, os.argv,
+add new parameter to main</a>.</li>
+<li>Rust, <a href="https://doc.rust-lang.org/std/env/fn.args.html">std::env::args</a> and
+<a href="https://doc.rust-lang.org/std/env/fn.args_os.html">std::env::args_os</a>.</li>
+<li>Java, <a href="https://openjdk.org/jeps/512">JEP 512: Compact Source Files and Instance Main
+Methods</a>.</li>
+<li>Qualys, <a href="https://www.qualys.com/2022/01/25/cve-2021-4034/pwnkit.txt">PwnKit: local
+privilege escalation in polkit's pkexec (CVE-2021-4034)</a>.</li>
+<li>Mark S. Miller, <a href="http://www.erights.org/talks/thesis/">Robust Composition: Towards a
+Unified Approach to Access Control and Concurrency Control</a>, 2006.</li>
+<li>Jack B. Dennis and Earl C. Van Horn, "Programming Semantics for Multiprogrammed Computations",
+Communications of the ACM, 1966.</li>
+<li>Python, <a href="https://peps.python.org/pep-0383/">PEP 383: Non-decodable Bytes in System
+Character Interfaces</a>.</li>
+</ul>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>

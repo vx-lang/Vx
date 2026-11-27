@@ -1,0 +1,50 @@
+//===- a_loop_of_blocks_with_more_passes_than_a_launch_stops_the_program.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A launch has at most 2147483647 blocks on an axis. A loop of blocks over a `usize` or an `i64`
+// range with a size that does not fit stops the program before the launch. Here the `usize`
+// size is 3000000000. The second program has an `i64` size of 0 - 3000000000, which would
+// wrap to a positive `i32`. The third has a `u64` size of 18446744073709551610, which reads as
+// -6 when the compiler compares it as a signed number. The program stops at the first such loop,
+// so each is a file.
+//
+// RUN: not env CUDA_VISIBLE_DEVICES= VX_NO_AST_FALLBACK=1 vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=USIZE
+// RUN: not env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=USIZE
+// RUN: mkdir -p %t.d
+// RUN: sed -e 's/n : usize/n : i64/' -e 's/3000000000usize/0i64 - 3000000000i64/' %s > %t.d/i64.vx
+// RUN: not env CUDA_VISIBLE_DEVICES= VX_NO_AST_FALLBACK=1 vxc %t.d/i64.vx --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=I64
+// RUN: not env CUDA_VISIBLE_DEVICES= vxc %t.d/i64.vx --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=I64
+// RUN: sed -e 's/n : usize/n : u64/' -e 's/3000000000usize/18446744073709551610u64/' %s > %t.d/u64.vx
+// RUN: not env CUDA_VISIBLE_DEVICES= VX_NO_AST_FALLBACK=1 vxc %t.d/u64.vx --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=U64
+// RUN: not env CUDA_VISIBLE_DEVICES= vxc %t.d/u64.vx --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=U64
+//
+// USIZE-NOT: launched
+// USIZE: the loop of blocks at line [[#@LINE+11]] has more passes than a launch can have, which is 2147483647
+// USIZE-NOT: launched
+// I64-NOT: launched
+// I64: the loop of blocks at line [[#@LINE+8]] has more passes than a launch can have, which is 2147483647
+// I64-NOT: launched
+// U64-NOT: launched
+// U64: the loop of blocks at line [[#@LINE+5]] has more passes than a launch can have, which is 2147483647
+// U64-NOT: launched
+
+fn blocks(out : &mut Tensor<i32, [?, ?], Memory::HBM>, n : usize) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..32 across lanes {
+        out[b][l] = 1;
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut out = Tensor<i32, [?, ?], Memory::HBM>::new([1, 32]);
+  blocks(&mut out, 3000000000usize);
+  println!("launched");
+  return 0;
+}

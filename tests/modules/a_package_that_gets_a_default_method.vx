@@ -1,0 +1,30 @@
+//===- a_package_that_gets_a_default_method.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with no trusted code of its own. Its `impl Count` gets the default `add_eight` of
+// the package `traits`, which has an `unsafe` block.
+
+import traits::count;
+
+struct Counter {
+  total : i64,
+}
+
+impl Count for Counter {
+  fn add(self : &mut Counter, n : i64) -> void {
+    self.total = self.total + n;
+  }
+}
+
+/// 8, as the default `add_eight` adds it.
+pub fn counted() -> i64 {
+  let mut c = Counter {
+    total : 0
+  };
+  c.add_eight();
+  return c.total;
+}

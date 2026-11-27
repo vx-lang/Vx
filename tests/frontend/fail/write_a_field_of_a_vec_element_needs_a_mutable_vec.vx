@@ -1,0 +1,52 @@
+//===- write_a_field_of_a_vec_element_needs_a_mutable_vec.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `v[i].n = x` changes `v`, so `v` must be a `let mut` or a `&mut Vec`. The value of the
+// assignment cannot change `v` either: `grow` could move the elements while the write holds the
+// address of one.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E4006] at {{.*}}.vx:[[@LINE+13]]:4: `index_mut` takes `&mut self`, and this calls it through a shared reference
+// CHECK: Error[E4010] at {{.*}}.vx:[[@LINE+17]]:8: `v` is not declared `mut`, so it cannot be assigned
+// CHECK: Error[E4010] at {{.*}}.vx:[[@LINE+16]]:4: `v` is not declared `mut`, so `index_mut`, which takes `&mut self`, cannot change it
+// CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+30]]:17: Cannot borrow 'v' as mutable
+// CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+30]]:18: Cannot borrow 'v' as mutable
+// CHECK: 5 error(s) emitted
+import std::vec;
+
+struct Slot {
+  n : i32,
+}
+
+fn through_a_shared_reference(v : &Vec<Slot>) -> void {
+  v[0].n = 5;
+}
+
+fn not_mut() -> void {
+  let v = Vec<Slot>::new();
+  v[0].n = 5;
+}
+
+fn grow(v : &mut Vec<Slot>) -> i32 {
+  v.push(Slot {
+    n : 0
+  });
+  return 1;
+}
+
+fn a_value_that_changes_the_vec() -> void {
+  let mut v = Vec<Slot>::new();
+  v.push(Slot {
+    n : 0
+  });
+  v[0].n = grow(&mut v);
+  v[0].n += grow(&mut v);
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1076,6 +1076,8 @@ pub fn build_frozen_registry_with(
                                 &crate::hir::provenance::ReturnProvenance::AnyParam,
                             ),
                             is_unsafe: !ext.is_safe,
+                            visibility: ext.visibility,
+                            file: ext.file.as_ref().map(crate::registry::file_name_only),
                             ret_valid: crate::hir::check::pointer_clauses::valid_result_length(
                                 &ext.params,
                                 &ext.return_type,
@@ -1140,6 +1142,14 @@ pub fn build_frozen_registry_with(
                                     &m.return_type,
                                     &m.ensures,
                                 ),
+                                // A method of a trait impl has the level of the trait, and
+                                // each trait is public.
+                                visibility: if imp.trait_name.is_some() {
+                                    crate::gid::Visibility::Public
+                                } else {
+                                    m.visibility
+                                },
+                                file: m.file.as_ref().map(crate::registry::file_name_only),
                             },
                         );
                     }
@@ -1179,6 +1189,8 @@ pub fn fn_sig_of(module_hash: u64, f: &syntax::Function) -> crate::registry::FnS
             &f.return_type,
             &f.ensures,
         ),
+        visibility: f.visibility,
+        file: f.file.as_ref().map(crate::registry::file_name_only),
     }
 }
 
@@ -1296,6 +1308,8 @@ fn by_value_nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
     use syntax::Type;
     match ty {
         Type::Struct(_, id) | Type::Enum(_, id) => *id,
+        // A closure value is the pair `{ env, func }`, held by value.
+        Type::Closure(..) => Some(crate::hir::flatten::closure_pair_gid()),
         Type::Pinned(inner, _)
         | Type::Verified(inner)
         | Type::Distinct(inner)
@@ -1416,9 +1430,10 @@ pub fn report_warnings(warnings: &[crate::diagnostic::Diagnostic]) {
     }
 }
 
-/// The errors to report from the imported modules' functions: those of the functions the
-/// program uses. An unused function with an error is removed from `modules`, together with the
-/// generic instances checking it created, because the code generator cannot compile it. See
+/// The errors to report from the imported modules' functions: all of them for a module outside
+/// the standard library, and those of the functions the program uses for a module of the
+/// standard library. An unused function with an error is removed from `modules`, together with
+/// the generic instances checking it created, because the code generator cannot compile it. See
 /// `imported_errors`.
 fn imported_errors_to_report(
     modules: &mut [VxModule],
@@ -1452,12 +1467,16 @@ fn imported_errors_to_report(
         .iter_mut()
         .filter(|c| with_errors.contains(&c.function))
     {
-        let module = modules[c.module_idx].module_path.to_string();
-        if used.contains(&c.function) {
+        let module = &modules[c.module_idx];
+        let is_used = used.contains(&c.function);
+        let reported = is_used || !module.standard_library;
+        let module = module.module_path.to_string();
+        if reported {
             errors.extend(crate::hir::check::imported_errors::errors_to_report(
                 c.diagnostics.inner.clone(),
                 &module,
                 &c.function,
+                is_used,
             ));
         } else {
             c.monomorphs.clear();
@@ -2630,7 +2649,7 @@ mod gid_stream_tests {
         // interface. `pick` exists ONLY here and in the resulting registry — never in the consumer.
         let lib = parse_and_resolve(
             "crate::lib",
-            "fn pick(a: &i32, b: &i32) -> &i32 { return b; }",
+            "pub fn pick(a: &i32, b: &i32) -> &i32 { return b; }",
         );
         let lib_reg = build_frozen_registry(std::slice::from_ref(&lib)).expect("acyclic");
         let imported = deserialize_registry_interface(&serialize_registry_interface(&lib_reg))
@@ -3114,7 +3133,7 @@ fn main() -> i32 { return 0; }
             .collect()
     }
 
-    /// A parse error names its file once, in the `Error at FILE:LINE:COL:` header.
+    /// A parse error names its file once, in the `Error[E1001] at FILE:LINE:COL:` header.
     #[test]
     fn a_parse_error_names_its_file_once() {
         let bad = scratch_modules(
@@ -3124,7 +3143,7 @@ fn main() -> i32 { return 0; }
         let err = compile_pipeline_mlir(&bad).expect_err("a missing `;` must be refused");
         let text = err.to_string();
         assert!(
-            text.contains("Error at ") && text.contains("bad.vx:1:"),
+            text.contains("Error[E1001] at ") && text.contains("bad.vx:1:"),
             "{text}"
         );
         assert_eq!(text.matches("bad.vx").count(), 1, "{text}");

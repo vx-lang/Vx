@@ -1,0 +1,21 @@
+//===- a_macro_from_the_file_of_a_capability_cannot_make_it_copyable.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `AdminCap` and the macro `copyable` are in the same file. Only that file can write a plain
+// `impl` of `AdminCap`. An impl that a macro writes belongs to the file of the macro call, so
+// this file cannot use the macro to make `AdminCap` copyable.
+import tests::modules::a_capability_with_a_macro_that_writes_impl_copy;
+
+copyable!(AdminCap);
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: Error[E3066] at {{.*}}.vx:15:1: `impl Copy for AdminCap` is in `a_macro_from_the_file_of_a_capability_cannot_make_it_copyable.vx`, and `a_capability_with_a_macro_that_writes_impl_copy.vx` declares `AdminCap`

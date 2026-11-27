@@ -569,7 +569,10 @@ impl TypeChecker<'_> {
         }
         let block_err = result_parts(block_ty).map(|(_, e)| e);
         for f in failures {
-            if block_err.as_ref() != Some(&f.err) {
+            if !block_err
+                .as_ref()
+                .is_some_and(|e| self.is_assignable(e, &f.err))
+            {
                 self.task_error(
                     DiagnosticCode::E3060,
                     format!(
@@ -583,7 +586,10 @@ impl TypeChecker<'_> {
             }
         }
         for (err, at) in passed_up {
-            if block_err.as_ref() != Some(err) {
+            if !block_err
+                .as_ref()
+                .is_some_and(|e| self.is_assignable(e, err))
+            {
                 self.task_error(
                     DiagnosticCode::E3063,
                     format!(
@@ -609,9 +615,7 @@ impl TypeChecker<'_> {
             unreachable!("only `?` reaches here")
         };
         let span = *span;
-        let errors = self.errors.len();
-        let inner_ty = self.operand_type(inner);
-        self.errors.inner.truncate(errors);
+        let inner_ty = self.operand_type_without_diagnostics(inner);
         let Some((ok_ty, err_ty)) = result_parts(&inner_ty) else {
             let Expr::UnaryOp(UnaryOpExpr { expr: inner, .. }) = expr else {
                 unreachable!("matched above")
@@ -648,7 +652,9 @@ impl TypeChecker<'_> {
                      `|..| -> Result<T, {err_ty}> {{ .. }}`"
                 ),
             )),
-            None if result_parts(&fn_ret).is_some_and(|(_, e)| e == err_ty) => None,
+            None if result_parts(&fn_ret).is_some_and(|(_, e)| self.is_assignable(&e, &err_ty)) => {
+                None
+            }
             None => Some((
                 DiagnosticCode::E3063,
                 format!(
@@ -789,14 +795,12 @@ impl TypeChecker<'_> {
             // block. The type of a tail that names a variable of the task is not known here, and
             // the probe can report that variable as undefined. The check of the body below
             // reports each real error of the tail, so the errors of the probe are dropped.
-            let errors = self.errors.len();
             let tail_ty = match &*expr {
                 Expr::TaskBlock(TaskBlockExpr {
                     ret: Some(tail), ..
-                }) => Some(self.operand_type(tail)),
+                }) => Some(self.operand_type_without_diagnostics(tail)),
                 _ => None,
             };
-            self.errors.inner.truncate(errors);
             if let Some((_, err)) = tail_ty.as_ref().and_then(result_parts) {
                 self.task_error(
                     DiagnosticCode::E3060,
@@ -1053,7 +1057,11 @@ impl TypeChecker<'_> {
         }
         let task_err = result_parts(ty).map(|(_, e)| e);
         for (err, at) in passed_up {
-            if *ty != Type::Unknown && task_err.as_ref() != Some(err) {
+            if *ty != Type::Unknown
+                && !task_err
+                    .as_ref()
+                    .is_some_and(|e| self.is_assignable(e, err))
+            {
                 self.task_error(
                     DiagnosticCode::E3063,
                     format!(

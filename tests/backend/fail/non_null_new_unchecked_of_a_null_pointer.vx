@@ -1,0 +1,22 @@
+//===- non_null_new_unchecked_of_a_null_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `NonNull::new_unchecked` of a null pointer stops the program with a message. The program
+// must not print anything after the call.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: new_unchecked: the pointer is null
+// CHECK-NOT: after the call
+import core::ptr;
+
+fn main() -> i32 {
+  let n = unsafe { NonNull<f32>::new_unchecked(null_mut<f32>()) };
+  println!("after the call");
+  print(is_null_mut(n.as_ptr()));
+  return 0;
+}

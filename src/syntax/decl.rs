@@ -499,6 +499,9 @@ pub struct Program {
     /// the empty name for the files of the program itself. A `pkg fn` is visible to each
     /// file of its package. `None` for a program built in memory.
     pub package: Option<Symbol>,
+    /// The module is a file of the standard library. Of its functions with a type error, only
+    /// those that the program uses report the error. Every other module reports all its errors.
+    pub standard_library: bool,
     pub imports: Vec<ImportDecl>,
     pub macros: Vec<MacroDefDecl>,
     pub externs: Vec<ExternDecl>,
@@ -574,6 +577,7 @@ impl Program {
             module_path: self.module_path.clone(),
             file: self.file.clone(),
             package: self.package.clone(),
+            standard_library: self.standard_library,
             // Not carried: a signature-only copy is taken after expansion, when the list is
             // already empty, and carrying it would expand the same call a second time.
             item_macros: Vec::new(),

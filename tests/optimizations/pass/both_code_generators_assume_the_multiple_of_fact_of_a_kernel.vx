@@ -1,0 +1,50 @@
+//===- both_code_generators_assume_the_multiple_of_fact_of_a_kernel.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `requires n % 8 == 0` about the extent `?n` of a parameter becomes an `llvm.intr.assume`
+// inside the kernel: `(n & 7) == 0`. Both code generators write it, also for a tensor that
+// the kernel takes by reference. A kernel with no such `requires` gets no assume.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir | FileCheck %s
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-mlir | FileCheck %s
+
+// CHECK-LABEL: func.func @write_rows_of_a_multiple_of_8(
+// CHECK:       vx.spawn
+// CHECK:       %[[AXIS:c1[_0-9]*]] = arith.constant 1 : index
+// CHECK-NEXT:  %[[DIM:dim[_0-9]*]] = memref.dim %{{[0-9a-z]+}}, %[[AXIS]]
+// CHECK-NEXT:  %[[MASK:c7[_0-9]*]] = arith.constant 7 : index
+// CHECK-NEXT:  %[[LOW:[0-9]+]] = arith.andi %[[DIM]], %[[MASK]] : index
+// CHECK-NEXT:  %[[ZERO:c0[_0-9]*]] = arith.constant 0 : index
+// CHECK-NEXT:  %[[EQ:[0-9]+]] = arith.cmpi eq, %[[LOW]], %[[ZERO]] : index
+// CHECK-NEXT:  llvm.intr.assume %[[EQ]] : i1
+// CHECK:       vx.yield
+// CHECK-LABEL: func.func @write_rows_with_no_fact(
+// CHECK-NOT:   llvm.intr.assume
+
+fn write_rows_with_no_fact(out : &mut Tensor<bf16, [?, ?n], Memory::HBM>, count : i32) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..count across blocks {
+      for r in 0..8 across lanes(32) {
+        out[t][r] = 1.0 as bf16;
+      }
+    }
+  }
+  return;
+}
+
+fn write_rows_of_a_multiple_of_8(out : &mut Tensor<bf16, [?, ?n], Memory::HBM>, count : i32) -> void
+requires n % 8 == 0
+{
+  spawn on(Topology::Device) {
+    for t in 0..count across blocks {
+      for r in 0..8 across lanes(32) {
+        out[t][r] = 1.0 as bf16;
+      }
+    }
+  }
+  return;
+}

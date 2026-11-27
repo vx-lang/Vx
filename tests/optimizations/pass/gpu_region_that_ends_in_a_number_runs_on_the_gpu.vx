@@ -32,7 +32,7 @@
 // CHECK-NEXT: [[AT:%[0-9]+]] = llvm.getelementptr inbounds|nuw [[HOST]][
 // CHECK-NEXT: [[N:%[0-9]+]] = llvm.load [[AT]] : !llvm.ptr -> i32
 // CHECK-NEXT: llvm.call @vx_plugin_free([[HOST]],
-// CHECK: llvm.call @print_i32([[N]])
+// CHECK: llvm.call @vx_print_i32([[N]])
 
 fn main() -> i32 {
   let n = spawn on(Topology::GPU) {

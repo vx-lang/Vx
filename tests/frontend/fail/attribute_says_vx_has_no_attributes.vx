@@ -1,0 +1,20 @@
+//===- attribute_says_vx_has_no_attributes.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Unexpected --implicit-check-not=impl
+//
+// An attribute that is not `derive` gets the same first sentence, with no `impl` to suggest.
+
+// CHECK: Error at {{.*}}attribute_says_vx_has_no_attributes.vx:[[@LINE+1]]:1: Vx has no attributes yet, so `#[...]` does not work.
+#[inline]
+fn one() -> i32 {
+  return 1;
+}
+
+fn main() -> i32 {
+  return one();
+}

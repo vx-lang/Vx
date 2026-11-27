@@ -176,6 +176,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/register_tensor_loops_are_unrolled.vx",           // needs --machine
         "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",      // needs --machine
         "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
+        "optimizations/pass/a_multiple_of_fact_on_a_dimension_writes_the_values_it_states.vx", // needs --machine
+        "optimizations/pass/both_code_generators_assume_the_multiple_of_fact_of_a_kernel.vx", // needs --machine
         "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
         "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
         "optimizations/pass/whole_tensor_assignments_write_into_the_destination.vx", // needs --machine
@@ -201,6 +203,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lane_prefetch_into_the_l2_cache.vx",              // needs --machine
         "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
         "optimizations/pass/values_at_the_start_of_block_code_reach_every_lane.vx", // needs --machine
+        "optimizations/pass/across_loop_calls_the_math_methods_of_f16_and_bf16.vx", // needs --machine
         "optimizations/pass/lane_matmuls_on_the_cpu.vx",                      // needs --machine
         "optimizations/pass/lane_matmuls_on_the_gpu.vx",                      // needs --machine
         "optimizations/pass/matmul_tiles_in_shared_memory_avoid_bank_conflicts.vx", // needs --machine
@@ -270,6 +273,11 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/a_transfer_async_to_a_gpu_copies_in_the_background.vx",
         "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
         "frontend/pass/packages/import_from_a_package.vx", // needs --package
+        // needs --package traits=..
+        "frontend/pass/packages/a_package_that_gets_a_default_method_with_unsafe_has_no_trusted_code.vx",
+        "frontend/pass/jobs_keeps_an_imported_library_flaw_quiet.vx", // needs --std-path
+        // needs --std-path
+        "frontend/pass/unused_functions_with_type_errors_in_the_standard_library.vx",
         // needs --machine
         "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
         // needs --machine
@@ -332,6 +340,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
         "optimizations/pass/lanes_write_rows_from_nested_parts_of_the_lane_index.vx",
         // needs --machine
         "optimizations/pass/lanes_write_rows_in_two_loops_one_after_another.vx",
+        // needs --machine
+        "optimizations/pass/across_loops_over_usize_and_i64_ranges.vx",
         // needs --machine
         "optimizations/pass/lane_matmuls_of_a_tile_in_hbm_give_the_sums.vx",
         // needs --machine

@@ -58,7 +58,7 @@ fn wait(listener : TcpListener) -> void {
 fn main(root : Root) -> i32 {
   let network = &root.network;
   match TcpListener::bind(network, unsafe {
-    &String::from_c_str("127.0.0.1:41786")
+    &String::from_c_str("127.0.0.1:21786")
   }) {
     Result<TcpListener, NetError>::Ok(listener) => {
       wait(listener);

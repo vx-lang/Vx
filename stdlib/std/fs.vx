@@ -21,6 +21,11 @@ extern {
   /// and the error number of the system.
   pub fn vx_file_try_open(c_path : *const i8, mode : i32, file : *mut *mut i8,
   native_code : *mut i32) -> i32;
+  /// The Rust core behind `remove_file`, with the outputs of `vx_file_try_open`.
+  pkg fn vx_file_try_remove(c_path : *const i8, native_code : *mut i32) -> i32;
+  /// The Rust core behind `file_kind`: 1, 2 or 3 in `*kind` for a regular file, a folder or
+  /// something else.
+  pkg fn vx_file_try_kind(c_path : *const i8, kind : *mut i32, native_code : *mut i32) -> i32;
   /// The Rust core behind `File::read_raw`.
   pub fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
   /// The Rust core behind `File::write_raw`.
@@ -42,6 +47,12 @@ extern {
   pub fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   /// The Rust core behind dropping a `File`.
   pub fn vx_file_drop(ptr : *mut i8) -> void;
+  /// The Rust core behind `File::map`: 0 with the address in `*base` and the size in `*len`, or
+  /// the category of the error and the error number of the system.
+  fn vx_file_try_map(ptr : *mut i8, base : *mut *mut u8, len : *mut i64,
+  native_code : *mut i32) -> i32;
+  /// The Rust core behind dropping a `Mapping`.
+  fn vx_file_unmap(base : *mut u8, len : i64) -> void;
 
   // libc bindings for high-level I/O
   /// C's `fopen`, for code that wants a `FILE*` rather than the Rust-backed `File`.
@@ -69,9 +80,9 @@ struct Files {
   invariant true,
 }
 
-/// The file right of the program, for `std::root`. Unsafe because a second `Files` gives the
-/// right to code that did not get it.
-pub unsafe fn files_of_the_program() -> Files {
+/// The file right of the program, for `std::root`. Only `std` can call it, because a second
+/// `Files` gives the right to code that did not get it.
+pkg unsafe fn files_of_the_program() -> Files {
   return Files {};
 }
 
@@ -271,12 +282,73 @@ impl File {
   pub fn seek(self : &mut File, offset : i64, whence : i32) -> i64 {
     unsafe { vx_file_seek(self.ptr, offset, whence) }
   }
+
+  /// The whole file in memory, read-only, with no copy: the system reads each part of the file
+  /// when the program first reads it. The file must be open for reading, else the result is
+  /// `PermissionDenied`. The `Mapping` stays valid after the `File` closes.
+  pub fn map(self : &File) -> Result<Mapping, FileError> {
+    let mut base : *mut u8 = unsafe { 0 as *mut u8 };
+    let mut len : i64 = 0;
+    let mut native_code : i32 = 0;
+    let status = unsafe {
+      vx_file_try_map(self.ptr, (&mut base) as *mut *mut u8, (&mut len) as *mut i64,
+      (&mut native_code) as *mut i32)
+    };
+    if status != 0 {
+      return Result<Mapping, FileError>::Err(file_error(status, native_code));
+    }
+    return Result<Mapping, FileError>::Ok(Mapping {
+      base : base, len : len
+    });
+  }
 }
 
 impl Drop for File {
   /// Close the file and release it.
   fn drop(self : &mut File) -> void {
     unsafe { vx_file_drop(self.ptr) };
+  }
+}
+
+/// A read-only view of a whole file in memory, from `File::map`. A drop unmaps it. The
+/// invariant lets only this file make a `Mapping` or change its fields.
+///
+/// The view shows the file as it is now. When another program shortens the file, a read past
+/// its new end stops the program with the signal SIGBUS.
+struct Mapping {
+  base : *mut u8,
+  len : i64,
+
+  invariant true,
+}
+
+// The memory does not change through a `Mapping`, so tasks may share it.
+unsafe impl Send for Mapping {}
+unsafe impl Sync for Mapping {}
+
+impl Mapping {
+  /// The size of the file in bytes, when it was mapped.
+  pub fn len(self : &Mapping) -> i64 {
+    return self.len;
+  }
+
+  /// The address of the first byte of the file, or null for an empty file. Code that reads
+  /// through it must keep the `Mapping` until it stops reading.
+  pub fn as_ptr(self : &Mapping) -> *const u8 {
+    return self.base as *const u8;
+  }
+
+  /// Byte `i` of the file. Panics when `i` is outside the file.
+  pub fn byte(self : &Mapping, i : i64) -> u8 {
+    assert(i >= 0 && i < self.len, "the index is outside the mapped file");
+    return unsafe { self.base[i] };
+  }
+}
+
+impl Drop for Mapping {
+  /// Unmap the file.
+  fn drop(self : &mut Mapping) -> void {
+    unsafe { vx_file_unmap(self.base, self.len) };
   }
 }
 
@@ -351,5 +423,80 @@ impl Drop for Folder {
   /// Close the folder. The Rust core holds an open folder as a file.
   fn drop(self : &mut Folder) -> void {
     unsafe { vx_file_drop(self.dir) };
+  }
+}
+
+/// Remove the file at `path`. The caller needs the file right, a `&Files`. A folder is not
+/// removed: it gives an error of the system.
+pub fn remove_file(_files : &Files, path : &String) -> Result<i32, FileError> {
+  let c_path = CPath::of(path)?;
+  let mut native_code : i32 = 0;
+  let status = unsafe {
+    vx_file_try_remove(c_path.ptr, (&mut native_code) as *mut i32)
+  };
+  if status != 0 {
+    return Result<i32, FileError>::Err(file_error(status, native_code));
+  }
+  return Result<i32, FileError>::Ok(0);
+}
+
+/// What a path names. It follows a symbolic link, as `stat` does.
+enum FileKind {
+  // A regular file.
+  Regular,
+  // A folder.
+  Folder,
+  // Anything else, such as a device like `/dev/null`, a pipe or a socket.
+  Other,
+}
+
+/// What `path` names. The caller needs the file right, a `&Files`. A path with no file gives
+/// `NotFound`.
+pub fn file_kind(_files : &Files, path : &String) -> Result<FileKind, FileError> {
+  let c_path = CPath::of(path)?;
+  let mut kind : i32 = 0;
+  let mut native_code : i32 = 0;
+  let status = unsafe {
+    vx_file_try_kind(c_path.ptr, (&mut kind) as *mut i32, (&mut native_code) as *mut i32)
+  };
+  if status != 0 {
+    return Result<FileKind, FileError>::Err(file_error(status, native_code));
+  }
+  if kind == 1 {
+    return Result<FileKind, FileError>::Ok(FileKind::Regular);
+  }
+  if kind == 2 {
+    return Result<FileKind, FileError>::Ok(FileKind::Folder);
+  }
+  return Result<FileKind, FileError>::Ok(FileKind::Other);
+}
+
+/// The right to open one path in one mode, later. A program makes it with its `&Files`, and can
+/// give it to code that has no `&Files`. That code can open this path and no other. `new` opens
+/// nothing, so an open for `Write` empties the file only when `open` runs. The invariant lets
+/// only this file make a `PendingFile`.
+struct PendingFile {
+  path : String,
+  mode : OpenMode,
+
+  invariant true,
+}
+
+impl PendingFile {
+  /// The right to open `path` in `mode` later. It gives `BadPath` at once for a path with a NUL
+  /// byte.
+  pub fn new(_files : &Files, path : &String, mode : OpenMode) -> Result<PendingFile, FileError> {
+    let _checked = CPath::of(path)?;
+    let copy = String::from_utf8(&path.to_bytes()).unwrap();
+    return Result<PendingFile, FileError>::Ok(PendingFile {
+      path : copy, mode : mode
+    });
+  }
+
+  /// Open the path. It uses up the right, so it opens the path once.
+  pub fn open(self : PendingFile) -> Result<File, FileError> {
+    // `new` took the file right for this one open.
+    let files = Files {};
+    return File::open(&files, &self.path, self.mode);
   }
 }

@@ -5,6 +5,10 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::result;
+import std::sync::select;
+import std::vec;
+
 extern {
   /// The Rust core behind `stdout_write`.
   pub fn vx_stdout_write(buffer : *const u8, len : u64) -> u64;
@@ -12,6 +16,14 @@ extern {
   pub fn vx_stderr_write(buffer : *const u8, len : u64) -> u64;
   /// The Rust core behind `stdin_read`.
   pub fn vx_stdin_read(buffer : *mut u8, len : u64) -> u64;
+  /// Read up to `len` bytes of standard input, and put how many arrived in `*out`. 0, -1 for a
+  /// cancel, or the error number of the system.
+  pkg fn vx_stdin_read_some(buffer : *mut u8, len : u64, out : *mut u64) -> i32;
+  /// Write and flush all `len` bytes, to standard error when `to_stderr` is 1. 0, -2 when the
+  /// reader closed the output, or the error number of the system.
+  pkg fn vx_stdio_write_all(to_stderr : i32, buffer : *const u8, len : u64) -> i32;
+  /// 1 when a read of `fd` does not wait.
+  pkg fn vx_fd_can_read(fd : i32) -> i32;
 }
 
 /// Write `len` bytes to standard output and answer how many were taken.
@@ -36,4 +48,148 @@ pub unsafe fn stderr_write(buffer : *const u8, len : u64)
 pub unsafe fn stdin_read(buffer : *mut u8, len : u64)
 ->u64 {
   unsafe { vx_stdin_read(buffer, len) }
+}
+
+/// The right to read standard input. A program gets it in its `Root`, and only `std` can make
+/// one.
+struct Stdin {
+  invariant true,
+}
+
+/// The right to write to standard output. A program gets it in its `Root`, and only `std` can
+/// make one.
+struct Stdout {
+  invariant true,
+}
+
+/// The right to write to standard error. A program gets it in its `Root`, and only `std` can
+/// make one.
+struct Stderr {
+  invariant true,
+}
+
+/// The standard input right of the program, for `std::root`. Only `std` can call it, because a
+/// second `Stdin` gives the right to code that did not get it.
+pkg unsafe fn stdin_of_the_program() -> Stdin {
+  return Stdin {};
+}
+
+/// The standard output right of the program, for `std::root`.
+pkg unsafe fn stdout_of_the_program() -> Stdout {
+  return Stdout {};
+}
+
+/// The standard error right of the program, for `std::root`.
+pkg unsafe fn stderr_of_the_program() -> Stderr {
+  return Stderr {};
+}
+
+/// Why a read of standard input or a write to standard output or error did not work.
+enum StdioError {
+  // The `tasks` block of this task was cancelled while the read waited.
+  Cancelled,
+  // The input ended before `read_exact` filled the buffer.
+  EndOfInput,
+  // The reader of the output closed it.
+  Closed,
+  // Another error, with the error number of the system.
+  System(i32),
+}
+
+fn stdio_error(status : i32) -> StdioError {
+  if status == -1 {
+    return StdioError::Cancelled;
+  }
+  if status == -2 {
+    return StdioError::Closed;
+  }
+  return StdioError::System(status);
+}
+
+impl Stdin {
+  /// Read up to `buffer.len()` bytes into `buffer` and give how many arrived. 0 means that the
+  /// input ended. A short read is normal. A task parks while it waits for input.
+  pub fn read(self : &mut Stdin, buffer : &mut Vec<u8>) -> Result<u64, StdioError> {
+    let mut count : u64 = 0;
+    let status = unsafe {
+      vx_stdin_read_some(buffer.as_mut_ptr(), buffer.len() as u64, (&mut count) as *mut u64)
+    };
+    if status != 0 {
+      return Result<u64, StdioError>::Err(stdio_error(status));
+    }
+    return Result<u64, StdioError>::Ok(count);
+  }
+
+  /// Fill all of `buffer`, in as many reads as it takes, and give its length. When the input
+  /// ends first, it gives `EndOfInput`.
+  pub fn read_exact(self : &mut Stdin, buffer : &mut Vec<u8>) -> Result<u64, StdioError> {
+    let len = buffer.len() as u64;
+    let p = buffer.as_mut_ptr();
+    let mut done : u64 = 0;
+    while done < len {
+      let mut count : u64 = 0;
+      let status = unsafe {
+        vx_stdin_read_some(add_mut(p, done as usize), len - done, (&mut count) as *mut u64)
+      };
+      if status != 0 {
+        return Result<u64, StdioError>::Err(stdio_error(status));
+      }
+      if count == 0 {
+        return Result<u64, StdioError>::Err(StdioError::EndOfInput);
+      }
+      done = done + count;
+    }
+    return Result<u64, StdioError>::Ok(done);
+  }
+}
+
+impl Stdout {
+  /// False: `print_s!` and `println_s!` with a `Stdout` print to standard output.
+  pub fn is_standard_error(self : &Stdout) -> bool {
+    return false;
+  }
+
+  /// Write all of `bytes` and give their number. It keeps its order with `print!`.
+  pub fn write_all(self : &mut Stdout, bytes : &Vec<u8>) -> Result<u64, StdioError> {
+    let status = unsafe {
+      vx_stdio_write_all(0, bytes.as_mut_ptr() as *const u8, bytes.len() as u64)
+    };
+    if status != 0 {
+      return Result<u64, StdioError>::Err(stdio_error(status));
+    }
+    return Result<u64, StdioError>::Ok(bytes.len() as u64);
+  }
+}
+
+impl Stderr {
+  /// True: `print_s!` and `println_s!` with a `Stderr` print to standard error.
+  pub fn is_standard_error(self : &Stderr) -> bool {
+    return true;
+  }
+
+  /// Write all of `bytes` and give their number.
+  pub fn write_all(self : &mut Stderr, bytes : &Vec<u8>) -> Result<u64, StdioError> {
+    let status = unsafe {
+      vx_stdio_write_all(1, bytes.as_mut_ptr() as *const u8, bytes.len() as u64)
+    };
+    if status != 0 {
+      return Result<u64, StdioError>::Err(stdio_error(status));
+    }
+    return Result<u64, StdioError>::Ok(bytes.len() as u64);
+  }
+}
+
+impl WaitSource for Stdin {
+  /// Ready when `read` does not wait: bytes arrived, or the input ended.
+  fn is_ready(self : &Stdin) -> bool {
+    return unsafe { vx_fd_can_read(0) } != 0;
+  }
+
+  fn watch(self : &Stdin, w : &Waiter) -> void {
+    w.watch_fd(0);
+  }
+
+  fn unwatch(self : &Stdin, w : &Waiter) -> void {
+    w.unwatch_fd(0);
+  }
 }

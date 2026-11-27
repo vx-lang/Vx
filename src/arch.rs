@@ -469,6 +469,16 @@ fn topology_index(expr: &crate::syntax::Expr) -> i32 {
 pub const TASKS_BLOCK_DISPATCH_ID: i32 = 10;
 pub const TASK_DISPATCH_ID: i32 = 11;
 
+/// Whether a spawn with this dispatch id runs on a device: anything but the CPU, its two
+/// feature levels, and the two task ids.
+pub fn is_device_dispatch_id(id: i64) -> bool {
+    let host = [Topology::CPU, Topology::CpuAvx512, Topology::CpuNeon]
+        .iter()
+        .map(topology_dispatch_id)
+        .chain([TASKS_BLOCK_DISPATCH_ID, TASK_DISPATCH_ID]);
+    !host.map(i64::from).any(|h| h == id)
+}
+
 pub fn topology_dispatch_id(top: &Topology) -> i32 {
     match top {
         Topology::CPU | Topology::Current => 0,
@@ -914,6 +924,7 @@ fn first_device_of(kind: &crate::syntax::TopologyKind) -> Topology {
     use crate::syntax::TopologyKind as K;
     let zero = || {
         Box::new(crate::syntax::Expr::Number(crate::syntax::NumberExpr {
+            written: None,
             value: "0".into(),
             ty: None,
             span: crate::syntax::Span::default(),

@@ -1,0 +1,19 @@
+//===- use_keyword_says_vx_writes_import.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A Rust programmer writes `use core::option::Option;`. Vx has no `use`. The error says to write
+// `import` with a module path. It does not repeat the path above: `import core::option::Option;`
+// fails, because `Option` is not a module.
+
+// CHECK: Error at {{.*}}use_keyword_says_vx_writes_import.vx:[[@LINE+1]]:1: Vx has no `use`: write `import` with a module path, as in `import core::option;`
+use core::option::Option;
+
+fn main() -> i32 {
+  return 0;
+}

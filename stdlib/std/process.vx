@@ -1,0 +1,72 @@
+//===- process.vx - Vx Compiler ----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Starting other programs. Starting one is a right: a function starts a program only when it gets
+// a `&Processes`. The compiler does not check the program that starts, and that program can open
+// files, use the network and read the environment variables. So `&Processes` gives every other
+// right in practice. Give it only to code that you trust with all of them.
+//===----------------------------------------------------------------------===//
+
+import core::result;
+import std::string;
+import std::vec;
+
+extern {
+  /// The Rust core behind `Processes::run`. `vx_process_new` makes a command for a program,
+  /// `vx_process_arg` adds one argument, and `vx_process_run` starts the program, waits, and
+  /// frees the command. It gives 0 and the exit code, 1 when the program did not start, or 2 and
+  /// the signal that stopped the program.
+  fn vx_process_new(program : *mut i8) -> *mut i8;
+  fn vx_process_arg(command : *mut i8, arg : *mut i8) -> void;
+  fn vx_process_run(command : *mut i8, code : *mut i32) -> i32;
+}
+
+/// The right to start other programs. Only this file can make a `Processes`, and a program gets
+/// one in its `Root` (`std::root`). A function that gets a `&Processes` uses it during the call
+/// and cannot keep it.
+struct Processes {
+  invariant true,
+}
+
+/// The process right of the program, for `std::root`. Only `std` can call it, because a second
+/// `Processes` gives the right to code that did not get it.
+pkg unsafe fn processes_of_the_program() -> Processes {
+  return Processes {};
+}
+
+/// Why `Processes::run` gave no exit code.
+enum ProcessError {
+  // The program did not start. No program has the name, the file is not a program, or the name
+  // or an argument holds a NUL byte.
+  NotStarted,
+  // A signal stopped the program, so it gave no exit code. The value is the number of the signal.
+  Killed(i32),
+}
+
+impl Processes {
+  /// Starts `program` with the arguments `args`, waits until it ends, and gives its exit code.
+  /// A name with no `/` names a program in a folder of `PATH`. The program gets the standard
+  /// input, output and error, and the environment variables, of this program.
+  pub fn run(self : &Processes, program : &String, args : &Vec<String>) -> Result<i32, ProcessError> {
+    let command = unsafe { vx_process_new(program.ptr) };
+    let mut i = 0;
+    while i < args.len() {
+      let arg = args.get_ref(i);
+      unsafe { vx_process_arg(command, arg.ptr) };
+      i = i + 1;
+    }
+    let mut code : i32 = 0;
+    let status = unsafe { vx_process_run(command, (&mut code) as *mut i32) };
+    if status == 1 {
+      return Result<i32, ProcessError>::Err(ProcessError::NotStarted);
+    }
+    if status == 2 {
+      return Result<i32, ProcessError>::Err(ProcessError::Killed(code));
+    }
+    return Result<i32, ProcessError>::Ok(code);
+  }
+}

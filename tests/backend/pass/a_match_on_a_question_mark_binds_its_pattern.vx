@@ -1,0 +1,97 @@
+//===- a_match_on_a_question_mark_binds_its_pattern.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `match find(n)? { .. }` matches the `Option` inside an `Ok`, and an `Err` returns from the
+// function first. The names in the patterns get the payload: a struct and a number. The match
+// is a statement in `port_of` and a value in `port_or_zero`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=declined
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}port 7{{$}}
+// CHECK-NEXT: {{^}}no port 0{{$}}
+// CHECK-NEXT: {{^}}error -1{{$}}
+// CHECK-NEXT: {{^}}value 9{{$}}
+// CHECK-NEXT: {{^}}value 0{{$}}
+// CHECK-NEXT: {{^}}doubled 10{{$}}
+
+import core::option;
+import core::result;
+
+struct Target {
+  port : i32,
+}
+
+fn find(n : i32) -> Result<Option<Target>, i32> {
+  if n < 0 {
+    return Result<Option<Target>, i32>::Err(n);
+  }
+  if n == 0 {
+    return Result<Option<Target>, i32>::Ok(Option<Target>::None());
+  }
+  return Result<Option<Target>, i32>::Ok(Option<Target>::Some(Target {
+    port : n
+  }));
+}
+
+fn port_of(n : i32) -> Result<i32, i32> {
+  let mut out = 0;
+  match find(n)? {
+    Option<Target>::Some(target) => {
+      out = target.port;
+    },
+    Option<Target>::None() => {}
+  }
+  return Result<i32, i32>::Ok(out);
+}
+
+fn port_or_zero(n : i32) -> Result<i32, i32> {
+  let port = match find(n)? {
+    Option<Target>::Some(target) => {
+      target.port
+    },
+    Option<Target>::None() => {
+      0
+    }
+  };
+  return Result<i32, i32>::Ok(port);
+}
+
+fn half(n : i32) -> Result<Option<i32>, i32> {
+  return Result<Option<i32>, i32>::Ok(Option<i32>::Some(n / 2));
+}
+
+fn doubled_half(n : i32) -> Result<i32, i32> {
+  let mut out = 0;
+  match half(n)? {
+    Option<i32>::Some(v) => {
+      out = v * 2;
+    },
+    Option<i32>::None() => {}
+  }
+  return Result<i32, i32>::Ok(out);
+}
+
+fn show(label : *const i8, r : Result<i32, i32>) -> void {
+  match r {
+    Result<i32, i32>::Ok(v) => {
+      println!("{} {}", label, v);
+    },
+    Result<i32, i32>::Err(e) => {
+      println!("error {}", e);
+    }
+  }
+}
+
+fn main() -> i32 {
+  show("port", port_of(7));
+  show("no port", port_of(0));
+  show("port", port_of(-1));
+  show("value", port_or_zero(9));
+  show("value", port_or_zero(0));
+  show("doubled", doubled_half(11));
+  return 0;
+}

@@ -17,8 +17,8 @@
 // CHECK-DAG: func.func private @free(
 // CHECK-DAG: func.func private @remove(
 // CHECK-DAG: func.func private @vx_free_temp_file(
-// CHECK-DAG: func.func private @print_str(
-// CHECK-DAG: func.func private @print_i32(
+// CHECK-DAG: func.func private @vx_print_str(
+// CHECK-DAG: func.func private @vx_print_i32(
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: %[[V0:.*]] = call @vx_get_temp_file(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
 // CHECK: %[[V1:.*]] = call @vx_file_open(%[[V0]], %{{.*}}) : (!llvm.ptr, i32) -> !llvm.ptr

@@ -46,6 +46,8 @@ when writing Vx with Rust habits.
 - `Tensor<f32, [2, 3]>`: the shape is part of the type. `?` is a size known only at run time,
   `Tensor<f32, [?, ?]>`, read with `t.extent(0)`. A third argument names the memory it lives in:
   `Tensor<f32, [4], Memory::NPU_HBM>`. Arrays are tensors: `let a : Tensor<f32, [3]> = [1.0, 2.0, 3.0];`.
+- `?n` names a run-time extent of a parameter: in `fn f(t : &Tensor<f32, [?n]>) -> usize requires n % 4 == 0`, the body and the contracts read `n` as a `usize`. Each `?n` of a function is one
+  extent, and a call must show the `requires`.
 - `Option<T>` and `Result<T, E>` (`import core::option;`, `import core::result;`), `Vec<T>`
   (`import std::vec;`), `Box<T>` (`import std::box;`).
 - A function that never returns has the type `-> !`, like `panic("..")`.
@@ -74,6 +76,8 @@ when writing Vx with Rust habits.
 - `print(x)` prints one value. `print!("text")` prints text. `println!("{} and {}", a, b)` puts
   each value in place of a `{}` and ends the line.
 - `eprint!` and `eprintln!` do the same on standard error.
+- `print_s!(out, ..)` and `println_s!(out, ..)` do the same, but take the right to print first: a
+  `Stdout` or a `Stderr` from `root`, or a reference to one.
 - `panic("message")` stops the program with a message on standard error, and `abort()` without
   one.
 

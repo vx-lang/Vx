@@ -5,116 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `Hash` and `Hasher`, with SipHash-1-3 and Fx.
-//
-// A hasher takes one byte at a time: without slices the byte is the only unit every writer
-// can agree on, and the wider writes are defaults over it.
-// Bytes go in little-endian order.
+// The hashers SipHash-1-3 and Fx. `Hash` and `Hasher` are in `core::hash::traits`, which this
+// file imports.
+import core::hash::traits;
 import core::marker;
 import core::num;
-import core::time;
-
-trait Hasher {
-  fn write_u8(self : &mut Self, b : u8) -> i32;
-
-  fn finish(self : &Self) -> u64;
-
-  fn write_u16(self : &mut Self, v : u16) -> i32 {
-    let mut x : u16 = v;
-    let mut i : i64 = 0i64;
-    loop {
-      if i >= 2i64 {
-        break;
-      }
-      self.write_u8((x & 255u16) as u8);
-      x = x >> 8u16;
-      i = i + 1i64;
-    }
-    return 0;
-  }
-
-  fn write_u32(self : &mut Self, v : u32) -> i32 {
-    let mut x : u32 = v;
-    let mut i : i64 = 0i64;
-    loop {
-      if i >= 4i64 {
-        break;
-      }
-      self.write_u8((x & 255u32) as u8);
-      x = x >> 8u32;
-      i = i + 1i64;
-    }
-    return 0;
-  }
-
-  fn write_u64(self : &mut Self, v : u64) -> i32 {
-    let mut x : u64 = v;
-    let mut i : i64 = 0i64;
-    loop {
-      if i >= 8i64 {
-        break;
-      }
-      self.write_u8((x & 255u64) as u8);
-      x = x >> 8u64;
-      i = i + 1i64;
-    }
-    return 0;
-  }
-
-  fn write_i8(self : &mut Self, v : i8) -> i32 {
-    return self.write_u8(v as u8);
-  }
-
-  fn write_i16(self : &mut Self, v : i16) -> i32 {
-    return self.write_u16(v as u16);
-  }
-
-  fn write_i32(self : &mut Self, v : i32) -> i32 {
-    return self.write_u32(v as u32);
-  }
-
-  fn write_i64(self : &mut Self, v : i64) -> i32 {
-    return self.write_u64(v as u64);
-  }
-
-  /// Written as a `u64`, so a `usize` hashes the same as a `u64` holding the same number.
-  fn write_usize(self : &mut Self, v : usize) -> i32 {
-    return self.write_u64(v as u64);
-  }
-
-  fn write_bool(self : &mut Self, v : bool) -> i32 {
-    if v {
-      return self.write_u8(1u8);
-    }
-    return self.write_u8(0u8);
-  }
-}
-
-trait Hash {
-  fn hash<H : Hasher>(self : &Self, state : &mut H) -> i32;
-}
-
-/// Stamps `Hash` for one type through the matching `write_` method.
-macro_rules stamp_hash {
-  ($t : ty, $wr : ident) => {
-    impl Hash for $t {
-      fn hash<H : Hasher>(self : &$t, state : &mut H) -> i32 {
-        return state.$wr(*self);
-      }
-    }
-  };
-}
-
-stamp_hash!(u8, write_u8);
-stamp_hash!(u16, write_u16);
-stamp_hash!(u32, write_u32);
-stamp_hash!(u64, write_u64);
-stamp_hash!(usize, write_usize);
-stamp_hash!(i8, write_i8);
-stamp_hash!(i16, write_i16);
-stamp_hash!(i32, write_i32);
-stamp_hash!(i64, write_i64);
-stamp_hash!(bool, write_bool);
 
 /// rustc's hasher: fast, not resistant to a chosen-key attack.
 struct FxHasher {
@@ -251,14 +146,5 @@ impl Hasher for SipHasher13 {
     let a4 : SipState = sip_round(a3);
     let a5 : SipState = sip_round(a4);
     return a5.v0 ^ a5.v1 ^ a5.v2 ^ a5.v3;
-  }
-}
-
-/// Hashes the seconds and then the nanoseconds. It is here and not in `core::time`, so that
-/// `core::ops`, which imports `core::time` for `Drop::wait_limit`, does not load `core::num`.
-extern impl Hash for Duration {
-  fn hash<H : Hasher>(self : &Duration, state : &mut H) -> i32 {
-    let _secs = state.write_u64(self.secs);
-    return state.write_u32(self.nanos);
   }
 }

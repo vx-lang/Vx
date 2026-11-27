@@ -20,9 +20,9 @@
 //
 //   `unwrap_or_default`    `T::default()` on a bounded type parameter is not resolved.
 //   `inspect`              no closure literal can return void (Vx#711).
-//   `as_ref`, `as_mut`,    each answers with a reference into the option, and `iter` needs
-//   `iter`, `insert`,      `core::iter` besides.
-//   `get_or_insert`
+//   `iter`                 needs `core::iter`.
+//
+// `insert` and `get_or_insert` need nothing outside this file, but they are not written yet.
 //
 // A closure is called by hand -- `let p = f.func; p(f.env, v)` -- since there is no call
 // syntax for one yet.
@@ -299,6 +299,30 @@ impl<T> Option<T> {
       Option<T>::None() => {
         let q = d.func;
         return q(d.env);
+      }
+    }
+  }
+
+  /// A reference to the value, if there is one. The option keeps the value.
+  pub fn as_ref(self : &Option<T>) -> Option<&T> {
+    match self {
+      Option<T>::Some(v) => {
+        return Option<&T>::Some(v);
+      }
+      Option<T>::None() => {
+        return Option<&T>::None();
+      }
+    }
+  }
+
+  /// A reference that can change the value, if there is one. The option keeps the value.
+  pub fn as_mut(self : &mut Option<T>) -> Option<&mut T> {
+    match self {
+      Option<T>::Some(v) => {
+        return Option<&mut T>::Some(v);
+      }
+      Option<T>::None() => {
+        return Option<&mut T>::None();
       }
     }
   }

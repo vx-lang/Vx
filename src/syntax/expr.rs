@@ -98,15 +98,31 @@ pub struct NumberExpr {
     pub value: Symbol,
     pub ty: Option<ElementType>,
     pub span: Span,
+    /// How and where the program wrote the number, for an error message. `None` for a literal
+    /// the compiler made. Left out of `==`: a parsed `0xA` and a synthesised `10` are the same
+    /// dimension.
+    pub written: Option<WrittenNumber>,
 }
+
+/// A number literal as it is in the source file.
+#[derive(Debug, Clone)]
+pub struct WrittenNumber {
+    /// The number without its type suffix, such as `0x1FF` for `0x1FFu8`.
+    pub text: Symbol,
+    /// Where the literal is.
+    pub span: Span,
+}
+
 impl PartialEq for NumberExpr {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value && self.ty == other.ty
     }
 }
+
 impl NumberExpr {
     pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
         Self {
+            written: None,
             value: value.into(),
             ty,
             span,
@@ -230,7 +246,8 @@ pub struct FunctionCallExpr {
     pub args: Vec<Expr>,
     pub span: Span,
     /// The compiler wrote this call, as `c_str_equals` for `s == "hi"`. The program did not, so
-    /// the check of visibility skips it (docs/lang/visibility.md, section 4, rule 4).
+    /// the check of visibility skips it (docs/lang/visibility.md, section 4, rule 4). The AST
+    /// code generator also writes `transpose(t, [1, 0])` for the method `t.transpose([1, 0])`.
     pub by_the_compiler: bool,
 }
 impl FunctionCallExpr {
@@ -1112,10 +1129,18 @@ pub struct MatchExpr {
     pub expr: Box<Expr>,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// The checker sets it when the matched value is a reference. Each name in a pattern then
+    /// binds a reference to its part of the value, not a copy of it.
+    pub binds_references: bool,
 }
 impl MatchExpr {
     pub fn new(expr: Box<Expr>, arms: Vec<MatchArm>, span: Span) -> Self {
-        Self { expr, arms, span }
+        Self {
+            expr,
+            arms,
+            span,
+            binds_references: false,
+        }
     }
 }
 
@@ -1986,6 +2011,7 @@ impl Expr {
                     })
                     .collect(),
                 span: e.span,
+                binds_references: e.binds_references,
             }),
             Expr::Grad(e) => Expr::Grad(GradExpr {
                 target_fn: e.target_fn.clone(),
@@ -2024,6 +2050,7 @@ impl Expr {
                     if let Type::Generic(val_str, _) = mapped_ty {
                         if val_str.parse::<f64>().is_ok() {
                             return Expr::Number(syntax::NumberExpr {
+                                written: None,
                                 value: val_str.to_string().into(),
                                 ty: None,
                                 span: id.span,
