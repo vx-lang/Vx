@@ -491,13 +491,13 @@ post went up, a program read an environment variable by calling <code>getenv</co
 <a href="https://github.com/vx-lang/Vx/pull/4102">#4102</a> made reading a variable need a
 capability. <code>Root</code> gained a third field, <code>env : Environment</code>, and a function
 needs an <code>&amp;Environment</code> to call <code>env.var(&amp;name)</code>. Later,
-<a href="https://github.com/vx-lang/Vx/pull/4110">#4110</a> removed the old functions for reading
+<a href="https://github.com/vx-lang/Vx/pull/4123">#4123</a> removed the old functions for reading
 command-line arguments, <code>vx_env_args_count</code> and <code>vx_env_arg</code>.</li>
 <li><strong>Processes.</strong> <em>Update: closed.</em> When this post went up, <code>std</code>
 had no function to start a process.
 <a href="https://github.com/vx-lang/Vx/pull/4111">#4111</a> added
 <code>processes.run(&amp;program, &amp;args)</code>, which needs a capability: <code>Root</code>
-gained a fourth field, <code>processes : Processes</code>. The compiler does not check the program
+gained a field, <code>processes : Processes</code>. The compiler does not check the program
 that <code>run</code> starts, so <code>Processes</code> gives all other capabilities in
 practice.</li>
 <li><strong>Native code.</strong> Native code is still reachable only via <code>extern</code>.
