@@ -5281,25 +5281,7 @@ impl<'r> Lowerer<'r> {
     fn closure_pair_layout(&mut self) -> TypeId {
         let gid = closure_pair_gid();
         if self.generated_layout(gid).is_none() {
-            let field = |name: &str, offset| crate::layout::GeneratedFieldLayout {
-                layout: crate::layout::FieldLayout {
-                    name: name.into(),
-                    offset,
-                    size: 8,
-                    ty: FieldTy::Opaque,
-                },
-                mlir_type: "!llvm.ptr".to_string(),
-                aggregate_id: None,
-                pointer_target_id: None,
-            };
-            let layout = crate::layout::GeneratedAggregateLayout {
-                type_id: gid,
-                name: "closure".to_string(),
-                size_bytes: 16,
-                align_bytes: 8,
-                fields: vec![field("env", 0), field("func", 8)],
-                variant_payloads: Vec::new(),
-            };
+            let layout = crate::layout::closure_pair_layout();
             self.instance_layouts.insert(gid, layout.type_definition());
             self.record_generated_layout(layout);
         }
@@ -5582,10 +5564,6 @@ impl<'r> Lowerer<'r> {
                 let gid = self.resolve_concrete_layout(ty)?;
                 self.aggregate_size_align(gid)
             }
-            // A closure value is a pair of pointers, `{ env, func }`, but a struct field of a
-            // closure type has room for one pointer only. Decline until the two agree. Look
-            // through the wrappers that `structural_field_info` looks through.
-            _ if matches!(peel_storage_wrappers(ty), Type::Closure(..)) => None,
             _ => self
                 .undeclared_storage(ty)
                 .map(|(size, align, ..)| (size, align)),
@@ -5603,10 +5581,17 @@ impl<'r> Lowerer<'r> {
     }
 
     /// The size, alignment, MLIR storage type and field type of a value whose type has no
-    /// declaration: a number, a pointer, a function, a tensor or a vector. A struct field and an
-    /// enum payload store such a value in the same way.
-    fn undeclared_storage(&self, ty: &Type) -> Option<(u64, u64, String, FieldTy)> {
+    /// declaration: a number, a pointer, a function, a closure, a tensor or a vector. A struct
+    /// field and an enum payload store such a value in the same way.
+    fn undeclared_storage(&mut self, ty: &Type) -> Option<(u64, u64, String, FieldTy)> {
         let (size, align, kind) = crate::layout::structural_field_info(ty)?;
+        // The registry has the closure pair only when a declared type holds a closure, not for
+        // an instance such as `Option<|i32| -> i32>`.
+        if kind == FieldTy::Nominal(closure_pair_gid()) {
+            let pair = self.closure_pair_layout();
+            let mlir = crate::codegen::flat::generated_storage_type(self.generated_layout(pair)?);
+            return Some((size as u64, align as u64, mlir, kind));
+        }
         let mlir = crate::codegen::flat::registry_field_storage_type(
             &kind,
             self.registry,
@@ -9079,18 +9064,6 @@ fn parse_scalar_type_arg(s: &str) -> Type {
         other => return Type::Struct(other.to_string().into(), None),
     };
     Type::Scalar(e)
-}
-
-/// The type inside the wrappers that do not change how a value is stored: `Pinned`, `Verified`,
-/// `Distinct` and `DisjointRanges`. `structural_field_info` looks through the same wrappers.
-fn peel_storage_wrappers(ty: &Type) -> &Type {
-    match ty {
-        Type::Pinned(inner, _)
-        | Type::Verified(inner)
-        | Type::Distinct(inner)
-        | Type::DisjointRanges(inner) => peel_storage_wrappers(inner),
-        other => other,
-    }
 }
 
 /// The MLIR scalar type string for an element type (`i32`, `f32`, `i1` for bool, …) — the flat-lowerer

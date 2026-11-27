@@ -470,6 +470,19 @@ impl ImmutableGlobalRegistry {
             layouts.insert(def.id, def);
         }
 
+        // A field or an enum payload of a closure type holds the closure pair, which no
+        // declaration gives.
+        let pair = crate::hir::flatten::closure_pair_gid();
+        if !layouts.contains_key(&pair)
+            && layouts
+                .values()
+                .any(|def| def.by_value_dependencies.contains(&pair))
+        {
+            let def = crate::layout::closure_pair_layout().type_definition();
+            node_map.insert(def.id, graph.add_node(def.id));
+            layouts.insert(def.id, def);
+        }
+
         // 2. Add dependency edges
         for def in layouts.values() {
             let source_idx = *node_map.get(&def.id).unwrap();

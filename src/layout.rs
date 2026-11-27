@@ -116,6 +116,29 @@ impl GeneratedAggregateLayout {
     }
 }
 
+/// The layout of a closure value (`|i32| -> i32`): the pair `{ env, func }` of two pointers.
+pub fn closure_pair_layout() -> GeneratedAggregateLayout {
+    let field = |name: &str, offset| GeneratedFieldLayout {
+        layout: FieldLayout {
+            name: name.into(),
+            offset,
+            size: 8,
+            ty: FieldTy::Opaque,
+        },
+        mlir_type: "!llvm.ptr".to_string(),
+        aggregate_id: None,
+        pointer_target_id: None,
+    };
+    GeneratedAggregateLayout {
+        type_id: crate::hir::flatten::closure_pair_gid(),
+        name: "closure".to_string(),
+        size_bytes: 16,
+        align_bytes: 8,
+        fields: vec![field("env", 0), field("func", 8)],
+        variant_payloads: Vec::new(),
+    }
+}
+
 /// An enum payload's actual type, independent of its shared storage field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneratedPayloadLayout {
@@ -163,12 +186,16 @@ pub(crate) fn structural_field_info(ty: &Type) -> Option<(usize, usize, FieldTy)
             structural_field_info(inner)
         }
         // Pointer-like fields, all a pointer-sized opaque word: raw pointers, borrows, and a
-        // function/closure type (a function pointer, e.g. `Closure1`'s `func` field). (#242)
-        Type::Pointer(..)
-        | Type::Ref(..)
-        | Type::Borrow { .. }
-        | Type::Function(..)
-        | Type::Closure(..) => Some((8, 8, FieldTy::Opaque)),
+        // function type (a function pointer, e.g. `Closure1`'s `func` field).
+        Type::Pointer(..) | Type::Ref(..) | Type::Borrow { .. } | Type::Function(..) => {
+            Some((8, 8, FieldTy::Opaque))
+        }
+        // A closure value is the pair `{ env, func }` of two pointers.
+        Type::Closure(..) => Some((
+            16,
+            8,
+            FieldTy::Nominal(crate::hir::flatten::closure_pair_gid()),
+        )),
         // A tensor field is its memref descriptor by value, 8-aligned: two pointers, an
         // offset, and a size and a stride per rank. A generic element has no descriptor yet.
         Type::Tensor(elem, dims, _) => {
