@@ -1,0 +1,62 @@
+//===- a_package_that_reads_and_builds_strings.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module with no trusted code. It reads the bytes of a `String` one at a time, appends one
+// `String` to another, and copies a byte range of a `String`.
+
+import core::result;
+import std::string;
+
+/// The bytes of `s` as numbers, with a space between two of them.
+pub fn show_bytes(s : &String) -> void {
+  for i in 0..s.len() {
+    if i > 0 {
+      print!(" ");
+    }
+    print!("{}", s.byte(i));
+  }
+  println!("");
+}
+
+/// How many bytes of `s` are a space.
+pub fn count_spaces(s : &String) -> i32 {
+  let mut count = 0;
+  for i in 0..s.len() {
+    if s.byte(i) == 32u8 {
+      count = count + 1;
+    }
+  }
+  return count;
+}
+
+/// `first`, a comma and a space, then `second`.
+pub fn join(first : &String, second : &String) -> String {
+  let mut out = String::new();
+  out.push_str(first);
+  match String::from_bytes(", " as *const u8, 2) {
+    Result::Ok(comma) => {
+      out.push_str(&comma);
+    }
+    Result::Err(_e) => {
+      println!("not UTF-8");
+    }
+  }
+  out.push_str(second);
+  return out;
+}
+
+/// The bytes `from..to` of `s` in brackets, or where the range cuts a character.
+pub fn show_range(s : &String, from : i32, to : i32) -> void {
+  match s.byte_range(from, to) {
+    Result::Ok(part) => {
+      println!("[{}]", part);
+    }
+    Result::Err(e) => {
+      println!("cuts a character after {} bytes", e.valid_up_to);
+    }
+  }
+}

@@ -50,6 +50,8 @@ extern {
   pub fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8;
   /// The bytes of a string, for reading only.
   pkg fn vx_string_bytes(ptr : *mut i8) -> *const u8;
+  /// Append the bytes of `other` to `ptr`. The two may be the same string.
+  pkg fn vx_string_push_str(ptr : *mut i8, other : *mut i8) -> void;
 }
 
 /// A growable, owned string, held by the Rust core behind an opaque pointer.
@@ -146,6 +148,42 @@ impl String {
     let p = unsafe { vx_string_bytes(self.ptr) };
     let _copied = unsafe { out.extend_from_raw(p, n) };
     return out;
+  }
+
+  /// The byte at index `i`. An `i` outside `0..len()` stops the program, as `v[i]` does.
+  pub fn byte(self : &String, i : i32) -> u8 {
+    if i < 0 || i >= self.len() {
+      panic("String: byte index out of bounds");
+    }
+    let p = unsafe { vx_string_bytes(self.ptr) };
+    return unsafe { read(add(p, i as usize)) };
+  }
+
+  /// Append the bytes of `other` to the end.
+  pub fn push_str(self : &mut String, other : &String) -> void {
+    unsafe { vx_string_push_str(self.ptr, other.ptr) };
+  }
+
+  /// A copy of the bytes from `from` up to, not including, `to`, as a new `String`.
+  ///
+  /// A range outside `0..len()` stops the program. The result is an error when the range cuts a
+  /// UTF-8 character in two. Then `valid_up_to` counts from `from`.
+  pub fn byte_range(self : &String, from : i32, to : i32) -> Result<String, Utf8Error> {
+    if from < 0 || from > to || to > self.len() {
+      panic("String: byte range out of bounds");
+    }
+    let start = add(unsafe { vx_string_bytes(self.ptr) }, from as usize);
+    let n = (to - from) as i64;
+    let ptr = unsafe { vx_string_try_from_bytes(start, n) };
+    if is_null_mut(ptr) {
+      let good = unsafe { vx_utf8_valid_up_to(start, n) };
+      return Result<String, Utf8Error>::Err(Utf8Error {
+        valid_up_to : good as i32
+      });
+    }
+    return Result<String, Utf8Error>::Ok(String {
+      ptr : ptr
+    });
   }
 
   /// A NUL-terminated copy of the contents.

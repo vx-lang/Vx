@@ -47,6 +47,11 @@ give a `Result`. Its `Err` holds a `Utf8Error` when the bytes are not UTF-8, and
 is the number of bytes before the first bad one. `s.to_bytes()` goes the other way: it copies the
 bytes of a `String` into a new `Vec<u8>`.
 
+`s.byte(i)` gives byte `i` of a `String` as a `u8`. `s.push_str(&t)` adds the bytes of `t` to the
+end of `s`. `s.byte_range(from, to)` copies bytes `from` to `to` into a new `String`. It gives a
+`Utf8Error` when the range cuts a character in two. An index or a range outside the string stops
+the program, as `v[i]` does. None of the three needs `unsafe`.
+
 `parse_int` stops at the first byte that is not a digit. So `"12abc"` gives 12, and `"abc"`
 gives 0. A `-` is not a sign. `parse_int` does not check for overflow.
 
