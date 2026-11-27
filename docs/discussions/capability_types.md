@@ -117,7 +117,7 @@ and a review reads each of them.
 Two tools keep the trusted code small and easy to find:
 
 - `vxc --no-trusted-code NAME` refuses `unsafe`, `extern impl`, `unsafe impl`, `mlir!`, `extern`
-  and a pointer `requires` of an `extern fn` in the package `NAME`, as `#![forbid(unsafe_code)]`
+  and a `requires` of an `extern fn` in the package `NAME`, as `#![forbid(unsafe_code)]`
   does in Rust. The program that uses the
   package gives the flag, so a new version of the package cannot add trusted code without an
   error.

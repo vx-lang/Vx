@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Two functions that C code can call. `length_of` requires facts about its pointer, which a
-// call from C does not prove. `twice` requires a fact that names no pointer.
+// Three functions that C code can call. `length_of` requires facts about its pointer, and
+// `twice` requires `n > 0`. A call from C proves neither. `add_one` requires nothing.
 
 pub extern fn length_of(p : *const u8, n : i32) -> i32
 requires valid(p, n)
@@ -19,6 +19,10 @@ pub extern fn twice(n : i32) -> i32
 requires n > 0
 {
   return n * 2;
+}
+
+pub extern fn add_one(n : i32) -> i32 {
+  return n + 1;
 }
 
 /// A function of the package whose caller must prove that `p` points at `n` bytes.
