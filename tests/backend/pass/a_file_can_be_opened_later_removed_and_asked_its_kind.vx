@@ -1,0 +1,151 @@
+//===- a_file_can_be_opened_later_removed_and_asked_its_kind.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `PendingFile` is the right to open one path in one mode later. `PendingFile::new` takes the
+// file right but opens nothing, so a file that the later open empties keeps its bytes until
+// then. `write_the_body` gets the `PendingFile` and no `&Files`, and it can open only that path.
+// `file_kind` follows symbolic links as `stat` does, and `remove_file` removes a file.
+//
+// RUN: rm -rf %t && mkdir -p %t && printf x > %t/target && ln -s target %t/link
+// RUN: vxc %s -- %t 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}before the open: old{{$}}
+// CHECK-NEXT: {{^}}after the open: new!{{$}}
+// CHECK-NEXT: {{^}}the file is Regular, the folder is Folder, /dev/null is Other{{$}}
+// CHECK-NEXT: {{^}}a link to a file is Regular{{$}}
+// CHECK-NEXT: {{^}}a path with no file: NotFound{{$}}
+// CHECK-NEXT: {{^}}remove: removed, and then the kind is NotFound{{$}}
+// CHECK-NEXT: {{^}}remove again: NotFound{{$}}
+// CHECK-NEXT: {{^}}a pending path with a NUL byte: BadPath{{$}}
+
+import core::result;
+import std::fs;
+import std::root;
+import std::string;
+import std::vec;
+
+fn text(s : *const i8) -> String {
+  return unsafe { String::from_c_str(s) };
+}
+
+fn join(folder : &String, name : *const i8) -> String {
+  let mut bytes = folder.to_bytes();
+  bytes.push(47u8);
+  let mut i = 0i64;
+  while unsafe { name[i] } != 0i8 {
+    bytes.push(unsafe { name[i] } as u8);
+    i = i + 1i64;
+  }
+  return String::from_utf8(&bytes).unwrap();
+}
+
+fn error_name(e : FileError) -> *const i8 {
+  match e {
+    FileError::NotFound => {
+      return "NotFound";
+    }
+    FileError::BadPath => {
+      return "BadPath";
+    }
+    _ => {
+      return "another error";
+    }
+  }
+}
+
+fn kind_name(r : Result<FileKind, FileError>) -> *const i8 {
+  match r {
+    Result::Ok(k) => {
+      match k {
+        FileKind::Regular => {
+          return "Regular";
+        }
+        FileKind::Folder => {
+          return "Folder";
+        }
+        FileKind::Other => {
+          return "Other";
+        }
+      }
+    }
+    Result::Err(e) => {
+      return error_name(e);
+    }
+  }
+}
+
+fn contents(files : &Files, path : &String) -> String {
+  let mut file = File::open(files, path, OpenMode::Read).unwrap();
+  let mut buffer = Vec<u8>::new();
+  for _i in 0..16 {
+    buffer.push(0u8);
+  }
+  let n = file.read(&mut buffer).unwrap();
+  let mut got = Vec<u8>::new();
+  for i in 0..n as i32 {
+    got.push(buffer.get(i));
+  }
+  return String::from_utf8(&got).unwrap();
+}
+
+/// Has no `&Files`, so it can open only the one path of `pending`.
+fn write_the_body(pending : PendingFile) -> Result<u64, FileError> {
+  let mut file = pending.open()?;
+  return file.write(&text("new!").to_bytes());
+}
+
+fn main(root : Root, args : Vec<String>) -> i32 {
+  // The test runner also runs the program with no words.
+  if args.len() < 2 {
+    return 0;
+  }
+  let folder = args.get_ref(1);
+  let path = join(folder, "out.txt");
+  let mut old = File::open(&root.files, &path, OpenMode::Write).unwrap();
+  let _w = old.write(&text("old").to_bytes());
+
+  let pending = PendingFile::new(&root.files, &path, OpenMode::Write).unwrap();
+  println!("before the open: {}", contents(&root.files, &path));
+  let _t = write_the_body(pending);
+  println!("after the open: {}", contents(&root.files, &path));
+
+  let file = kind_name(file_kind(&root.files, &path));
+  let dir = kind_name(file_kind(&root.files, folder));
+  let null = kind_name(file_kind(&root.files, &text("/dev/null")));
+  println!("the file is {}, the folder is {}, /dev/null is {}", file, dir, null);
+  println!("a link to a file is {}", kind_name(file_kind(&root.files, &join(folder, "link"))));
+  println!("a path with no file: {}", kind_name(file_kind(&root.files, &join(folder, "none"))));
+
+  match remove_file(&root.files, &path) {
+    Result::Ok(_r) => {
+      let after = kind_name(file_kind(&root.files, &path));
+      println!("remove: removed, and then the kind is {}", after);
+    }
+    Result::Err(e) => {
+      println!("remove: {}", error_name(e));
+    }
+  }
+  match remove_file(&root.files, &path) {
+    Result::Ok(_r) => {
+      println!("remove again: removed");
+    }
+    Result::Err(e) => {
+      println!("remove again: {}", error_name(e));
+    }
+  }
+  let mut with_nul = Vec<u8>::new();
+  with_nul.push(97u8);
+  with_nul.push(0u8);
+  match PendingFile::new(&root.files, &String::from_utf8(&with_nul).unwrap(), OpenMode::Write) {
+    Result::Ok(_p) => {
+      println!("a pending path with a NUL byte: made");
+    }
+    Result::Err(e) => {
+      println!("a pending path with a NUL byte: {}", error_name(e));
+    }
+  }
+  return 0;
+}

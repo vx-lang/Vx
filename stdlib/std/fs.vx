@@ -21,6 +21,11 @@ extern {
   /// and the error number of the system.
   pub fn vx_file_try_open(c_path : *const i8, mode : i32, file : *mut *mut i8,
   native_code : *mut i32) -> i32;
+  /// The Rust core behind `remove_file`, with the outputs of `vx_file_try_open`.
+  pkg fn vx_file_try_remove(c_path : *const i8, native_code : *mut i32) -> i32;
+  /// The Rust core behind `file_kind`: 1, 2 or 3 in `*kind` for a regular file, a folder or
+  /// something else.
+  pkg fn vx_file_try_kind(c_path : *const i8, kind : *mut i32, native_code : *mut i32) -> i32;
   /// The Rust core behind `File::read_raw`.
   pub fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
   /// The Rust core behind `File::write_raw`.
@@ -418,5 +423,80 @@ impl Drop for Folder {
   /// Close the folder. The Rust core holds an open folder as a file.
   fn drop(self : &mut Folder) -> void {
     unsafe { vx_file_drop(self.dir) };
+  }
+}
+
+/// Remove the file at `path`. The caller needs the file right, a `&Files`. A folder is not
+/// removed: it gives an error of the system.
+pub fn remove_file(_files : &Files, path : &String) -> Result<i32, FileError> {
+  let c_path = CPath::of(path)?;
+  let mut native_code : i32 = 0;
+  let status = unsafe {
+    vx_file_try_remove(c_path.ptr, (&mut native_code) as *mut i32)
+  };
+  if status != 0 {
+    return Result<i32, FileError>::Err(file_error(status, native_code));
+  }
+  return Result<i32, FileError>::Ok(0);
+}
+
+/// What a path names. It follows a symbolic link, as `stat` does.
+enum FileKind {
+  // A regular file.
+  Regular,
+  // A folder.
+  Folder,
+  // Anything else, such as a device like `/dev/null`, a pipe or a socket.
+  Other,
+}
+
+/// What `path` names. The caller needs the file right, a `&Files`. A path with no file gives
+/// `NotFound`.
+pub fn file_kind(_files : &Files, path : &String) -> Result<FileKind, FileError> {
+  let c_path = CPath::of(path)?;
+  let mut kind : i32 = 0;
+  let mut native_code : i32 = 0;
+  let status = unsafe {
+    vx_file_try_kind(c_path.ptr, (&mut kind) as *mut i32, (&mut native_code) as *mut i32)
+  };
+  if status != 0 {
+    return Result<FileKind, FileError>::Err(file_error(status, native_code));
+  }
+  if kind == 1 {
+    return Result<FileKind, FileError>::Ok(FileKind::Regular);
+  }
+  if kind == 2 {
+    return Result<FileKind, FileError>::Ok(FileKind::Folder);
+  }
+  return Result<FileKind, FileError>::Ok(FileKind::Other);
+}
+
+/// The right to open one path in one mode, later. A program makes it with its `&Files`, and can
+/// give it to code that has no `&Files`. That code can open this path and no other. `new` opens
+/// nothing, so an open for `Write` empties the file only when `open` runs. The invariant lets
+/// only this file make a `PendingFile`.
+struct PendingFile {
+  path : String,
+  mode : OpenMode,
+
+  invariant true,
+}
+
+impl PendingFile {
+  /// The right to open `path` in `mode` later. It gives `BadPath` at once for a path with a NUL
+  /// byte.
+  pub fn new(_files : &Files, path : &String, mode : OpenMode) -> Result<PendingFile, FileError> {
+    let _checked = CPath::of(path)?;
+    let copy = String::from_utf8(&path.to_bytes()).unwrap();
+    return Result<PendingFile, FileError>::Ok(PendingFile {
+      path : copy, mode : mode
+    });
+  }
+
+  /// Open the path. It uses up the right, so it opens the path once.
+  pub fn open(self : PendingFile) -> Result<File, FileError> {
+    // `new` took the file right for this one open.
+    let files = Files {};
+    return File::open(&files, &self.path, self.mode);
   }
 }

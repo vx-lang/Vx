@@ -512,6 +512,18 @@ macro_rules! instantiate_file_ffi {
             c_path: *const std::ffi::c_char,
             opts: &std::fs::OpenOptions,
         ) -> std::io::Result<std::fs::File> {
+            unsafe { vx_file_with_path(c_path, |path| opts.open(path)) }
+        }
+
+        /// Runs `call` with the path of the NUL-terminated `c_path`, as a fiber runs a file call.
+        /// A null path, or off Unix a path that is not UTF-8, gives `InvalidInput`.
+        ///
+        /// # Safety
+        /// A non-null `c_path` must point at a NUL-terminated string.
+        unsafe fn vx_file_with_path<T>(
+            c_path: *const std::ffi::c_char,
+            call: impl FnOnce(&std::path::Path) -> std::io::Result<T>,
+        ) -> std::io::Result<T> {
             let bad_path = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
             if c_path.is_null() {
                 return Err(bad_path());
@@ -524,7 +536,62 @@ macro_rules! instantiate_file_ffi {
             };
             #[cfg(not(unix))]
             let path = c_path.to_str().map_err(|_| bad_path())?;
-            $off_the_worker(|| opts.open(path))
+            $off_the_worker(|| call(std::path::Path::new(path)))
+        }
+
+        /// Remove the file at `c_path`, for `std::fs::remove_file`. The status is as for
+        /// `vx_file_try_open`.
+        ///
+        /// # Safety
+        /// `c_path` is as for `vx_file_try_open`, and `native_code` must be writable.
+        #[no_mangle]
+        pub unsafe extern "C" fn vx_file_try_remove(
+            c_path: *const std::ffi::c_char,
+            native_code: *mut i32,
+        ) -> i32 {
+            unsafe { *native_code = 0 };
+            match unsafe { vx_file_with_path(c_path, |path| std::fs::remove_file(path)) } {
+                Ok(()) => VX_FILE_STATUS_OK,
+                Err(error) => {
+                    let mut has_native_code = false;
+                    unsafe { vx_file_store_error(&error, native_code, &mut has_native_code) }
+                }
+            }
+        }
+
+        /// The kind of the file at `c_path`, following symbolic links as `stat` does: 1 for a
+        /// regular file, 2 for a folder and 3 for anything else, in `*kind`. The status is as
+        /// for `vx_file_try_open`.
+        ///
+        /// # Safety
+        /// `c_path` is as for `vx_file_try_open`, and `kind` and `native_code` must be writable.
+        #[no_mangle]
+        pub unsafe extern "C" fn vx_file_try_kind(
+            c_path: *const std::ffi::c_char,
+            kind: *mut i32,
+            native_code: *mut i32,
+        ) -> i32 {
+            unsafe {
+                *kind = 0;
+                *native_code = 0;
+            }
+            match unsafe { vx_file_with_path(c_path, |path| std::fs::metadata(path)) } {
+                Ok(meta) => {
+                    let found = if meta.is_file() {
+                        1
+                    } else if meta.is_dir() {
+                        2
+                    } else {
+                        3
+                    };
+                    unsafe { *kind = found };
+                    VX_FILE_STATUS_OK
+                }
+                Err(error) => {
+                    let mut has_native_code = false;
+                    unsafe { vx_file_store_error(&error, native_code, &mut has_native_code) }
+                }
+            }
         }
 
         #[no_mangle]
