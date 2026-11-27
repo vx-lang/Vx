@@ -2792,7 +2792,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
     //    source is ever seen; the consumer below works purely from these bytes.
     let lib_bytes = build_lib_interface(
         "crate::mathlib",
-        "fn double(x: i32) -> i32 { return x * 2; }",
+        "pub fn double(x: i32) -> i32 { return x * 2; }",
     );
 
     // 2. Consumer: a program that CALLS `double`, compiled with no access to the library's AST.
@@ -2914,8 +2914,16 @@ fn driver_link_interface_refuses_an_unguarded_unsafe_import() {
     let (lib, vxlib) = (dir.join("unsafelib.vx"), dir.join("unsafelib.vxlib"));
     let (safelib, safevxlib) = (dir.join("safelib.vx"), dir.join("safelib.vxlib"));
     let app = dir.join("app.vx");
-    std::fs::write(&lib, "unsafe fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
-    std::fs::write(&safelib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(
+        &lib,
+        "pub unsafe fn double(x : i32) -> i32 { return x * 2; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &safelib,
+        "pub fn double(x : i32) -> i32 { return x * 2; }\n",
+    )
+    .unwrap();
     std::fs::write(&app, "fn main() -> i32 { return double(21); }\n").unwrap();
 
     let vxc = env!("CARGO_BIN_EXE_vxc");
@@ -2993,7 +3001,7 @@ fn driver_link_interface_runs_a_scalar_import() {
         dir.join("app.vx"),
         dir.join("mathlib.vxlib"),
     );
-    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&lib, "pub fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
     std::fs::write(&app, "fn main() -> i32 { return double(21); }\n").unwrap();
 
     let vxc = env!("CARGO_BIN_EXE_vxc");
@@ -3053,9 +3061,9 @@ fn driver_link_interface_runs_an_imported_enum() {
     std::fs::write(
         &lib,
         "enum Color { Red, Green, Blue }\n\
-         fn pick(k : i32) -> Color { if k == 0 { return Color::Red; } \
+         pub fn pick(k : i32) -> Color { if k == 0 { return Color::Red; } \
            if k == 1 { return Color::Green; } return Color::Blue; }\n\
-         fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
+         pub fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
            Color::Green => { return 20; } Color::Blue => { return 30; } } }\n",
     )
     .unwrap();
@@ -3119,7 +3127,7 @@ fn driver_link_interface_runs_an_imported_enum_as_a_payload() {
     std::fs::write(
         &lib,
         "enum Color { Red, Green, Blue }\n\
-         fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
+         pub fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
            Color::Green => { return 20; } Color::Blue => { return 30; } } }\n",
     )
     .unwrap();
@@ -3187,8 +3195,8 @@ fn driver_link_interface_builds_and_matches_an_imported_enum() {
     std::fs::write(
         &lib,
         "enum Color { Red, Green, Blue }\n\
-         fn pick() -> Color { return Color::Blue; }\n\
-         fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
+         pub fn pick() -> Color { return Color::Blue; }\n\
+         pub fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
            Color::Green => { return 20; } Color::Blue => { return 30; } } }\n",
     )
     .unwrap();
@@ -3252,7 +3260,11 @@ fn driver_link_interface_runs_a_library_with_a_u8_literal() {
         dir.join("app.vx"),
         dir.join("bytes.vxlib"),
     );
-    std::fs::write(&lib, "fn is_space(b : u8) -> bool { return b == 32; }\n").unwrap();
+    std::fs::write(
+        &lib,
+        "pub fn is_space(b : u8) -> bool { return b == 32; }\n",
+    )
+    .unwrap();
     std::fs::write(
         &app,
         "fn main() -> i32 { if is_space(32) { print!(\"space\\n\"); } \
@@ -3312,7 +3324,7 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         dir.join("refapp.vx"),
         dir.join("reflib.vxlib"),
     );
-    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&lib, "pub fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
     // VX_FLAT_DECLINE makes the flat path decline `main`, which calls the imported `double`.
     // The decline forces the AST path, which has no AST for the imported body, so the driver
     // must emit a clean diagnostic rather than ICE.
@@ -3379,7 +3391,7 @@ fn legacy_codegen_names_itself_when_a_program_imports_a_vxlib() {
         dir.join("refapp.vx"),
         dir.join("reflib.vxlib"),
     );
-    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&lib, "pub fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
     std::fs::write(&app, "fn main() -> i32 { print(double(21)); return 0; }\n").unwrap();
 
     let vxc = env!("CARGO_BIN_EXE_vxc");
@@ -3452,7 +3464,7 @@ fn driver_link_interface_links_what_a_library_function_calls() {
         &lib,
         "fn square(x : i32) -> i32 { return x * x; }\n\
          fn is_square(n : i32, root : i32) -> bool { return square(root) == n; }\n\
-         fn answer() -> i32 { if is_square(49, 7) { return 1; } return 0; }\n",
+         pub fn answer() -> i32 { if is_square(49, 7) { return 1; } return 0; }\n",
     )
     .unwrap();
     std::fs::write(
@@ -3515,7 +3527,11 @@ fn driver_import_runs_cross_module_scalar_references() {
         dir.join("refapp.vx"),
         dir.join("reflib.vxlib"),
     );
-    std::fs::write(&lib, "fn pick(a : &i32, b : &i32) -> &i32 { return b; }\n").unwrap();
+    std::fs::write(
+        &lib,
+        "pub fn pick(a : &i32, b : &i32) -> &i32 { return b; }\n",
+    )
+    .unwrap();
     std::fs::write(
         &app,
         "import reflib;\nfn main() -> i32 { let x = 10; let y = 20; let r = pick(&x, &y); return *r; }\n",
@@ -3568,7 +3584,7 @@ fn driver_import_auto_resolves_a_vxlib_artifact() {
         dir.join("imapp.vx"),
         dir.join("mathlib.vxlib"),
     );
-    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&lib, "pub fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
     std::fs::write(
         &app,
         "import mathlib;\nfn main() -> i32 { return double(21); }\n",
@@ -3625,7 +3641,7 @@ fn driver_import_uses_a_struct_from_a_vxlib() {
     );
     std::fs::write(
         &lib,
-        "struct Point { x : i32, y : i32 }\nfn origin() -> Point { return Point { x : 7, y : 9 }; }\n",
+        "struct Point { x : i32, y : i32 }\npub fn origin() -> Point { return Point { x : 7, y : 9 }; }\n",
     )
     .unwrap();
     std::fs::write(

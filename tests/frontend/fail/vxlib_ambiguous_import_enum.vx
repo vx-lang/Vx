@@ -9,9 +9,9 @@
 // pick one. The error says so, rather than calling the enum unknown.
 //
 // RUN: mkdir -p %t.d
-// RUN: printf 'enum Color { Red, Green }\nfn geta() -> i32 { return 1; }\n' > %t.d/ca.vx
+// RUN: printf 'enum Color { Red, Green }\npub fn geta() -> i32 { return 1; }\n' > %t.d/ca.vx
 // RUN: vxc %t.d/ca.vx --action emit-interface -o %t.d/ca.vxlib
-// RUN: printf 'enum Color { Cyan, Green }\nfn getb() -> i32 { return 2; }\n' > %t.d/cb.vx
+// RUN: printf 'enum Color { Cyan, Green }\npub fn getb() -> i32 { return 2; }\n' > %t.d/cb.vx
 // RUN: vxc %t.d/cb.vx --action emit-interface -o %t.d/cb.vxlib
 // RUN: rm %t.d/ca.vx %t.d/cb.vx
 // RUN: not vxc %s --std-path %t.d --action emit-mlir -o /dev/null 2>&1 | FileCheck %s

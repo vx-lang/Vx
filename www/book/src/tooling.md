@@ -82,7 +82,9 @@ not check.
 
 `--emit-interface` writes a `.vxlib`: the module's frozen registry and portable flat-HIR bodies.
 A downstream compile consumes it with `--link-interface` and resolves calls into that module without
-parsing its source.
+parsing its source. The program can call only the `pub` functions of the module, as when it imports
+the module from its source. A `pkg` function is out of reach too, because the module is another
+compile.
 
 ```bash
 vxc --emit-interface lib.vx -o lib.vxlib
@@ -102,9 +104,10 @@ needs a major one. Anything else is a patch.
 vx-api diff old/lib.vxlib new/lib.vxlib
 ```
 
-Every item in a `.vxlib` counts as public, because a program can call any of them. The tool cannot
-see traits, data-carrying enums, constants or the bounds of generic parameters, because a `.vxlib`
-does not hold them.
+Only the `pub` functions and methods count, because a program cannot call the others. So a change
+to a private function is a patch, and a function that loses `pub` needs a major release. Each struct
+and enum counts, because types have no level yet. The tool cannot see traits, data-carrying enums,
+constants or the bounds of generic parameters, because a `.vxlib` does not hold them.
 
 ## The other tools
 
