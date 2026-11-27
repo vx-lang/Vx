@@ -1575,7 +1575,7 @@ impl<'a> TypeChecker<'a> {
                         ty @ Type::Scalar(_) if !ty.has_generic_params() => ty.clone(),
                         _ => Type::Unknown,
                     };
-                    self.instantiate_generic_function_call(
+                    let ret = self.instantiate_generic_function_call(
                         generic_func,
                         origin_hash,
                         &resolved_name,
@@ -1584,8 +1584,12 @@ impl<'a> TypeChecker<'a> {
                         &arg_types,
                         &explicit_generic_args,
                         span,
-                    )
-                    .unwrap_or(declared_scalar)
+                    );
+                    // `name` is the instance now, which has the `requires` of the template.
+                    if ret.is_some() {
+                        self.check_call_requires(name.as_ref(), &resolved_name, args, span);
+                    }
+                    ret.unwrap_or(declared_scalar)
                 } else if resolved_name.contains("::") {
                     self.check_static_method_call(&resolved_name, name, args, &arg_types, span)
                 } else if let Some(sig) = self
