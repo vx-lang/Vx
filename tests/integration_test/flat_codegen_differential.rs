@@ -883,7 +883,7 @@ fn flat_matches_ast_unsafe_extern_call() {
 fn flat_matches_ast_print_string_literal() {
     // A bare string `print!` (the `print!("Success: ")` shape from the ffi corpus, #225): the flat
     // path records the bytes in a string side table, emits an `llvm.mlir.global` for them, and calls
-    // `@print_str`. Stdout must match the AST oracle, which does the same.
+    // `@vx_print_str`. Stdout must match the AST oracle, which does the same.
     assert_output_parity("fn main() -> i32 { print!(\"Stdio Success: \"); return 0; }");
 }
 
@@ -897,7 +897,7 @@ fn flat_matches_ast_print_string_and_scalar() {
 #[test]
 fn flat_matches_ast_println_string() {
     // `println!` prints its args then a trailing newline. The flat path reuses `PrintStr` for the
-    // newline (a `"\n"` string is byte-identical to the AST path's `println()` runtime call), so the
+    // newline (a `"\n"` string is byte-identical to the AST path's `vx_println()` runtime call), so the
     // full line — label, value, newline — matches the oracle.
     assert_output_parity("fn main() -> i32 { let v = 7; println!(\"count: \", v); return 0; }");
 }
@@ -2120,7 +2120,7 @@ fn flat_matches_ast_matmul_with_run_time_extents() {
 
 #[test]
 fn flat_matches_ast_print_of_a_string_local() {
-    // A string bound to a local is a pointer value; printing it goes through `print_str`, as
+    // A string bound to a local is a pointer value; printing it goes through `vx_print_str`, as
     // a literal does.
     assert_output_parity(
         "fn main() -> i32 { let s = \"hi|\"; let st : i32 = print!(s); print!(s); \
@@ -2158,7 +2158,7 @@ fn flat_matches_ast_reborrow_of_a_raw_pointer() {
 
 #[test]
 fn flat_prints_a_string_value() {
-    // A `String` value prints its C string through `print_str`. Flat-only: the AST path types
+    // A `String` value prints its C string through `vx_print_str`. Flat-only: the AST path types
     // a print argument by its MLIR spelling and has no case for the struct.
     let flat = flat_llvm(
         "extern \"C\" { fn vx_string_from_c_str(c_str : *const i8) -> *mut i8; \

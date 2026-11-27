@@ -410,7 +410,7 @@ impl FnEmit<'_> {
     }
 
     // Print a string literal (no result): take the address of the module-level global emitted
-    // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
+    // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@vx_print_str` runtime
     // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
     // Conditional abort -- `assert`, and `abort()` with a constant-false condition.
     // `cf.assert` rather than a hand-written branch onto a call, because MLIR lowers it

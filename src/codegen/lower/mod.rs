@@ -1628,7 +1628,7 @@ pub(crate) fn lower_print_call<'c>(
     let (mut arg_val, arg_ty, block) = gen.generate_expr(print_arg, block)?;
 
     // Scalar fast-path (#185): `printMemref*` only accepts ranked memrefs/tensors, so a
-    // bare scalar must route through the scalar `print_*` runtime helpers instead.
+    // bare scalar must route through the scalar `vx_print_*` runtime helpers instead.
     if let Some((fn_name, arg_val, arg_ty_str)) =
         pick_scalar_print(gen, block, print_arg, arg_val, arg_ty)?
     {
@@ -1636,9 +1636,9 @@ pub(crate) fn lower_print_call<'c>(
         return Ok((result, gen.none_ty, block));
     }
 
-    // A string is a pointer to its bytes: the `print_str` helper, as `print!` uses.
+    // A string is a pointer to its bytes: the `vx_print_str` helper, as `print!` uses.
     if arg_ty.to_string() == "!llvm.ptr" {
-        let result = call_scalar_print(gen, block, "print_str", arg_val, "!llvm.ptr")?;
+        let result = call_scalar_print(gen, block, "vx_print_str", arg_val, "!llvm.ptr")?;
         return Ok((result, gen.none_ty, block));
     }
 
@@ -1726,7 +1726,7 @@ pub(crate) fn lower_print_call<'c>(
     ))
 }
 
-/// Picks the runtime `print_*` function for a scalar and returns it with the value to pass
+/// Picks the runtime `vx_print_*` function for a scalar and returns it with the value to pass
 /// and that value's MLIR type. MLIR integers carry no sign, so an unsigned value is known by
 /// the `x as u64` cast the checker wraps it in. Narrow signed integers and `f16`/`bf16` have
 /// no helper of their own and are widened (#320). `None` for anything that is not a scalar.
@@ -1758,23 +1758,23 @@ pub(crate) fn pick_scalar_print<'c>(
     };
     let ty_str = arg_ty.to_string();
     let (fn_name, widen): (&'static str, Option<(&str, &str)>) = match (ty_str.as_str(), unsigned) {
-        ("i8", true) => ("print_u8", None),
-        ("i16", true) => ("print_u16", None),
-        ("i32", true) => ("print_u32", None),
-        ("i64", true) => ("print_u64", None),
-        ("i1", _) => ("print_bool", Some(("arith.extui", "i32"))),
-        ("i8" | "i16", false) => ("print_i32", Some(("arith.extsi", "i32"))),
-        ("i32", false) => ("print_i32", None),
-        ("i64", false) => ("print_i64", None),
-        ("i128", true) => ("print_u128", None),
-        ("i128", false) => ("print_i128", None),
+        ("i8", true) => ("vx_print_u8", None),
+        ("i16", true) => ("vx_print_u16", None),
+        ("i32", true) => ("vx_print_u32", None),
+        ("i64", true) => ("vx_print_u64", None),
+        ("i1", _) => ("vx_print_bool", Some(("arith.extui", "i32"))),
+        ("i8" | "i16", false) => ("vx_print_i32", Some(("arith.extsi", "i32"))),
+        ("i32", false) => ("vx_print_i32", None),
+        ("i64", false) => ("vx_print_i64", None),
+        ("i128", true) => ("vx_print_u128", None),
+        ("i128", false) => ("vx_print_i128", None),
         // A `for` variable over a range is an `index` here.
-        ("index", _) => ("print_i64", Some(("arith.index_cast", "i64"))),
+        ("index", _) => ("vx_print_i64", Some(("arith.index_cast", "i64"))),
         ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f8E8M0FNU" | "f16" | "bf16", _) => {
-            ("print_f32", Some(("arith.extf", "f32")))
+            ("vx_print_f32", Some(("arith.extf", "f32")))
         }
-        ("f32", _) => ("print_f32", None),
-        ("f64", _) => ("print_f64", None),
+        ("f32", _) => ("vx_print_f32", None),
+        ("f64", _) => ("vx_print_f64", None),
         _ => return Ok(None),
     };
     let Some((op_name, wide_ty_str)) = widen else {

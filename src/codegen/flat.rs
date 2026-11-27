@@ -1232,20 +1232,20 @@ const RUNTIME_HELPERS: [(&str, &str); 28] = [
     ("printMemrefI32", "(memref<*xi32>)"),
     ("printMemrefI64", "(memref<*xi64>)"),
     ("printMemrefBF16", "(memref<*xbf16>)"),
-    ("print_f32", "(f32) -> i32"),
-    ("print_f64", "(f64) -> i32"),
-    ("print_i32", "(i32) -> i32"),
-    ("print_i64", "(i64) -> i32"),
-    ("print_u8", "(i8) -> i32"),
-    ("print_u16", "(i16) -> i32"),
-    ("print_u32", "(i32) -> i32"),
-    ("print_u64", "(i64) -> i32"),
-    ("print_i128", "(i64, i64) -> i32"),
-    ("print_u128", "(i64, i64) -> i32"),
-    ("print_str", "(!llvm.ptr) -> i32"),
+    ("vx_print_f32", "(f32) -> i32"),
+    ("vx_print_f64", "(f64) -> i32"),
+    ("vx_print_i32", "(i32) -> i32"),
+    ("vx_print_i64", "(i64) -> i32"),
+    ("vx_print_u8", "(i8) -> i32"),
+    ("vx_print_u16", "(i16) -> i32"),
+    ("vx_print_u32", "(i32) -> i32"),
+    ("vx_print_u64", "(i64) -> i32"),
+    ("vx_print_i128", "(i64, i64) -> i32"),
+    ("vx_print_u128", "(i64, i64) -> i32"),
+    ("vx_print_str", "(!llvm.ptr) -> i32"),
     ("vx_print_to_stderr", "(i32) -> i32"),
     ("vx_init_signals", "()"),
-    ("print_bool", "(i32) -> i32"),
+    ("vx_print_bool", "(i32) -> i32"),
     ("printMemrefU32", "(memref<*xi32>)"),
     ("printMemrefU64", "(memref<*xi64>)"),
     ("printMemrefI8", "(memref<*xi8>)"),
@@ -2728,7 +2728,7 @@ impl<'a> FnEmit<'a> {
             // into VMEM/TMEM, and they are dropped otherwise.
             Opcode::Transfer => self.op_transfer(idx, ins),
             // Print a value (no result). A tensor is `memref.cast`'d to an unranked memref and passed
-            // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same
+            // to the `printMemref*` runtime helper; a scalar goes to `vx_print_*`. These are the same
             // helpers the AST path calls; `emit_module_mlir` prepends their `private` declarations.
             Opcode::Print => self.op_print(idx, ins),
             // Open a `vx.spawn` region (generic form). The op is inline in the enclosing block, which
@@ -2784,7 +2784,7 @@ impl<'a> FnEmit<'a> {
                 Ok(())
             }
             // Print a string literal (no result): take the address of the module-level global emitted
-            // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
+            // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@vx_print_str` runtime
             // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
             // Conditional abort -- `assert`, and `abort()` with a constant-false condition.
             // `cf.assert` rather than a hand-written branch onto a call, because MLIR lowers it

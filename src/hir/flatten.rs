@@ -912,7 +912,7 @@ impl<'r> Lowerer<'r> {
     /// Bind a fresh local name to a value: an SSA alias in straight-line mode, or an `Alloca` slot
     /// (+ initializing `Store`) in memory mode.
     /// Emit a `Print` for a value: `type_idx` carries the value's type (scalar or tensor) so codegen
-    /// routes to the right `print_*` / `printMemref*` runtime helper.
+    /// routes to the right `vx_print_*` / `printMemref*` runtime helper.
     /// A scalar returned from a function whose return type is a dims-less tensor wraps into a
     /// rank-0 buffer -- the return-position analogue of the let-binding materialization (Vx#396).
     /// Any other value passes through.
@@ -1001,7 +1001,7 @@ impl<'r> Lowerer<'r> {
 
     /// Emit a `PrintStr` for a string literal (no result): record the bytes in the string side table
     /// and carry that entry's index in `imm`. Codegen emits an `llvm.mlir.global` for the bytes and
-    /// calls `@print_str` — matching the AST path's string `print!` argument.
+    /// calls `@vx_print_str` — matching the AST path's string `print!` argument.
     fn emit_print_str(&mut self, s: &str) {
         let imm = self.strings.len() as u64;
         self.strings.push(s.to_string());
@@ -1082,13 +1082,13 @@ impl<'r> Lowerer<'r> {
 
     /// Lower one `print!`/`println!` argument to what is printed: a string literal is text, and
     /// any other argument is lowered as a value, which `emit_print` routes to the scalar or tensor
-    /// `print_*` helper by its type.
+    /// `vx_print_*` helper by its type.
     fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<PrintPiece> {
         if let Expr::StringLiteral(sl) = arg {
             return Ok(PrintPiece::Text(sl.value.to_string()));
         }
         // A `String` value prints its bytes: the runtime hands out a C copy of the handle in
-        // the `ptr` field, `print_str` prints it, and the copy is freed. The runtime's entry
+        // the `ptr` field, `vx_print_str` prints it, and the copy is freed. The runtime's entry
         // points are the ones `std::string` declares, so a program that has not brought them
         // into scope declines.
         let is_string = self.infer_ast_type(arg).is_some_and(
@@ -7964,7 +7964,7 @@ impl<'r> Lowerer<'r> {
                 }),
                 // `print(x)` is a statement-level effect (no result): lower its one argument and emit
                 // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
-                // routes to the right `print_*`/`printMemref*` runtime helper.
+                // routes to the right `vx_print_*`/`printMemref*` runtime helper.
                 // `abort()` -- terminate unconditionally, expressed as a conditional abort
                 // whose condition is `false`. One form serves both, and it inherits the same
                 // target portability: on the host it becomes `abort()`, inside a kernel
@@ -8016,11 +8016,11 @@ impl<'r> Lowerer<'r> {
                     Ok(())
                 }
                 // The `print!` macro form (`Expr::Print`): prints each argument in sequence via the same
-                // `print_*` / `print_str` helpers, no separators — matching the AST codegen. A
+                // `vx_print_*` / `vx_print_str` helpers, no separators — matching the AST codegen. A
                 // `StringLiteral` arg emits a `PrintStr`; any other arg is lowered and `print`ed.
                 Expr::Print(p) => self.lower_print(&p.args, false, p.to_stderr),
                 // The `println!` macro form (`Expr::Println`): print each argument (as `print!`), then a
-                // trailing newline. The AST path calls a `println()` runtime helper for the newline;
+                // trailing newline. The AST path calls a `vx_println()` runtime helper for the newline;
                 // printing a `"\n"` string is byte-identical, so reuse `PrintStr` and add no new helper.
                 Expr::Println(p) => self.lower_print(&p.args, true, p.to_stderr),
                 other => {
