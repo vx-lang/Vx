@@ -1,0 +1,63 @@
+//===- a_struct_with_many_fields_is_written_once.vx --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>/dev/null | FileCheck %s
+//
+// In the printed MLIR, a struct with 17 fields or more gets the short name `!vx_struct`. Its
+// fields are written once, where the name is defined, and a field access uses the name. A struct
+// with 16 fields keeps its full type at each use.
+
+// CHECK: !vx_struct = !llvm.struct<(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)>
+struct Wide {
+  f0 : i64,
+  f1 : i64,
+  f2 : i64,
+  f3 : i64,
+  f4 : i64,
+  f5 : i64,
+  f6 : i64,
+  f7 : i64,
+  f8 : i64,
+  f9 : i64,
+  f10 : i64,
+  f11 : i64,
+  f12 : i64,
+  f13 : i64,
+  f14 : i64,
+  f15 : i64,
+  f16 : i64,
+}
+
+struct Narrow {
+  f0 : i64,
+  f1 : i64,
+  f2 : i64,
+  f3 : i64,
+  f4 : i64,
+  f5 : i64,
+  f6 : i64,
+  f7 : i64,
+  f8 : i64,
+  f9 : i64,
+  f10 : i64,
+  f11 : i64,
+  f12 : i64,
+  f13 : i64,
+  f14 : i64,
+  f15 : i64,
+}
+
+// CHECK-LABEL: func.func @read_both
+// CHECK: llvm.getelementptr {{.*}}, !vx_struct{{$}}
+// CHECK: llvm.getelementptr {{.*}}, !llvm.struct<(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)>{{$}}
+fn read_both(w : &Wide, n : &Narrow) -> i64 {
+  return w.f3 + n.f3;
+}
+
+fn main() -> i32 {
+  return 0;
+}
