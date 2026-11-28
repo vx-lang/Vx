@@ -51,6 +51,10 @@ For example: "46.8 against 45.0 generated tokens a second (1.04×), Qwen3-Coder-
   at `-O0` and 0.9 ms at `-O2`. A release build of llama.cpp compiles at `-O3`.
 - **Resolve every "auto".** Record the value that each `auto` or default setting chose, for example
   flash attention or the thread count.
+- **A warm pass over large data.** On macOS, the first pass that writes a large fresh allocation can
+  be 4 to 5 times slower than the passes after it, and the trace of the slow pass shows no page fault
+  and no disk access (#3898). Run one pass over the data before the timed passes, and leave it out of
+  the numbers.
 - **At least 3 runs** of each case. Alternate the order of the programs between rounds, and wait for
   an idle machine before each run.
 - **Keep every run**, outliers too. Report the median, the fastest and the slowest run. If a run is
