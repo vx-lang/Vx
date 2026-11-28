@@ -218,8 +218,8 @@ impl ModuleLoader {
                 }
             }
         }
-        self.rename_clashes(&mut programs)?;
         self.name_packages(&mut programs);
+        self.rename_clashes(&mut programs)?;
         Ok(programs)
     }
 
@@ -304,6 +304,8 @@ impl ModuleLoader {
                 "renaming a clashing name changed an import path"
             );
             renamed.file = program.file.clone();
+            renamed.package = program.package.clone();
+            renamed.standard_library = program.standard_library;
             *program = renamed;
         }
         Ok(())
@@ -341,8 +343,8 @@ impl ModuleLoader {
              it for them would compile an empty program"
         );
         let mut programs: Vec<Program> = self.loaded_modules.values().cloned().collect();
-        self.rename_clashes(&mut programs)?;
         self.name_packages(&mut programs);
+        self.rename_clashes(&mut programs)?;
         Ok(programs)
     }
 

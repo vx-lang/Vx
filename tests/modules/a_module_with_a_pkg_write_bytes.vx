@@ -1,0 +1,18 @@
+//===- a_module_with_a_pkg_write_bytes.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module for `functions_that_an_importer_cannot_call_do_not_clash.vx` and
+// `a_pkg_function_clashes_in_its_own_package.vx`. `core::ptr` also has a `write_bytes`. This one
+// is `pkg`, so only the files of the package `tests` can call it.
+
+pkg fn write_bytes(n : i64) -> i64 {
+  return n + 2;
+}
+
+pub fn two() -> i64 {
+  return write_bytes(0);
+}
