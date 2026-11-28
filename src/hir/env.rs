@@ -1014,10 +1014,12 @@ impl<'a> TypeChecker<'a> {
         let depth = self.scopes.len();
         if let Some(vars) = self.scopes.pop() {
             self.pointer_facts_end_scope(&vars);
-            // After the scope, the name is an outer variable, or no variable.
-            for name in vars.keys() {
-                self.forget_value_facts_about(name.as_ref());
-            }
+            // After the scope, the name is an outer variable, or no variable. One pass over the
+            // facts for all the names of the scope, where a call per name scans the facts once
+            // per variable.
+            let names: std::collections::HashSet<crate::symbol::Symbol> =
+                vars.keys().cloned().collect();
+            self.forget_value_facts_about_any(&names);
         }
         self.borrow.moved_vars.pop();
         self.borrow.mutable_vars.pop();
@@ -1108,6 +1110,27 @@ impl<'a> TypeChecker<'a> {
         self.borrow.shadow(name, self.scopes.len());
     }
 
+    /// The consteval values that `eval_expr` can read while checking `expr`: the scopes' values
+    /// for the names that the expression itself names, innermost binding first. Only those names
+    /// can be read, so a long function does not copy its whole consteval env at each `let`.
+    pub(crate) fn consteval_env_for(&self, expr: &Expr) -> HashMap<crate::symbol::Symbol, Value> {
+        let mut wanted: std::collections::HashSet<crate::symbol::Symbol> = Default::default();
+        crate::syntax::visit_expr(expr, &mut |e| {
+            if let Expr::Identifier(id) = e {
+                wanted.insert(id.name.clone());
+            }
+        });
+        let mut flat = HashMap::new();
+        for name in wanted {
+            for env in self.consteval.env.iter().rev() {
+                if let Some(v) = env.get(&name) {
+                    flat.insert(name, v.clone());
+                    break;
+                }
+            }
+        }
+        flat
+    }
     pub fn insert(&mut self, name: String, ty: Type) {
         self.refuse_a_variable_with_an_extent_name(&name);
         // A new variable of this name: a move of the old one, or of its fields, says nothing
@@ -1120,7 +1143,10 @@ impl<'a> TypeChecker<'a> {
             bound.remove(&name);
         }
         // Nor do the facts about the old one, such as an outer `y == 1` under `Some(y)`.
-        self.forget_value_facts_about(&name);
+        let already_bound = self.scopes.iter().any(|s| s.contains_key(name.as_str()));
+        if already_bound {
+            self.forget_value_facts_about(&name);
+        }
         let current_top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.into(), (ty, current_top));
