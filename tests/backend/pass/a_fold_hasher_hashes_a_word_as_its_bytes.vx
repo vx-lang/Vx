@@ -1,0 +1,101 @@
+//===- a_fold_hasher_hashes_a_word_as_its_bytes.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `folded_multiply` and `FoldHasher`, the hash of `HashMap`.
+//
+// - products: `folded_multiply` gives the two halves of a 128-bit product joined by `^`. The
+//   values come from Python's integers. The first three need a carry between the halves.
+// - words: writing a `u64` hashes the same as writing its 8 bytes, lowest first, also after 3
+//   bytes that are not mixed in yet.
+// - lengths: "a" and "a" then a 0 byte hash differently, because the count of bytes is mixed in.
+// - seeds: the same bytes with other seeds give another hash.
+// - maps: two maps of the same 1000 keys have different random seeds, so their keys come out in
+//   a different order. The two orders are the same with a chance of about 1 in 1000!.
+//
+// EXPECT: products 1 18446744073709551615 18446744073709551615 2528527714576915378 | words true true | lengths true | seeds true | maps true
+
+import core::hash;
+import core::hash::traits;
+import core::option;
+import std::hash_map;
+import std::vec;
+
+fn hash_bytes(seed0 : u64, seed1 : u64, bytes : &Vec<u8>) -> u64 {
+  let mut h = FoldHasher::with_seeds(seed0, seed1);
+  for i in 0..bytes.len() {
+    let _b = h.write_u8(bytes[i]);
+  }
+  return h.finish();
+}
+
+fn main() -> i32 {
+  let all : u64 = 18446744073709551615u64;
+  print!("products ");
+  print(folded_multiply(4294967296u64, 4294967296u64));
+  print!(" ");
+  print(folded_multiply(all, 2u64));
+  print!(" ");
+  print(folded_multiply(all, all));
+  print!(" ");
+  print(folded_multiply(1311768467463790320u64, 1147797409030816545u64));
+
+  // 0x0807060504030201 is the bytes 1 to 8, lowest first.
+  let word : u64 = 578437695752307201u64;
+  let mut by_word = FoldHasher::with_seeds(5u64, 7u64);
+  let _w = by_word.write_u64(word);
+  let mut by_bytes = FoldHasher::with_seeds(5u64, 7u64);
+  for b in 1..9 {
+    let _b = by_bytes.write_u8(b as u8);
+  }
+  print!(" | words ");
+  print(by_word.finish() == by_bytes.finish());
+  let mut late_word = FoldHasher::with_seeds(5u64, 7u64);
+  let mut late_bytes = FoldHasher::with_seeds(5u64, 7u64);
+  for b in 20..23 {
+    let _x = late_word.write_u8(b as u8);
+    let _y = late_bytes.write_u8(b as u8);
+  }
+  let _w2 = late_word.write_u64(word);
+  for b in 1..9 {
+    let _b = late_bytes.write_u8(b as u8);
+  }
+  print!(" ");
+  print(late_word.finish() == late_bytes.finish());
+
+  let mut a = Vec<u8>::new();
+  a.push(97u8);
+  let mut a0 = Vec<u8>::new();
+  a0.push(97u8);
+  a0.push(0u8);
+  print!(" | lengths ");
+  print(hash_bytes(5u64, 7u64, &a) != hash_bytes(5u64, 7u64, &a0));
+  print!(" | seeds ");
+  print(hash_bytes(5u64, 7u64, &a) != hash_bytes(6u64, 7u64, &a));
+
+  let mut m1 = HashMap<i64, i64>::new();
+  let mut m2 = HashMap<i64, i64>::new();
+  for i in 0i64..1000i64 {
+    let _x = m1.insert(i, i);
+    let _y = m2.insert(i, i);
+  }
+  let mut order1 = Vec<i64>::new();
+  for k in m1.keys() {
+    order1.push(*k);
+  }
+  let mut same = true;
+  let mut at = 0;
+  for k in m2.keys() {
+    if order1[at] != *k {
+      same = false;
+    }
+    at += 1;
+  }
+  print!(" | maps ");
+  print(!same);
+  println!("");
+  return 0;
+}

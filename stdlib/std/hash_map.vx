@@ -47,6 +47,9 @@ extern {
   pub fn vx_hash_map_len_i32_f32(ptr : *mut i8) -> i32;
   /// Release the map.
   pub fn vx_hash_map_drop_i32_f32(ptr : *mut i8) -> i32;
+
+  /// A random number for a seed of one `HashMap`. Two calls give different numbers.
+  pkg fn vx_hash_map_seed() -> u64;
 }
 
 // The control byte of a slot that never held a key. A search stops at it.
@@ -68,20 +71,17 @@ enum MapSlot<K, V> {
 /// the hash give and goes on to the next slot until it finds the key or a slot that never held
 /// one. When 7 of each 8 slots are used, the table grows to twice as many.
 ///
-/// The hash is `FxHasher`, which is fast but has no secret seed. So a program that puts keys from
-/// a source it does not trust in a map can be made slow by keys with the same hash.
+/// The hash is `FoldHasher`, with two random seeds for each map. So a program cannot know in
+/// advance which keys get the same hash, and keys from a source it does not trust cannot make
+/// the map slow. The order of `keys` and `values` differs from one map to the next.
 struct HashMap<K, V> {
   ctrl : Vec<u8>,
   slots : Vec<MapSlot<K, V>>,
   len : i32,
   // How many keys can go in slots that never held one, before the table grows.
   growth_left : i32,
-}
-
-fn map_hash<K : Hash>(key : &K) -> u64 {
-  let mut h = FxHasher::new();
-  let _hashed = key.hash(&mut h);
-  return h.finish();
+  seed0 : u64,
+  seed1 : u64,
 }
 
 // The top 7 bits of a hash, which the control byte of a slot with a key holds.
@@ -97,6 +97,13 @@ impl<K : Hash + Eq, V> HashMap<K, V> {
 
   /// An empty map that holds `n` keys before it grows.
   pub fn with_capacity(n : i32) -> HashMap<K, V> {
+    let seed0 = unsafe { vx_hash_map_seed() };
+    let seed1 = unsafe { vx_hash_map_seed() };
+    return HashMap<K, V>::with_seeds(n, seed0, seed1);
+  }
+
+  // An empty map with given seeds. A map that grows keeps its seeds, so a hash stays valid.
+  fn with_seeds(n : i32, seed0 : u64, seed1 : u64) -> HashMap<K, V> {
     let mut slots = 8;
     while slots / 8 * 7 < n {
       slots = slots * 2;
@@ -108,8 +115,20 @@ impl<K : Hash + Eq, V> HashMap<K, V> {
       s.push(MapSlot<K, V>::Empty);
     }
     return HashMap<K, V> {
-      ctrl : ctrl, slots : s, len : 0, growth_left : slots / 8 * 7
+      ctrl : ctrl,
+      slots : s,
+      len : 0,
+      growth_left : slots / 8 * 7,
+      seed0 : seed0,
+      seed1 : seed1,
     };
+  }
+
+  // The hash of `key` with the seeds of this map.
+  fn hash_of(self : &HashMap<K, V>, key : &K) -> u64 {
+    let mut h = FoldHasher::with_seeds(self.seed0, self.seed1);
+    let _hashed = key.hash(&mut h);
+    return h.finish();
   }
 
   /// How many keys the map holds.
@@ -158,11 +177,11 @@ impl<K : Hash + Eq, V> HashMap<K, V> {
 
   // Twice as many slots, with each key moved to its place in the new table.
   fn grow(self : &mut HashMap<K, V>) -> void {
-    let mut bigger = HashMap<K, V>::with_capacity(self.ctrl.len() / 8 * 7 * 2);
+    let mut bigger = HashMap<K, V>::with_seeds(self.ctrl.len() / 8 * 7 * 2, self.seed0, self.seed1);
     for i in 0..self.slots.len() {
       match replace(self.slots.index_mut(i), MapSlot<K, V>::Empty) {
         MapSlot<K, V>::Full(k, v) => {
-          let h = map_hash(&k);
+          let h = bigger.hash_of(&k);
           let _slot = bigger.put_new(k, v, h);
         },
         MapSlot<K, V>::Empty => {}
@@ -189,7 +208,7 @@ impl<K : Hash + Eq, V> HashMap<K, V> {
 
   /// A reference to the value of `key`, or `None`.
   pub fn get(self : &HashMap<K, V>, key : &K) -> Option<&V> {
-    let i = self.find(key, map_hash(key));
+    let i = self.find(key, self.hash_of(key));
     if i < 0 {
       return Option<&V>::None();
     }
@@ -205,7 +224,7 @@ impl<K : Hash + Eq, V> HashMap<K, V> {
 
   /// A mutable reference to the value of `key`, or `None`.
   pub fn get_mut(self : &mut HashMap<K, V>, key : &K) -> Option<&mut V> {
-    let i = self.find(key, map_hash(key));
+    let i = self.find(key, self.hash_of(key));
     if i < 0 {
       return Option<&mut V>::None();
     }
@@ -221,13 +240,13 @@ impl<K : Hash + Eq, V> HashMap<K, V> {
 
   /// True when the map holds `key`.
   pub fn contains_key(self : &HashMap<K, V>, key : &K) -> bool {
-    return self.find(key, map_hash(key)) >= 0;
+    return self.find(key, self.hash_of(key)) >= 0;
   }
 
   /// Puts `value` under `key`, and gives the value that was there, or `None`. A key that the
   /// map holds already keeps its first copy, as in Rust.
   pub fn insert(self : &mut HashMap<K, V>, key : K, value : V) -> Option<V> {
-    let h = map_hash(&key);
+    let h = self.hash_of(&key);
     let i = self.find(&key, h);
     if i < 0 {
       let _slot = self.put_new(key, value, h);
@@ -246,7 +265,7 @@ impl<K : Hash + Eq, V> HashMap<K, V> {
   /// A mutable reference to the value of `key`. When the map does not hold `key`, it puts
   /// `value` under it first. `*m.get_or_insert(k, 0) += 1` counts `k`.
   pub fn get_or_insert(self : &mut HashMap<K, V>, key : K, value : V) -> &mut V {
-    let h = map_hash(&key);
+    let h = self.hash_of(&key);
     let mut i = self.find(&key, h);
     if i < 0 {
       i = self.put_new(key, value, h);
@@ -263,7 +282,7 @@ impl<K : Hash + Eq, V> HashMap<K, V> {
 
   /// Takes `key` and its value out of the map, and gives the value, or `None`.
   pub fn remove(self : &mut HashMap<K, V>, key : &K) -> Option<V> {
-    let i = self.find(key, map_hash(key));
+    let i = self.find(key, self.hash_of(key));
     if i < 0 {
       return Option<V>::None();
     }

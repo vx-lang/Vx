@@ -148,3 +148,82 @@ impl Hasher for SipHasher13 {
     return a5.v0 ^ a5.v1 ^ a5.v2 ^ a5.v3;
   }
 }
+
+/// The 128-bit product of `a` and `b`, with its two 64-bit halves joined by `^`. Each bit of the
+/// result depends on many bits of both inputs. Vx has no 128-bit integer, so this multiplies the
+/// 32-bit halves.
+pub fn folded_multiply(a : u64, b : u64) -> u64 {
+  let low : u64 = 4294967295u64;
+  let a_lo = a & low;
+  let a_hi = a >> 32u64;
+  let b_lo = b & low;
+  let b_hi = b >> 32u64;
+  let lo_lo = a_lo * b_lo;
+  let hi_lo = a_hi * b_lo;
+  let lo_hi = a_lo * b_hi;
+  let hi_hi = a_hi * b_hi;
+  // At most 2^64 - 1, so the sum does not wrap.
+  let cross = (lo_lo >> 32u64) + (hi_lo & low) + lo_hi;
+  let lo = (cross << 32u64) | (lo_lo & low);
+  let hi = hi_hi + (hi_lo >> 32u64) + (cross >> 32u64);
+  return lo ^ hi;
+}
+
+/// A fast hasher with two secret seeds, in the way of Rust's foldhash. It mixes each 8 bytes into
+/// its state with one `folded_multiply` by a seed. A program that does not know the seeds cannot
+/// make many keys with the same hash. `std::hash_map` gives each map two random seeds.
+///
+/// Writing a `u64` gives the same hash as writing its 8 bytes, lowest first.
+struct FoldHasher {
+  acc : u64,
+  fold : u64,
+  // The bytes not mixed in yet, lowest first, and how many there are.
+  buf : u64,
+  nbuf : u64,
+  // How many bytes the state holds already.
+  mixed : u64,
+}
+
+impl FoldHasher {
+  pub fn with_seeds(seed0 : u64, seed1 : u64) -> FoldHasher {
+    return FoldHasher {
+      acc : seed0, fold : seed1, buf : 0u64, nbuf : 0u64, mixed : 0u64
+    };
+  }
+}
+
+impl Hasher for FoldHasher {
+  fn write_u8(self : &mut FoldHasher, b : u8) -> i32 {
+    self.buf = self.buf | ((b as u64) << (self.nbuf * 8u64));
+    self.nbuf = self.nbuf + 1u64;
+    if self.nbuf == 8u64 {
+      self.acc = folded_multiply(self.acc ^ self.buf, self.fold);
+      self.mixed = self.mixed + 8u64;
+      self.buf = 0u64;
+      self.nbuf = 0u64;
+    }
+    return 0;
+  }
+
+  fn write_u64(self : &mut FoldHasher, v : u64) -> i32 {
+    if self.nbuf == 0u64 {
+      self.acc = folded_multiply(self.acc ^ v, self.fold);
+      self.mixed = self.mixed + 8u64;
+      return 0;
+    }
+    let mut x : u64 = v;
+    for _i in 0..8 {
+      let _byte = self.write_u8((x & 255u64) as u8);
+      x = x >> 8u64;
+    }
+    return 0;
+  }
+
+  fn finish(self : &FoldHasher) -> u64 {
+    // The count of bytes goes in the top byte, which the at most 7 bytes left never reach. So
+    // "a" and "a" then a 0 byte do not hash the same.
+    let count : u64 = (self.mixed + self.nbuf) & 255u64;
+    let last = folded_multiply(self.acc ^ self.buf ^ (count << 56u64), self.fold);
+    return folded_multiply(last, self.fold ^ 11400714819323198485u64);
+  }
+}
