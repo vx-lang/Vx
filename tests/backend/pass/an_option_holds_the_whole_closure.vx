@@ -7,10 +7,11 @@
 //===----------------------------------------------------------------------===//
 // A closure value is two pointers: its captured values and its function. An `Option` of a
 // closure type must hold both, and no declared type in this program has a closure field.
-// Only the default code generator runs this: the legacy one panics on the call of `g`.
-// REQUIRES: flat-codegen
+// The pattern `Option::Some(g)` names no type arguments, so the type of `g` comes from the
+// matched value, and the call of `g` needs it.
 //
 // RUN: env VX_NO_AST_FALLBACK=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}the closure in the option gives 6{{$}}
 
 import core::option;
