@@ -2049,6 +2049,9 @@ impl<'a> TypeChecker<'a> {
                 // placement in its type, so each read through it is checked where it happens.
                 let borrows_placed = Self::extract_base_and_path(inner).is_some()
                     && self.check_expr_type_probe(inner).placement().is_some();
+                if *is_mut && !self.speculating {
+                    self.index_through_index_mut(inner);
+                }
                 if *is_mut {
                     self.record_change(inner);
                     self.note_a_change_to(inner);
@@ -2164,6 +2167,42 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// In the place of a `&mut`, `a[i]` on a type with `IndexMut` becomes `*a.index_mut(i)`, as in
+    /// Rust, also inside `a[i][j]` and `a[i].f`. A read `a[i]` of a `Copy` element is a copy, so
+    /// a `&mut` of it pointed at the copy, and a write through it was lost.
+    fn index_through_index_mut(&mut self, place: &mut Expr) {
+        match place {
+            Expr::MemberAccess(m) => self.index_through_index_mut(&mut m.base),
+            Expr::IndexAccess(ix) => {
+                self.index_through_index_mut(&mut ix.base);
+                let ty = match self.operand_type(&ix.base) {
+                    Type::Borrow { inner, .. } => *inner,
+                    ty => ty,
+                };
+                let has_index_mut = Self::is_user_type(&ty)
+                    && self
+                        .resolve_method_in_impls(&ty, &"index_mut".into(), &mut HashMap::new())
+                        .is_some();
+                if has_index_mut {
+                    let span = ix.span;
+                    let call = Expr::MethodCall(crate::syntax::MethodCallExpr {
+                        base: ix.base.clone(),
+                        method_name: "index_mut".into(),
+                        type_args: None,
+                        args: vec![(*ix.index).clone()],
+                        span,
+                    });
+                    *place = Expr::Dereference(crate::syntax::expr::DereferenceExpr {
+                        expr: Box::new(call),
+                        ty: None,
+                        span,
+                    });
+                }
+            }
+            _ => {}
         }
     }
 

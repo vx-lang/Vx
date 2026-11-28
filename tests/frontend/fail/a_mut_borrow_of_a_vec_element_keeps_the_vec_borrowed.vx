@@ -1,0 +1,44 @@
+//===- a_mut_borrow_of_a_vec_element_keeps_the_vec_borrowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `&mut v[i]` borrows `v` as `v.index_mut(i)` does, so the rules of a `&mut v` hold:
+// - `v` must be `mut`,
+// - a second `&mut v[j]` waits until the first one is no longer in use,
+// - and `v.push(..)`, which can move the elements, waits too.
+import std::vec;
+
+fn bump(x : &mut i32) -> void {
+  *x = *x + 1;
+}
+
+fn not_mut(w : Vec<i32>) -> void {
+  let v = w;
+  // CHECK: Error[E4010] at {{.*}}a_mut_borrow_of_a_vec_element_keeps_the_vec_borrowed.vx:[[@LINE+1]]:14: `v` is not declared `mut`
+  bump(&mut v[0]);
+}
+
+fn two_elements(v : &mut Vec<i32>) -> void {
+  let a = &mut v[0];
+  // CHECK: Error[E4004] at {{.*}}a_mut_borrow_of_a_vec_element_keeps_the_vec_borrowed.vx:[[@LINE+1]]:17: Cannot borrow 'v' because it is already borrowed as mutable.
+  let b = &mut v[1];
+  *a = 3;
+  *b = 4;
+}
+
+fn push_while_borrowed(v : &mut Vec<i32>) -> void {
+  let r = &mut v[0];
+  // CHECK: Error[E4004] at {{.*}}a_mut_borrow_of_a_vec_element_keeps_the_vec_borrowed.vx:[[@LINE+1]]:5: Cannot borrow 'v' because it is already borrowed as mutable.
+  v.push(2);
+  *r = 5;
+}
+
+// CHECK: 3 error(s) emitted
+fn main() -> i32 {
+  return 0;
+}
