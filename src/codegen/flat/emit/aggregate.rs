@@ -40,7 +40,7 @@ impl FnEmit<'_> {
         let p = format!("%p{idx}");
         self.body += &format!(
             "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
-            agg.struct_ty
+            self.ctx.field_access_ty(&gid, agg)
         );
         // A tensor value goes in as its descriptor. A rank the field does not have (a rank-0
         // `Tensor<f32>()` for a `[?, ?]` field, which the checker admits) has no descriptor the
@@ -181,7 +181,7 @@ impl FnEmit<'_> {
         let n = format!("%v{idx}");
         self.body += &format!(
             "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
-            agg.struct_ty
+            self.ctx.field_access_ty(&gid, agg)
         );
         // Read back at the type this instruction says it produces, for the same reason the
         // store writes at the value's: an enum payload slot holds whichever variant was
@@ -296,7 +296,7 @@ impl FnEmit<'_> {
         let n = format!("%v{idx}");
         self.body += &format!(
             "  {n} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
-            agg.struct_ty
+            self.ctx.field_access_ty(&parent_gid, agg)
         );
         self.names[idx] = n;
         // A nested-aggregate field's address is tracked as an aggregate slot, so a chained field
