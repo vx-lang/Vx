@@ -5625,6 +5625,7 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
             match_val,
             match_ty,
             matched_reference.as_ref(),
+            scrutinee_ty.as_ref(),
             block,
             merge_block,
             value_ty,

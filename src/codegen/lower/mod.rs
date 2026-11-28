@@ -851,6 +851,7 @@ pub fn generate_match_chain<'c>(
     match_val: melior::ir::Value<'c, 'c>,
     _match_ty: melior::ir::Type<'c>,
     matched_reference: Option<&MatchedReference<'c>>,
+    scrutinee_ty: Option<&syntax::Type>,
     block: melior::ir::BlockRef<'c, 'c>,
     merge_block: melior::ir::BlockRef<'c, 'c>,
     value_ty: Option<melior::ir::Type<'c>>,
@@ -1081,8 +1082,16 @@ pub fn generate_match_chain<'c>(
                 gen.env.insert(name.to_string().into(), (slot, gen.ptr_ty));
                 continue;
             }
-            // The Vx type of the name, so a later `transfer` of it knows where its data is.
-            match crate::codegen::lower::expr::variant_payload_type(gen, en, vn, position, None) {
+            // The Vx type of the name, so a later `transfer` of it knows where its data is, and a
+            // call of a closure knows its signature. `Option::Some(g)` names no type arguments,
+            // so they come from the scrutinee.
+            let matched_ty = match scrutinee_ty {
+                Some(syntax::Type::Borrow { inner, .. }) => Some(inner.as_ref()),
+                other => other,
+            };
+            match crate::codegen::lower::expr::variant_payload_type(
+                gen, en, vn, position, matched_ty,
+            ) {
                 Some(ty) => gen.ast_env.insert(name.to_string().into(), ty),
                 None => gen.ast_env.remove(name.as_ref()),
             };
@@ -1243,6 +1252,7 @@ pub fn generate_match_chain<'c>(
         match_val,
         _match_ty,
         matched_reference,
+        scrutinee_ty,
         else_block,
         merge_block,
         value_ty,
