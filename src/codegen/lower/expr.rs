@@ -795,8 +795,15 @@ pub(crate) fn deref_target<'c>(
                 return Ok((val, ty, block));
             }
         }
+        return gen.generate_expr(expr, block);
     }
-    gen.generate_expr(expr, block)
+    // The pointer is a value, also when `*p` is a place: in `&*b.ptr`, the place is what
+    // `b.ptr` points to, not the field `ptr`.
+    let prev_lvalue = gen.is_lvalue_context;
+    gen.is_lvalue_context = false;
+    let target = gen.generate_expr(expr, block);
+    gen.is_lvalue_context = prev_lvalue;
+    target
 }
 
 impl<'c> LowerToMelior<'c> for DereferenceExpr {
