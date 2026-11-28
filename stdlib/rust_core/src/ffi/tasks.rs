@@ -85,6 +85,11 @@ pub(crate) struct Deadline {
     at: i64,
     /// A `drop`, not a call of `within`.
     drop: bool,
+    /// The time limit of a `drop`, in nanoseconds.
+    limit: i64,
+    /// How many `drop`s inside this one share its scope, because a scope of their own would
+    /// change nothing.
+    inner_drops: u32,
 }
 
 /// The scopes with a deadline that this task runs in, innermost last.
@@ -144,6 +149,8 @@ pub(crate) fn deadlines_for_a_task() -> PutAside {
         mark: None,
         at,
         drop: false,
+        limit: 0,
+        inner_drops: 0,
     })
     .into_iter()
     .collect()
@@ -154,7 +161,15 @@ pub(crate) fn deadlines_for_a_task() -> PutAside {
 fn push_deadline(mark: Option<Arc<CancelMark>>, limit_ns: i64, drop: bool) {
     let at = crate::ffi::wait::vx_clock_ns().saturating_add(limit_ns);
     let at = drop_deadline().map_or(at, |outer| outer.min(at));
-    PUT_ASIDE.with(|p| p.borrow_mut().push(Deadline { mark, at, drop }));
+    PUT_ASIDE.with(|p| {
+        p.borrow_mut().push(Deadline {
+            mark,
+            at,
+            drop,
+            limit: limit_ns,
+            inner_drops: 0,
+        })
+    });
 }
 
 /// Before a `drop`: this thread runs with no mark until `vx_cancel_on`, so no wait gives
@@ -164,15 +179,42 @@ fn push_deadline(mark: Option<Arc<CancelMark>>, limit_ns: i64, drop: bool) {
 /// with no parent.
 #[no_mangle]
 pub extern "C" fn vx_cancel_off(limit_ns: i64) {
-    let mark = CURRENT.with(|c| c.borrow_mut().take());
     let limit_ns = limit_ns.max(0);
     let limit_ns = drop_wait_cap_ns().map_or(limit_ns, |cap| cap.min(limit_ns));
-    push_deadline(mark, limit_ns, true);
+    // In a `drop` with no mark current, a `drop` whose limit is not shorter gets the same
+    // deadline and no mark. So it shares that scope, with no clock read. A tree drops this way.
+    let no_mark = CURRENT.with(|c| c.borrow().is_none());
+    let shared = no_mark
+        && PUT_ASIDE.with(|p| match p.borrow_mut().last_mut() {
+            Some(top) if top.drop && limit_ns >= top.limit => {
+                top.inner_drops += 1;
+                true
+            }
+            _ => false,
+        });
+    if !shared {
+        let mark = CURRENT.with(|c| c.borrow_mut().take());
+        push_deadline(mark, limit_ns, true);
+    }
 }
 
 /// After a `drop`: the mark that `vx_cancel_off` put aside comes back.
 #[no_mangle]
 pub extern "C" fn vx_cancel_on() {
+    let shared = PUT_ASIDE.with(|p| match p.borrow_mut().last_mut() {
+        Some(top) if top.drop && top.inner_drops > 0 => {
+            top.inner_drops -= 1;
+            true
+        }
+        _ => false,
+    });
+    if shared {
+        assert!(
+            CURRENT.with(|c| c.borrow().is_none()),
+            "a tasks block in a drop did not end"
+        );
+        return;
+    }
     let scope = PUT_ASIDE.with(|p| p.borrow_mut().pop());
     let scope = scope.expect("vx_cancel_on comes after vx_cancel_off");
     assert!(scope.drop, "a call of `within` in a drop did not end");
@@ -623,6 +665,69 @@ mod tests {
             vx_task_start_at(group, record_inner, e as *mut u8, c"b.vx".as_ptr(), 20);
             vx_tasks_end(group);
         }
+    }
+
+    /// The deadline and the count of inner drops of each scope on this thread, innermost last.
+    fn scopes() -> Vec<(i64, u32)> {
+        PUT_ASIDE.with(|p| p.borrow().iter().map(|d| (d.at, d.inner_drops)).collect())
+    }
+
+    const SECOND: i64 = 1_000_000_000;
+
+    #[test]
+    fn a_drop_in_a_drop_with_a_limit_that_is_not_shorter_shares_its_scope() {
+        vx_cancel_off(SECOND);
+        let outer = scopes()[0].0;
+        vx_cancel_off(SECOND);
+        vx_cancel_off(5 * SECOND);
+        assert_eq!(scopes(), vec![(outer, 2)]);
+        vx_cancel_on();
+        vx_cancel_on();
+        assert_eq!(scopes(), vec![(outer, 0)]);
+        vx_cancel_on();
+        assert_eq!(scopes(), vec![]);
+    }
+
+    #[test]
+    fn a_drop_in_a_drop_with_a_shorter_limit_gets_an_earlier_deadline() {
+        vx_cancel_off(10 * SECOND);
+        vx_cancel_off(SECOND / 1000);
+        let s = scopes();
+        assert_eq!(s.len(), 2);
+        assert!(s[1].0 < s[0].0);
+        vx_cancel_on();
+        vx_cancel_on();
+        assert_eq!(scopes(), vec![]);
+    }
+
+    #[test]
+    fn a_drop_in_a_tasks_block_in_a_drop_puts_the_mark_of_the_block_aside() {
+        vx_cancel_off(SECOND);
+        let mark = Arc::new(CancelMark {
+            set: AtomicBool::new(false),
+            parent: None,
+        });
+        CURRENT.with(|c| *c.borrow_mut() = Some(mark));
+        vx_cancel_off(SECOND);
+        assert_eq!(scopes().len(), 2);
+        assert!(CURRENT.with(|c| c.borrow().is_none()));
+        vx_cancel_on();
+        assert!(CURRENT.with(|c| c.borrow().is_some()));
+        CURRENT.with(|c| *c.borrow_mut() = None);
+        vx_cancel_on();
+        assert_eq!(scopes(), vec![]);
+    }
+
+    #[test]
+    fn a_drop_in_a_call_of_within_in_a_drop_gets_its_own_scope() {
+        vx_cancel_off(SECOND);
+        vx_within_start(SECOND);
+        vx_cancel_off(SECOND);
+        assert_eq!(scopes().len(), 3);
+        vx_cancel_on();
+        vx_within_end();
+        vx_cancel_on();
+        assert_eq!(scopes(), vec![]);
     }
 
     #[test]
