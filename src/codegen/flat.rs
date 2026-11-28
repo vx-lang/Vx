@@ -1996,10 +1996,15 @@ pub fn emit_module_mlir(
         // Only the strings the code takes the address of become globals: an assert message
         // or a spawn's topology name is written into the op itself.
         let strs = string_tables.get(fi).copied().unwrap_or(&[]);
+        if strs.is_empty() {
+            continue;
+        }
         let text = emission.as_ref().map(|(t, _, _)| t.as_str()).unwrap_or("");
+        // One scan of the text, not one search of it for each string.
+        let named = string_globals_named_in(text);
         for (li, s) in strs.iter().enumerate() {
             let n = str_bases[fi] + li;
-            if text.contains(&format!("@\".str.{n}\"")) {
+            if named.contains(&n) {
                 globals += &emit_string_global(n, s);
             }
         }
@@ -2090,6 +2095,21 @@ pub fn emit_module_mlir(
         calls.into_par_iter().for_each(drop);
     }
     Ok(module)
+}
+
+/// The numbers `n` of the string globals `@".str.<n>"` that `text` names.
+fn string_globals_named_in(text: &str) -> std::collections::HashSet<usize> {
+    const PREFIX: &str = "@\".str.";
+    let mut named = std::collections::HashSet::new();
+    for (at, _) in text.match_indices(PREFIX) {
+        let rest = &text[at + PREFIX.len()..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        // A whole name ends with its closing quote.
+        if digits > 0 && rest.as_bytes().get(digits) == Some(&b'"') {
+            named.insert(rest[..digits].parse().expect("only digits"));
+        }
+    }
+    named
 }
 
 /// Emit the module-level `llvm.mlir.global` for a string literal: an internal constant array holding
@@ -3097,6 +3117,18 @@ mod tests {
     use crate::hir::flatten::lower_function_to_hir;
     use crate::session::{GlobalSession, LocalWorkerState};
     use std::sync::Arc;
+
+    /// Only a whole name `@".str.<n>"` counts, with all of its digits and its closing quote.
+    #[test]
+    fn string_globals_named_in_reads_whole_names() {
+        let text = r#"%a = llvm.mlir.addressof @".str.12" : !llvm.ptr
+%b = llvm.mlir.addressof @".str.3" : !llvm.ptr
+%c = llvm.mlir.addressof @".str.3" : !llvm.ptr
+@".str." @".str.x" @".str.7"#;
+        let mut named: Vec<usize> = string_globals_named_in(text).into_iter().collect();
+        named.sort();
+        assert_eq!(named, vec![3, 12]);
+    }
 
     /// The prefix for an `mlir!` block's function grows until no function starts with it.
     #[test]
