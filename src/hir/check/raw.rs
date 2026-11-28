@@ -1355,23 +1355,21 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn forget_value_facts_about(&mut self, name: &str) {
         for c in self.consteval.constraints.iter_mut() {
             if expr_mentions(c, name) {
-                *c = Expr::RelationalOp(RelationalOpExpr {
-                    lhs: Box::new(Expr::Number(NumberExpr {
-                        written: None,
-                        value: "0".to_string().into(),
-                        ty: None,
-                        span: Span::default(),
-                    })),
-                    op: RelationalOp::Eq,
-                    rhs: Box::new(Expr::Number(NumberExpr {
-                        written: None,
-                        value: "0".to_string().into(),
-                        ty: None,
-                        span: Span::default(),
-                    })),
-                    span: Span::default(),
-                    operand_ty: None,
-                });
+                *c = neutral_fact();
+            }
+        }
+    }
+
+    /// Overwrite each prover fact that names any of `names`, as `forget_value_facts_about` does.
+    /// The end of a scope calls this once for the scope's variables, where the single-name version
+    /// would scan the facts once per variable.
+    pub(crate) fn forget_value_facts_about_any(
+        &mut self,
+        names: &std::collections::HashSet<crate::symbol::Symbol>,
+    ) {
+        for c in self.consteval.constraints.iter_mut() {
+            if expr_mentions_any(c, names) {
+                *c = neutral_fact();
             }
         }
     }
@@ -1797,6 +1795,41 @@ fn names_more_than_other_fields(
         Expr::AsCast(c) => more(&c.expr),
         _ => expr_mentions(e, root.as_ref()),
     }
+}
+
+/// The prover fact for a name that was rebound: `0 == 0`, true, and about no variable.
+fn neutral_fact() -> Expr {
+    Expr::RelationalOp(RelationalOpExpr {
+        lhs: Box::new(Expr::Number(NumberExpr {
+            written: None,
+            value: "0".to_string().into(),
+            ty: None,
+            span: Span::default(),
+        })),
+        op: RelationalOp::Eq,
+        rhs: Box::new(Expr::Number(NumberExpr {
+            written: None,
+            value: "0".to_string().into(),
+            ty: None,
+            span: Span::default(),
+        })),
+        span: Span::default(),
+        operand_ty: None,
+    })
+}
+
+/// Whether `e` names any of `names`. The batch form of `expr_mentions`, for the end of a scope,
+/// which checks the facts of the function once against the scope's variables.
+pub(crate) fn expr_mentions_any(e: &Expr, names: &std::collections::HashSet<crate::symbol::Symbol>) -> bool {
+    let mut found = false;
+    crate::syntax::visit_expr(e, &mut |sub| {
+        if let Expr::Identifier(id) = sub {
+            if names.contains(&id.name) {
+                found = true;
+            }
+        }
+    });
+    found
 }
 
 pub(crate) fn expr_mentions(e: &Expr, name: &str) -> bool {

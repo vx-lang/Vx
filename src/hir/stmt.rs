@@ -814,12 +814,7 @@ impl<'a> TypeChecker<'a> {
         self.current_assignment_target = None;
         self.pending_lets.pop();
 
-        let mut tmp_env = HashMap::new();
-        for env in &self.consteval.env {
-            for (k, v) in env {
-                tmp_env.insert(k.clone(), v.clone());
-            }
-        }
+        let tmp_env = self.consteval_env_for(expr);
         if let Some(val) = self.eval_expr(expr, &tmp_env) {
             self.consteval
                 .env
@@ -3276,12 +3271,7 @@ impl<'a> TypeChecker<'a> {
         if self.consteval.comptime_depth > 0 && !is_verified {
             return;
         }
-        let mut tmp_env = HashMap::new();
-        for env in &self.consteval.env {
-            for (k, v) in env {
-                tmp_env.insert(k.clone(), v.clone());
-            }
-        }
+        let tmp_env = self.consteval_env_for(expr);
         // Each assert has its own loop budget.
         let outer_steps = self.consteval.loop_steps.replace(0);
         let eval_res = self.eval_expr(expr, &tmp_env);
