@@ -1,0 +1,266 @@
+//===- core_num_to_bytes_and_from_bytes.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `to_le_bytes`, `to_be_bytes` and the `from_*_bytes` functions, for every integer width,
+// `usize`, `f32` and `f64`, on a little-endian target.
+//
+// Each line prints the little-endian and big-endian bytes of three values. The EXPECT lines
+// are what Rust prints for the same values. The asserts check that each `from_*_bytes` gives
+// back the value that the matching `to_*_bytes` started from. For the floats the asserts
+// compare bits, so a NaN must keep its payload and -0.0 must keep its sign.
+import core::convert;
+import core::num;
+
+fn show_1(b : Tensor<u8, [1]>) -> i32 {
+  print!("[");
+  print(b[0]);
+  print!("]");
+  return 0;
+}
+
+fn show_2(b : Tensor<u8, [2]>) -> i32 {
+  print!("[");
+  print(b[0]);
+  print!(" ");
+  print(b[1]);
+  print!("]");
+  return 0;
+}
+
+fn show_4(b : Tensor<u8, [4]>) -> i32 {
+  print!("[");
+  print(b[0]);
+  print!(" ");
+  print(b[1]);
+  print!(" ");
+  print(b[2]);
+  print!(" ");
+  print(b[3]);
+  print!("]");
+  return 0;
+}
+
+fn show_8(b : Tensor<u8, [8]>) -> i32 {
+  print!("[");
+  print(b[0]);
+  print!(" ");
+  print(b[1]);
+  print!(" ");
+  print(b[2]);
+  print!(" ");
+  print(b[3]);
+  print!(" ");
+  print(b[4]);
+  print!(" ");
+  print(b[5]);
+  print!(" ");
+  print(b[6]);
+  print!(" ");
+  print(b[7]);
+  print!("]");
+  return 0;
+}
+
+fn check_i8(x : i8) -> i32 {
+  print!(" le=");
+  show_1(x.to_le_bytes());
+  print!(" be=");
+  show_1(x.to_be_bytes());
+  print!(";");
+  assert(i8::from_le_bytes(x.to_le_bytes()) == x, "i8 from_le_bytes");
+  assert(i8::from_be_bytes(x.to_be_bytes()) == x, "i8 from_be_bytes");
+  assert(i8::from_ne_bytes(x.to_ne_bytes()) == x, "i8 from_ne_bytes");
+  return 0;
+}
+
+fn check_u8(x : u8) -> i32 {
+  print!(" le=");
+  show_1(x.to_le_bytes());
+  print!(" be=");
+  show_1(x.to_be_bytes());
+  print!(";");
+  assert(u8::from_le_bytes(x.to_le_bytes()) == x, "u8 from_le_bytes");
+  assert(u8::from_be_bytes(x.to_be_bytes()) == x, "u8 from_be_bytes");
+  assert(u8::from_ne_bytes(x.to_ne_bytes()) == x, "u8 from_ne_bytes");
+  return 0;
+}
+
+fn check_i16(x : i16) -> i32 {
+  print!(" le=");
+  show_2(x.to_le_bytes());
+  print!(" be=");
+  show_2(x.to_be_bytes());
+  print!(";");
+  assert(i16::from_le_bytes(x.to_le_bytes()) == x, "i16 from_le_bytes");
+  assert(i16::from_be_bytes(x.to_be_bytes()) == x, "i16 from_be_bytes");
+  assert(i16::from_ne_bytes(x.to_ne_bytes()) == x, "i16 from_ne_bytes");
+  return 0;
+}
+
+fn check_u16(x : u16) -> i32 {
+  print!(" le=");
+  show_2(x.to_le_bytes());
+  print!(" be=");
+  show_2(x.to_be_bytes());
+  print!(";");
+  assert(u16::from_le_bytes(x.to_le_bytes()) == x, "u16 from_le_bytes");
+  assert(u16::from_be_bytes(x.to_be_bytes()) == x, "u16 from_be_bytes");
+  assert(u16::from_ne_bytes(x.to_ne_bytes()) == x, "u16 from_ne_bytes");
+  return 0;
+}
+
+fn check_i32(x : i32) -> i32 {
+  print!(" le=");
+  show_4(x.to_le_bytes());
+  print!(" be=");
+  show_4(x.to_be_bytes());
+  print!(";");
+  assert(i32::from_le_bytes(x.to_le_bytes()) == x, "i32 from_le_bytes");
+  assert(i32::from_be_bytes(x.to_be_bytes()) == x, "i32 from_be_bytes");
+  assert(i32::from_ne_bytes(x.to_ne_bytes()) == x, "i32 from_ne_bytes");
+  return 0;
+}
+
+fn check_u32(x : u32) -> i32 {
+  print!(" le=");
+  show_4(x.to_le_bytes());
+  print!(" be=");
+  show_4(x.to_be_bytes());
+  print!(";");
+  assert(u32::from_le_bytes(x.to_le_bytes()) == x, "u32 from_le_bytes");
+  assert(u32::from_be_bytes(x.to_be_bytes()) == x, "u32 from_be_bytes");
+  assert(u32::from_ne_bytes(x.to_ne_bytes()) == x, "u32 from_ne_bytes");
+  return 0;
+}
+
+fn check_i64(x : i64) -> i32 {
+  print!(" le=");
+  show_8(x.to_le_bytes());
+  print!(" be=");
+  show_8(x.to_be_bytes());
+  print!(";");
+  assert(i64::from_le_bytes(x.to_le_bytes()) == x, "i64 from_le_bytes");
+  assert(i64::from_be_bytes(x.to_be_bytes()) == x, "i64 from_be_bytes");
+  assert(i64::from_ne_bytes(x.to_ne_bytes()) == x, "i64 from_ne_bytes");
+  return 0;
+}
+
+fn check_u64(x : u64) -> i32 {
+  print!(" le=");
+  show_8(x.to_le_bytes());
+  print!(" be=");
+  show_8(x.to_be_bytes());
+  print!(";");
+  assert(u64::from_le_bytes(x.to_le_bytes()) == x, "u64 from_le_bytes");
+  assert(u64::from_be_bytes(x.to_be_bytes()) == x, "u64 from_be_bytes");
+  assert(u64::from_ne_bytes(x.to_ne_bytes()) == x, "u64 from_ne_bytes");
+  return 0;
+}
+
+// `usize` has no `from_*_bytes`, so its bytes are read back as a `u64`.
+fn check_usize(x : usize) -> i32 {
+  print!(" le=");
+  show_8(x.to_le_bytes());
+  print!(" be=");
+  show_8(x.to_be_bytes());
+  print!(";");
+  assert(u64::from_le_bytes(x.to_le_bytes()) == u64::from(x), "usize to_le_bytes");
+  assert(u64::from_be_bytes(x.to_be_bytes()) == u64::from(x), "usize to_be_bytes");
+  assert(u64::from_ne_bytes(x.to_ne_bytes()) == u64::from(x), "usize to_ne_bytes");
+  return 0;
+}
+
+fn check_f32(x : f32) -> i32 {
+  print!(" le=");
+  show_4(x.to_le_bytes());
+  print!(" be=");
+  show_4(x.to_be_bytes());
+  print!(";");
+  assert(f32::from_le_bytes(x.to_le_bytes()).to_bits() == x.to_bits(), "f32 from_le_bytes");
+  assert(f32::from_be_bytes(x.to_be_bytes()).to_bits() == x.to_bits(), "f32 from_be_bytes");
+  assert(f32::from_ne_bytes(x.to_ne_bytes()).to_bits() == x.to_bits(), "f32 from_ne_bytes");
+  return 0;
+}
+
+fn check_f64(x : f64) -> i32 {
+  print!(" le=");
+  show_8(x.to_le_bytes());
+  print!(" be=");
+  show_8(x.to_be_bytes());
+  print!(";");
+  assert(f64::from_le_bytes(x.to_le_bytes()).to_bits() == x.to_bits(), "f64 from_le_bytes");
+  assert(f64::from_be_bytes(x.to_be_bytes()).to_bits() == x.to_bits(), "f64 from_be_bytes");
+  assert(f64::from_ne_bytes(x.to_ne_bytes()).to_bits() == x.to_bits(), "f64 from_ne_bytes");
+  return 0;
+}
+
+fn main() -> i32 {
+  // Each width gets its smallest value, its largest value and a value whose bytes are
+  // 1, 2, 3 and so on, so that a swapped byte order shows.
+  print!("i8:");
+  let i8_min : i8 = -127 - 1;
+  check_i8(i8_min);
+  check_i8(127);
+  check_i8(1);
+  print!("\nu8:");
+  check_u8(0);
+  check_u8(255);
+  check_u8(1);
+  print!("\ni16:");
+  let i16_min : i16 = -32767 - 1;
+  check_i16(i16_min);
+  check_i16(32767);
+  check_i16(258);
+  print!("\nu16:");
+  check_u16(0);
+  check_u16(65535);
+  check_u16(258);
+  print!("\ni32:");
+  check_i32(-2147483647 - 1);
+  check_i32(2147483647);
+  check_i32(16909060);
+  print!("\nu32:");
+  check_u32(0);
+  check_u32(4294967295);
+  check_u32(16909060);
+  print!("\ni64:");
+  let i64_min : i64 = -9223372036854775807 - 1;
+  check_i64(i64_min);
+  check_i64(9223372036854775807);
+  check_i64(72623859790382856);
+  print!("\nu64:");
+  check_u64(0);
+  check_u64(18446744073709551615);
+  check_u64(72623859790382856);
+  print!("\nusize:");
+  check_usize(0);
+  check_usize(9223372036854775807);
+  check_usize(72623859790382856);
+  // The floats get 1.0, -0.0 and a NaN with a payload of 1.
+  print!("\nf32:");
+  check_f32(1.0);
+  check_f32(-0.0);
+  check_f32(f32::from_bits(2143289345));
+  print!("\nf64:");
+  check_f64(1.0);
+  check_f64(-0.0);
+  check_f64(f64::from_bits(9221120237041090561));
+  print!("\n");
+  return 0;
+}
+
+// EXPECT: i8: le=[128] be=[128]; le=[127] be=[127]; le=[1] be=[1];
+// EXPECT: u8: le=[0] be=[0]; le=[255] be=[255]; le=[1] be=[1];
+// EXPECT: i16: le=[0 128] be=[128 0]; le=[255 127] be=[127 255]; le=[2 1] be=[1 2];
+// EXPECT: u16: le=[0 0] be=[0 0]; le=[255 255] be=[255 255]; le=[2 1] be=[1 2];
+// EXPECT: i32: le=[0 0 0 128] be=[128 0 0 0]; le=[255 255 255 127] be=[127 255 255 255]; le=[4 3 2 1] be=[1 2 3 4];
+// EXPECT: u32: le=[0 0 0 0] be=[0 0 0 0]; le=[255 255 255 255] be=[255 255 255 255]; le=[4 3 2 1] be=[1 2 3 4];
+// EXPECT: i64: le=[0 0 0 0 0 0 0 128] be=[128 0 0 0 0 0 0 0]; le=[255 255 255 255 255 255 255 127] be=[127 255 255 255 255 255 255 255]; le=[8 7 6 5 4 3 2 1] be=[1 2 3 4 5 6 7 8];
+// EXPECT: u64: le=[0 0 0 0 0 0 0 0] be=[0 0 0 0 0 0 0 0]; le=[255 255 255 255 255 255 255 255] be=[255 255 255 255 255 255 255 255]; le=[8 7 6 5 4 3 2 1] be=[1 2 3 4 5 6 7 8];
+// EXPECT: usize: le=[0 0 0 0 0 0 0 0] be=[0 0 0 0 0 0 0 0]; le=[255 255 255 255 255 255 255 127] be=[127 255 255 255 255 255 255 255]; le=[8 7 6 5 4 3 2 1] be=[1 2 3 4 5 6 7 8];
+// EXPECT: f32: le=[0 0 128 63] be=[63 128 0 0]; le=[0 0 0 128] be=[128 0 0 0]; le=[1 0 192 127] be=[127 192 0 1];
+// EXPECT: f64: le=[0 0 0 0 0 0 240 63] be=[63 240 0 0 0 0 0 0]; le=[0 0 0 0 0 0 0 128] be=[128 0 0 0 0 0 0 0]; le=[1 0 0 0 0 0 248 127] be=[127 248 0 0 0 0 0 1];

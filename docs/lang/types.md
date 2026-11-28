@@ -496,7 +496,7 @@ In a contract, the prover reads a cast to `usize` as its value only for a value 
 
 ### Arrays and Tensors
 
-- **Arrays**: Fixed-size arrays are supported using the `[T; N]` syntax.
+- **Arrays**: A fixed-size array is a tensor of rank 1. Vx has no `[T; N]` type: write `Tensor<T, [N]>`. An array literal such as `[1, 2, 3]` is a `Tensor<i32, [3]>`.
 - **Tensors**: The built-in `Tensor<T, Shape>` type is a first-class construct that the compiler understands, for high-performance algebraic operations. A matrix is a tensor of rank 2.
 - **Vectors**: `<N x T>` is N lanes of a scalar type `T` (`<4 x f32>`): one value, lowered to `vector<NxT>`. Arithmetic between two `<N x T>` values is lane-wise. A vector is loaded and stored through a pointer to the vector type (`*mut <4 x f32>`). There is no implicit conversion between `<N x T>` and `T`: an `f32` is not a `<1 x f32>`, and a `*mut f32` dereferences to one `f32`.
 
