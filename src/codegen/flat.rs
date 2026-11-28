@@ -1148,6 +1148,11 @@ pub struct EmitCtx {
     pub describe_params: bool,
     pub callees: CalleeMap,
     pub aggs: AggMap,
+    /// Layout GID → the alias `!vx_struct<k>` that a field access writes in place of the whole
+    /// struct type. Empty unless `name_struct_types` ran.
+    struct_aliases: HashMap<TypeId, String>,
+    /// The struct type of each alias `!vx_struct<k>`, at index `k`.
+    struct_alias_tys: Vec<String>,
     /// Base struct/enum name → modelled layout GID, for resolving a monomorphized cross-module
     /// aggregate whose signature carries an unresolved base GID (`Struct("Vec", None)`). (#242)
     pub agg_names: HashMap<String, TypeId>,
@@ -1374,6 +1379,30 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
 }
 
 impl EmitCtx {
+    /// Give each struct type in `aggs` an alias `!vx_struct<k>`. A field access writes the alias,
+    /// so the text of a wide struct is not written once for each access. The types are numbered in
+    /// sorted order, so the same program gets the same names.
+    fn name_struct_types(&mut self) {
+        let mut tys: Vec<&str> = self.aggs.values().map(|a| a.struct_ty.as_str()).collect();
+        tys.sort_unstable();
+        tys.dedup();
+        let index: HashMap<&str, usize> = tys.iter().enumerate().map(|(k, t)| (*t, k)).collect();
+        self.struct_aliases = self
+            .aggs
+            .iter()
+            .map(|(gid, a)| (*gid, format!("!vx_struct{}", index[a.struct_ty.as_str()])))
+            .collect();
+        self.struct_alias_tys = tys.into_iter().map(str::to_string).collect();
+    }
+
+    /// The struct type of the layout `gid` as a field access writes it: its alias, or the whole
+    /// type when it has no alias.
+    pub(crate) fn field_access_ty<'a>(&'a self, gid: &TypeId, agg: &'a AggLayout) -> &'a str {
+        self.struct_aliases
+            .get(gid)
+            .map_or(agg.struct_ty.as_str(), String::as_str)
+    }
+
     pub fn topo_arch(&self, topo: i64) -> Option<DeclaredArch> {
         if let Some(declared) = self.topo_archs.get(&topo) {
             return Some(declared.clone());
@@ -1519,6 +1548,8 @@ impl EmitCtx {
                 .collect(),
             shared_cell_types: std::collections::HashSet::new(),
             describe_params: false,
+            struct_aliases: HashMap::new(),
+            struct_alias_tys: Vec::new(),
             mlir_wrapper_prefix: mlir_wrapper_prefix(
                 "vx_flat_mlir_",
                 registry.fn_sigs.keys().map(|n| n.as_ref()),
@@ -1722,9 +1753,9 @@ fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String>
     None
 }
 
-/// One function's emitted text, the calls it makes, and the runtime-helper bitmask over
-/// `RUNTIME_HELPERS`.
-type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64);
+/// One function's emitted text, the calls it makes, the runtime-helper bitmask over
+/// `RUNTIME_HELPERS`, and the numbers `k` of the aliases `!vx_struct<k>` that the text uses.
+type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64, Vec<usize>);
 
 /// `why`, naming the function it was found in.
 ///
@@ -1783,7 +1814,28 @@ fn emit_one(
             m
         }
     });
-    Ok((text, calls, helpers))
+    let aliases = if ctx.struct_aliases.is_empty() {
+        Vec::new()
+    } else {
+        struct_aliases_named_in(&text)
+    };
+    Ok((text, calls, helpers, aliases))
+}
+
+/// The numbers `k` of the aliases `!vx_struct<k>` that `text` names, each once, in order.
+fn struct_aliases_named_in(text: &str) -> Vec<usize> {
+    const PREFIX: &str = "!vx_struct";
+    let mut named: Vec<usize> = text
+        .match_indices(PREFIX)
+        .filter_map(|(at, _)| {
+            let rest = &text[at + PREFIX.len()..];
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            rest[..digits].parse().ok()
+        })
+        .collect();
+    named.sort_unstable();
+    named.dedup();
+    named
 }
 
 /// Generate MLIR for all functions, wrapped in `module { … }`.
@@ -1832,6 +1884,7 @@ pub fn emit_module_mlir(
     // Generated struct and enum instance layouts are local to the lowerer, outside the frozen registry.
     // Install their storage shapes so aggregate allocation and field access can find them.
     ctx.install_generated_layouts(registry, agg_layouts, sched)?;
+    ctx.name_struct_types();
     // Function GID → (param MLIR types, ret MLIR type), for a `FuncConst`'s `func.constant @name : sig`.
     // Built from the module's own functions (each `Function` carries its params); the target must be a
     // function whose whole signature is modelled (else the FuncConst declines at emit). (#242)
@@ -1962,7 +2015,7 @@ pub fn emit_module_mlir(
     // being compiled, which is exactly the shape that flattens a scaling curve.
     let out_len: usize = emitted
         .iter()
-        .filter_map(|e| e.as_ref().ok().map(|(t, _, _)| t.len()))
+        .filter_map(|e| e.as_ref().ok().map(|(t, ..)| t.len()))
         .sum();
     let mut globals = String::new();
     let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
@@ -1978,8 +2031,9 @@ pub fn emit_module_mlir(
     // A decline is reported for the *first* declining function rather than whichever thread noticed
     // first, so `VX_FLAT_DBG` says the same thing it always did.
     let mut helper_mask = 0u64;
+    let mut used_aliases = std::collections::BTreeSet::new();
     for (fi, emission) in emitted.iter_mut().enumerate() {
-        let (_, fn_calls, helpers) = match emission {
+        let (_, fn_calls, helpers, aliases) = match emission {
             Ok(e) => e,
             Err(why) => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
@@ -1993,10 +2047,11 @@ pub fn emit_module_mlir(
         };
         calls.append(fn_calls);
         helper_mask |= *helpers;
+        used_aliases.extend(aliases.iter().copied());
         // Only the strings the code takes the address of become globals: an assert message
         // or a spawn's topology name is written into the op itself.
         let strs = string_tables.get(fi).copied().unwrap_or(&[]);
-        let text = emission.as_ref().map(|(t, _, _)| t.as_str()).unwrap_or("");
+        let text = emission.as_ref().map(|(t, ..)| t.as_str()).unwrap_or("");
         for (li, s) in strs.iter().enumerate() {
             let n = str_bases[fi] + li;
             if text.contains(&format!("@\".str.{n}\"")) {
@@ -2066,9 +2121,20 @@ pub fn emit_module_mlir(
         "module attributes {{vx.drops{}}} {{\n",
         local_devices_attr(local_devices)
     );
+    // MLIR wants a type alias defined at the top level, before the module that uses it.
+    let mut aliases = String::new();
+    // A number with no alias comes from text that the program wrote, such as an `mlir!` block or
+    // an assert message. It gets no definition.
+    for k in used_aliases {
+        if let Some(ty) = ctx.struct_alias_tys.get(k) {
+            aliases += &format!("!vx_struct{k} = {ty}\n");
+        }
+    }
     const CLOSE: &str = "}\n";
-    let mut module =
-        String::with_capacity(open.len() + globals.len() + decls.len() + out_len + CLOSE.len());
+    let mut module = String::with_capacity(
+        aliases.len() + open.len() + globals.len() + decls.len() + out_len + CLOSE.len(),
+    );
+    module.push_str(&aliases);
     module.push_str(&open);
     module.push_str(&globals);
     module.push_str(&decls);
@@ -3517,6 +3583,38 @@ mod tests {
                 }))
             ),
             "a different aggregate must decline before field access: {result:?}"
+        );
+    }
+
+    /// A field load, a field store and the address of a field each name the struct type by an
+    /// alias. So the text of the struct type is written once, in the alias, and not once for
+    /// each access.
+    #[test]
+    fn field_accesses_name_their_struct_type_by_an_alias() {
+        let source = "struct Wide { a: i32, b: i64, c: i8 } \
+             fn load(w: &Wide) -> i64 { let x = w.b; let y = w.b; return x + y; } \
+             fn store(w: &mut Wide) -> void { w.b = 7; w.b = 8; } \
+             fn address(w: &Wide) -> &i64 { return &w.b; }";
+        let text = emit_module_with_field_instructions(source, |_| {}, |_, _| {})
+            .expect("the module generates code");
+        let (header, body) = text
+            .split_once("module attributes")
+            .expect("a module header");
+        let ty = header
+            .lines()
+            .filter(|l| l.starts_with("!vx_struct"))
+            .find_map(|l| l.split_once(" = "))
+            .map(|(_, ty)| ty)
+            .expect("an alias before the module");
+        let accesses = body.matches("llvm.getelementptr").count();
+        assert_eq!(
+            accesses, 5,
+            "two loads, two stores and one address:\n{text}"
+        );
+        assert_eq!(
+            text.matches(ty).count(),
+            1,
+            "the struct type outside its alias:\n{text}"
         );
     }
 
