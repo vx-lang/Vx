@@ -1,0 +1,91 @@
+//===- a_mut_borrow_of_a_vec_element_changes_the_element.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `&mut v[i]` on a `Vec` borrows the element itself, as `v.index_mut(i)` does, so a write
+// through the reference changes the element. Before, a read `v[i]` of an `i32` was a copy, and
+// `bump(&mut v[0])` changed only the copy.
+//
+// The line has one number for each kind of place: a local `Vec`, a `Vec` in a struct behind a
+// `&mut`, a field of an element, an element of an element, a borrow in a generic function, and a
+// `String` element, which was refused with E4006 before.
+//
+// EXPECT: 2 3 21 3 6 abc
+
+import std::string;
+import std::vec;
+
+struct Counter {
+  n : i32,
+}
+
+struct Holder {
+  v : Vec<i32>,
+}
+
+fn bump(x : &mut i32) -> void {
+  *x = *x + 1;
+}
+
+fn bump_first(h : &mut Holder) -> void {
+  bump(&mut h.v[0]);
+}
+
+fn first_mut<T>(v : &mut Vec<T>) -> &mut T {
+  return &mut v[0];
+}
+
+fn main() -> i32 {
+  let mut local = Vec<i32>::new();
+  local.push(1);
+  bump(&mut local[0]);
+  print(local[0]);
+  print!(" ");
+
+  let mut inner = Vec<i32>::new();
+  inner.push(1);
+  let mut h = Holder {
+    v : inner
+  };
+  bump_first(&mut h);
+  bump_first(&mut h);
+  print(h.v[0]);
+  print!(" ");
+
+  let mut counters = Vec<Counter>::new();
+  counters.push(Counter {
+    n : 10
+  });
+  counters.push(Counter {
+    n : 20
+  });
+  bump(&mut counters[1].n);
+  print(counters[1].n);
+  print!(" ");
+
+  let mut row = Vec<i32>::new();
+  row.push(1);
+  row.push(2);
+  let mut grid = Vec<Vec<i32>>::new();
+  grid.push(row);
+  bump(&mut grid[0][1]);
+  print(grid[0][1]);
+  print!(" ");
+
+  let mut wide = Vec<i64>::new();
+  wide.push(5i64);
+  *first_mut(&mut wide) = 6i64;
+  print(wide[0]);
+  print!(" ");
+
+  let mut names = Vec<String>::new();
+  names.push(String::from_bytes("ab" as *const u8, 2).unwrap());
+  let s = &mut names[0];
+  let tail = String::from_bytes("c" as *const u8, 1).unwrap();
+  s.push_str(&tail);
+  println!("{}", names[0]);
+  return 0;
+}
