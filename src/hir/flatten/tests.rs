@@ -665,6 +665,7 @@ fn generated_struct_layout_records_nested_values_and_pointer_targets() {
                 },
             ],
             variant_payloads: vec![],
+            null_variant: None,
         },
         "the worker must retain the struct's complete generated layout"
     );
@@ -1806,6 +1807,7 @@ fn generated_enum_layout_keeps_variant_types_separate_from_storage() {
                 vec![payload(ElementType::U64)],
                 vec![]
             ],
+            null_variant: None,
         },
         "a shared i64 slot must retain the actual i8 and u64 variant types"
     );
@@ -1846,6 +1848,37 @@ fn generated_enum_layout_keeps_each_variants_pointer_target() {
         layout.variant_payloads,
         vec![vec![payload("Left", left)], vec![payload("Right", right)]],
         "variants sharing a pointer slot must retain distinct pointer targets"
+    );
+}
+
+#[test]
+fn an_enum_of_a_reference_or_nothing_has_no_tag() {
+    // A reference is never null, so `None` of `Maybe<&i32>` is a null pointer, with no tag. A
+    // raw pointer can be null. This module's `Box` is not the standard one, so it can be null too.
+    let (did, worker) = lower_with_registry(
+        "struct Box<T> { ptr: *mut T }\n\
+         enum Maybe<T> { None, Some(T) }\n\
+         fn inspect(a: Maybe<&i32>, b: Maybe<*const i32>, c: Maybe<Box<i32>>) -> void {}",
+        "inspect",
+    );
+    assert!(did, "the function with three Maybe parameters must lower");
+    let mut layouts: Vec<String> = worker
+        .local_agg_layouts
+        .iter()
+        .filter(|l| l.name == "Maybe")
+        .map(|l| {
+            let payload = match &l.variant_payloads[1][0].ty {
+                Type::Borrow { .. } => "reference",
+                Type::Pointer(..) => "raw pointer",
+                _ => "box",
+            };
+            format!("{payload} {} {:?}", l.size_bytes, l.null_variant)
+        })
+        .collect();
+    layouts.sort();
+    assert_eq!(
+        layouts,
+        ["box 16 None", "raw pointer 16 None", "reference 8 Some(0)"]
     );
 }
 

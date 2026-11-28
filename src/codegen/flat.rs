@@ -877,6 +877,8 @@ pub struct AggLayout {
     pub field_agg: Vec<Option<TypeId>>,
     /// Actual payload metadata for each variant, separate from shared storage fields.
     pub variant_payloads: Vec<Vec<crate::layout::GeneratedPayloadLayout>>,
+    /// The variant that a null pointer stands for in an enum with no tag.
+    pub null_variant: Option<u32>,
 }
 
 /// Build an LLVM struct type from the generated fields in declaration order.
@@ -905,6 +907,7 @@ impl AggLayout {
             field_pointee: layout.fields.iter().map(|f| f.pointer_target_id).collect(),
             field_agg: layout.fields.iter().map(|f| f.aggregate_id).collect(),
             variant_payloads: layout.variant_payloads.clone(),
+            null_variant: layout.null_variant,
         }
     }
 }
@@ -942,6 +945,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     field_pointee: Vec::new(),
                     field_agg: Vec::new(),
                     variant_payloads: Vec::new(),
+                    null_variant: None,
                 },
             ));
         }
@@ -1029,6 +1033,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                 field_pointee,
                 field_agg,
                 variant_payloads: Vec::new(),
+                null_variant: None,
             },
         ))
     };
@@ -3605,6 +3610,7 @@ mod tests {
             field_pointee: vec![None; 5],
             field_agg: vec![None; 5],
             variant_payloads: vec![],
+            null_variant: None,
         }
     }
 
@@ -3930,6 +3936,7 @@ mod tests {
                 })
                 .collect(),
             variant_payloads: vec![],
+            null_variant: None,
         };
         (registry, layout)
     }
@@ -4371,6 +4378,7 @@ mod tests {
                 pointer_target_id: None,
             }],
             variant_payloads: vec![],
+            null_variant: None,
         };
         let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
         // Model a nominal layout that becomes complete only during function lowering.
