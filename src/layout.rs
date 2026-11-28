@@ -41,6 +41,9 @@ pub struct GeneratedAggregateLayout {
     /// Actual payload types and metadata in declaration order for each enum variant.
     /// Struct layouts have no variants.
     pub variant_payloads: Vec<Vec<GeneratedPayloadLayout>>,
+    /// An enum with this set has no tag. Its only field holds the payload of its other variant,
+    /// a pointer that is never null, and a null pointer there means this variant.
+    pub null_variant: Option<u32>,
 }
 
 /// One generated field, in LLVM struct field order.
@@ -65,6 +68,7 @@ impl GeneratedAggregateLayout {
             && self.size_bytes == other.size_bytes
             && self.align_bytes == other.align_bytes
             && self.fields == other.fields
+            && self.null_variant == other.null_variant
             && self.variant_payloads.len() == other.variant_payloads.len()
             && self
                 .variant_payloads
@@ -81,6 +85,11 @@ impl GeneratedAggregateLayout {
                                 )
                         })
                 })
+    }
+
+    /// The storage field of an enum payload, which comes after the tag when there is one.
+    pub fn payload_field(&self, payload: usize) -> usize {
+        payload + usize::from(self.null_variant.is_none())
     }
 
     pub fn field_offsets(&self) -> Vec<u64> {
@@ -136,6 +145,7 @@ pub fn closure_pair_layout() -> GeneratedAggregateLayout {
         align_bytes: 8,
         fields: vec![field("env", 0), field("func", 8)],
         variant_payloads: Vec::new(),
+        null_variant: None,
     }
 }
 
@@ -684,6 +694,7 @@ mod tests {
                 aggregate_id: None,
                 pointer_target_id: Some(node),
             }]],
+            null_variant: None,
         };
         (record, identities)
     }

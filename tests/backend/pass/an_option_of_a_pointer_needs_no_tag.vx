@@ -1,0 +1,186 @@
+//===- an_option_of_a_pointer_needs_no_tag.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A reference, a `Box` and a `NonNull` are never null. So the default code generator stores
+// `None` of such an `Option` as a null pointer, and the `Option` has no tag. The `sizes` line
+// checks this: 8 bytes, against 16 for an `Option` of a raw pointer or an `i64`. The AST code
+// generator keeps the tag, so its `sizes` line differs.
+//
+// The other lines check that each value reads back with both code generators. `Option` puts
+// its empty variant second. `Link` puts it first, so the program checks both orders.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --check-prefixes=CHECK,FLAT --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --check-prefixes=CHECK,AST --implicit-check-not=Error
+// FLAT: {{^}}sizes 8 8 8 8 16 16{{$}}
+// AST: {{^}}sizes 16 16 16 16 16 16{{$}}
+// CHECK-NEXT: {{^}}tree 15 26{{$}}
+// CHECK-NEXT: {{^}}list 10 45{{$}}
+// CHECK-NEXT: {{^}}refs 60 20 -1{{$}}
+// CHECK-NEXT: {{^}}changed 9 taken 7 none true{{$}}
+// CHECK-NEXT: {{^}}non-null none true 5{{$}}
+
+import core::convert;
+import core::option;
+import core::ptr;
+import std::alloc;
+import std::box;
+import std::vec;
+
+struct Node {
+  value : i64,
+  left : Option<Box<Node>>,
+  right : Option<Box<Node>>,
+}
+
+struct Item {
+  value : i64,
+  next : Link,
+}
+
+enum Link {
+  End,
+  Next(Box<Item>),
+}
+
+fn tree(depth : i64) -> Option<Box<Node>> {
+  if depth == 0 {
+    return Option<Box<Node>>::None();
+  }
+  return Option<Box<Node>>::Some(Box<Node>::new(Node {
+    value : depth, left : tree(depth - 1), right : tree(depth - 1)
+  }));
+}
+
+// The number of nodes, and the sum of their values.
+fn count(t : &Option<Box<Node>>) -> (i64, i64) {
+  match t {
+    Option<Box<Node>>::Some(b) => {
+      let n = b.get();
+      let (lc, ls) = count(&n.left);
+      let (rc, rs) = count(&n.right);
+      return (1 + lc + rc, n.value + ls + rs);
+    },
+    Option<Box<Node>>::None() => {
+      return (0, 0);
+    }
+  }
+}
+
+fn list(n : i32) -> Link {
+  let mut head = Link::End;
+  for i in 0..n {
+    head = Link::Next(Box<Item>::new(Item {
+      value : i64::from(i), next : head
+    }));
+  }
+  return head;
+}
+
+fn list_count(l : &Link) -> (i64, i64) {
+  match l {
+    Link::Next(b) => {
+      let item = b.get();
+      let (c, s) = list_count(&item.next);
+      return (c + 1, s + item.value);
+    },
+    Link::End => {
+      return (0, 0);
+    }
+  }
+}
+
+fn first_over(v : &Vec<i64>, limit : i64) -> Option<&i64> {
+  for x in v.iter() {
+    if *x > limit {
+      return Option<&i64>::Some(x);
+    }
+  }
+  return Option<&i64>::None();
+}
+
+// The value, or -1 for `None`.
+fn value_or_minus_one(o : Option<&i64>) -> i64 {
+  match o {
+    Option<&i64>::Some(x) => {
+      return *x;
+    },
+    Option<&i64>::None() => {
+      return -1;
+    }
+  }
+}
+
+fn main() -> i32 {
+  println!(
+  "sizes {} {} {} {} {} {}",
+  sizeof<Option<&i64>>(),
+  sizeof<Option<Box<Node>>>(),
+  sizeof<Option<NonNull<i64>>>(),
+  sizeof<Link>(),
+  sizeof<Option<*mut i64>>(),
+  sizeof<Option<i64>>()
+  );
+
+  let (nodes, total) = count(&tree(4));
+  println!("tree {} {}", nodes, total);
+
+  let (items, sum) = list_count(&list(10));
+  println!("list {} {}", items, sum);
+
+  let mut v = Vec<i64>::new();
+  v.push(10);
+  v.push(20);
+  v.push(30);
+  let mut refs : i64 = 0;
+  for x in v.iter() {
+    refs = refs + *x;
+  }
+  println!("refs {} {} {}", refs, value_or_minus_one(first_over(&v, 15)),
+  value_or_minus_one(first_over(&v, 30)));
+
+  let mut o = Option<Box<i64>>::Some(Box<i64>::new(7));
+  match &mut o {
+    Option<Box<i64>>::Some(b) => {
+      *b.get_mut() = 9;
+    },
+    Option<Box<i64>>::None() => {}
+  }
+  let changed = match &o {
+    Option<Box<i64>>::Some(b) => {
+      *b.get()
+    },
+    Option<Box<i64>>::None() => {
+      0
+    },
+  };
+  match &mut o {
+    Option<Box<i64>>::Some(b) => {
+      *b.get_mut() = 7;
+    },
+    Option<Box<i64>>::None() => {}
+  }
+  let taken = o.take().unwrap().into_inner();
+  println!("changed {} taken {} none {}", changed, taken, o.is_none());
+
+  let null : *mut i64 = null_mut<i64>();
+  let p : *mut i64 = alloc(8, 16);
+  unsafe { *p = 5; }
+  let a = NonNull<i64>::new(null);
+  let b = NonNull<i64>::new(p);
+  let shown = match b {
+    Option<NonNull<i64>>::Some(q) => {
+      unsafe { *q.as_ptr() }
+    },
+    Option<NonNull<i64>>::None() => {
+      0
+    },
+  };
+  println!("non-null none {} {}", a.is_none(), shown);
+  let p8 : *mut i8 = p;
+  unsafe { dealloc(p8, 16) };
+  return 0;
+}

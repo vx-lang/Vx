@@ -129,9 +129,10 @@ impl FnEmit<'_> {
         let agg = self.ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
         let payload_index = (ins.opcode == Opcode::EnumPayloadLoad)
             .then(|| crate::bytecode::EnumPayloadIndex::decode(ins.imm));
+        // A payload comes after the tag, in an enum that has one.
         let field_idx = match payload_index {
             Some(index) => (index.field as usize)
-                .checked_add(1)
+                .checked_add(usize::from(agg.null_variant.is_none()))
                 .ok_or(crate::emitter_gap!())?,
             None => agg.field_index(ins.imm)?,
         };

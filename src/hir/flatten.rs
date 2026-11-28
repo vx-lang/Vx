@@ -3274,7 +3274,6 @@ impl<'r> Lowerer<'r> {
             self.infer_ast_type(&m.expr),
             Some(Type::Borrow { is_mut: true, .. })
         );
-        let tag_field = self.enum_field_index(gid, 0)?;
         let registry = self.registry;
         let data = registry
             .enum_data
@@ -3308,27 +3307,7 @@ impl<'r> Lowerer<'r> {
                         .ok_or(Decline::TypeNotModelled {
                             what: "a variant not in the enum",
                         })? as u64;
-                    let tag = self.emit_value(
-                        Opcode::FieldLoad,
-                        slot,
-                        Register(0),
-                        ElementType::I32,
-                        tag_field,
-                    );
-                    let tagc = self.emit_value(
-                        Opcode::Const,
-                        Register(0),
-                        Register(0),
-                        ElementType::I32,
-                        ordinal,
-                    );
-                    let cond = self.emit_value(
-                        Opcode::Cmp,
-                        tag.reg,
-                        tagc.reg,
-                        ElementType::Bool,
-                        rel_code(&RelationalOp::Eq),
-                    );
+                    let cond = self.emit_variant_test(slot, gid, ordinal)?;
                     let body_b = self.new_block();
                     let next_b = self.new_block();
                     self.emit_effect(
@@ -3388,7 +3367,7 @@ impl<'r> Lowerer<'r> {
                                                 what: "a reference to an enum payload of this type",
                                             }),
                                         };
-                                    let access = self.enum_field_index(gid, payload_field + 1)?;
+                                    let access = self.enum_payload_field(gid, payload_field)?;
                                     let reg = self.emit_field_addr(slot, addr_gid, access);
                                     self.note_shadow(pname);
                                     self.ast_types.insert(
@@ -4049,28 +4028,8 @@ impl<'r> Lowerer<'r> {
         let opt_slot = self.emit_alloca(LoweredTy::Aggregate(enum_gid));
         self.emit_effect(Opcode::Store, opt_slot.reg, call_reg, 0);
 
-        // Dispatch on the tag: `Some` -> body, else -> exit.
-        let tag = self.emit_value(
-            Opcode::FieldLoad,
-            opt_slot.reg,
-            Register(0),
-            ElementType::I32,
-            self.enum_field_index(enum_gid, 0)?,
-        );
-        let some_c = self.emit_value(
-            Opcode::Const,
-            Register(0),
-            Register(0),
-            ElementType::I32,
-            some_ord,
-        );
-        let cond = self.emit_value(
-            Opcode::Cmp,
-            tag.reg,
-            some_c.reg,
-            ElementType::Bool,
-            rel_code(&RelationalOp::Eq),
-        );
+        // Dispatch on the variant: `Some` -> body, else -> exit.
+        let cond = self.emit_variant_test(opt_slot.reg, enum_gid, some_ord)?;
         self.emit_effect(
             Opcode::CondBr,
             cond.reg,
@@ -4502,7 +4461,6 @@ impl<'r> Lowerer<'r> {
         let gid = self
             .enum_instance_layout_of(declaration, args)
             .ok_or(not_modelled("the layout of the Result of a task"))?;
-        let tag_field = self.enum_field_index(gid, 0)?;
         let err =
             self.registry
                 .enum_data
@@ -4519,27 +4477,7 @@ impl<'r> Lowerer<'r> {
             }
             _ => return Err(not_modelled("a Result of a task that is not an aggregate")),
         };
-        let tag = self.emit_value(
-            Opcode::FieldLoad,
-            slot,
-            Register(0),
-            ElementType::I32,
-            tag_field,
-        );
-        let err = self.emit_value(
-            Opcode::Const,
-            Register(0),
-            Register(0),
-            ElementType::I32,
-            err,
-        );
-        let cond = self.emit_value(
-            Opcode::Cmp,
-            tag.reg,
-            err.reg,
-            ElementType::Bool,
-            rel_code(&RelationalOp::Eq),
-        );
+        let cond = self.emit_variant_test(slot, gid, err)?;
         let failed_b = self.new_block();
         let next_b = self.new_block();
         self.emit_effect(
@@ -4762,6 +4700,43 @@ impl<'r> Lowerer<'r> {
         Ok(None)
     }
 
+    /// The storage field of payload `payload` of an enum.
+    fn enum_payload_field(&self, gid: TypeId, payload: usize) -> Lowered<u64> {
+        let index = self
+            .generated_layout(gid)
+            .map(|layout| layout.payload_field(payload))
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum payload offset that is not laid out",
+            })?;
+        self.enum_field_index(gid, index)
+    }
+
+    /// A `Bool` that is true when the enum in `slot` holds the variant `ordinal`. An enum with no
+    /// tag holds its null variant when its pointer is null.
+    fn emit_variant_test(&mut self, slot: Register, gid: TypeId, ordinal: u64) -> Lowered<Val> {
+        let null_variant = self
+            .generated_layout(gid)
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum with no modelled instance layout",
+            })?
+            .null_variant;
+        let (ty, value, op) = match null_variant {
+            None => (ElementType::I32, ordinal, RelationalOp::Eq),
+            Some(null) if u64::from(null) == ordinal => (ElementType::I64, 0, RelationalOp::Eq),
+            Some(_) => (ElementType::I64, 0, RelationalOp::NotEq),
+        };
+        let field = self.enum_field_index(gid, 0)?;
+        let stored = self.emit_value(Opcode::FieldLoad, slot, Register(0), ty.clone(), field);
+        let expected = self.emit_value(Opcode::Const, Register(0), Register(0), ty, value);
+        Ok(self.emit_value(
+            Opcode::Cmp,
+            stored.reg,
+            expected.reg,
+            ElementType::Bool,
+            rel_code(&op),
+        ))
+    }
+
     fn enum_field_index(&self, gid: TypeId, index: usize) -> Lowered<u64> {
         self.layout_of(&gid)
             .and_then(|layout| layout.fields.get(index))
@@ -4816,19 +4791,21 @@ impl<'r> Lowerer<'r> {
         if starts_lifetime {
             self.start_lifetime(&slot);
         }
-        let tag = self.emit_value(
-            Opcode::Const,
-            Register(0),
-            Register(0),
-            ElementType::I32,
-            ordinal,
-        );
-        self.emit_effect(
-            Opcode::FieldStore,
-            slot.reg,
-            tag.reg,
-            self.enum_field_index(gid, 0)?,
-        );
+        // An enum with no tag stores a null pointer for its null variant, and nothing else.
+        let tag = match self.generated_layout(gid).and_then(|l| l.null_variant) {
+            None => Some((ElementType::I32, ordinal)),
+            Some(null) if u64::from(null) == ordinal => Some((ElementType::I64, 0)),
+            Some(_) => None,
+        };
+        if let Some((ty, value)) = tag {
+            let tag = self.emit_value(Opcode::Const, Register(0), Register(0), ty, value);
+            self.emit_effect(
+                Opcode::FieldStore,
+                slot.reg,
+                tag.reg,
+                self.enum_field_index(gid, 0)?,
+            );
+        }
         if let Some(payload) = &ev.payload {
             // The layout leaves out `void` payloads, so a payload's field counts only the
             // non-void payloads before it.
@@ -4843,7 +4820,6 @@ impl<'r> Lowerer<'r> {
                 if crate::syntax::is_void_ty(payload_type) {
                     continue;
                 }
-                field += 1;
                 // A struct built in place is its slot's address; the payload takes its value,
                 // as a struct literal's field does.
                 if construction_tail(pexpr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
@@ -4853,8 +4829,9 @@ impl<'r> Lowerer<'r> {
                     Opcode::FieldStore,
                     slot.reg,
                     v.reg,
-                    self.enum_field_index(gid, field)?,
+                    self.enum_payload_field(gid, field)?,
                 );
+                field += 1;
             }
             let stored_payloads = payload_types
                 .iter()
@@ -5509,6 +5486,7 @@ impl<'r> Lowerer<'r> {
                 align_bytes: align,
                 fields,
                 variant_payloads: Vec::new(),
+                null_variant: None,
             };
             self.instance_layouts
                 .insert(gid, storage.unwrap_or_else(|| layout.type_definition()));
@@ -5639,22 +5617,49 @@ impl<'r> Lowerer<'r> {
         for (g, a) in data.generics.iter().zip(args) {
             mapping.insert(g.clone(), a.clone());
         }
+        // A `void` payload, as in `Ok` of `Result<void, E>`, holds nothing.
+        let payload_types: Vec<Vec<Type>> = data
+            .variants
+            .iter()
+            .map(|(_, types)| {
+                types
+                    .iter()
+                    .map(|ty| ty.substitute(&mapping))
+                    .filter(|ty| !crate::syntax::types::is_void_ty(ty))
+                    .collect()
+            })
+            .collect();
         let mut variants = Vec::new();
-        for (_, types) in &data.variants {
+        for types in &payload_types {
             let mut payloads = Vec::new();
-            // A `void` payload, as in `Ok` of `Result<void, E>`, holds nothing.
             for ty in types {
-                let ty = ty.substitute(&mapping);
-                if crate::syntax::types::is_void_ty(&ty) {
-                    continue;
-                }
-                let (size, align) = self.payload_size_align(&ty)?;
-                payloads.push((size, align));
+                payloads.push(self.payload_size_align(ty)?);
             }
             variants.push(payloads);
         }
-        let storage = crate::layout::enum_storage_layout(&variants)?;
-        let mut fields = vec![crate::layout::GeneratedFieldLayout {
+        // `Option<&T>` and `Option<Box<T>>` need no tag: their `None` is a null pointer.
+        let null_variant = match payload_types.as_slice() {
+            [none, some] | [some, none] if none.is_empty() => match some.as_slice() {
+                [pointer] if self.is_never_null_pointer(pointer) => {
+                    u32::try_from(payload_types.iter().position(Vec::is_empty)?).ok()
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut storage = crate::layout::enum_storage_layout(&variants)?;
+        if null_variant.is_some() {
+            storage = crate::layout::EnumStorageLayout {
+                size: 8,
+                align: 8,
+                slots: vec![crate::layout::EnumPayloadSlot {
+                    offset: 0,
+                    size: 8,
+                    align: 8,
+                }],
+            };
+        }
+        let tag = (null_variant.is_none()).then(|| crate::layout::GeneratedFieldLayout {
             layout: crate::layout::FieldLayout {
                 name: "tag".into(),
                 offset: 0,
@@ -5664,7 +5669,8 @@ impl<'r> Lowerer<'r> {
             mlir_type: "i32".to_string(),
             aggregate_id: None,
             pointer_target_id: None,
-        }];
+        });
+        let mut fields: Vec<_> = tag.into_iter().collect();
         for (index, slot) in storage.slots.iter().enumerate() {
             // Payload types can contain padding or sub-byte fields. Copy every carrier byte instead.
             let mlir = crate::layout::enum_slot_storage(slot)?;
@@ -5700,12 +5706,44 @@ impl<'r> Lowerer<'r> {
                 align_bytes: storage.align,
                 fields,
                 variant_payloads,
+                null_variant,
             };
             self.instance_layouts.insert(gid, layout.type_definition());
             self.record_generated_layout(layout);
         }
         self.generated_layout(gid)?;
         Some(gid)
+    }
+
+    /// Whether a value of this type is a pointer that is never null: a host reference, a `Box` or
+    /// a `NonNull`. A reference in GPU memory can be null, since its memory starts at address 0.
+    fn is_never_null_pointer(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Borrow {
+                mem_space: None, ..
+            } => matches!(
+                crate::layout::structural_field_info(ty),
+                Some((8, 8, FieldTy::Opaque))
+            ),
+            Type::GenericInstance(base, args) if args.len() == 1 => {
+                let declaration = |module: &str, name: &str| {
+                    TypeId::new(
+                        crate::hash::compute_module_hash(module),
+                        crate::hash::DefPath::Named(name).compute_symbol_hash(),
+                        0,
+                        0,
+                    )
+                };
+                self.registry
+                    .aggregate_identities()
+                    .resolve_base((&**base).into())
+                    .is_some_and(|(_, id)| {
+                        id == declaration("std::box", "Box")
+                            || id == declaration("core::ptr", "NonNull")
+                    })
+            }
+            _ => false,
+        }
     }
 
     /// Construct a struct literal into a fresh stack slot: `Alloca` the aggregate (sized from its
