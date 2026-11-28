@@ -173,6 +173,21 @@ macro_rules! instantiate_string_ffi {
             Box::into_raw(s) as *mut std::ffi::c_void
         }
 
+        /// Adds `n` NUL bytes to the end of the string, and gives the address of the first
+        /// of them, for the caller to overwrite with `n` ASCII bytes. The address holds until
+        /// the string changes again.
+        #[no_mangle]
+        pub extern "C" fn vx_string_extend_zeroed(ptr: *mut std::ffi::c_void, n: i64) -> *mut u8 {
+            assert!(!ptr.is_null(), "vx_string_extend_zeroed: null string");
+            assert!(n >= 0, "vx_string_extend_zeroed: negative length {n}");
+            let s = unsafe { &mut *(ptr as *mut String) };
+            // NUL bytes are valid UTF-8, so the string stays valid until the caller writes.
+            let bytes = unsafe { s.as_mut_vec() };
+            let at = bytes.len();
+            bytes.resize(at + n as usize, 0);
+            unsafe { bytes.as_mut_ptr().add(at) }
+        }
+
         /// The string's bytes, writable. Writing anything but ASCII breaks the UTF-8
         /// invariant, which is why no Vx caller outside `std::string` should see this.
         #[no_mangle]

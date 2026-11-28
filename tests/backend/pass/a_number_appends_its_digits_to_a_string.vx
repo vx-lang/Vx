@@ -1,0 +1,46 @@
+//===- a_number_appends_its_digits_to_a_string.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `v.append_to(&mut s)` adds the digits of `v` to the end of `s`, as `to_string` writes them,
+// and `s.push_ascii(b)` adds one ASCII byte. The line holds the smallest and largest values
+// of several widths, 0, a float, and the length of the whole string. The length shows that each
+// call added only its own bytes.
+//
+// EXPECT: [-128 255 -2147483648 18446744073709551615 -9223372036854775808 0 0.1 x] 72
+
+import std::string;
+
+fn main() -> i32 {
+  let small : i8 = -128;
+  let byte : u8 = 255;
+  let int_min : i32 = -2147483648;
+  let u64_max : u64 = 18446744073709551615u64;
+  let i64_min : i64 = -9223372036854775807i64 - 1i64;
+  let zero : i32 = 0;
+  let tenth : f64 = 0.1;
+
+  let mut s = String::new();
+  s.push_ascii(91u8);
+  small.append_to(&mut s);
+  s.push_ascii(32u8);
+  byte.append_to(&mut s);
+  s.push_ascii(32u8);
+  int_min.append_to(&mut s);
+  s.push_ascii(32u8);
+  u64_max.append_to(&mut s);
+  s.push_ascii(32u8);
+  i64_min.append_to(&mut s);
+  s.push_ascii(32u8);
+  zero.append_to(&mut s);
+  s.push_ascii(32u8);
+  tenth.append_to(&mut s);
+  s.push_ascii(32u8);
+  s.push_ascii(120u8);
+  s.push_ascii(93u8);
+  println!("{} {}", s, s.len());
+  return 0;
+}
