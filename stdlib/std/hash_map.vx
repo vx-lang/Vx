@@ -5,6 +5,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+// `HashMap<K, V>`, a map from keys to values written in Vx, and the older maps from `i32` keys
+// that the Rust core owns.
+import core::cmp;
+import core::hash;
+import core::hash::traits;
+import core::mem;
+import core::option;
+import core::panic;
+import std::vec;
+
 extern {
   /// An empty map from `i32` to `i32`, owned by the Rust core.
   pub fn vx_hash_map_new_i32_i32() -> *mut i8;
@@ -37,4 +47,319 @@ extern {
   pub fn vx_hash_map_len_i32_f32(ptr : *mut i8) -> i32;
   /// Release the map.
   pub fn vx_hash_map_drop_i32_f32(ptr : *mut i8) -> i32;
+
+  /// A random number for a seed of one `HashMap`. Two calls give different numbers.
+  pkg fn vx_hash_map_seed() -> u64;
+}
+
+// The control byte of a slot that never held a key. A search stops at it.
+const MAP_EMPTY : u8 = 128u8;
+// The control byte of a slot whose key was removed. A search goes on past it.
+const MAP_DELETED : u8 = 254u8;
+
+// One slot of the table: no key, or a key and its value.
+enum MapSlot<K, V> {
+  Empty,
+  Full(K, V),
+}
+
+/// A map from keys to values, as Rust's `HashMap`. A key type needs `Hash` and `Eq`.
+///
+/// The table has a power-of-2 number of slots, and each slot has a control byte. The byte of a
+/// slot with a key holds the top 7 bits of the hash of the key, so a search compares the bytes and
+/// compares a key only where its 7 bits match. A search starts at the slot that the low bits of
+/// the hash give and goes on to the next slot until it finds the key or a slot that never held
+/// one. When 7 of each 8 slots are used, the table grows to twice as many.
+///
+/// The hash is `FoldHasher`, with two random seeds for each map. So a program cannot know in
+/// advance which keys get the same hash, and keys from a source it does not trust cannot make
+/// the map slow. The order of `keys` and `values` differs from one map to the next.
+struct HashMap<K, V> {
+  ctrl : Vec<u8>,
+  slots : Vec<MapSlot<K, V>>,
+  len : i32,
+  // How many keys can go in slots that never held one, before the table grows.
+  growth_left : i32,
+  seed0 : u64,
+  seed1 : u64,
+}
+
+// The top 7 bits of a hash, which the control byte of a slot with a key holds.
+fn map_tag(h : u64) -> u8 {
+  return (h >> 57u64) as u8;
+}
+
+impl<K : Hash + Eq, V> HashMap<K, V> {
+  /// An empty map.
+  pub fn new() -> HashMap<K, V> {
+    return HashMap<K, V>::with_capacity(0);
+  }
+
+  /// An empty map that holds `n` keys before it grows.
+  pub fn with_capacity(n : i32) -> HashMap<K, V> {
+    let seed0 = unsafe { vx_hash_map_seed() };
+    let seed1 = unsafe { vx_hash_map_seed() };
+    return HashMap<K, V>::with_seeds(n, seed0, seed1);
+  }
+
+  // An empty map with given seeds. A map that grows keeps its seeds, so a hash stays valid.
+  fn with_seeds(n : i32, seed0 : u64, seed1 : u64) -> HashMap<K, V> {
+    let mut slots = 8;
+    while slots / 8 * 7 < n {
+      slots = slots * 2;
+    }
+    let mut ctrl = Vec<u8>::with_capacity(slots);
+    let mut s = Vec<MapSlot<K, V>>::with_capacity(slots);
+    for _i in 0..slots {
+      ctrl.push(MAP_EMPTY);
+      s.push(MapSlot<K, V>::Empty);
+    }
+    return HashMap<K, V> {
+      ctrl : ctrl,
+      slots : s,
+      len : 0,
+      growth_left : slots / 8 * 7,
+      seed0 : seed0,
+      seed1 : seed1,
+    };
+  }
+
+  // The hash of `key` with the seeds of this map.
+  fn hash_of(self : &HashMap<K, V>, key : &K) -> u64 {
+    let mut h = FoldHasher::with_seeds(self.seed0, self.seed1);
+    let _hashed = key.hash(&mut h);
+    return h.finish();
+  }
+
+  /// How many keys the map holds.
+  pub fn len(self : &HashMap<K, V>) -> i32 {
+    return self.len;
+  }
+
+  /// True when the map holds no key.
+  pub fn is_empty(self : &HashMap<K, V>) -> bool {
+    return self.len == 0;
+  }
+
+  // The slot that holds `key`, or -1.
+  fn find(self : &HashMap<K, V>, key : &K, h : u64) -> i32 {
+    let mask = self.ctrl.len() - 1;
+    let tag = map_tag(h);
+    let mut i = (h as i32) & mask;
+    loop {
+      let c = self.ctrl[i];
+      if c == MAP_EMPTY {
+        return -1;
+      }
+      if c == tag {
+        match &self.slots[i] {
+          MapSlot<K, V>::Full(k, _v) => {
+            if k.eq(key) {
+              return i;
+            }
+          },
+          MapSlot<K, V>::Empty => {}
+        }
+      }
+      i = (i + 1) & mask;
+    }
+  }
+
+  // The first slot on the search path of `h` that holds no key.
+  fn free_slot(self : &HashMap<K, V>, h : u64) -> i32 {
+    let mask = self.ctrl.len() - 1;
+    let mut i = (h as i32) & mask;
+    while self.ctrl[i] != MAP_EMPTY && self.ctrl[i] != MAP_DELETED {
+      i = (i + 1) & mask;
+    }
+    return i;
+  }
+
+  // Twice as many slots, with each key moved to its place in the new table.
+  fn grow(self : &mut HashMap<K, V>) -> void {
+    let mut bigger = HashMap<K, V>::with_seeds(self.ctrl.len() / 8 * 7 * 2, self.seed0, self.seed1);
+    for i in 0..self.slots.len() {
+      match replace(self.slots.index_mut(i), MapSlot<K, V>::Empty) {
+        MapSlot<K, V>::Full(k, v) => {
+          let h = bigger.hash_of(&k);
+          let _slot = bigger.put_new(k, v, h);
+        },
+        MapSlot<K, V>::Empty => {}
+      }
+    }
+    swap(self, &mut bigger);
+  }
+
+  // Puts a key that the map does not hold, and gives its slot.
+  fn put_new(self : &mut HashMap<K, V>, key : K, value : V, h : u64) -> i32 {
+    let mut i = self.free_slot(h);
+    if self.ctrl[i] == MAP_EMPTY {
+      if self.growth_left == 0 {
+        self.grow();
+        i = self.free_slot(h);
+      }
+      self.growth_left = self.growth_left - 1;
+    }
+    self.ctrl[i] = map_tag(h);
+    self.slots[i] = MapSlot<K, V>::Full(key, value);
+    self.len = self.len + 1;
+    return i;
+  }
+
+  /// A reference to the value of `key`, or `None`.
+  pub fn get(self : &HashMap<K, V>, key : &K) -> Option<&V> {
+    let i = self.find(key, self.hash_of(key));
+    if i < 0 {
+      return Option<&V>::None();
+    }
+    match &self.slots[i] {
+      MapSlot<K, V>::Full(_k, v) => {
+        return Option<&V>::Some(v);
+      },
+      MapSlot<K, V>::Empty => {
+        return Option<&V>::None();
+      }
+    }
+  }
+
+  /// A mutable reference to the value of `key`, or `None`.
+  pub fn get_mut(self : &mut HashMap<K, V>, key : &K) -> Option<&mut V> {
+    let i = self.find(key, self.hash_of(key));
+    if i < 0 {
+      return Option<&mut V>::None();
+    }
+    match self.slots.index_mut(i) {
+      MapSlot<K, V>::Full(_k, v) => {
+        return Option<&mut V>::Some(v);
+      },
+      MapSlot<K, V>::Empty => {
+        return Option<&mut V>::None();
+      }
+    }
+  }
+
+  /// True when the map holds `key`.
+  pub fn contains_key(self : &HashMap<K, V>, key : &K) -> bool {
+    return self.find(key, self.hash_of(key)) >= 0;
+  }
+
+  /// Puts `value` under `key`, and gives the value that was there, or `None`. A key that the
+  /// map holds already keeps its first copy, as in Rust.
+  pub fn insert(self : &mut HashMap<K, V>, key : K, value : V) -> Option<V> {
+    let h = self.hash_of(&key);
+    let i = self.find(&key, h);
+    if i < 0 {
+      let _slot = self.put_new(key, value, h);
+      return Option<V>::None();
+    }
+    match self.slots.index_mut(i) {
+      MapSlot<K, V>::Full(_k, v) => {
+        return Option<V>::Some(replace(v, value));
+      },
+      MapSlot<K, V>::Empty => {
+        panic("HashMap: a slot with a control byte holds no key");
+      }
+    }
+  }
+
+  /// A mutable reference to the value of `key`. When the map does not hold `key`, it puts
+  /// `value` under it first. `*m.get_or_insert(k, 0) += 1` counts `k`.
+  pub fn get_or_insert(self : &mut HashMap<K, V>, key : K, value : V) -> &mut V {
+    let h = self.hash_of(&key);
+    let mut i = self.find(&key, h);
+    if i < 0 {
+      i = self.put_new(key, value, h);
+    }
+    match self.slots.index_mut(i) {
+      MapSlot<K, V>::Full(_k, v) => {
+        return v;
+      },
+      MapSlot<K, V>::Empty => {
+        panic("HashMap: a slot with a control byte holds no key");
+      }
+    }
+  }
+
+  /// Takes `key` and its value out of the map, and gives the value, or `None`.
+  pub fn remove(self : &mut HashMap<K, V>, key : &K) -> Option<V> {
+    let i = self.find(key, self.hash_of(key));
+    if i < 0 {
+      return Option<V>::None();
+    }
+    // The slot stays on the search path of the keys after it, so it is marked, not emptied.
+    self.ctrl[i] = MAP_DELETED;
+    self.len = self.len - 1;
+    match replace(self.slots.index_mut(i), MapSlot<K, V>::Empty) {
+      MapSlot<K, V>::Full(_k, v) => {
+        return Option<V>::Some(v);
+      },
+      MapSlot<K, V>::Empty => {
+        return Option<V>::None();
+      }
+    }
+  }
+
+  /// An iterator over references to the keys, in no particular order.
+  pub fn keys(self : &HashMap<K, V>) -> MapKeys<K, V> {
+    return MapKeys<K, V> {
+      map : self, at : 0
+    };
+  }
+
+  /// An iterator over references to the values, in the order of `keys`.
+  pub fn values(self : &HashMap<K, V>) -> MapValues<K, V> {
+    return MapValues<K, V> {
+      map : self, at : 0
+    };
+  }
+}
+
+/// An iterator over the keys of a map. `HashMap::keys` makes one.
+struct MapKeys<K, V> {
+  map : &HashMap<K, V>,
+  at : i32,
+}
+
+impl<K, V> Iterator for MapKeys<K, V> {
+  type Item = &K;
+
+  fn next(self : &mut MapKeys<K, V>) -> Option<&K> {
+    let n = self.map.slots.len();
+    while self.at < n {
+      let i = self.at;
+      self.at = self.at + 1;
+      match &self.map.slots[i] {
+        MapSlot<K, V>::Full(k, _v) => {
+          return Option<&K>::Some(k);
+        },
+        MapSlot<K, V>::Empty => {}
+      }
+    }
+    return Option<&K>::None();
+  }
+}
+
+/// An iterator over the values of a map. `HashMap::values` makes one.
+struct MapValues<K, V> {
+  map : &HashMap<K, V>,
+  at : i32,
+}
+
+impl<K, V> Iterator for MapValues<K, V> {
+  type Item = &V;
+
+  fn next(self : &mut MapValues<K, V>) -> Option<&V> {
+    let n = self.map.slots.len();
+    while self.at < n {
+      let i = self.at;
+      self.at = self.at + 1;
+      match &self.map.slots[i] {
+        MapSlot<K, V>::Full(_k, v) => {
+          return Option<&V>::Some(v);
+        },
+        MapSlot<K, V>::Empty => {}
+      }
+    }
+    return Option<&V>::None();
+  }
 }

@@ -110,6 +110,9 @@ fn main() -> i32 {
 - `core::option`, `core::result`, `core::cmp`, `core::clone`, `core::convert`, `core::panic`.
 - `std::vec` (`Vec<T>`: `push`, `pop`, `get`, `set`, `len`, `iter`), `std::box`, `std::io`,
   `std::fs`, `std::tensor`.
+- `std::hash_map` (`HashMap<K, V>`: `insert`, `get`, `get_mut`, `get_or_insert`, `remove`,
+  `contains_key`, `len`, `keys`, `values`) and `std::hash_set` (`HashSet<T>`: `insert`,
+  `contains`, `remove`, `len`, `iter`). A key needs `Hash` and `Eq`.
 
 ## Three programs
 

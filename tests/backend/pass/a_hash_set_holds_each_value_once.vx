@@ -1,0 +1,64 @@
+//===- a_hash_set_holds_each_value_once.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `HashSet<T>` holds each value once. Of the 300 values `i % 100`, 100 are different, and
+// `insert` says true only the first time. `remove` says whether the set held the value. The sum
+// over `iter` is 0 + 1 + .. + 99 less the 10 values from 50 to 59 that `remove` took out. A
+// `String` is found through another `String` with the same bytes.
+//
+// EXPECT: 100 100 true false true false 90 4405 | 2 true false
+
+import core::option;
+import std::hash_set;
+import std::string;
+
+fn main() -> i32 {
+  let mut s = HashSet<i64>::new();
+  let mut new_values = 0;
+  for i in 0i64..300i64 {
+    if s.insert(i % 100i64) {
+      new_values += 1;
+    }
+  }
+  print(s.len());
+  print!(" ");
+  print(new_values);
+  print!(" ");
+  print(s.contains(&42i64));
+  print!(" ");
+  print(s.contains(&100i64));
+  print!(" ");
+  for i in 50i64..60i64 {
+    let value : i64 = i;
+    let _held = s.remove(&value);
+  }
+  print(s.remove(&10i64));
+  print!(" ");
+  print(s.remove(&55i64));
+  print!(" ");
+  let _back = s.insert(10i64);
+  print(s.len());
+  print!(" ");
+  let mut sum : i64 = 0;
+  for v in s.iter() {
+    sum += *v;
+  }
+  print(sum);
+  print!(" | ");
+
+  let mut words = HashSet<String>::new();
+  let _a = words.insert(String::from_bytes("red" as *const u8, 3).unwrap());
+  let _b = words.insert(String::from_bytes("blue" as *const u8, 4).unwrap());
+  let _c = words.insert(String::from_bytes("red" as *const u8, 3).unwrap());
+  print(words.len());
+  print!(" ");
+  print(words.contains(&String::from_bytes("blue" as *const u8, 4).unwrap()));
+  print!(" ");
+  print(words.contains(&String::from_bytes("green" as *const u8, 5).unwrap()));
+  println!("");
+  return 0;
+}
