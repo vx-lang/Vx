@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+// `HashSet<T>`, a set written in Vx over `HashMap`, and the older set of `i32` that the Rust core
+// owns.
+import core::hash;
+import core::hash::traits;
+import core::option;
+import std::hash_map;
+
 extern {
   /// An empty set of `i32`, owned by the Rust core.
   pub fn vx_hash_set_new_i32() -> *mut i8;
@@ -16,4 +23,57 @@ extern {
   pub fn vx_hash_set_len_i32(ptr : *mut i8) -> i32;
   /// Release the set.
   pub fn vx_hash_set_drop_i32(ptr : *mut i8) -> i32;
+}
+
+/// A set of values, as Rust's `HashSet`: a `HashMap` from each value to `true`. A value type
+/// needs `Hash` and `Eq`.
+struct HashSet<T> {
+  map : HashMap<T, bool>,
+}
+
+impl<T : Hash + Eq> HashSet<T> {
+  /// An empty set.
+  pub fn new() -> HashSet<T> {
+    return HashSet<T> {
+      map : HashMap<T, bool>::new()
+    };
+  }
+
+  /// An empty set that holds `n` values before it grows.
+  pub fn with_capacity(n : i32) -> HashSet<T> {
+    return HashSet<T> {
+      map : HashMap<T, bool>::with_capacity(n)
+    };
+  }
+
+  /// How many values the set holds.
+  pub fn len(self : &HashSet<T>) -> i32 {
+    return self.map.len();
+  }
+
+  /// True when the set holds no value.
+  pub fn is_empty(self : &HashSet<T>) -> bool {
+    return self.map.is_empty();
+  }
+
+  /// Adds `value`, and gives true when the set did not hold it. A value that the set holds
+  /// already keeps its first copy.
+  pub fn insert(self : &mut HashSet<T>, value : T) -> bool {
+    return self.map.insert(value, true).is_none();
+  }
+
+  /// True when the set holds `value`.
+  pub fn contains(self : &HashSet<T>, value : &T) -> bool {
+    return self.map.contains_key(value);
+  }
+
+  /// Takes `value` out of the set, and gives true when the set held it.
+  pub fn remove(self : &mut HashSet<T>, value : &T) -> bool {
+    return self.map.remove(value).is_some();
+  }
+
+  /// An iterator over references to the values, in no particular order.
+  pub fn iter(self : &HashSet<T>) -> MapKeys<T, bool> {
+    return self.map.keys();
+  }
 }
