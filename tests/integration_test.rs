@@ -23,6 +23,7 @@ mod integration_test {
     mod codegen_determinism;
     mod collective_test;
     mod compile_test;
+    mod compile_time_of_string_literals;
     mod compile_time_of_vec_calls;
     mod comptime_twins;
     mod cross_call_capacity_test;
