@@ -1820,7 +1820,10 @@ fn neutral_fact() -> Expr {
 
 /// Whether `e` names any of `names`. The batch form of `expr_mentions`, for the end of a scope,
 /// which checks the facts of the function once against the scope's variables.
-pub(crate) fn expr_mentions_any(e: &Expr, names: &std::collections::HashSet<crate::symbol::Symbol>) -> bool {
+pub(crate) fn expr_mentions_any(
+    e: &Expr,
+    names: &std::collections::HashSet<crate::symbol::Symbol>,
+) -> bool {
     let mut found = false;
     crate::syntax::visit_expr(e, &mut |sub| {
         if let Expr::Identifier(id) = sub {
