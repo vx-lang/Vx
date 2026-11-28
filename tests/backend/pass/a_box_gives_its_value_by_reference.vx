@@ -1,0 +1,78 @@
+//===- a_box_gives_its_value_by_reference.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `get` reads the value in a box, `get_mut` changes it in place, and `into_inner` moves it out
+// with no `unsafe`. A linked list sums its values through `get`.
+//
+// Each `Noisy` prints its number when it drops. `into_inner` does not drop the value, so 7
+// drops once, when `moved` drops at the end of `main`, before `a` drops 6.
+//
+// EXPECT: 5 6 | 7 | 10 | end 7 6
+
+import core::option;
+import std::box;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+struct Link {
+  value : i64,
+  next : Option<Box<Link>>,
+}
+
+fn sum(l : &Link) -> i64 {
+  match &l.next {
+    Option<Box<Link>>::Some(n) => {
+      return l.value + sum(n.get());
+    },
+    Option<Box<Link>>::None() => {
+      return l.value;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Box<Noisy>::new(Noisy {
+    id : 5
+  });
+  print(a.get().id);
+  print!(" ");
+  let r = a.get_mut();
+  r.id = 6;
+  print(a.get().id);
+  print!(" | ");
+
+  let b = Box<Noisy>::new(Noisy {
+    id : 7
+  });
+  let moved = b.into_inner();
+  print(moved.id);
+  print!(" | ");
+
+  let three = Link {
+    value : 3, next : Option<Box<Link>>::None()
+  };
+  let two = Link {
+    value : 2, next : Option<Box<Link>>::Some(Box<Link>::new(three))
+  };
+  let mut one = Box<Link>::new(Link {
+    value : 1, next : Option<Box<Link>>::Some(Box<Link>::new(two))
+  });
+  let first = one.get_mut();
+  first.value = 5;
+  print(sum(one.get()));
+  print!(" | end ");
+  return 0;
+}

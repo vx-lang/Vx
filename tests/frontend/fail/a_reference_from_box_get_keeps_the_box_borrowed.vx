@@ -1,0 +1,20 @@
+//===- a_reference_from_box_get_keeps_the_box_borrowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `b.get()` gives a reference into the box, so `b` stays borrowed while `r` is in use, and
+// moving `b` is refused. Without this, `r` would point into memory that the move frees.
+import std::box;
+
+fn main() -> i32 {
+  let b = Box<i64>::new(4);
+  let r = b.get();
+  // CHECK: Error[E4007] at {{.*}}a_reference_from_box_get_keeps_the_box_borrowed.vx:[[@LINE+1]]:11: `b` is moved while it is borrowed
+  let c = b;
+  return (*r + *c.get()) as i32;
+}

@@ -37,6 +37,25 @@ Box<T> {
       ptr : p
     };
   }
+
+  /// A reference to the value. It keeps the box borrowed while it is in use.
+  pub fn get(self : &Box<T>) -> &T {
+    return unsafe { &*self.ptr };
+  }
+
+  /// A mutable reference to the value. It keeps the box borrowed while it is in use.
+  pub fn get_mut(self : &mut Box<T>) -> &mut T {
+    return unsafe { &mut *self.ptr };
+  }
+
+  /// The value, moved out of the box. The allocation is freed, and the value is not dropped.
+  pub fn into_inner(self : Box<T>) -> T {
+    let value : T = unsafe { read(self.ptr as *const T) };
+    let ptr_i8 : *mut i8 = self.ptr;
+    unsafe { dealloc(ptr_i8, 16) };
+    forget(self);
+    return value;
+  }
 }
 
 impl<T> Drop for Box<T> {
