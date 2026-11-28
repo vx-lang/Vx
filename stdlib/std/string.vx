@@ -48,6 +48,9 @@ extern {
   pub fn vx_string_with_len(len : i64) -> *mut i8;
   /// The bytes of a string made by `vx_string_with_len`, writable.
   pub fn vx_string_as_mut_ptr(ptr : *mut i8) -> *mut i8;
+  /// Adds `n` NUL bytes to the end of a string, and gives the address of the first of them, to
+  /// overwrite with `n` ASCII bytes.
+  pkg fn vx_string_extend_zeroed(ptr : *mut i8, n : i64) -> *mut i8;
   /// The bytes of a string, for reading only.
   pkg fn vx_string_bytes(ptr : *mut i8) -> *const u8;
   /// Append the bytes of `other` to `ptr`. The two may be the same string.
@@ -164,6 +167,16 @@ impl String {
     unsafe { vx_string_push_str(self.ptr, other.ptr) };
   }
 
+  /// Append one ASCII byte, such as `32u8` for a space. A byte of 128 or more is not a
+  /// character by itself in UTF-8, so it stops the program.
+  pub fn push_ascii(self : &mut String, b : u8) -> void {
+    if b >= 128u8 {
+      panic("String: push_ascii of a byte that is not ASCII");
+    }
+    let p = unsafe { vx_string_extend_zeroed(self.ptr, 1i64) };
+    unsafe { *p = b as i8; }
+  }
+
   /// A copy of the bytes from `from` up to, not including, `to`, as a new `String`.
   ///
   /// A range outside `0..len()` stops the program. The result is an error when the range cuts a
@@ -225,9 +238,10 @@ impl Drop for String {
   }
 }
 
-/// Stamps `to_string` for one number type.
+/// Stamps `to_string` and `append_to` for one number type.
 ///
-/// One allocation of the exact length, filled in place by `core::num`'s `write_decimal`.
+/// Each writes the digits in place with `core::num`'s `write_decimal`: `to_string` into one
+/// allocation of the exact length, and `append_to` at the end of a string.
 macro_rules stamp_to_string {
   ($t : ident) => {
     impl $t {
@@ -239,6 +253,13 @@ macro_rules stamp_to_string {
         return String {
           ptr : ptr
         };
+      }
+
+      /// Append this number in decimal to `s`, as `to_string` writes it. It makes no `String`
+      /// of its own, as `s.push_str(&v.to_string())` does.
+      pub fn append_to(self : $t, s : &mut String) -> void {
+        let at = unsafe { vx_string_extend_zeroed(s.ptr, self.decimal_len()) };
+        unsafe { self.write_decimal(at, 0i64) };
       }
     }
   };
