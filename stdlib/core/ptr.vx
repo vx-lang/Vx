@@ -18,6 +18,10 @@
 // while it is in use, as any result made from a parameter does. It also keeps the memory
 // of its argument, such as `in Memory::GPU_HBM`. `read` and `write` take a host pointer.
 //
+// `find_byte` and `compare_bytes` are C's `memchr` and `memcmp`. They compare 64 bytes at a time
+// as one vector, and a range of less than 64 bytes with two or four loads that can overlap. No
+// load reads a byte outside the range.
+//
 // `NonNull<T>` is a `*mut T` that is never null. It is a struct with one pointer field,
 // because a raw pointer cannot have methods. It has `new`, `new_unchecked` and `as_ptr`. `new`
 // answers an `Option`, so this file imports `core::option`, and so does every file that imports
@@ -169,4 +173,427 @@ impl<T> NonNull<T> {
   pub fn as_ptr(self : NonNull<T>) -> *mut T {
     return self.ptr;
   }
+}
+
+/// The index of the first of the `count` bytes at `p` that equals `byte`, or `None`, as C's
+/// `memchr` does.
+pub unsafe fn find_byte(p : *const u8, byte : u8, count : usize) -> Option<usize> {
+  let n = count as i64;
+  let mut at = -1i64;
+  if n >= 64 {
+    at = unsafe { bytes_find_long(p, byte, n) };
+  } else {
+    let m = unsafe { bytes_equal_short(p, byte, n) };
+    if m != 0 {
+      at = bytes_lowest_bit(m);
+    }
+  }
+  if at < 0 {
+    return Option<usize>::None;
+  }
+  return Option<usize>::Some(at as usize);
+}
+
+/// `find_byte` for 64 bytes or more, as an index, or -1.
+unsafe fn bytes_find_long(p : *const u8, byte : u8, n : i64) -> i64 {
+  let first = unsafe { bytes_equal_64(p, byte) };
+  if first != 0 {
+    return bytes_lowest_bit(first);
+  }
+  // From the next multiple of 64, so that no load crosses a cache line.
+  let mut i = 64 - bytes_offset_in_line(p);
+  while i + 256 <= n && unsafe { !bytes_any_equal_256(offset(p, i), byte) } {
+    i = i + 256;
+  }
+  while i + 64 <= n {
+    let m = unsafe { bytes_equal_64(offset(p, i), byte) };
+    if m != 0 {
+      return i + bytes_lowest_bit(m);
+    }
+    i = i + 64;
+  }
+  if i < n {
+    // The last 64 bytes. The bytes before `i` in them hold no `byte`.
+    let last = n - 64;
+    let m = unsafe { bytes_equal_64(offset(p, last), byte) };
+    if m != 0 {
+      return last + bytes_lowest_bit(m);
+    }
+  }
+  return -1;
+}
+
+/// Compares the `count` bytes at `a` with the `count` bytes at `b`, as C's `memcmp` does. The
+/// result is 0 when they are equal. Otherwise its sign is the sign of `a[i] - b[i]` at the first
+/// byte `i` that differs, with each byte as a number from 0 to 255.
+pub unsafe fn compare_bytes(a : *const u8, b : *const u8, count : usize) -> i32 {
+  let n = count as i64;
+  if n >= 64 {
+    return unsafe { bytes_compare_long(a, b, n) };
+  }
+  let m = unsafe { bytes_differ_short(a, b, n) };
+  if m == 0 {
+    return 0;
+  }
+  return unsafe { bytes_order_at(a, b, bytes_lowest_bit(m)) };
+}
+
+/// `compare_bytes` for 64 bytes or more.
+unsafe fn bytes_compare_long(a : *const u8, b : *const u8, n : i64) -> i32 {
+  let first = unsafe { bytes_differ_64(a, b) };
+  if first != 0 {
+    return unsafe { bytes_order_at(a, b, bytes_lowest_bit(first)) };
+  }
+  // From the next multiple of 64 in `a`. The loads from `b` can cross a cache line.
+  let mut i = 64 - bytes_offset_in_line(a);
+  while i + 256 <= n && unsafe { bytes_same_256(offset(a, i), offset(b, i)) } {
+    i = i + 256;
+  }
+  while i + 64 <= n {
+    let m = unsafe { bytes_differ_64(offset(a, i), offset(b, i)) };
+    if m != 0 {
+      return unsafe { bytes_order_at(a, b, i + bytes_lowest_bit(m)) };
+    }
+    i = i + 64;
+  }
+  if i < n {
+    let last = n - 64;
+    let m = unsafe { bytes_differ_64(offset(a, last), offset(b, last)) };
+    if m != 0 {
+      return unsafe { bytes_order_at(a, b, last + bytes_lowest_bit(m)) };
+    }
+  }
+  return 0;
+}
+
+// The vector steps of `find_byte` and `compare_bytes`. A mask has one bit for each byte: bit `i`
+// is byte `i`, as on every little-endian target.
+
+/// The address of `p`, modulo 64.
+fn bytes_offset_in_line(p : *const u8) -> i64 {
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %a = llvm.ptrtoint %p : !llvm.ptr to i64
+      %m = llvm.mlir.constant(63 : i64) : i64
+      %r = llvm.and %a, %m : i64
+      macro.yield %r : i64
+    } };
+}
+
+/// The mask of the `n` bytes at `p` that equal `byte`, for `n` less than 64. Two or four loads
+/// read the start and the end of the range, and they can overlap. A shift moves the mask of each
+/// load to the place of its first byte, so a byte that two loads read sets the same bit.
+unsafe fn bytes_equal_short(p : *const u8, byte : u8, n : i64) -> i64 {
+  if n >= 16 {
+    let head = unsafe { bytes_equal_16(p, byte) };
+    let tail = unsafe { bytes_equal_16(offset(p, n - 16), byte) };
+    if n <= 32 {
+      return head | (tail << (n - 16));
+    }
+    // The first 32 bytes and the last 32 bytes, as two 32-bit masks.
+    let low = head | (unsafe { bytes_equal_16(offset(p, 16), byte) } << 16);
+    let high = unsafe { bytes_equal_16(offset(p, n - 32), byte) } | (tail << 16);
+    return low | (high << (n - 32));
+  }
+  if n >= 8 {
+    let head = unsafe { bytes_equal_8(p, byte) };
+    let tail = unsafe { bytes_equal_8(offset(p, n - 8), byte) };
+    return head | (tail << (n - 8));
+  }
+  if n >= 4 {
+    let head = unsafe { bytes_equal_4(p, byte) };
+    let tail = unsafe { bytes_equal_4(offset(p, n - 4), byte) };
+    return head | (tail << (n - 4));
+  }
+  if n == 0 {
+    return 0;
+  }
+  // Bytes 0, n / 2 and n - 1 are each byte of a range of 1, 2 or 3 bytes.
+  let mid = n / 2;
+  let first = unsafe { bytes_equal_1(p, 0, byte) };
+  let middle = unsafe { bytes_equal_1(p, mid, byte) };
+  let last = unsafe { bytes_equal_1(p, n - 1, byte) };
+  return first | (middle << mid) | (last << (n - 1));
+}
+
+/// The mask of the `n` bytes at `a` that differ from the `n` bytes at `b`, for `n` less than 64,
+/// read as `bytes_equal_short` reads.
+unsafe fn bytes_differ_short(a : *const u8, b : *const u8, n : i64) -> i64 {
+  if n >= 16 {
+    let head = unsafe { bytes_differ_16(a, b) };
+    let tail = unsafe {
+      bytes_differ_16(offset(a, n - 16), offset(b, n - 16))
+    };
+    if n <= 32 {
+      return head | (tail << (n - 16));
+    }
+    // The first 32 bytes and the last 32 bytes, as two 32-bit masks.
+    let low = head | (unsafe { bytes_differ_16(offset(a, 16), offset(b, 16)) } << 16);
+    let high = unsafe {
+      bytes_differ_16(offset(a, n - 32), offset(b, n - 32))
+    } | (tail << 16);
+    return low | (high << (n - 32));
+  }
+  if n >= 8 {
+    let head = unsafe { bytes_differ_8(a, b) };
+    let tail = unsafe { bytes_differ_8(offset(a, n - 8), offset(b, n - 8)) };
+    return head | (tail << (n - 8));
+  }
+  if n >= 4 {
+    let head = unsafe { bytes_differ_4(a, b) };
+    let tail = unsafe { bytes_differ_4(offset(a, n - 4), offset(b, n - 4)) };
+    return head | (tail << (n - 4));
+  }
+  if n == 0 {
+    return 0;
+  }
+  // Bytes 0, n / 2 and n - 1 are each byte of a range of 1, 2 or 3 bytes.
+  let mid = n / 2;
+  let first = unsafe { bytes_differ_1(a, b, 0) };
+  let middle = unsafe { bytes_differ_1(a, b, mid) };
+  let last = unsafe { bytes_differ_1(a, b, n - 1) };
+  return first | (middle << mid) | (last << (n - 1));
+}
+
+/// The index of the lowest set bit of `mask`, which is not 0.
+fn bytes_lowest_bit(mask : i64) -> i64 {
+  return unsafe { mlir!( inputs : (%m = mask : i64), returns : i64, dialects : ["llvm"]) {
+      %r = "llvm.intr.cttz"(%m) < {
+        is_zero_poison = true
+      }> : (i64) -> i64
+      macro.yield %r : i64
+    } };
+}
+
+/// `a[i] - b[i]`, with each byte as a number from 0 to 255.
+unsafe fn bytes_order_at(a : *const u8, b : *const u8, i : i64) -> i32 {
+  let x = unsafe { a[i] };
+  let y = unsafe { b[i] };
+  return unsafe { mlir!( inputs : (%x = x : i8, %y = y : i8), returns : i32, dialects : ["llvm"]) {
+      %wx = llvm.zext %x : i8 to i32
+      %wy = llvm.zext %y : i8 to i32
+      %r = llvm.sub %wx, %wy : i32
+      macro.yield %r : i32
+    } };
+}
+
+/// 1 when byte `i` at `p` equals `byte`, else 0.
+unsafe fn bytes_equal_1(p : *const u8, i : i64, byte : u8) -> i64 {
+  if unsafe { p[i] } == byte {
+    return 1;
+  }
+  return 0;
+}
+
+/// The mask of the 4 bytes at `p` that equal `byte`.
+unsafe fn bytes_equal_4(p : *const u8, byte : u8) -> i64 {
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = byte : i8), returns : i64, dialects : ["llvm", "vector"]) {
+      %s = vector.broadcast %b : i8 to vector<4xi8>
+      %v = llvm.load %p {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<4xi8>
+      %e = llvm.icmp "eq" %v, %s : vector<4xi8>
+      %m = llvm.bitcast %e : vector<4xi1> to i4
+      %r = llvm.zext %m : i4 to i64
+      macro.yield %r : i64
+    } };
+}
+
+/// The mask of the 8 bytes at `p` that equal `byte`.
+unsafe fn bytes_equal_8(p : *const u8, byte : u8) -> i64 {
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = byte : i8), returns : i64, dialects : ["llvm", "vector"]) {
+      %s = vector.broadcast %b : i8 to vector<8xi8>
+      %v = llvm.load %p {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<8xi8>
+      %e = llvm.icmp "eq" %v, %s : vector<8xi8>
+      %m = llvm.bitcast %e : vector<8xi1> to i8
+      %r = llvm.zext %m : i8 to i64
+      macro.yield %r : i64
+    } };
+}
+
+/// The mask of the 16 bytes at `p` that equal `byte`.
+unsafe fn bytes_equal_16(p : *const u8, byte : u8) -> i64 {
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = byte : i8), returns : i64, dialects : ["llvm", "vector"]) {
+      %s = vector.broadcast %b : i8 to vector<16xi8>
+      %v = llvm.load %p {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<16xi8>
+      %e = llvm.icmp "eq" %v, %s : vector<16xi8>
+      %m = llvm.bitcast %e : vector<16xi1> to i16
+      %r = llvm.zext %m : i16 to i64
+      macro.yield %r : i64
+    } };
+}
+
+/// The mask of the 64 bytes at `p` that equal `byte`.
+unsafe fn bytes_equal_64(p : *const u8, byte : u8) -> i64 {
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = byte : i8), returns : i64, dialects : ["llvm", "vector"]) {
+      %s = vector.broadcast %b : i8 to vector<64xi8>
+      %v = llvm.load %p {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %e = llvm.icmp "eq" %v, %s : vector<64xi8>
+      %r = llvm.bitcast %e : vector<64xi1> to i64
+      macro.yield %r : i64
+    } };
+}
+
+/// Whether one of the 256 bytes at `p` equals `byte`. `p` is a multiple of 64.
+///
+/// The test makes a byte of each bit of the mask and ORs the bytes as eight 64-bit lanes. On Arm,
+/// LLVM makes a slow sequence of instructions for a test of the 64-bit mask itself.
+unsafe fn bytes_any_equal_256(p : *const u8, byte : u8) -> bool {
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr, %b = byte : i8), returns : bool, dialects : ["llvm", "vector"]) {
+      %s = vector.broadcast %b : i8 to vector<64xi8>
+      %p1 = llvm.getelementptr %p[64] : (!llvm.ptr) -> !llvm.ptr, i8
+      %p2 = llvm.getelementptr %p[128] : (!llvm.ptr) -> !llvm.ptr, i8
+      %p3 = llvm.getelementptr %p[192] : (!llvm.ptr) -> !llvm.ptr, i8
+      %v0 = llvm.load %p {
+        alignment = 64 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %v1 = llvm.load %p1 {
+        alignment = 64 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %v2 = llvm.load %p2 {
+        alignment = 64 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %v3 = llvm.load %p3 {
+        alignment = 64 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %e0 = llvm.icmp "eq" %v0, %s : vector<64xi8>
+      %e1 = llvm.icmp "eq" %v1, %s : vector<64xi8>
+      %e2 = llvm.icmp "eq" %v2, %s : vector<64xi8>
+      %e3 = llvm.icmp "eq" %v3, %s : vector<64xi8>
+      %o0 = llvm.or %e0, %e1 : vector<64xi1>
+      %o1 = llvm.or %e2, %e3 : vector<64xi1>
+      %o = llvm.or %o0, %o1 : vector<64xi1>
+      %w = llvm.sext %o : vector<64xi1> to vector<64xi8>
+      %q = llvm.bitcast %w : vector<64xi8> to vector<8xi64>
+      %any = "llvm.intr.vector.reduce.or"(%q) : (vector<8xi64>) -> i64
+      %z = llvm.mlir.constant(0 : i64) : i64
+      %r = llvm.icmp "ne" %any, %z : i64
+      macro.yield %r : i1
+    } };
+}
+
+/// 1 when byte `i` at `a` differs from byte `i` at `b`, else 0.
+unsafe fn bytes_differ_1(a : *const u8, b : *const u8, i : i64) -> i64 {
+  if unsafe { a[i] != b[i] } {
+    return 1;
+  }
+  return 0;
+}
+
+/// The mask of the 4 bytes at `a` that differ from the 4 bytes at `b`.
+unsafe fn bytes_differ_4(a : *const u8, b : *const u8) -> i64 {
+  return unsafe { mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %x = llvm.load %a {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<4xi8>
+      %y = llvm.load %b {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<4xi8>
+      %d = llvm.icmp "ne" %x, %y : vector<4xi8>
+      %m = llvm.bitcast %d : vector<4xi1> to i4
+      %r = llvm.zext %m : i4 to i64
+      macro.yield %r : i64
+    } };
+}
+
+/// The mask of the 8 bytes at `a` that differ from the 8 bytes at `b`.
+unsafe fn bytes_differ_8(a : *const u8, b : *const u8) -> i64 {
+  return unsafe { mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %x = llvm.load %a {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<8xi8>
+      %y = llvm.load %b {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<8xi8>
+      %d = llvm.icmp "ne" %x, %y : vector<8xi8>
+      %m = llvm.bitcast %d : vector<8xi1> to i8
+      %r = llvm.zext %m : i8 to i64
+      macro.yield %r : i64
+    } };
+}
+
+/// The mask of the 16 bytes at `a` that differ from the 16 bytes at `b`.
+unsafe fn bytes_differ_16(a : *const u8, b : *const u8) -> i64 {
+  return unsafe { mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %x = llvm.load %a {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<16xi8>
+      %y = llvm.load %b {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<16xi8>
+      %d = llvm.icmp "ne" %x, %y : vector<16xi8>
+      %m = llvm.bitcast %d : vector<16xi1> to i16
+      %r = llvm.zext %m : i16 to i64
+      macro.yield %r : i64
+    } };
+}
+
+/// The mask of the 64 bytes at `a` that differ from the 64 bytes at `b`.
+unsafe fn bytes_differ_64(a : *const u8, b : *const u8) -> i64 {
+  return unsafe { mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %x = llvm.load %a {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %y = llvm.load %b {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %d = llvm.icmp "ne" %x, %y : vector<64xi8>
+      %r = llvm.bitcast %d : vector<64xi1> to i64
+      macro.yield %r : i64
+    } };
+}
+
+/// Whether the 256 bytes at `a` are the same as the 256 bytes at `b`. `a` is a multiple of 64.
+/// It tests the mask as `bytes_any_equal_256` does.
+unsafe fn bytes_same_256(a : *const u8, b : *const u8) -> bool {
+  return unsafe { mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : bool, dialects : ["llvm"]) {
+      %a1 = llvm.getelementptr %a[64] : (!llvm.ptr) -> !llvm.ptr, i8
+      %a2 = llvm.getelementptr %a[128] : (!llvm.ptr) -> !llvm.ptr, i8
+      %a3 = llvm.getelementptr %a[192] : (!llvm.ptr) -> !llvm.ptr, i8
+      %b1 = llvm.getelementptr %b[64] : (!llvm.ptr) -> !llvm.ptr, i8
+      %b2 = llvm.getelementptr %b[128] : (!llvm.ptr) -> !llvm.ptr, i8
+      %b3 = llvm.getelementptr %b[192] : (!llvm.ptr) -> !llvm.ptr, i8
+      %x0 = llvm.load %a {
+        alignment = 64 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %x1 = llvm.load %a1 {
+        alignment = 64 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %x2 = llvm.load %a2 {
+        alignment = 64 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %x3 = llvm.load %a3 {
+        alignment = 64 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %y0 = llvm.load %b {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %y1 = llvm.load %b1 {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %y2 = llvm.load %b2 {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %y3 = llvm.load %b3 {
+        alignment = 1 : i64
+      } : !llvm.ptr -> vector<64xi8>
+      %d0 = llvm.icmp "ne" %x0, %y0 : vector<64xi8>
+      %d1 = llvm.icmp "ne" %x1, %y1 : vector<64xi8>
+      %d2 = llvm.icmp "ne" %x2, %y2 : vector<64xi8>
+      %d3 = llvm.icmp "ne" %x3, %y3 : vector<64xi8>
+      %o0 = llvm.or %d0, %d1 : vector<64xi1>
+      %o1 = llvm.or %d2, %d3 : vector<64xi1>
+      %o = llvm.or %o0, %o1 : vector<64xi1>
+      %w = llvm.sext %o : vector<64xi1> to vector<64xi8>
+      %q = llvm.bitcast %w : vector<64xi8> to vector<8xi64>
+      %any = "llvm.intr.vector.reduce.or"(%q) : (vector<8xi64>) -> i64
+      %z = llvm.mlir.constant(0 : i64) : i64
+      %r = llvm.icmp "eq" %any, %z : i64
+      macro.yield %r : i1
+    } };
 }

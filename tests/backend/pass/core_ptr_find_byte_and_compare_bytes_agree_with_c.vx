@@ -1,0 +1,146 @@
+//===- core_ptr_find_byte_and_compare_bytes_agree_with_c.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `find_byte` and `compare_bytes` from `core::ptr` give the same answers as C's `memchr` and
+// `memcmp`. The test tries every length up to 600, at 11 distances from a 64-byte boundary.
+//
+// Each case puts the byte to find, and a byte that differs, in two places. The answer must be the
+// first place. The first pair that differs is 250 against 100, and a signed compare gets its sign
+// wrong. The second pair, 250 against 255, has the other sign.
+// The byte just before the range and the byte just after it hold the byte to find, and differ, so
+// a read outside the range gives a wrong answer.
+//
+// EXPECT: find_byte: 0 wrong | compare_bytes: 0 wrong | 935143 cases
+
+import core::convert;
+import core::option;
+import core::ptr;
+import std::libc;
+
+extern {
+  fn memchr(p : *const u8, c : i32, n : i64) -> *const u8;
+  fn memcmp(a : *const u8, b : *const u8, n : i64) -> i32;
+}
+
+/// The byte to find. The filler bytes are below 200, so they never equal it.
+const NEEDLE : u8 = 250u8;
+
+fn address(p : *const u8) -> i64 {
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %a = llvm.ptrtoint %p : !llvm.ptr to i64
+      macro.yield %a : i64
+    } };
+}
+
+fn sign(x : i32) -> i32 {
+  if x < 0 {
+    return -1;
+  }
+  if x > 0 {
+    return 1;
+  }
+  return 0;
+}
+
+/// `find_byte` as a number: the index, or -1.
+fn found_at(p : *const u8, n : i64) -> i64 {
+  match unsafe { find_byte(p, NEEDLE, n as usize) } {
+    Option<usize>::Some(k) => {
+      return i64::from(k);
+    }
+    Option<usize>::None => {
+      return -1;
+    }
+  }
+}
+
+/// `memchr` as a number: the index, or -1.
+fn c_found_at(p : *const u8, n : i64) -> i64 {
+  let q = unsafe { memchr(p, 250i32, n) };
+  if is_null(q) {
+    return -1;
+  }
+  return address(q) - address(p);
+}
+
+/// Puts the byte to find in `a`, and a pair of bytes that differ in `a` and `b`, at `i`.
+fn plant(a : *mut u8, b : *mut u8, i : i64, x : u8, y : u8) -> void {
+  unsafe { a[i] = x; }
+  unsafe { b[i] = y; }
+}
+
+/// Puts the filler byte back at `i` in `a` and `b`.
+fn restore(a : *mut u8, b : *mut u8, i : i64) -> void {
+  let v = ((i * 7) % 200) as u8;
+  unsafe { a[i] = v; }
+  unsafe { b[i] = v; }
+}
+
+fn main() -> i32 {
+  let size = 1024i64;
+  let a = unsafe { aligned_alloc(64usize, size as usize) } as *mut u8;
+  let b = unsafe { aligned_alloc(64usize, size as usize) } as *mut u8;
+  for i in 0..size {
+    restore(a, b, i);
+  }
+  let starts : Tensor<i64, [11]> = [1i64, 2i64, 15i64, 16i64, 17i64, 31i64, 32i64, 47i64, 48i64, 63i64, 64i64];
+  let mut wrong_find = 0i64;
+  let mut wrong_compare = 0i64;
+  let mut cases = 0i64;
+  for s in 0..11 {
+    let start = starts[s];
+    let pa = offset(a as *const u8, start);
+    let pb = offset(b as *const u8, start);
+    for n in 0..601i64 {
+      // The bytes just outside the range.
+      plant(a, b, start - 1, NEEDLE, 0u8);
+      plant(a, b, start + n, NEEDLE, 0u8);
+      let mut at = -1i64;
+      while at < n {
+        if at >= 0 {
+          plant(a, b, start + at, NEEDLE, 100u8);
+        }
+        // A second place, later in the range, where the order is the other way round.
+        let later = at + 1 + (at + n) % 37;
+        if at >= 0 && later < n {
+          plant(a, b, start + later, NEEDLE, 255u8);
+        }
+        if found_at(pa, n) != c_found_at(pa, n) {
+          if wrong_find < 4 {
+            println!("find_byte: start {} length {} at {}: {} and memchr {}", start, n, at, found_at(pa, n), c_found_at(pa, n));
+          }
+          wrong_find = wrong_find + 1;
+        }
+        let ours = sign(unsafe { compare_bytes(pa, pb, n as usize) });
+        let theirs = sign(unsafe { memcmp(pa, pb, n) });
+        if ours != theirs {
+          if wrong_compare < 4 {
+            println!("compare_bytes: start {} length {} at {}: {} and memcmp {}", start, n, at, ours, theirs);
+          }
+          wrong_compare = wrong_compare + 1;
+        }
+        cases = cases + 1;
+        if at >= 0 {
+          restore(a, b, start + at);
+          if later < n {
+            restore(a, b, start + later);
+          }
+        }
+        // Every place near the start and the end, and every ninth place between them.
+        if at >= 70 && at < n - 70 {
+          at = at + 9;
+        } else {
+          at = at + 1;
+        }
+      }
+      restore(a, b, start - 1);
+      restore(a, b, start + n);
+    }
+  }
+  println!("find_byte: {} wrong | compare_bytes: {} wrong | {} cases", wrong_find, wrong_compare, cases);
+  return 0;
+}

@@ -1,0 +1,158 @@
+//===- bytes.vx - Vx Benchmarks -----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `find_byte` and `compare_bytes` from `core::ptr`, C's `memchr` and `memcmp`, and the byte loops
+// that a program writes by hand, on 16 bytes to 64 MiB. Each call reads the whole range but one
+// byte: the byte to find, and the one byte that differs, are the last but one. The length of each
+// call is `n` or `n - 1` in turn, so that the compiler cannot move a call out of its loop.
+//
+// It prints one line for each size, round and routine: `bytes,round,routine,GB/s`. Each round
+// runs the six routines in the other order.
+
+import core::convert;
+import core::option;
+import core::ptr;
+import std::libc;
+
+extern {
+  fn memchr(p : *const u8, c : i32, n : i64) -> *const u8;
+  fn memcmp(a : *const u8, b : *const u8, n : i64) -> i32;
+  fn vx_clock_ns() -> i64;
+}
+
+fn address(p : *const u8) -> i64 {
+  return unsafe { mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+      %a = llvm.ptrtoint %p : !llvm.ptr to i64
+      macro.yield %a : i64
+    } };
+}
+
+fn loop_find(p : *const u8, byte : u8, n : i64) -> i64 {
+  let mut i = 0i64;
+  while i < n {
+    if unsafe { p[i] } == byte {
+      return i;
+    }
+    i = i + 1;
+  }
+  return -1;
+}
+
+fn loop_compare(a : *const u8, b : *const u8, n : i64) -> i32 {
+  let mut i = 0i64;
+  while i < n {
+    let x = unsafe { a[i] };
+    let y = unsafe { b[i] };
+    if x != y {
+      if x < y {
+        return -1;
+      }
+      return 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+fn routine_name(which : i64) -> *const i8 {
+  if which == 0 {
+    return "find_byte";
+  }
+  if which == 1 {
+    return "memchr";
+  }
+  if which == 2 {
+    return "find_loop";
+  }
+  if which == 3 {
+    return "compare_bytes";
+  }
+  if which == 4 {
+    return "memcmp";
+  }
+  return "compare_loop";
+}
+
+/// Bytes a nanosecond, which is GB/s, of one routine over `reps` calls on about `n` bytes.
+fn rate(which : i64, a : *const u8, b : *const u8, n : i64, reps : i64) -> f64 {
+  let mut sum = 0i64;
+  let t0 = unsafe { vx_clock_ns() };
+  for r in 0..reps {
+    let len = n - (r % 2);
+    if which == 0 {
+      match unsafe { find_byte(a, 250u8, len as usize) } {
+        Option<usize>::Some(k) => {
+          sum = sum + i64::from(k);
+        }
+        Option<usize>::None => {}
+      }
+    } else if which == 1 {
+      sum = sum + address(unsafe { memchr(a, 250i32, len) }) - address(a);
+    } else if which == 2 {
+      sum = sum + loop_find(a, 250u8, len);
+    } else if which == 3 {
+      sum = sum + i64::from(unsafe { compare_bytes(a, b, len as usize) });
+    } else if which == 4 {
+      sum = sum + i64::from(unsafe { memcmp(a, b, len) });
+    } else {
+      sum = sum + i64::from(loop_compare(a, b, len));
+    }
+  }
+  let t1 = unsafe { vx_clock_ns() };
+  // Each find gives n - 2. Each compare gives a negative number, as 250 is less than 251.
+  let wrong = if which < 3 {
+    sum != (n - 2) * reps
+  } else {
+    sum >= 0
+  };
+  if wrong {
+    println!("{}: wrong result {}", routine_name(which), sum);
+  }
+  return ((n * reps) as f64) / ((t1 - t0) as f64);
+}
+
+fn main() -> i32 {
+  let big = 67108864i64 + 4096;
+  let a = unsafe { aligned_alloc(4096usize, big as usize) } as *mut u8;
+  let b = unsafe { aligned_alloc(4096usize, big as usize) } as *mut u8;
+  for i in 0..big {
+    unsafe { a[i] = 1u8; }
+    unsafe { b[i] = 1u8; }
+  }
+  // 16 bytes after the start of a page, as a block from malloc starts.
+  let pa = offset(a as *const u8, 16);
+  let pb = offset(b as *const u8, 16);
+  let sizes : Tensor<i64, [10]> = [16i64, 32i64, 64i64, 256i64, 1024i64, 4096i64, 65536i64, 1048576i64, 8388608i64, 67108864i64];
+  println!("bytes,round,routine,gb_per_s");
+  for k in 0..10 {
+    let n = sizes[k];
+    unsafe { a[16 + n - 2] = 250u8; }
+    unsafe { b[16 + n - 2] = 251u8; }
+    // About 4 GB of reads for each routine, and at most 20 million calls.
+    let mut reps = 4000000000i64 / (n + 64);
+    if reps > 20000000 {
+      reps = 20000000;
+    }
+    if reps < 8 {
+      reps = 8;
+    }
+    for round in 0..3i64 {
+      for j in 0..6i64 {
+        let which = if round % 2 == 0 {
+          j
+        } else {
+          5 - j
+        };
+        let gbs = rate(which, pa, pb, n, reps);
+        println!("{},{},{},{}", n, round, routine_name(which), gbs);
+      }
+    }
+    unsafe { a[16 + n - 2] = 1u8; }
+    unsafe { b[16 + n - 2] = 1u8; }
+  }
+  return 0;
+}
