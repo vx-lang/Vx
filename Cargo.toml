@@ -26,6 +26,8 @@ id-arena = "2.2.2"
 tempfile = "3.10"
 rayon = "1.10"
 regex = "1.10"
+# `getrusage`, for the peak memory column of the VX_PIPELINE_PHASES table.
+libc = "0.2"
 bytemuck = { version = "1.15", features = ["derive"] }
 once_cell = "1.19"
 mlir-sys = "220.0.2"
