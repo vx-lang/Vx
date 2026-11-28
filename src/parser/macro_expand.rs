@@ -166,6 +166,9 @@ pub struct MacroExpander<'a> {
     /// For each expansion, by its id less 1: where to report the code that it wrote. See
     /// `Program::macro_call_sites`.
     call_sites: std::cell::RefCell<Vec<Option<Span>>>,
+    /// For each expansion, by its id less 1: the module whose privileges its tokens have. See
+    /// `Program::macro_homes`.
+    homes: std::cell::RefCell<Vec<Option<Symbol>>>,
     /// The trait methods that carry a default body, across every module. Held here because
     /// filling them in is the last thing expansion does, and it has to be the last thing:
     /// an impl a macro produced is entitled to the defaults, and nothing before expansion
@@ -289,6 +292,7 @@ impl<'a> MacroExpander<'a> {
             macros,
             module: Symbol::from(""),
             call_sites: std::cell::RefCell::new(Vec::new()),
+            homes: std::cell::RefCell::new(Vec::new()),
             trait_defaults,
             expansions: std::cell::Cell::new(0),
             call_locals: std::cell::RefCell::new(Vec::new()),
@@ -398,7 +402,8 @@ impl<'a> MacroExpander<'a> {
         &self,
         call: &stmt::MacroCallStmt,
     ) -> Result<crate::syntax::Program, String> {
-        let (home, rules) = self.macros.rules(&self.module, call.name.as_ref())?;
+        let caller = self.privileges(call.span.expansion);
+        let (home, rules) = self.macros.rules(&caller, call.name.as_ref())?;
         let call_site = self.call_site(home, call.span);
         for rule in rules {
             self.validate_matcher(call.name.as_ref(), &rule.matcher)?;
@@ -415,7 +420,8 @@ impl<'a> MacroExpander<'a> {
         };
         for rule in rules {
             if let Ok(captures) = self.match_rule(&rule.matcher, &input_tokens) {
-                let mut transcribed = self.transcribe(&rule.transcriber, &captures, call_site)?;
+                let mut transcribed =
+                    self.transcribe(&rule.transcriber, &captures, call_site, home)?;
                 transcribed.push(crate::lexer::OwnedToken {
                     kind: OwnedTokenType::Eof,
                     line: 0,
@@ -438,6 +444,7 @@ impl<'a> MacroExpander<'a> {
         expander.module = module.module_path.clone();
         expander.expand_module_from_zero(module)?;
         module.macro_call_sites = expander.call_sites.take();
+        module.macro_homes = expander.homes.take();
         Ok(())
     }
 
@@ -864,7 +871,8 @@ impl<'a> MacroExpander<'a> {
                 .map(|e| MacroBody::Expr(Box::new(e)));
         }
 
-        let (home, rules) = self.macros.rules(&self.module, name)?;
+        let caller = self.privileges(span.expansion);
+        let (home, rules) = self.macros.rules(&caller, name)?;
         let call_site = self.call_site(home, span);
         for rule in rules {
             self.validate_matcher(name, &rule.matcher)?;
@@ -883,7 +891,8 @@ impl<'a> MacroExpander<'a> {
 
         for rule in rules {
             if let Ok(captures) = self.match_rule(&rule.matcher, &input_tokens) {
-                let mut transcribed = self.transcribe(&rule.transcriber, &captures, call_site)?;
+                let mut transcribed =
+                    self.transcribe(&rule.transcriber, &captures, call_site, home)?;
                 // IMPORTANT: The parser expects an EOF token at the end!
                 transcribed.push(crate::lexer::OwnedToken {
                     kind: OwnedTokenType::Eof,
@@ -1077,14 +1086,46 @@ impl<'a> MacroExpander<'a> {
         Some(outer.unwrap_or(span))
     }
 
-    /// The tokens of one expansion. `call_site` is where to report the code that they make.
+    /// The module whose privileges a token of expansion `expansion` has: the module that
+    /// defines the macro for a token of its body, and the caller's for a token of an argument.
+    fn privileges(&self, expansion: u32) -> Symbol {
+        let home = expansion
+            .checked_sub(1)
+            .and_then(|i| self.homes.borrow().get(i as usize).cloned().flatten());
+        home.unwrap_or_else(|| self.module.clone())
+    }
+
+    /// A new expansion id, for tokens that are reported at `call_site` and have the privileges
+    /// of `home`.
+    fn new_expansion(&self, call_site: Option<Span>, home: Symbol) -> u32 {
+        let id = self.expansions.get() + 1;
+        self.expansions.set(id);
+        let mut call_sites = self.call_sites.borrow_mut();
+        call_sites.push(call_site);
+        assert_eq!(
+            call_sites.len(),
+            id as usize,
+            "one call site for each expansion"
+        );
+        let mut homes = self.homes.borrow_mut();
+        homes.push((home != self.module).then_some(home));
+        assert_eq!(homes.len(), id as usize, "one home for each expansion");
+        id
+    }
+
+    /// The tokens of one expansion of a macro of `home`. `call_site` is where to report the code
+    /// that they make.
     fn transcribe(
         &self,
         transcriber: &[TokenTree],
         captures: &HashMap<crate::symbol::Symbol, Vec<crate::lexer::OwnedToken>>,
         call_site: Option<Span>,
+        home: &Symbol,
     ) -> Result<Vec<crate::lexer::OwnedToken>, String> {
         let mut tokens = Vec::new();
+        // For each token: `None` when the macro body wrote it, or the expansion id it had in the
+        // argument of the call.
+        let mut origins: Vec<Option<u32>> = Vec::new();
         let mut transcriber_tokens = Vec::new();
         for tt in transcriber {
             transcriber_tokens.extend(self.flatten_tt(tt));
@@ -1124,6 +1165,7 @@ impl<'a> MacroExpander<'a> {
                                     }
                                 }
                             }
+                            origins.push(Some(placed.expansion));
                             tokens.push(placed);
                         }
                         let one_line = captured.iter().all(|t| t.line == 0)
@@ -1140,11 +1182,13 @@ impl<'a> MacroExpander<'a> {
                     }
                 }
             }
+            origins.push(None);
             tokens.push(m_tok.clone());
             j += 1;
         }
 
         // Append EOF to ensure parser completes
+        origins.push(None);
         tokens.push(crate::lexer::OwnedToken {
             kind: OwnedTokenType::Eof,
             line: 0,
@@ -1154,18 +1198,23 @@ impl<'a> MacroExpander<'a> {
         });
 
         // Two expansions of one macro give their tokens the same positions, so the id is
-        // what keeps their nodes apart.
-        let id = self.expansions.get() + 1;
-        self.expansions.set(id);
-        let mut call_sites = self.call_sites.borrow_mut();
-        call_sites.push(call_site);
-        assert_eq!(
-            call_sites.len(),
-            id as usize,
-            "one call site for each expansion"
-        );
-        for tok in &mut tokens {
-            tok.expansion = id;
+        // what keeps their nodes apart. The tokens of the body get one id, with the privileges
+        // of `home`. The tokens of an argument get another id for each id that they had, with
+        // the privileges that they had.
+        let body = self.new_expansion(call_site, home.clone());
+        let mut argument_ids: Vec<(u32, u32)> = Vec::new();
+        for (tok, origin) in tokens.iter_mut().zip(origins) {
+            tok.expansion = match origin {
+                None => body,
+                Some(old) => match argument_ids.iter().find(|(o, _)| *o == old) {
+                    Some((_, new)) => *new,
+                    None => {
+                        let new = self.new_expansion(call_site, self.privileges(old));
+                        argument_ids.push((old, new));
+                        new
+                    }
+                },
+            };
         }
         Ok(tokens)
     }

@@ -1,0 +1,63 @@
+//===- a_module_with_macros_that_call_its_functions.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module for `a_macro_calls_the_functions_of_its_file.vx` and
+// `a_macro_argument_cannot_name_a_private_function.vx`. `ten` is private to this file, `twenty`
+// is `pkg` in the package `tests`, and `bumped` is a private method. The macros of this file call
+// them.
+import tests::modules::a_module_with_a_macro_that_calls_its_argument;
+
+fn ten() -> i64 {
+  return 10;
+}
+
+pkg fn twenty() -> i64 {
+  return 20;
+}
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn bumped(self : &Counter) -> i64 {
+    return self.n + 1;
+  }
+}
+
+pub fn new_counter() -> Counter {
+  return Counter {
+    n : 40
+  };
+}
+
+// Each of these macros starts with a token of its argument, before the names of its body.
+macro_rules add_thirty {
+  ($x : expr) => {
+    $x + ten() + twenty()
+  };
+}
+
+macro_rules bump_of {
+  ($c : expr) => {
+    $c.bumped()
+  };
+}
+
+// The body names `ten`, and gives it to `call_it` of another file as an argument.
+macro_rules ten_through_another_file {
+  () => {
+    call_it!(ten)
+  };
+}
+
+// Calls the function that its caller names. The name has the privileges of the caller.
+macro_rules call_mine {
+  ($f : ident) => {
+    $f()
+  };
+}

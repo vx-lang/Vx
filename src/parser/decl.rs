@@ -2203,6 +2203,7 @@ impl<'a> Parser<'a> {
             memories,
             transfer_impls,
             macro_call_sites: Vec::new(),
+            macro_homes: Vec::new(),
             no_trusted_code: None,
         })
     }

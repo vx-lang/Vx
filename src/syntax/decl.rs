@@ -529,6 +529,10 @@ pub struct Program {
     /// it wrote. It is the macro call when another module declares the macro, because the
     /// places in that code are in the other file. `None` keeps the places in the code.
     pub macro_call_sites: Vec<Option<crate::syntax::Span>>,
+    /// For each macro expansion in this module, by its id less 1: the module that defines the
+    /// macro whose body wrote the tokens, or `None` for this module. A name has the privileges
+    /// of that module (docs/lang/visibility.md, section 4, rule 3).
+    pub macro_homes: Vec<Option<Symbol>>,
     /// The package of this module, when `vxc --no-trusted-code` names it. Trusted code in the
     /// module is then an error.
     pub no_trusted_code: Option<Symbol>,
@@ -617,6 +621,7 @@ impl Program {
                 })
                 .collect(),
             macro_call_sites: self.macro_call_sites.clone(),
+            macro_homes: self.macro_homes.clone(),
             no_trusted_code: self.no_trusted_code.clone(),
         }
     }

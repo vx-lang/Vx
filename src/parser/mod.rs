@@ -257,8 +257,8 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// The macro expansion these tokens came from, or 0 for source code. One parser reads one
-    /// expansion, so every span it makes carries the same id.
+    /// The macro expansion these tokens came from, or 0 for source code. A name keeps the id of
+    /// its own token instead, because the body and the arguments of a macro get different ids.
     pub(crate) fn expansion(&self) -> u32 {
         self.tokens.first().map_or(0, |t| t.expansion)
     }

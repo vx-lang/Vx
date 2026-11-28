@@ -557,7 +557,7 @@ impl<'a> TypeChecker<'a> {
                         self.refuse_a_use_of_main(&span);
                         return Type::Unknown;
                     }
-                    if let Some(place) = self.place_of_function(name.as_ref()) {
+                    if let Some(place) = self.place_of_function(name.as_ref(), &span) {
                         let shown = name.to_string();
                         self.refuse_a_private_function(&shown, &shown, &place, &span);
                     }
